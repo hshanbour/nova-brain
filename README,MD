@@ -1,0 +1,18 @@
+# Nova Brain
+
+AI-powered missed-call recovery system for Nova.
+
+## Purpose
+
+Nova Brain handles missed calls, customer follow-up,
+lead recovery, conversations, and automation.
+
+## Core Flow
+
+Missed Call
+→ Identify Caller
+→ Create/Update Lead
+→ AI Follow-up
+→ SMS
+→ Track Response
+→ Book / Convert Lead
