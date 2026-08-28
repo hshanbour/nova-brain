@@ -1,4 +1,5 @@
 import { readJsonBody } from "./body.js";
+import { AgentStepLimitError, AgentToolCallLimitError } from "../agent/agent.js";
 import {
   ValidationError,
   validateAgentRequest,
@@ -71,6 +72,14 @@ export function createApi({ agent, config }) {
       } catch (error) {
         if (error instanceof ValidationError) {
           sendJson(response, 400, { error: error.message });
+          return;
+        }
+
+        if (
+          error instanceof AgentStepLimitError ||
+          error instanceof AgentToolCallLimitError
+        ) {
+          sendJson(response, 502, { error: error.message });
           return;
         }
 

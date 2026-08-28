@@ -1,8 +1,9 @@
 export function createMockModelProvider() {
   return Object.freeze({
+    name: "mock",
     async generate({ message }) {
       return {
-        provider: "mock",
+        type: "final",
         message: `Brian is ready. I received: ${message}`
       };
     }
