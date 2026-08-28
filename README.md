@@ -1,12 +1,12 @@
 # Nova Brain
 
-Nova Brain is the foundation for Brian: an extensible personal and business AI system for Sharp Cuts and future ventures.
+Nova Brain is an extensible personal AI operating system. Nova Console is its owner-facing interface; the backend agent remains independent so future web, mobile, voice, messaging, and business channels can connect to the same brain.
 
 ## Current MVP
 
 The repository provides a small, serverless-compatible agent runtime:
 
-- `GET /` serves the static Nova Brain landing page.
+- `GET /` serves Nova Console V1, a responsive interface connected to the live agent API.
 - `GET /api/health` returns a machine-readable health response.
 - `POST /api/agent` accepts a validated agent request and runs a bounded model/tool loop.
 - `POST /api/missed-call` preserves the original scaffold endpoint as a validated intake placeholder.
@@ -16,7 +16,7 @@ The mock provider remains the credential-free default. An OpenAI Responses API p
 
 ## Run locally
 
-Requires Node.js 20 or later.
+Requires Node.js 24.
 
 ```bash
 npm install
@@ -28,13 +28,19 @@ Set local values in your shell or load them from an ignored environment file wit
 
 ## API
 
-### Landing page
+### Nova Console
 
 ```http
 GET /
 ```
 
-Vercel serves `index.html` for this route. The local Node adapter serves the same file.
+Vercel serves `index.html` and the dependency-free files under `assets/`. The local Node adapter serves the same allowlisted static files. The console passes the returned `conversationId` into later messages until the owner starts a new conversation, and shows safe provider, step, and tool-execution metadata.
+
+The console includes a minimal web app manifest and mobile standalone metadata. It does not implement offline caching yet.
+
+### Security
+
+The current Preview remains protected by Vercel Authentication. Nova Console contains no API keys or environment-variable values; it calls same-origin backend routes only. Application-level owner authentication and authorization are still required before any public or production exposure. Do not treat Preview protection as the final product access-control layer.
 
 ### Health
 

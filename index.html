@@ -1,12 +1,80 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nova Brain</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0d12">
+  <meta name="description" content="Nova Brain — your private AI operating system.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Nova Brain">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/assets/nova-mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/console.css">
+  <title>Nova Brain — Console</title>
 </head>
 <body>
-  <h1>Nova Brain</h1>
-  <p>AI Agent is online.</p>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Nova Console navigation">
+      <a class="brand" href="/" aria-label="Nova Brain home">
+        <span class="brand-mark" aria-hidden="true"><span></span></span>
+        <span class="brand-copy"><strong>Nova Brain</strong><small>Personal operating system</small></span>
+      </a>
+      <nav class="primary-nav" aria-label="Primary">
+        <a class="nav-item active" href="#chat" aria-current="page"><span class="nav-icon" aria-hidden="true">⌁</span><span>Chat</span></a>
+        <button class="nav-item" type="button" disabled><span class="nav-icon">◇</span><span>Projects</span><small>Soon</small></button>
+        <button class="nav-item" type="button" disabled><span class="nav-icon">✓</span><span>Activity</span><small>Soon</small></button>
+        <button class="nav-item" type="button" disabled><span class="nav-icon">◫</span><span>Memory</span><small>Soon</small></button>
+        <button class="nav-item" type="button" disabled><span class="nav-icon">⌘</span><span>Tools</span><small>Soon</small></button>
+        <button class="nav-item" type="button" disabled><span class="nav-icon">◈</span><span>Approvals</span><small>Soon</small></button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="system-state"><span class="status-dot"></span><span><strong>Nova online</strong><small id="providerStatus">Checking provider…</small></span></div>
+        <p>Private preview · Owner access only</p>
+      </div>
+    </aside>
+
+    <main class="workspace" id="chat">
+      <header class="topbar">
+        <div><p class="eyebrow">Command center</p><h1>Chat with Nova</h1></div>
+        <button class="new-chat-button" id="newChatButton" type="button" aria-label="Start a new conversation"><span>＋</span><span>New conversation</span></button>
+      </header>
+      <section class="conversation" aria-label="Conversation with Nova Brain">
+        <div class="messages" id="messages" role="log" aria-live="polite" aria-relevant="additions">
+          <div class="welcome" id="welcomeState">
+            <div class="nova-orb" aria-hidden="true"><span></span></div>
+            <p class="eyebrow">Nova Brain</p>
+            <h2>What are we working on?</h2>
+            <p>Think, plan, and execute from one place. Nova is connected to the live agent runtime and ready for your next instruction.</p>
+            <div class="capability-row"><span>Real OpenAI model</span><span>Bounded agent loop</span><span>Private preview</span></div>
+          </div>
+        </div>
+        <div class="composer-wrap">
+          <div class="request-error" id="requestError" role="alert" hidden></div>
+          <form class="composer" id="composer">
+            <label class="sr-only" for="messageInput">Message Nova Brain</label>
+            <textarea id="messageInput" name="message" rows="1" maxlength="12000" placeholder="Tell Nova what you want to accomplish…" required></textarea>
+            <div class="composer-actions">
+              <button class="icon-button voice-button" type="button" disabled aria-label="Voice input coming soon" title="Voice input coming soon"><span></span></button>
+              <button class="send-button" id="sendButton" type="submit" aria-label="Send message"><span>Send</span><span class="send-arrow">↑</span></button>
+            </div>
+          </form>
+          <p class="composer-note">Nova can make mistakes. Review important actions before approval.</p>
+        </div>
+      </section>
+    </main>
+
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <a href="#chat" class="active"><span>⌁</span><small>Chat</small></a>
+      <button type="button" disabled><span>◇</span><small>Projects</small></button>
+      <button type="button" disabled><span>✓</span><small>Activity</small></button>
+      <button type="button" disabled><span>◫</span><small>Memory</small></button>
+    </nav>
+  </div>
+
+  <template id="messageTemplate">
+    <article class="message"><div class="avatar"></div><div class="message-content"><div class="message-heading"><strong></strong><time></time></div><div class="message-body"></div><div class="execution-meta" hidden></div></div></article>
+  </template>
+  <script type="module" src="/assets/console.js"></script>
 </body>
 </html>

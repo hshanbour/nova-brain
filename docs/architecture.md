@@ -1,5 +1,11 @@
 # Nova Brain architecture
 
+## Nova Console
+
+`index.html` and `assets/` form a dependency-free presentation layer. `assets/api-client.js` owns the browser-to-agent contract and conversation continuity; it does not contain agent logic. The browser calls same-origin `/api/health` and `/api/agent` routes, while all provider credentials and model execution remain server-side.
+
+The console navigation deliberately exposes only Chat. Projects, Activity, Memory, Tools, and Approvals are inactive product boundaries for later milestones, not simulated features. The manifest provides a PWA-ready shell without a service worker or offline behavior.
+
 ## Canonical MVP boundaries
 
 ```
