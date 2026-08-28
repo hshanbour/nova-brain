@@ -20,7 +20,7 @@ Mock provider today; real provider later
 
 ### API/server layer
 
-`api/index.js` is the Vercel entry point. It constructs the application once per function instance and delegates every request to `src/http/api.js`. `src/local-server.js` is only a local adapter; production never calls `app.listen()`.
+`index.html` is the landing page at `GET /`. Vercel serves it directly, while `src/local-server.js` serves the same file during local development. `GET /api/health` is the machine-readable health endpoint. `api/index.js` is the Vercel API entry point: it constructs the application once per function instance and delegates API requests to `src/http/api.js`. `src/local-server.js` is only a local adapter; production never calls `app.listen()`.
 
 ### Agent/orchestration layer
 

@@ -37,7 +37,7 @@ export function createApi({ agent, config }) {
       const pathname = new URL(request.url || "/", "http://localhost").pathname;
 
       try {
-        if (request.method === "GET" && pathname === "/") {
+        if (request.method === "GET" && pathname === "/api/health") {
           sendJson(response, 200, {
             name: "Nova Brain",
             status: "online",

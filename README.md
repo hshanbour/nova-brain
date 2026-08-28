@@ -6,7 +6,8 @@ Nova Brain is the foundation for Brian: an extensible personal and business AI s
 
 The repository now provides a small, serverless-compatible agent foundation:
 
-- `GET /` returns a safe health response.
+- `GET /` serves the static Nova Brain landing page.
+- `GET /api/health` returns a machine-readable health response.
 - `POST /api/agent` accepts a validated agent request and returns a deterministic mock response.
 - `POST /api/missed-call` preserves the original scaffold endpoint as a validated intake placeholder.
 - The agent, model provider, tools, memory, configuration, and HTTP adapter are separate modules.
@@ -27,10 +28,18 @@ Copy `.env.example` to `.env.local` for local values. Never commit a real `.env`
 
 ## API
 
-### Health
+### Landing page
 
 ```http
 GET /
+```
+
+Vercel serves `index.html` for this route. The local Node adapter serves the same file.
+
+### Health
+
+```http
+GET /api/health
 ```
 
 ### Agent request
@@ -66,4 +75,4 @@ See [docs/architecture.md](docs/architecture.md) for the canonical MVP boundarie
 
 ## Deployment
 
-Vercel automatically treats `api/index.js` as a Node.js serverless function. `vercel.json` rewrites requests to that function. Configure environment variables in Vercel Project Settings; do not add secrets to the repository.
+Vercel serves the root `index.html` as a static asset and automatically treats `api/index.js` as a Node.js serverless function for API requests. `vercel.json` rewrites requests without a matching static asset to that function. Configure environment variables in Vercel Project Settings; do not add secrets to the repository.
