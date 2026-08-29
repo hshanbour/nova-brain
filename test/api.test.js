@@ -43,7 +43,8 @@ test("health endpoint returns an online response with defensive headers", async 
   assert.deepEqual(JSON.parse(res.body), {
     name: "Nova Brain",
     status: "online",
-    provider: "mock"
+    provider: "mock",
+    storage: { provider: "memory", durable: false, status: "ready" }
   });
 });
 
@@ -62,7 +63,7 @@ test("agent endpoint validates and processes JSON input", async () => {
   );
 
   assert.equal(res.statusCode, 200);
-  assert.equal(JSON.parse(res.body).message, "Brian is ready. I received: Hello Brian");
+  assert.equal(JSON.parse(res.body).message, "Nova is ready. I received: Hello Brian");
 });
 
 test("API rejects malformed JSON", async () => {
@@ -174,4 +175,50 @@ test("API root is not used as the landing page or health endpoint", async () => 
 
   assert.equal(res.statusCode, 404);
   assert.deepEqual(JSON.parse(res.body), { error: "Not found" });
+});
+
+test("owner profile and memory APIs expose controlled private CRUD", async () => {
+  const app = createApp({ environment: {} });
+  const profile = response();
+  await app.handle(request({ method: "GET", url: "/api/owner/profile" }), profile);
+  assert.equal(JSON.parse(profile.body).owner.fullName, "Mohammad Shanbour");
+  assert.equal(profile.headers.get("cache-control"), "no-store");
+
+  const created = response();
+  await app.handle(request({ method: "POST", url: "/api/memories", headers: { "content-type": "application/json" }, body: JSON.stringify({ category: "preference", content: "Prefer compact release notes", scope: "global" }) }), created);
+  assert.equal(created.statusCode, 201);
+  const memory = JSON.parse(created.body).memory;
+  assert.equal(memory.provenance, "owner-explicit");
+  assert.equal(memory.privacy, "private");
+
+  const updated = response();
+  await app.handle(request({ method: "PATCH", url: `/api/memories/${memory.id}`, headers: { "content-type": "application/json" }, body: JSON.stringify({ scope: "project", projectId: "nova-brain" }) }), updated);
+  assert.equal(updated.statusCode, 200);
+  assert.equal(JSON.parse(updated.body).memory.projectId, "nova-brain");
+
+  const removed = response();
+  await app.handle(request({ method: "DELETE", url: `/api/memories/${memory.id}` }), removed);
+  assert.deepEqual(JSON.parse(removed.body), { success: true });
+});
+
+test("memory API rejects unsupported categories and invalid project scope", async () => {
+  const app = createApp({ environment: {} });
+  for (const payload of [
+    { category: "secret_model_fact", content: "unsafe", scope: "global" },
+    { category: "goal", content: "missing project", scope: "project" }
+  ]) {
+    const res = response();
+    await app.handle(request({ method: "POST", url: "/api/memories", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }), res);
+    assert.equal(res.statusCode, 400);
+  }
+});
+
+test("storage failures are fail-closed and health reports degradation", async () => {
+  const storage = Object.freeze({ provider: "postgres", durable: true, async initialize() { throw new Error("database-secret-value"); }, async health() { throw new Error("database-secret-value"); } });
+  const app = createApp({ environment: {}, storage });
+  const health = response(); await app.handle(request({ method: "GET", url: "/api/health" }), health);
+  assert.deepEqual(JSON.parse(health.body).storage, { provider: "postgres", durable: true, status: "degraded" });
+  const profile = response(); await app.handle(request({ method: "GET", url: "/api/owner/profile" }), profile);
+  assert.equal(profile.statusCode, 503);
+  assert.equal(profile.body.includes("database-secret-value"), false);
 });

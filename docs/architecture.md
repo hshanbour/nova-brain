@@ -4,7 +4,7 @@
 
 `index.html` and `assets/` form a dependency-free presentation layer. `assets/api-client.js` owns the browser-to-agent contract and conversation continuity; it does not contain agent logic. The browser calls same-origin `/api/health` and `/api/agent` routes, while all provider credentials and model execution remain server-side.
 
-The console navigation deliberately exposes only Chat. Projects, Activity, Memory, Tools, and Approvals are inactive product boundaries for later milestones, not simulated features. The manifest provides a PWA-ready shell without a service worker or offline behavior.
+The console exposes Chat and Memory. Memory provides controlled profile editing and explicit long-term-memory CRUD; Projects, Activity, Tools, and Approvals remain inactive product boundaries. The manifest provides a PWA-ready shell without a service worker or offline behavior.
 
 ## Canonical MVP boundaries
 
@@ -18,7 +18,9 @@ API adapter + validation + error mapping
 Bounded agent loop ----- Tool registry ---- future actions/integrations
         |                       |
         v                       v
-Model-provider interface    Memory-store interface
+Model-provider interface    Storage interface
+                                  |
+                         memory or PostgreSQL
         |
         v
 Mock or OpenAI provider
@@ -47,9 +49,17 @@ OpenAI response objects, function-call output objects, and response IDs never en
 
 `src/tools/tool-registry.js` defines tools with explicit names, descriptions, optional JSON input schemas, optional validation functions, and async `execute(input, context)` functions. Only registered names can execute. Invalid, unknown, and failed calls become safe failed tool results rather than arbitrary execution or process crashes. The milestone deliberately registers no external tools.
 
-### Persistent data/memory layer
+### Owner identity, conversation, and memory
 
-`src/memory/in-memory-store.js` implements the memory-store interface for tests and local development. It is ephemeral in a serverless environment and must not be treated as durable. A real database-backed adapter can replace it without changing the agent.
+`src/identity/initial-context.js` is the reviewed seed source for Mohammad Shanbour (`محمد شنبور`), his preferences, active projects, and Nova's product purpose. Deterministic IDs plus conflict-safe inserts make initialization repeatable without overwriting owner edits. No GitHub username, model inference, or chat content becomes identity truth.
+
+The provider-neutral interface in `src/storage/` has in-memory and PostgreSQL adapters. Its schema separates owner profile, projects, conversations, messages, and categorized long-term memories. PostgreSQL is durable; memory is a non-durable local/test fallback. `migrations/001_owner_memory_foundation.sql` is the canonical schema migration.
+
+The agent loads only bounded recent messages and calls `src/memory/context-retriever.js` for a small relevance-ranked memory subset. Core profile fields are minimized, especially family data. System communication policy is global: British English by default, adaptive Arabic when useful, recipient-aware tone, and no disclosure of private context unless the owner asks for it and the task requires it. Conversation content is never automatically promoted into long-term memory.
+
+Relevant retrieved context is sent server-side to the configured model provider when inference requires it. This is an explicit trust boundary: private data is minimized before the request, but it can leave Nova's application server for the configured provider. External tools receive no profile or memory database by default and future actions must pass only task-authorized minimum fields.
+
+Retrieval currently uses explainable token overlap plus small project/core-memory boosts over a bounded candidate set. A future semantic adapter can add embeddings or hybrid search behind the same storage/retrieval contract without changing agent orchestration or canonical records.
 
 ### Integrations layer
 
@@ -57,11 +67,11 @@ No integrations are configured today. Future adapters should own credentials, ve
 
 ### Configuration/environment handling
 
-`src/config/env.js` centralizes provider selection, OpenAI configuration, and bounded execution limits. Selecting `openai` requires `OPENAI_API_KEY` and `OPENAI_MODEL`; selecting `mock` requires no credentials. `.env.example` contains names and safe defaults only. Secrets belong in Vercel Project Settings or a local ignored env file.
+`src/config/env.js` centralizes model/storage selection and bounded execution limits. Storage auto-detects standard server-side PostgreSQL variables and never serializes them into HTTP responses. Selecting `openai` requires `OPENAI_API_KEY` and `OPENAI_MODEL`; selecting `mock` requires no credentials. `.env.example` contains names and safe defaults only. Secrets belong in Vercel Project Settings or a local ignored env file.
 
 ### Validation and security
 
-`src/http/validation.js` validates all JSON inputs. `src/http/api.js` limits JSON bodies, emits safe JSON errors, uses defensive response headers, and only enables CORS for configured origins. Authentication and authorization are intentionally not included until a concrete user/UI boundary is selected.
+`src/http/validation.js` validates all JSON inputs and allowlists mutable profile/memory fields. `src/http/api.js` limits JSON bodies, disables caching of private responses, emits safe errors, uses defensive headers, and only enables CORS for configured origins. Storage failure is fail-closed for private endpoints. Vercel Authentication is the current Preview boundary; application-level authentication and owner authorization remain mandatory before public or Production exposure.
 
 ### Future telephony and SMS
 
@@ -71,10 +81,14 @@ A future telephony webhook should enter through a dedicated API route, verify th
 
 A UI can call `POST /api/agent` or use a dedicated BFF route. It must authenticate users before durable personal/business data is exposed. Streaming can be added at the API boundary without coupling UI code to the agent core.
 
+### Future channels
+
+Web, native mobile, voice, phone, WhatsApp, SMS, and email adapters should authenticate/identify the owner or recipient, normalize channel events, and call the same agent/storage domains. They must not create channel-specific owner identities or memory silos. Each adapter owns its vendor credentials, consent, delivery metadata, and privacy-minimizing projection.
+
 ## Current limitations
 
-- Memory remains process-local and ephemeral on Vercel.
-- No authentication or authorization is implemented.
+- Durable state requires a configured PostgreSQL/Neon connection; otherwise health explicitly reports the non-durable memory adapter.
+- No application-level authentication or authorization is implemented; Vercel Authentication protects Preview only.
 - No external tools or business integrations are registered.
 - OpenAI is the only production provider adapter.
 - Tool calls are sequential, even if a provider can generate parallel calls.

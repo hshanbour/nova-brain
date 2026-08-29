@@ -4,7 +4,7 @@ export function createMockModelProvider() {
     async generate({ message }) {
       return {
         type: "final",
-        message: `Brian is ready. I received: ${message}`
+        message: `Nova is ready. I received: ${message}`
       };
     }
   });

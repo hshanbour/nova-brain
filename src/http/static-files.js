@@ -6,6 +6,7 @@ const ASSETS = Object.freeze({
   "/assets/console.css": { file: "../../assets/console.css", type: "text/css; charset=utf-8" },
   "/assets/console.js": { file: "../../assets/console.js", type: "text/javascript; charset=utf-8" },
   "/assets/api-client.js": { file: "../../assets/api-client.js", type: "text/javascript; charset=utf-8" },
+  "/assets/memory-client.js": { file: "../../assets/memory-client.js", type: "text/javascript; charset=utf-8" },
   "/assets/nova-mark.svg": { file: "../../assets/nova-mark.svg", type: "image/svg+xml" }
 });
 

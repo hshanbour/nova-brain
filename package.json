@@ -9,6 +9,10 @@
   "scripts": {
     "dev": "node --watch src/local-server.js",
     "start": "node src/local-server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "db:migrate": "node scripts/migrate.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.1.0"
   }
 }

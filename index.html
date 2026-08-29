@@ -21,10 +21,10 @@
         <span class="brand-copy"><strong>Nova Brain</strong><small>Personal operating system</small></span>
       </a>
       <nav class="primary-nav" aria-label="Primary">
-        <a class="nav-item active" href="#chat" aria-current="page"><span class="nav-icon" aria-hidden="true">⌁</span><span>Chat</span></a>
+        <a class="nav-item active" href="#chat" data-section="chat" aria-current="page"><span class="nav-icon" aria-hidden="true">⌁</span><span>Chat</span></a>
         <button class="nav-item" type="button" disabled><span class="nav-icon">◇</span><span>Projects</span><small>Soon</small></button>
         <button class="nav-item" type="button" disabled><span class="nav-icon">✓</span><span>Activity</span><small>Soon</small></button>
-        <button class="nav-item" type="button" disabled><span class="nav-icon">◫</span><span>Memory</span><small>Soon</small></button>
+        <a class="nav-item" href="#memory" data-section="memory"><span class="nav-icon">◫</span><span>Memory</span></a>
         <button class="nav-item" type="button" disabled><span class="nav-icon">⌘</span><span>Tools</span><small>Soon</small></button>
         <button class="nav-item" type="button" disabled><span class="nav-icon">◈</span><span>Approvals</span><small>Soon</small></button>
       </nav>
@@ -64,17 +64,49 @@
       </section>
     </main>
 
+    <main class="workspace memory-workspace" id="memory" hidden>
+      <header class="topbar"><div><p class="eyebrow">Private knowledge</p><h1>Owner &amp; Memory</h1></div><button class="new-chat-button" id="addMemoryButton" type="button"><span>＋</span><span>Add memory</span></button></header>
+      <div class="memory-scroll">
+        <section class="profile-card" aria-labelledby="ownerProfileHeading">
+          <div class="profile-identity"><div class="profile-avatar">M</div><div><p class="eyebrow">Owner profile</p><h2 id="ownerProfileHeading">Mohammad Shanbour</h2><p class="arabic-name" dir="rtl">محمد شنبور</p></div><span class="privacy-badge">Private</span></div>
+          <form id="profileForm" class="profile-form">
+            <label>Preferred name<input name="preferredName" maxlength="100"></label>
+            <label>Current location<input name="currentLocation" maxlength="200"></label>
+            <label class="wide">Communication preferences<textarea name="communication" rows="2" maxlength="1000"></textarea></label>
+            <div class="wide form-actions"><span id="profileStatus" role="status"></span><button class="secondary-button" type="submit">Save profile</button></div>
+          </form>
+        </section>
+
+        <section class="memory-section" aria-labelledby="memoryHeading">
+          <div class="section-heading"><div><p class="eyebrow">Long-term context</p><h2 id="memoryHeading">What Nova remembers</h2></div><label class="filter-label">Category<select id="memoryFilter"><option value="">All memories</option><option value="identity">Identity</option><option value="preference">Preferences</option><option value="goal">Goals</option><option value="decision">Decisions</option><option value="project_context">Project context</option><option value="relationship_context">Relationships</option><option value="reusable_instruction">Instructions</option></select></label></div>
+          <div class="memory-error" id="memoryError" role="alert" hidden></div>
+          <div class="memory-list" id="memoryList"><div class="memory-loading">Loading private memory…</div></div>
+        </section>
+      </div>
+    </main>
+
     <nav class="mobile-nav" aria-label="Mobile navigation">
-      <a href="#chat" class="active"><span>⌁</span><small>Chat</small></a>
+      <a href="#chat" class="active" data-section="chat"><span>⌁</span><small>Chat</small></a>
       <button type="button" disabled><span>◇</span><small>Projects</small></button>
       <button type="button" disabled><span>✓</span><small>Activity</small></button>
-      <button type="button" disabled><span>◫</span><small>Memory</small></button>
+      <a href="#memory" data-section="memory"><span>◫</span><small>Memory</small></a>
     </nav>
   </div>
 
   <template id="messageTemplate">
     <article class="message"><div class="avatar"></div><div class="message-content"><div class="message-heading"><strong></strong><time></time></div><div class="message-body"></div><div class="execution-meta" hidden></div></div></article>
   </template>
-  <script type="module" src="/assets/console.js"></script>
+  <section id="memoryDialog" class="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="memoryDialogTitle" hidden>
+    <form id="memoryForm" method="dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">Explicit memory</p><h2 id="memoryDialogTitle">Add memory</h2></div><button type="button" class="dialog-close" data-close-memory aria-label="Close">×</button></div>
+      <input type="hidden" name="memoryId">
+      <label>What should Nova remember?<textarea name="content" rows="5" maxlength="4000" required></textarea></label>
+      <div class="dialog-grid"><label>Category<select name="category" required><option value="preference">Preference</option><option value="goal">Goal</option><option value="decision">Decision</option><option value="project_context">Project context</option><option value="relationship_context">Relationship</option><option value="reusable_instruction">Working instruction</option></select></label><label>Scope<select name="scope"><option value="global">Global owner context</option><option value="system">Nova system</option><option value="project">Specific project</option></select></label></div>
+      <label id="projectField" hidden>Project<select name="projectId"><option value="nova-brain">Nova Brain</option><option value="sharp-cuts">Sharp Cuts</option><option value="uk-missed-call-recovery">UK missed-call recovery</option></select></label>
+      <p class="privacy-note">Stored privately. Nova retrieves only a small relevant subset for each request.</p>
+      <div class="dialog-actions"><button type="button" class="secondary-button" data-close-memory>Cancel</button><button type="submit" class="send-button" id="saveMemoryButton">Save memory</button></div>
+    </form>
+  </section>
+  <script type="module" src="/assets/console.js?v=owner-memory-v2"></script>
 </body>
 </html>

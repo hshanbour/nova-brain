@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createAgent } from "../src/agent/agent.js";
-import { createInMemoryMemoryStore } from "../src/memory/in-memory-store.js";
+import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
+import { INITIAL_OWNER_PROFILE, OWNER_ID } from "../src/identity/initial-context.js";
 import { createMockModelProvider } from "../src/providers/mock-model-provider.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 
@@ -17,10 +18,20 @@ function scriptedProvider(outputs, onGenerate = () => {}) {
   };
 }
 
+function testStorage() {
+  const storage = createInMemoryStorage();
+  storage.initialize({ owner: INITIAL_OWNER_PROFILE });
+  return storage;
+}
+
+function createTestAgent(options) {
+  return createAgent({ storage: options.storage || testStorage(), ownerId: OWNER_ID, ...options });
+}
+
 test("agent returns a stable response and records a conversation turn", async () => {
-  const memoryStore = createInMemoryMemoryStore();
-  const agent = createAgent({
-    memoryStore,
+  const storage = testStorage();
+  const agent = createTestAgent({
+    storage,
     modelProvider: createMockModelProvider(),
     toolRegistry: createToolRegistry()
   });
@@ -33,12 +44,12 @@ test("agent returns a stable response and records a conversation turn", async ()
   assert.equal(result.conversationId, "conversation-1");
   assert.equal(result.provider, "mock");
   assert.equal(result.steps, 1);
-  assert.equal(result.message, "Brian is ready. I received: Plan a Sharp Cuts campaign");
-  assert.deepEqual(await memoryStore.list("conversation-1"), [
+  assert.equal(result.message, "Nova is ready. I received: Plan a Sharp Cuts campaign");
+  assert.deepEqual((await storage.listMessages("conversation-1", OWNER_ID)).map(({ role, content }) => ({ role, content })), [
     { role: "user", content: "Plan a Sharp Cuts campaign" },
     {
       role: "assistant",
-      content: "Brian is ready. I received: Plan a Sharp Cuts campaign"
+      content: "Nova is ready. I received: Plan a Sharp Cuts campaign"
     }
   ]);
 });
@@ -61,8 +72,7 @@ test("agent executes one tool call and returns the next final response", async (
       ]);
     }
   });
-  const agent = createAgent({
-    memoryStore: createInMemoryMemoryStore(),
+  const agent = createTestAgent({
     modelProvider: provider,
     toolRegistry: registry
   });
@@ -90,8 +100,7 @@ test("agent supports multiple sequential tool calls", async () => {
     { type: "tool_calls", toolCalls: [{ id: "c2", name: "identity", arguments: { n: 2 } }] },
     { type: "final", message: "Done" }
   ]);
-  const agent = createAgent({
-    memoryStore: createInMemoryMemoryStore(),
+  const agent = createTestAgent({
     modelProvider: provider,
     toolRegistry: registry
   });
@@ -113,8 +122,7 @@ test("agent returns unknown tool requests to the provider as safe failures", asy
       ]);
     }
   });
-  const agent = createAgent({
-    memoryStore: createInMemoryMemoryStore(),
+  const agent = createTestAgent({
     modelProvider: provider,
     toolRegistry: createToolRegistry()
   });
@@ -132,8 +140,7 @@ test("agent contains tool execution errors and continues", async () => {
     { type: "tool_calls", toolCalls: [{ id: "c1", name: "fail", arguments: {} }] },
     { type: "final", message: "The tool failed safely." }
   ]);
-  const agent = createAgent({
-    memoryStore: createInMemoryMemoryStore(),
+  const agent = createTestAgent({
     modelProvider: provider,
     toolRegistry: registry
   });
@@ -155,8 +162,7 @@ test("agent enforces its maximum model-step limit", async () => {
       return "again";
     }
   });
-  const agent = createAgent({
-    memoryStore: createInMemoryMemoryStore(),
+  const agent = createTestAgent({
     modelProvider: scriptedProvider([
       { type: "tool_calls", toolCalls: [{ id: "c1", name: "again", arguments: {} }] }
     ]),
@@ -184,8 +190,7 @@ test("tool arguments are validated and passed without transformation", async () 
       return "ok";
     }
   });
-  const agent = createAgent({
-    memoryStore: createInMemoryMemoryStore(),
+  const agent = createTestAgent({
     modelProvider: scriptedProvider([
       { type: "tool_calls", toolCalls: [{ id: "c1", name: "validated", arguments: { count: 3 } }] },
       { type: "final", message: "Done" }
@@ -198,14 +203,14 @@ test("tool arguments are validated and passed without transformation", async () 
 });
 
 test("conversation history is preserved across agent turns", async () => {
-  const memoryStore = createInMemoryMemoryStore();
+  const storage = testStorage();
   const histories = [];
   const provider = scriptedProvider(
     [{ type: "final", message: "First" }, { type: "final", message: "Second" }],
     (input) => histories.push(input.conversationHistory)
   );
-  const agent = createAgent({
-    memoryStore,
+  const agent = createTestAgent({
+    storage,
     modelProvider: provider,
     toolRegistry: createToolRegistry()
   });
@@ -214,8 +219,7 @@ test("conversation history is preserved across agent turns", async () => {
   await agent.run({ message: "Two", conversationId: "shared" });
 
   assert.deepEqual(histories[0], []);
-  assert.deepEqual(histories[1], [
-    { role: "user", content: "One" },
-    { role: "assistant", content: "First" }
+  assert.deepEqual(histories[1].map(({ role, content }) => ({ role, content })), [
+    { role: "user", content: "One" }, { role: "assistant", content: "First" }
   ]);
 });

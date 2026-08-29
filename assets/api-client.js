@@ -7,6 +7,7 @@ export function createNovaClient({ fetchImpl = globalThis.fetch, endpoint = "/ap
   let conversationId;
   return Object.freeze({
     get conversationId() { return conversationId; },
+    resume(id) { conversationId = typeof id === "string" && id ? id : undefined; },
     reset() { conversationId = undefined; },
     async send(message) {
       const payload = { message };

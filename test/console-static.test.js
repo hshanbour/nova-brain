@@ -11,6 +11,19 @@ test("console document includes API UI, PWA metadata, and no embedded secrets", 
   assert.doesNotMatch(html, /OPENAI_API_KEY|sk-[A-Za-z0-9]/);
 });
 
+test("console exposes the controlled Mohammad owner profile and Memory workspace", async () => {
+  const [html, script] = await Promise.all([
+    readFile(new URL("../index.html", import.meta.url), "utf8"),
+    readFile(new URL("../assets/console.js", import.meta.url), "utf8")
+  ]);
+  assert.match(html, /Mohammad Shanbour/);
+  assert.match(html, /محمد شنبور/);
+  assert.match(html, /id="memoryDialog"[^>]+hidden/);
+  assert.doesNotMatch(html, /hshanbour/i);
+  assert.match(script, /memoryDialog\.hidden = false/);
+  assert.match(script, /data-close-memory/);
+});
+
 test("local static handler serves console assets with defensive headers", async () => {
   const serve = createStaticFileHandler({ loadFile: async () => Buffer.from("asset") }); const res = response();
   assert.equal(await serve({ method: "GET", url: "/assets/console.js" }, res), true);

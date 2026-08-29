@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { buildSystemContext, retrieveAgentContext } from "../memory/context-retriever.js";
 
 export class AgentStepLimitError extends Error {}
 export class AgentToolCallLimitError extends Error {}
@@ -34,19 +35,27 @@ function safeToolError(error, name) {
 }
 
 export function createAgent({
-  memoryStore,
+  storage,
+  ownerId,
   modelProvider,
   toolRegistry,
   maxSteps = 5,
-  maxToolCallsPerStep = 4
+  maxToolCallsPerStep = 4,
+  historyLimit = 24,
+  memoryLimit = 6
 }) {
-  if (!memoryStore || !modelProvider || !toolRegistry) {
-    throw new Error("Agent requires memoryStore, modelProvider, and toolRegistry.");
+  if (!storage || !ownerId || !modelProvider || !toolRegistry) {
+    throw new Error("Agent requires storage, ownerId, modelProvider, and toolRegistry.");
   }
 
   return Object.freeze({
     async run({ message, conversationId = randomUUID(), context = {} }) {
-      const conversationHistory = await memoryStore.list(conversationId);
+      const conversation = await storage.ensureConversation({ id: conversationId, ownerId, title: message.slice(0, 120) });
+      if (!conversation) throw new Error("Conversation is unavailable.");
+      const conversationHistory = await storage.listMessages(conversationId, ownerId, { limit: historyLimit });
+      const retrieved = await retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit });
+      const systemContext = buildSystemContext(retrieved);
+      await storage.appendMessage({ conversationId, ownerId, role: "user", content: message });
       const toolExecutions = [];
       let continuationToken;
       let toolResults = [];
@@ -55,6 +64,7 @@ export function createAgent({
         const generated = await modelProvider.generate({
           message,
           context,
+          systemContext,
           conversationHistory,
           tools: toolRegistry.list(),
           toolResults,
@@ -72,11 +82,7 @@ export function createAgent({
             steps: step
           };
 
-          await memoryStore.append(conversationId, { role: "user", content: message });
-          await memoryStore.append(conversationId, {
-            role: "assistant",
-            content: response.message
-          });
+          await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: response.message });
 
           return response;
         }

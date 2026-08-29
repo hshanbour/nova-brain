@@ -39,3 +39,11 @@ test("agent execution limits are bounded configuration values", () => {
     /between 1 and 10/
   );
 });
+
+test("storage auto-detects durable Postgres without exposing its connection string", () => {
+  const config = readConfig({ DATABASE_URL: "postgresql://private-token@example/db" });
+  assert.equal(config.storageProvider, "postgres");
+  assert.equal(config.databaseUrl, "postgresql://private-token@example/db");
+  assert.equal(JSON.stringify({ provider: config.storageProvider }).includes("private-token"), false);
+  assert.throws(() => readConfig({ NOVA_BRAIN_STORAGE_PROVIDER: "postgres" }), /Postgres connection variable is required/);
+});
