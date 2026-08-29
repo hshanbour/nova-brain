@@ -5,7 +5,7 @@ function copy(value) { return value === undefined ? undefined : structuredClone(
 function now(clock) { return clock().toISOString(); }
 
 export function createInMemoryStorage({ clock = () => new Date() } = {}) {
-  const owners = new Map(); const projects = new Map(); const conversations = new Map(); const messages = new Map(); const memories = new Map();
+  const owners = new Map(); const projects = new Map(); const conversations = new Map(); const messages = new Map(); const memories = new Map(); const runs = new Map(); const approvals = new Map(); const activity = [];
   let sequence = 0;
 
   return Object.freeze({
@@ -26,6 +26,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const updated = { ...current, ...copy(patch), id: ownerId, createdAt: current.createdAt, updatedAt: now(clock) };
       owners.set(ownerId, updated); return copy(updated);
     },
+    async listProjects(ownerId) { return [...projects.values()].filter((item) => item.ownerId === ownerId).sort((a,b) => a.name.localeCompare(b.name)).map(copy); },
     async ensureConversation({ id = randomUUID(), ownerId, title = null }) {
       const current = conversations.get(id);
       if (current) return current.ownerId === ownerId ? copy(current) : null;
@@ -67,6 +68,24 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     },
     async retrieveMemories(ownerId, query, { projectId, limit = 6 } = {}) {
       return rankRelevantMemories([...memories.values()].filter((item) => item.ownerId === ownerId), query, { projectId, limit }).map(copy);
-    }
+    },
+    async createRun({ id = randomUUID(), ownerId, projectId = null, conversationId = null, goal, status = "planning" }) {
+      const timestamp = now(clock); const run = { id, ownerId, projectId, conversationId, goal, status, currentStep: 0, result: null, error: null, createdAt: timestamp, updatedAt: timestamp, completedAt: null };
+      runs.set(id, run); return copy(run);
+    },
+    async updateRun(id, ownerId, patch) {
+      const current = runs.get(id); if (!current || current.ownerId !== ownerId) return null;
+      const updated = { ...current, ...copy(patch), id, ownerId, updatedAt: now(clock) }; runs.set(id, updated); return copy(updated);
+    },
+    async listRuns(ownerId, { projectId, limit = 50 } = {}) { return [...runs.values()].filter((item) => item.ownerId === ownerId && (!projectId || item.projectId === projectId)).sort((a,b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id)).slice(0,limit).map(copy); },
+    async createApproval(input) { const approval = { id: input.id || randomUUID(), ...copy(input), status: "pending", decision: null, createdAt: now(clock), decidedAt: null }; approvals.set(approval.id, approval); return copy(approval); },
+    async getApproval(id, ownerId) { const item = approvals.get(id); return copy(item?.ownerId === ownerId ? item : null); },
+    async decideApproval(id, ownerId, decision) {
+      const current = approvals.get(id); if (!current || current.ownerId !== ownerId || current.status !== "pending") return null;
+      const updated = { ...current, status: decision === "approved" ? "approved" : "rejected", decision, decidedAt: now(clock) }; approvals.set(id, updated); return copy(updated);
+    },
+    async listApprovals(ownerId, { status, limit = 50 } = {}) { return [...approvals.values()].filter((item) => item.ownerId === ownerId && (!status || item.status === status)).sort((a,b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id)).slice(0,limit).map(copy); },
+    async appendActivity(input) { const event = { id: input.id || randomUUID(), ...copy(input), sequence: ++sequence, createdAt: now(clock) }; activity.push(event); return copy(event); },
+    async listActivity(ownerId, { projectId, runId, limit = 100 } = {}) { return activity.filter((item) => item.ownerId === ownerId && (!projectId || item.projectId === projectId) && (!runId || item.runId === runId)).sort((a,b) => b.sequence-a.sequence).slice(0,limit).map(copy); }
   });
 }

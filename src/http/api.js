@@ -8,7 +8,8 @@ import {
   validateMemoryCreate,
   validateMemoryPatch,
   validateListLimit,
-  validateListOffset
+  validateListOffset,
+  validateApprovalDecision
 } from "./validation.js";
 
 class StorageUnavailableError extends Error {}
@@ -31,7 +32,7 @@ function setCorsHeaders(request, response, allowedOrigins) {
   }
 }
 
-export function createApi({ agent, config, storage, initialize, ownerId }) {
+export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools }) {
   return Object.freeze({
     async handle(request, response) {
       setCorsHeaders(request, response, config.allowedOrigins);
@@ -110,6 +111,27 @@ export function createApi({ agent, config, storage, initialize, ownerId }) {
         if (request.method === "GET" && pathname === "/api/conversations") {
           await ready(); const limit = validateListLimit(url.searchParams.get("limit"), 20, 100);
           sendJson(response, 200, { conversations: await storage.listConversations(ownerId, { limit }) }); return;
+        }
+
+        if (request.method === "GET" && pathname === "/api/tools") { await ready(); sendJson(response,200,{tools:toolRegistry.list()}); return; }
+        if (request.method === "GET" && pathname === "/api/projects") {
+          await ready(); const projects=await storage.listProjects(ownerId);
+          sendJson(response,200,{projects:await Promise.all(projects.map(async(project)=>({...project,memories:await storage.listMemories(ownerId,{projectId:project.id,limit:20}),runs:await storage.listRuns(ownerId,{projectId:project.id,limit:10}),activity:await storage.listActivity(ownerId,{projectId:project.id,limit:10})})))}); return;
+        }
+        if (request.method === "GET" && pathname === "/api/runs") { await ready(); sendJson(response,200,{runs:await storage.listRuns(ownerId,{projectId:url.searchParams.get("projectId")||undefined,limit:validateListLimit(url.searchParams.get("limit"),50,100)})}); return; }
+        if (request.method === "GET" && pathname === "/api/activity") { await ready(); sendJson(response,200,{activity:await storage.listActivity(ownerId,{projectId:url.searchParams.get("projectId")||undefined,runId:url.searchParams.get("runId")||undefined,limit:validateListLimit(url.searchParams.get("limit"),100,200)})}); return; }
+        if (request.method === "GET" && pathname === "/api/approvals") { await ready(); sendJson(response,200,{approvals:await storage.listApprovals(ownerId,{status:url.searchParams.get("status")||undefined,limit:validateListLimit(url.searchParams.get("limit"),50,100)})}); return; }
+        const approvalMatch=pathname.match(/^\/api\/approvals\/([^/]+)\/decision$/);
+        if(approvalMatch&&request.method==="POST"){
+          await ready(); const decision=validateApprovalDecision(await readJsonBody(request,config.maxBodyBytes)); const approval=await storage.decideApproval(decodeURIComponent(approvalMatch[1]),ownerId,decision);
+          if(!approval){sendJson(response,404,{error:"Pending approval not found"});return;}
+          await storage.appendActivity({ownerId,projectId:approval.projectId,runId:approval.runId,action:`approval_${decision}`,tool:approval.tool,status:decision,summary:`Owner ${decision} ${approval.tool}.`});
+          let execution;
+          if(decision==="approved"){
+            try{execution=await toolRegistry.execute(approval.tool,approval.arguments,{approvalId:approval.id,runId:approval.runId,projectId:approval.projectId});await storage.appendActivity({ownerId,projectId:approval.projectId,runId:approval.runId,action:"approved_action_completed",tool:approval.tool,status:"completed",summary:`Approved ${approval.tool} action completed.`});if(approval.runId)await storage.updateRun(approval.runId,ownerId,{status:"completed",result:execution,completedAt:new Date().toISOString()});}
+            catch(error){await storage.appendActivity({ownerId,projectId:approval.projectId,runId:approval.runId,action:"approved_action_failed",tool:approval.tool,status:"failed",summary:`Approved ${approval.tool} action failed safely.`});if(approval.runId)await storage.updateRun(approval.runId,ownerId,{status:"failed",error:"Approved action failed.",completedAt:new Date().toISOString()});throw error;}
+          }else if(approval.runId)await storage.updateRun(approval.runId,ownerId,{status:"cancelled",error:"Owner rejected the requested action.",completedAt:new Date().toISOString()});
+          sendJson(response,200,{approval,...(execution!==undefined?{execution}:{})});return;
         }
 
         const conversationMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);

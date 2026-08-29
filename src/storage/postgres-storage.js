@@ -9,6 +9,10 @@ const ownerRow = (row) => row && ({ id: row.id, fullName: row.full_name, preferr
 const conversationRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, title: row.title, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
 const messageRow = (row) => row && ({ id: row.id, conversationId: row.conversation_id, ownerId: row.owner_id, role: row.role, content: row.content, sequence: Number(row.sequence), createdAt: date(row.created_at) });
 const memoryRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, category: row.category, content: row.content, provenance: row.provenance, privacy: row.privacy, sensitivity: row.sensitivity, scope: row.scope, projectId: row.project_id, confidence: row.confidence === null ? null : Number(row.confidence), status: row.status, createdAt: date(row.created_at), updatedAt: date(row.updated_at), deletedAt: date(row.deleted_at) });
+const projectRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, name: row.name, description: row.description, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
+const runRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, projectId: row.project_id, conversationId: row.conversation_id, goal: row.goal, status: row.status, currentStep: Number(row.current_step), result: row.result, error: row.error, createdAt: date(row.created_at), updatedAt: date(row.updated_at), completedAt: date(row.completed_at) });
+const approvalRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, projectId: row.project_id, runId: row.run_id, tool: row.tool, reason: row.reason, riskLevel: row.risk_level, arguments: row.arguments, status: row.status, decision: row.decision, createdAt: date(row.created_at), decidedAt: date(row.decided_at) });
+const activityRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, projectId: row.project_id, runId: row.run_id, action: row.action, tool: row.tool, status: row.status, summary: row.summary, metadata: row.metadata, sequence: Number(row.sequence), createdAt: date(row.created_at) });
 
 export function createPostgresStorage({ connectionString }) {
   if (!connectionString) throw new Error("A Postgres connection string is required.");
@@ -40,6 +44,7 @@ export function createPostgresStorage({ connectionString }) {
       const params = [ownerId]; const sets = entries.map(([key, value], index) => { params.push(["facts","preferences","goals","context"].includes(key) ? JSON.stringify(value) : value); return `${fields[key]}=$${index + 2}${["facts","preferences","goals","context"].includes(key) ? "::jsonb" : ""}`; });
       return ownerRow((await run(`UPDATE nova_owners SET ${sets.join(",")}, updated_at=now() WHERE id=$1 RETURNING *`, params))[0]);
     },
+    async listProjects(ownerId) { return (await run("SELECT * FROM nova_projects WHERE owner_id=$1 ORDER BY name ASC, id ASC", [ownerId])).map(projectRow); },
     async ensureConversation({ id = randomUUID(), ownerId, title = null }) {
       const rows = await run(`INSERT INTO nova_conversations (id,owner_id,title) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET id=EXCLUDED.id WHERE nova_conversations.owner_id=EXCLUDED.owner_id RETURNING *`, [id, ownerId, title]);
       return conversationRow(rows[0]);
@@ -70,7 +75,20 @@ export function createPostgresStorage({ connectionString }) {
     async retrieveMemories(ownerId, queryText, { projectId, limit = 6, candidateLimit = 50 } = {}) {
       const candidates = (await run("SELECT * FROM nova_memories WHERE owner_id=$1 AND status='active' ORDER BY updated_at DESC, id ASC LIMIT $2", [ownerId, candidateLimit])).map(memoryRow);
       return rankRelevantMemories(candidates, queryText, { projectId, limit });
-    }
+    },
+    async createRun({ id = randomUUID(), ownerId, projectId = null, conversationId = null, goal, status = "planning" }) { return runRow((await run("INSERT INTO nova_execution_runs (id,owner_id,project_id,conversation_id,goal,status) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *", [id,ownerId,projectId,conversationId,goal,status]))[0]); },
+    async updateRun(id, ownerId, patch) {
+      const fields={status:"status",currentStep:"current_step",result:"result",error:"error",completedAt:"completed_at"}; const entries=Object.entries(patch).filter(([key])=>fields[key]); if(!entries.length)return null;
+      const params=[id,ownerId]; const sets=entries.map(([key,value],index)=>{params.push(key==="result"?JSON.stringify(value):value);return `${fields[key]}=$${index+3}${key==="result"?"::jsonb":""}`;});
+      return runRow((await run(`UPDATE nova_execution_runs SET ${sets.join(",")},updated_at=now() WHERE id=$1 AND owner_id=$2 RETURNING *`,params))[0]);
+    },
+    async listRuns(ownerId,{projectId,limit=50}={}){return(await run("SELECT * FROM nova_execution_runs WHERE owner_id=$1 AND ($2::text IS NULL OR project_id=$2) ORDER BY updated_at DESC,id ASC LIMIT $3",[ownerId,projectId||null,limit])).map(runRow);},
+    async createApproval(input){return approvalRow((await run("INSERT INTO nova_approvals (id,owner_id,project_id,run_id,tool,reason,risk_level,arguments) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) RETURNING *",[input.id||randomUUID(),input.ownerId,input.projectId||null,input.runId||null,input.tool,input.reason,input.riskLevel,JSON.stringify(input.arguments||{})]))[0]);},
+    async getApproval(id,ownerId){return approvalRow((await run("SELECT * FROM nova_approvals WHERE id=$1 AND owner_id=$2",[id,ownerId]))[0]);},
+    async decideApproval(id,ownerId,decision){return approvalRow((await run("UPDATE nova_approvals SET status=$3,decision=$3,decided_at=now() WHERE id=$1 AND owner_id=$2 AND status='pending' RETURNING *",[id,ownerId,decision]))[0]);},
+    async listApprovals(ownerId,{status,limit=50}={}){return(await run("SELECT * FROM nova_approvals WHERE owner_id=$1 AND ($2::text IS NULL OR status=$2) ORDER BY created_at DESC,id ASC LIMIT $3",[ownerId,status||null,limit])).map(approvalRow);},
+    async appendActivity(input){return activityRow((await run("INSERT INTO nova_activity_events (id,owner_id,project_id,run_id,action,tool,status,summary,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) RETURNING *",[input.id||randomUUID(),input.ownerId,input.projectId||null,input.runId||null,input.action,input.tool||null,input.status,input.summary,JSON.stringify(input.metadata||{})]))[0]);},
+    async listActivity(ownerId,{projectId,runId,limit=100}={}){return(await run("SELECT * FROM nova_activity_events WHERE owner_id=$1 AND ($2::text IS NULL OR project_id=$2) AND ($3::text IS NULL OR run_id=$3) ORDER BY sequence DESC LIMIT $4",[ownerId,projectId||null,runId||null,limit])).map(activityRow);}
   };
   return Object.freeze(storage);
 }

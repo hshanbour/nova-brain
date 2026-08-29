@@ -31,6 +31,8 @@ test("console exposes desktop and accessible mobile recent-conversation controls
   assert.match(html, /href="#memory"[^>]+data-section="memory"/);
 });
 
+test("Console activates all six workspaces and voice input without fake Soon states",async()=>{const html=await readFile(new URL("../index.html",import.meta.url),"utf8");for(const section of ["chat","projects","activity","memory","tools","approvals"]){assert.match(html,new RegExp(`data-section="${section}"`));assert.match(html,new RegExp(`id="${section}"`));}assert.match(html,/id="voiceButton"/);assert.doesNotMatch(html,/Projects<\/span><small>Soon|Activity<\/span><small>Soon|Tools<\/span><small>Soon|Approvals<\/span><small>Soon/);});
+
 test("local static handler serves console assets with defensive headers", async () => {
   const serve = createStaticFileHandler({ loadFile: async () => Buffer.from("asset") }); const res = response();
   assert.equal(await serve({ method: "GET", url: "/assets/console.js" }, res), true);

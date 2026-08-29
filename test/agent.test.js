@@ -5,6 +5,7 @@ import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { INITIAL_OWNER_PROFILE, OWNER_ID } from "../src/identity/initial-context.js";
 import { createMockModelProvider } from "../src/providers/mock-model-provider.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
+import { ApprovalRequiredError } from "../src/policy/action-policy.js";
 
 function scriptedProvider(outputs, onGenerate = () => {}) {
   let index = 0;
@@ -223,3 +224,5 @@ test("conversation history is preserved across agent turns", async () => {
     { role: "user", content: "One" }, { role: "assistant", content: "First" }
   ]);
 });
+
+test("agent stops a sensitive run in waiting-for-approval state",async()=>{const storage=testStorage();const approval={id:"approval-1",tool:"sensitive",status:"pending"};const registry={list(){return[{name:"sensitive"}];},async execute(){throw new ApprovalRequiredError(approval);}};const agent=createTestAgent({storage,toolRegistry:registry,modelProvider:scriptedProvider([{type:"tool_calls",toolCalls:[{id:"call-1",name:"sensitive",arguments:{target:"one"}}]}])});const result=await agent.run({message:"Sensitive action",conversationId:"approval-chat"});assert.equal(result.runStatus,"waiting_for_approval");assert.equal(result.approval.id,"approval-1");assert.equal(result.toolCalls[0].status,"waiting_for_approval");assert.equal((await storage.listRuns(OWNER_ID))[0].status,"waiting_for_approval");});

@@ -2,6 +2,7 @@ import { createNovaClient } from "./api-client.js";
 import { ownerMemoryClient } from "./memory-client.js";
 import { selectWorkspace } from "./workspace-navigation.js";
 import { conversationTitle, createConversationHistory } from "./conversation-history.js";
+import { createVoiceInput } from "./voice-input.js";
 
 const client = createNovaClient();
 const composer = document.querySelector("#composer");
@@ -136,6 +137,7 @@ resizeInput();
 function showSection(name) {
   const selected = selectWorkspace({ workspaces: document.querySelectorAll("main.workspace"), links: document.querySelectorAll("[data-section]"), name });
   if (selected === "memory") loadMemoryWorkspace();
+  if (["projects","activity","tools","approvals"].includes(selected)) loadDashboard(selected);
 }
 
 document.querySelectorAll("[data-section]").forEach((link) => link.addEventListener("click", (event) => { event.preventDefault(); const name = link.dataset.section; history.replaceState(null, "", `#${name}`); showSection(name); }));
@@ -213,6 +215,27 @@ document.querySelector("#memoryList").addEventListener("click", async (event) =>
 });
 document.querySelector("#memoryFilter").addEventListener("change", loadMemoryWorkspace);
 
+function dashboardCard(title, subtitle, body, badges = []) {
+  const article=document.createElement("article");article.className="dashboard-card";
+  const heading=document.createElement("div");heading.className="dashboard-card-heading";const copy=document.createElement("div");const name=document.createElement("h2");name.textContent=title;const detail=document.createElement("small");detail.textContent=subtitle||"";copy.append(name,detail);const tags=document.createElement("div");tags.className="dashboard-tags";for(const badge of badges.filter(Boolean)){const tag=document.createElement("span");tag.textContent=badge;tags.append(tag);}heading.append(copy,tags);const content=document.createElement("p");content.textContent=body||"";article.append(heading,content);return article;
+}
+
+async function loadDashboard(section) {
+  const list=document.querySelector(`#${section}List`);list.innerHTML=`<p class="dashboard-state">Loading ${section}…</p>`;
+  try {
+    if(section==="projects") { const {projects}=await ownerMemoryClient.projects(); list.replaceChildren(...projects.map((project)=>dashboardCard(project.name,project.id,project.description,[`${project.memories.length} memories`,`${project.runs.length} runs`]))); }
+    if(section==="activity") { const {activity}=await ownerMemoryClient.activity(); list.replaceChildren(...activity.map((event)=>dashboardCard(event.action,event.createdAt,event.summary,[event.status,event.tool,event.projectId]))); }
+    if(section==="tools") { const {tools}=await ownerMemoryClient.tools(); list.replaceChildren(...tools.map((tool)=>dashboardCard(tool.name,tool.description,tool.available===false?"Configuration required or adapter unavailable.":"Connected to Nova's runtime registry.",[tool.category,tool.riskLevel,tool.capability,tool.available===false?"Unavailable":"Ready"]))); }
+    if(section==="approvals") { const {approvals}=await ownerMemoryClient.approvals(); list.replaceChildren(...approvals.map((approval)=>{const card=dashboardCard(approval.tool,approval.reason,JSON.stringify(approval.arguments),[approval.riskLevel,approval.status,approval.projectId]);if(approval.status==="pending"){const actions=document.createElement("div");actions.className="approval-actions";for(const decision of ["approved","rejected"]){const button=document.createElement("button");button.type="button";button.className=decision==="approved"?"send-button":"secondary-button";button.textContent=decision==="approved"?"Approve":"Reject";button.addEventListener("click",async()=>{button.disabled=true;try{await ownerMemoryClient.decideApproval(approval.id,decision);await loadDashboard("approvals");}catch(cause){list.innerHTML=`<p class="dashboard-state error">${cause.message}</p>`;}});actions.append(button);}card.append(actions);}return card;})); }
+    if(!list.children.length)list.innerHTML=`<p class="dashboard-state">No ${section} yet.</p>`;
+  } catch(cause) { list.innerHTML=`<p class="dashboard-state error">${cause.message}</p>`; }
+}
+
+const voiceButton=document.querySelector("#voiceButton");let voiceListening=false;
+const voice=createVoiceInput({SpeechRecognition:window.SpeechRecognition||window.webkitSpeechRecognition,onText(text){input.value=text;resizeInput();},onState(state){voiceListening=state==="listening";voiceButton.classList.toggle("listening",voiceListening);voiceButton.setAttribute("aria-label",voiceListening?"Stop voice input":"Start voice input");},onError(message){requestError.textContent=message;requestError.hidden=false;}});
+if(!voice.supported){voiceButton.classList.add("unsupported");voiceButton.title="Voice input is not supported in this browser";}
+voiceButton.addEventListener("click",()=>{requestError.hidden=true;if(voiceListening)voice.stop();else voice.start();});
+
 await restoreConversation();
 await refreshRecents();
-showSection(location.hash === "#memory" ? "memory" : "chat");
+showSection(["#projects","#activity","#memory","#tools","#approvals"].includes(location.hash)?location.hash.slice(1):"chat");

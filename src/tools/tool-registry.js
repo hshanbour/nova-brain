@@ -1,4 +1,4 @@
-export function createToolRegistry() {
+export function createToolRegistry({ policy } = {}) {
   const tools = new Map();
 
   return Object.freeze({
@@ -17,11 +17,9 @@ export function createToolRegistry() {
 
       tools.set(tool.name, Object.freeze({ ...tool }));
     },
-    list() {
-      return [...tools.values()].map(({ name, description, inputSchema }) => ({
-        name,
-        description,
-        ...(inputSchema ? { inputSchema } : {})
+    list({ executableOnly = false } = {}) {
+      return [...tools.values()].filter((tool) => !executableOnly || tool.available !== false).map(({ execute: _execute, validate: _validate, ...tool }) => ({
+        ...tool
       }));
     },
     async execute(name, input, context) {
@@ -35,7 +33,10 @@ export function createToolRegistry() {
         throw new Error(`Tool arguments must be an object: ${name}`);
       }
 
+      if (tool.available === false) throw new Error(`Tool is unavailable: ${name}`);
+
       if (tool.validate) await tool.validate(input);
+      if (policy) await policy.authorize(tool, input, context);
 
       return tool.execute(input, context);
     }

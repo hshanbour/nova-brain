@@ -130,7 +130,7 @@ Each request can take at most `NOVA_BRAIN_MAX_STEPS` model steps (default `5`, a
 
 Unknown tools, invalid arguments, and tool failures are contained and returned to the model as failed tool results. The runtime never executes arbitrary code, shell commands, URLs, or unregistered actions. Reaching a limit ends the request with a safe `502` error.
 
-No external tools are registered yet, so configuring OpenAI currently enables real model responses but no business actions.
+Nova now registers bounded repository inspection tools, durable project listing, and an approval-gated memory-forget action. Local development can also run the allowlisted Node test suite. Repository writes require server-only GitHub configuration and are restricted to `NOVA_BRAIN_DEVELOPMENT_BRANCH`; arbitrary shell execution is never exposed. Vercel inspection tools remain visibly unavailable until their adapter is implemented and configured.
 
 ## Durable storage and migrations
 

@@ -124,3 +124,8 @@ export function validateListOffset(value, max = 100_000) {
   const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 0 || parsed > max) throw new ValidationError(`offset must be an integer between 0 and ${max}.`);
   return parsed;
 }
+
+export function validateApprovalDecision(value) {
+  if (!isPlainObject(value) || !["approved", "rejected"].includes(value.decision)) throw new ValidationError("decision must be approved or rejected.");
+  return value.decision;
+}

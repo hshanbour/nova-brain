@@ -53,9 +53,14 @@ export function readConfig(environment = process.env) {
     databaseUrl,
     conversationHistoryLimit,
     memoryRetrievalLimit,
+    developmentBranch: environment.NOVA_BRAIN_DEVELOPMENT_BRANCH || "feat/nova-brain-mvp-foundation",
     openAI: Object.freeze({
       apiKey: environment.OPENAI_API_KEY || null,
       model: environment.OPENAI_MODEL || null
+    }),
+    integrations: Object.freeze({
+      githubConfigured: Boolean(environment.NOVA_BRAIN_GITHUB_TOKEN && environment.NOVA_BRAIN_GITHUB_REPOSITORY),
+      vercelConfigured: Boolean(environment.NOVA_BRAIN_VERCEL_TOKEN && environment.NOVA_BRAIN_VERCEL_PROJECT_ID)
     }),
     allowedOrigins: parseOrigins(environment.CORS_ALLOWED_ORIGINS),
     maxBodyBytes: 64 * 1024

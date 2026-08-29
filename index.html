@@ -22,11 +22,11 @@
       </a>
       <nav class="primary-nav" aria-label="Primary">
         <a class="nav-item active" href="#chat" data-section="chat" aria-current="page"><span class="nav-icon" aria-hidden="true">⌁</span><span>Chat</span></a>
-        <button class="nav-item" type="button" disabled><span class="nav-icon">◇</span><span>Projects</span><small>Soon</small></button>
-        <button class="nav-item" type="button" disabled><span class="nav-icon">✓</span><span>Activity</span><small>Soon</small></button>
+        <a class="nav-item" href="#projects" data-section="projects"><span class="nav-icon">◇</span><span>Projects</span></a>
+        <a class="nav-item" href="#activity" data-section="activity"><span class="nav-icon">✓</span><span>Activity</span></a>
         <a class="nav-item" href="#memory" data-section="memory"><span class="nav-icon">◫</span><span>Memory</span></a>
-        <button class="nav-item" type="button" disabled><span class="nav-icon">⌘</span><span>Tools</span><small>Soon</small></button>
-        <button class="nav-item" type="button" disabled><span class="nav-icon">◈</span><span>Approvals</span><small>Soon</small></button>
+        <a class="nav-item" href="#tools" data-section="tools"><span class="nav-icon">⌘</span><span>Tools</span></a>
+        <a class="nav-item" href="#approvals" data-section="approvals"><span class="nav-icon">◈</span><span>Approvals</span></a>
       </nav>
       <section class="recents" aria-labelledby="recentsHeading">
         <div class="recents-heading"><h2 id="recentsHeading">Recent conversations</h2><button type="button" id="refreshRecentsButton" aria-label="Refresh recent conversations">↻</button></div>
@@ -59,7 +59,7 @@
             <label class="sr-only" for="messageInput">Message Nova Brain</label>
             <textarea id="messageInput" name="message" rows="1" maxlength="12000" placeholder="Tell Nova what you want to accomplish…" required></textarea>
             <div class="composer-actions">
-              <button class="icon-button voice-button" type="button" disabled aria-label="Voice input coming soon" title="Voice input coming soon"><span></span></button>
+              <button class="icon-button voice-button" id="voiceButton" type="button" aria-label="Start voice input" title="Start voice input"><span></span></button>
               <button class="send-button" id="sendButton" type="submit" aria-label="Send message"><span>Send</span><span class="send-arrow">↑</span></button>
             </div>
           </form>
@@ -67,6 +67,11 @@
         </div>
       </section>
     </main>
+
+    <main class="workspace dashboard-workspace" id="projects" hidden><header class="topbar"><div><p class="eyebrow">Portfolio</p><h1>Projects</h1></div></header><div class="dashboard-scroll"><div class="dashboard-grid" id="projectsList"><p class="dashboard-state">Loading projects…</p></div></div></main>
+    <main class="workspace dashboard-workspace" id="activity" hidden><header class="topbar"><div><p class="eyebrow">Audit trail</p><h1>Activity</h1></div></header><div class="dashboard-scroll"><div class="dashboard-list" id="activityList"><p class="dashboard-state">Loading activity…</p></div></div></main>
+    <main class="workspace dashboard-workspace" id="tools" hidden><header class="topbar"><div><p class="eyebrow">Runtime capabilities</p><h1>Tools</h1></div></header><div class="dashboard-scroll"><div class="dashboard-grid" id="toolsList"><p class="dashboard-state">Loading tools…</p></div></div></main>
+    <main class="workspace dashboard-workspace" id="approvals" hidden><header class="topbar"><div><p class="eyebrow">Owner control</p><h1>Approvals</h1></div></header><div class="dashboard-scroll"><div class="dashboard-list" id="approvalsList"><p class="dashboard-state">Loading approvals…</p></div></div></main>
 
     <main class="workspace memory-workspace" id="memory" hidden>
       <header class="topbar"><div><p class="eyebrow">Private knowledge</p><h1>Owner &amp; Memory</h1></div><button class="new-chat-button" id="addMemoryButton" type="button"><span>＋</span><span>Add memory</span></button></header>
@@ -91,9 +96,11 @@
 
     <nav class="mobile-nav" aria-label="Mobile navigation">
       <a href="#chat" class="active" data-section="chat"><span>⌁</span><small>Chat</small></a>
-      <button type="button" disabled><span>◇</span><small>Projects</small></button>
-      <button type="button" disabled><span>✓</span><small>Activity</small></button>
+      <a href="#projects" data-section="projects"><span>◇</span><small>Projects</small></a>
+      <a href="#activity" data-section="activity"><span>✓</span><small>Activity</small></a>
       <a href="#memory" data-section="memory"><span>◫</span><small>Memory</small></a>
+      <a href="#tools" data-section="tools"><span>⌘</span><small>Tools</small></a>
+      <a href="#approvals" data-section="approvals"><span>◈</span><small>Approvals</small></a>
     </nav>
   </div>
 
@@ -115,6 +122,6 @@
       <div class="dialog-actions"><button type="button" class="secondary-button" data-close-memory>Cancel</button><button type="submit" class="send-button" id="saveMemoryButton">Save memory</button></div>
     </form>
   </section>
-  <script type="module" src="/assets/console.js?v=conversation-history-v1"></script>
+  <script type="module" src="/assets/console.js?v=execution-foundation-v1"></script>
 </body>
 </html>
