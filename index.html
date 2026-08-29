@@ -41,7 +41,7 @@
     <main class="workspace" id="chat">
       <header class="topbar">
         <div><p class="eyebrow">Command center</p><h1>Chat with Nova</h1></div>
-        <div class="chat-actions"><button class="new-chat-button history-button" id="historyButton" type="button" aria-label="Open recent conversations"><span>☰</span><span>Recents</span></button><button class="new-chat-button" id="newChatButton" type="button" aria-label="Start a new conversation"><span>＋</span><span>New conversation</span></button></div>
+        <div class="chat-actions"><button class="new-chat-button voice-settings-button" id="voiceSettingsButton" type="button" aria-label="Open voice settings"><span>◉</span><span>Voice</span></button><button class="new-chat-button history-button" id="historyButton" type="button" aria-label="Open recent conversations"><span>☰</span><span>Recents</span></button><button class="new-chat-button" id="newChatButton" type="button" aria-label="Start a new conversation"><span>＋</span><span>New conversation</span></button></div>
       </header>
       <section class="conversation" aria-label="Conversation with Nova Brain">
         <div class="messages" id="messages" role="log" aria-live="polite" aria-relevant="additions">
@@ -109,8 +109,17 @@
   </section>
 
   <template id="messageTemplate">
-    <article class="message"><div class="avatar"></div><div class="message-content"><div class="message-heading"><strong></strong><time></time></div><div class="message-body"></div><div class="execution-meta" hidden></div></div></article>
+    <article class="message"><div class="avatar"></div><div class="message-content"><div class="message-heading"><strong></strong><time></time><button class="speak-response" type="button" aria-label="Speak response" title="Speak response" hidden>▶</button></div><div class="message-body"></div><div class="execution-meta" hidden></div></div></article>
   </template>
+  <section id="voiceSettingsDialog" class="memory-dialog voice-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="voiceSettingsTitle" hidden>
+    <form method="dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">Browser-native audio</p><h2 id="voiceSettingsTitle">Voice settings</h2></div><button type="button" class="dialog-close" data-close-voice-settings aria-label="Close voice settings">×</button></div>
+      <fieldset><legend>Voice input</legend><label>Microphone language<select id="microphoneLanguage"></select></label><p id="voiceInputSupport" class="privacy-note"></p></fieldset>
+      <fieldset><legend>Voice output</legend><label>Preferred browser voice<select id="preferredVoice"></select></label><label class="toggle-label"><input id="autoSpeak" type="checkbox"> Automatically speak new Nova responses</label><p id="voiceOutputSupport" class="privacy-note"></p></fieldset>
+      <p class="privacy-note">Voice preferences stay in this browser and are not saved to Nova memory.</p>
+      <div class="dialog-actions"><button type="button" class="secondary-button" data-close-voice-settings>Done</button></div>
+    </form>
+  </section>
   <section id="memoryDialog" class="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="memoryDialogTitle" hidden>
     <form id="memoryForm" method="dialog">
       <div class="dialog-heading"><div><p class="eyebrow">Explicit memory</p><h2 id="memoryDialogTitle">Add memory</h2></div><button type="button" class="dialog-close" data-close-memory aria-label="Close">×</button></div>
@@ -122,6 +131,6 @@
       <div class="dialog-actions"><button type="button" class="secondary-button" data-close-memory>Cancel</button><button type="submit" class="send-button" id="saveMemoryButton">Save memory</button></div>
     </form>
   </section>
-  <script type="module" src="/assets/console.js?v=execution-foundation-v1"></script>
+  <script type="module" src="/assets/console.js?v=multilingual-voice-v1"></script>
 </body>
 </html>

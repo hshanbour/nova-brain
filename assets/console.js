@@ -3,6 +3,8 @@ import { ownerMemoryClient } from "./memory-client.js";
 import { selectWorkspace } from "./workspace-navigation.js";
 import { conversationTitle, createConversationHistory } from "./conversation-history.js";
 import { createVoiceInput } from "./voice-input.js";
+import { MICROPHONE_LANGUAGES } from "./voice-input.js";
+import { createVoiceOutput } from "./voice-output.js";
 
 const client = createNovaClient();
 const composer = document.querySelector("#composer");
@@ -19,6 +21,21 @@ let memoryRecords = [];
 const conversationKey = "nova.activeConversationId";
 const conversationHistory = createConversationHistory({ client, api: ownerMemoryClient, key: conversationKey });
 const recentsDrawer = document.querySelector("#recentsDrawer");
+let voiceMessageSequence = 0;
+const voiceOutput = createVoiceOutput({
+  synthesis: window.speechSynthesis,
+  Utterance: window.SpeechSynthesisUtterance,
+  storage: localStorage,
+  onState({ speaking, id }) {
+    document.querySelectorAll(".speak-response").forEach((button) => {
+      const active = speaking && button.dataset.voiceId === String(id);
+      button.classList.toggle("speaking", active); button.textContent = active ? "■" : "▶";
+      button.setAttribute("aria-label", active ? "Stop speaking" : "Speak response");
+      button.title = active ? "Stop speaking" : "Speak response";
+    });
+  },
+  onVoices: populateVoiceChoices
+});
 
 function resizeInput() { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 176)}px`; }
 function scrollToLatest() { messages.scrollTo({ top: messages.scrollHeight, behavior: "smooth" }); }
@@ -58,6 +75,7 @@ async function refreshRecents() {
 }
 
 async function selectConversation(id) {
+  voiceOutput.stop();
   renderRecentsState("Loading conversation…"); requestError.hidden = true;
   try {
     const storedMessages = await conversationHistory.select(id);
@@ -71,7 +89,7 @@ async function selectConversation(id) {
   }
 }
 
-function addMessage({ role, text, metadata }) {
+function addMessage({ role, text, metadata, autoSpeak = false }) {
   welcome.hidden = true;
   const node = template.content.firstElementChild.cloneNode(true);
   const isNova = role === "assistant";
@@ -80,6 +98,11 @@ function addMessage({ role, text, metadata }) {
   node.querySelector("strong").textContent = isNova ? "Nova" : "You";
   node.querySelector("time").textContent = timeLabel();
   node.querySelector(".message-body").textContent = text;
+  if (isNova && voiceOutput.supported) {
+    const speak = node.querySelector(".speak-response"); const voiceId = `message-${++voiceMessageSequence}`;
+    speak.hidden = false; speak.dataset.voiceId = voiceId; speak.dataset.speechText = text;
+    if (autoSpeak && voiceOutput.getAutoSpeak()) queueMicrotask(() => voiceOutput.speak(text, { id: voiceId }));
+  }
   if (metadata) {
     const meta = node.querySelector(".execution-meta");
     const toolCount = Array.isArray(metadata.toolCalls) ? metadata.toolCalls.length : 0;
@@ -108,7 +131,7 @@ async function sendMessage(message) {
     const result = await client.send(message);
     localStorage.setItem(conversationKey, result.conversationId);
     document.querySelector("#thinkingMessage")?.remove();
-    addMessage({ role: "assistant", text: result.message, metadata: result });
+    addMessage({ role: "assistant", text: result.message, metadata: result, autoSpeak: true });
     providerStatus.textContent = `${result.provider || "Agent"} provider · Ready`;
     await refreshRecents();
   } catch (error) {
@@ -118,12 +141,12 @@ async function sendMessage(message) {
 
 composer.addEventListener("submit", (event) => {
   event.preventDefault(); const message = input.value.trim(); if (!message || pending) return;
-  input.value = ""; resizeInput(); sendMessage(message);
+  voiceOutput.stop(); input.value = ""; resizeInput(); sendMessage(message);
 });
 input.addEventListener("input", resizeInput);
 input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); composer.requestSubmit(); } });
 document.querySelector("#newChatButton").addEventListener("click", () => {
-  conversationHistory.startNew(); clearConversation(); renderRecents(conversationHistory.conversations); input.focus();
+  voiceOutput.stop(); conversationHistory.startNew(); clearConversation(); renderRecents(conversationHistory.conversations); input.focus();
 });
 document.querySelector("#refreshRecentsButton").addEventListener("click", refreshRecents);
 document.querySelector("#historyButton").addEventListener("click", () => { recentsDrawer.hidden = false; refreshRecents(); });
@@ -135,6 +158,7 @@ fetch("/api/health").then((response) => response.ok ? response.json() : Promise.
 resizeInput();
 
 function showSection(name) {
+  voiceOutput.stop();
   const selected = selectWorkspace({ workspaces: document.querySelectorAll("main.workspace"), links: document.querySelectorAll("[data-section]"), name });
   if (selected === "memory") loadMemoryWorkspace();
   if (["projects","activity","tools","approvals"].includes(selected)) loadDashboard(selected);
@@ -231,10 +255,33 @@ async function loadDashboard(section) {
   } catch(cause) { list.innerHTML=`<p class="dashboard-state error">${cause.message}</p>`; }
 }
 
+messages.addEventListener("click",(event)=>{const button=event.target.closest(".speak-response");if(!button)return;if(voiceOutput.activeId()===button.dataset.voiceId)voiceOutput.stop();else voiceOutput.speak(button.dataset.speechText,{id:button.dataset.voiceId});});
+
+const voiceSettingsDialog=document.querySelector("#voiceSettingsDialog");
+const microphoneLanguage=document.querySelector("#microphoneLanguage");
+const preferredVoice=document.querySelector("#preferredVoice");
+const autoSpeak=document.querySelector("#autoSpeak");
+function populateVoiceChoices(voices=voiceOutput.getVoices()) {
+  const saved=voiceOutput.getPreferredVoice(); preferredVoice.replaceChildren();
+  const automatic=document.createElement("option");automatic.value="";automatic.textContent="Automatic language match";preferredVoice.append(automatic);
+  for(const item of voices){const option=document.createElement("option");option.value=item.voiceURI||item.name;option.textContent=`${item.name} — ${item.lang}`;preferredVoice.append(option);}
+  preferredVoice.value=[...preferredVoice.options].some(({value})=>value===saved)?saved:"";
+}
+for(const [label,value] of MICROPHONE_LANGUAGES){const option=document.createElement("option");option.value=value;option.textContent=label;microphoneLanguage.append(option);}
+autoSpeak.checked=voiceOutput.getAutoSpeak();
+document.querySelector("#voiceOutputSupport").textContent=voiceOutput.supported?"Uses voices installed in this browser.":"Speech output is unavailable in this browser.";
+document.querySelector("#voiceSettingsButton").addEventListener("click",()=>{voiceOutput.refreshVoices();voiceSettingsDialog.hidden=false;});
+document.querySelectorAll("[data-close-voice-settings]").forEach((button)=>button.addEventListener("click",()=>{voiceSettingsDialog.hidden=true;}));
+preferredVoice.addEventListener("change",()=>voiceOutput.setPreferredVoice(preferredVoice.value));
+autoSpeak.addEventListener("change",()=>voiceOutput.setAutoSpeak(autoSpeak.checked));
+
 const voiceButton=document.querySelector("#voiceButton");let voiceListening=false;
-const voice=createVoiceInput({SpeechRecognition:window.SpeechRecognition||window.webkitSpeechRecognition,onText(text){input.value=text;resizeInput();},onState(state){voiceListening=state==="listening";voiceButton.classList.toggle("listening",voiceListening);voiceButton.setAttribute("aria-label",voiceListening?"Stop voice input":"Start voice input");},onError(message){requestError.textContent=message;requestError.hidden=false;}});
+const voice=createVoiceInput({SpeechRecognition:window.SpeechRecognition||window.webkitSpeechRecognition,storage:localStorage,onText(text){input.value=text;resizeInput();},onState(state){voiceListening=state==="listening";voiceButton.classList.toggle("listening",voiceListening);voiceButton.setAttribute("aria-label",voiceListening?"Stop voice input":"Start voice input");},onError(message){requestError.textContent=message;requestError.hidden=false;}});
+microphoneLanguage.value=voice.getLanguage();
+microphoneLanguage.addEventListener("change",()=>voice.setLanguage(microphoneLanguage.value));
+document.querySelector("#voiceInputSupport").textContent=voice.supported?"The selected language applies to the next recording.":"Speech recognition is unavailable in this browser.";
 if(!voice.supported){voiceButton.classList.add("unsupported");voiceButton.title="Voice input is not supported in this browser";}
-voiceButton.addEventListener("click",()=>{requestError.hidden=true;if(voiceListening)voice.stop();else voice.start();});
+voiceButton.addEventListener("click",()=>{requestError.hidden=true;if(voiceListening)voice.stop();else{voiceOutput.stop();voice.start();}});
 
 await restoreConversation();
 await refreshRecents();
