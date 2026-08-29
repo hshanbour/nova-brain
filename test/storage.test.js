@@ -56,6 +56,40 @@ test("retrieval is relevant, limited, project-aware, and excludes deleted memory
   await storage.deleteMemory(global.id, OWNER_ID); assert.equal((await storage.retrieveMemories(OWNER_ID, "grow software capability", { limit: 10 })).some(({ id }) => id === global.id), false);
 });
 
+test("general queries discover Sharp Cuts memory without an explicit project", async () => {
+  const storage = await seededStorage();
+  const results = await storage.retrieveMemories(OWNER_ID, "What do you know about Sharp Cuts?", { limit: 6 });
+  assert.ok(results.some(({ id }) => id === "memory_sharp_cuts_context"));
+});
+
+test("general queries discover missed-call recovery memory without an explicit project", async () => {
+  const storage = await seededStorage();
+  const results = await storage.retrieveMemories(OWNER_ID, "Tell me about the missed call recovery business idea", { limit: 6 });
+  assert.ok(results.some(({ id }) => id === "memory_missed_call_testbed"));
+});
+
+test("one bounded query can retrieve two relevant projects without injecting unrelated projects", async () => {
+  const storage = await seededStorage();
+  await storage.createMemory({ id: "memory_unrelated_project", ownerId: OWNER_ID, category: "project_context", content: "A ceramics inventory experiment in Bristol", provenance: "owner-explicit", privacy: "private", sensitivity: "business", scope: "project", projectId: "unrelated", status: "active" });
+  const results = await storage.retrieveMemories(OWNER_ID, "What do you know about Sharp Cuts and the missed call recovery business idea?", { limit: 4 });
+  assert.ok(results.length <= 4);
+  assert.ok(results.some(({ id }) => id === "memory_sharp_cuts_context"));
+  assert.ok(results.some(({ id }) => id === "memory_missed_call_testbed"));
+  assert.equal(results.some(({ id }) => id === "memory_unrelated_project"), false);
+});
+
+test("an explicit project strongly boosts rather than gates matching memories", async () => {
+  const storage = await seededStorage();
+  const results = await storage.retrieveMemories(OWNER_ID, "business project", { projectId: "uk-missed-call-recovery", limit: 1 });
+  assert.equal(results[0].id, "memory_missed_call_testbed");
+});
+
+test("Postgres candidate selection keeps all active owner memories eligible for ranking", async () => {
+  const source = await import("node:fs/promises").then(({ readFile }) => readFile(new URL("../src/storage/postgres-storage.js", import.meta.url), "utf8"));
+  assert.match(source, /WHERE owner_id=\$1 AND status='active' ORDER BY updated_at DESC, id ASC LIMIT \$2/);
+  assert.doesNotMatch(source, /project_id IS NULL OR project_id=/);
+});
+
 test("temporary conversation messages remain separate from long-term memory", async () => {
   const storage = await seededStorage(); const before = await storage.listMemories(OWNER_ID);
   await storage.ensureConversation({ id: "temporary", ownerId: OWNER_ID }); await storage.appendMessage({ conversationId: "temporary", ownerId: OWNER_ID, role: "user", content: "Do not automatically remember this chat" });

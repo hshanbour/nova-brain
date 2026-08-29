@@ -1,5 +1,6 @@
 import { createNovaClient } from "./api-client.js";
 import { ownerMemoryClient } from "./memory-client.js";
+import { selectWorkspace } from "./workspace-navigation.js";
 
 const client = createNovaClient();
 const composer = document.querySelector("#composer");
@@ -77,9 +78,8 @@ fetch("/api/health").then((response) => response.ok ? response.json() : Promise.
 resizeInput();
 
 function showSection(name) {
-  document.querySelectorAll("main.workspace").forEach((section) => { section.hidden = section.id !== name; });
-  document.querySelectorAll("[data-section]").forEach((link) => { const active = link.dataset.section === name; link.classList.toggle("active", active); if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current"); });
-  if (name === "memory") loadMemoryWorkspace();
+  const selected = selectWorkspace({ workspaces: document.querySelectorAll("main.workspace"), links: document.querySelectorAll("[data-section]"), name });
+  if (selected === "memory") loadMemoryWorkspace();
 }
 
 document.querySelectorAll("[data-section]").forEach((link) => link.addEventListener("click", (event) => { event.preventDefault(); const name = link.dataset.section; history.replaceState(null, "", `#${name}`); showSection(name); }));

@@ -1,18 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { rankRelevantMemories } from "../memory/relevance.js";
 
 function copy(value) { return value === undefined ? undefined : structuredClone(value); }
 function now(clock) { return clock().toISOString(); }
-
-function tokens(value) {
-  return new Set(String(value).toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) || []);
-}
-
-function relevance(memory, queryTokens, projectId) {
-  const matches = [...tokens(memory.content)].filter((token) => queryTokens.has(token)).length;
-  const projectBoost = projectId && memory.projectId === projectId ? 4 : 0;
-  const coreBoost = ["identity", "preference", "reusable_instruction"].includes(memory.category) ? 1 : 0;
-  return matches + projectBoost + coreBoost;
-}
 
 export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const owners = new Map(); const projects = new Map(); const conversations = new Map(); const messages = new Map(); const memories = new Map();
@@ -75,10 +65,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       memories.set(id, { ...current, status: "deleted", updatedAt: now(clock), deletedAt: now(clock) }); return true;
     },
     async retrieveMemories(ownerId, query, { projectId, limit = 6 } = {}) {
-      const queryTokens = tokens(query);
-      return [...memories.values()].filter((item) => item.ownerId === ownerId && item.status === "active")
-        .map((item) => ({ item, score: relevance(item, queryTokens, projectId) }))
-        .filter(({ score }) => score > 0).sort((a, b) => b.score - a.score || b.item.updatedAt.localeCompare(a.item.updatedAt)).slice(0, limit).map(({ item }) => copy(item));
+      return rankRelevantMemories([...memories.values()].filter((item) => item.ownerId === ownerId), query, { projectId, limit }).map(copy);
     }
   });
 }

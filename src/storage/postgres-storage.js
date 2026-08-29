@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
 import { SCHEMA_STATEMENTS } from "./schema.js";
+import { rankRelevantMemories } from "../memory/relevance.js";
 
 const json = (value) => JSON.stringify(value ?? {});
 const date = (value) => value instanceof Date ? value.toISOString() : value;
@@ -8,12 +9,6 @@ const ownerRow = (row) => row && ({ id: row.id, fullName: row.full_name, preferr
 const conversationRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, title: row.title, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
 const messageRow = (row) => row && ({ id: row.id, conversationId: row.conversation_id, ownerId: row.owner_id, role: row.role, content: row.content, sequence: Number(row.sequence), createdAt: date(row.created_at) });
 const memoryRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, category: row.category, content: row.content, provenance: row.provenance, privacy: row.privacy, sensitivity: row.sensitivity, scope: row.scope, projectId: row.project_id, confidence: row.confidence === null ? null : Number(row.confidence), status: row.status, createdAt: date(row.created_at), updatedAt: date(row.updated_at), deletedAt: date(row.deleted_at) });
-
-function queryTokens(value) { return new Set(String(value).toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) || []); }
-function score(memory, query, projectId) {
-  const matches = [...queryTokens(memory.content)].filter((token) => query.has(token)).length;
-  return matches + (projectId && memory.projectId === projectId ? 4 : 0) + (["identity", "preference", "reusable_instruction"].includes(memory.category) ? 1 : 0);
-}
 
 export function createPostgresStorage({ connectionString }) {
   if (!connectionString) throw new Error("A Postgres connection string is required.");
@@ -73,8 +68,8 @@ export function createPostgresStorage({ connectionString }) {
     },
     async deleteMemory(id, ownerId) { return (await run("UPDATE nova_memories SET status='deleted',deleted_at=now(),updated_at=now() WHERE id=$1 AND owner_id=$2 AND status<>'deleted' RETURNING id", [id, ownerId])).length > 0; },
     async retrieveMemories(ownerId, queryText, { projectId, limit = 6, candidateLimit = 50 } = {}) {
-      const candidates = (await run("SELECT * FROM nova_memories WHERE owner_id=$1 AND status='active' AND (project_id IS NULL OR project_id=$2 OR scope IN ('global','system')) ORDER BY updated_at DESC LIMIT $3", [ownerId, projectId || null, candidateLimit])).map(memoryRow);
-      const query = queryTokens(queryText); return candidates.map((item) => ({ item, score: score(item, query, projectId) })).filter(({ score }) => score > 0).sort((a,b) => b.score-a.score || b.item.updatedAt.localeCompare(a.item.updatedAt)).slice(0,limit).map(({item}) => item);
+      const candidates = (await run("SELECT * FROM nova_memories WHERE owner_id=$1 AND status='active' ORDER BY updated_at DESC, id ASC LIMIT $2", [ownerId, candidateLimit])).map(memoryRow);
+      return rankRelevantMemories(candidates, queryText, { projectId, limit });
     }
   };
   return Object.freeze(storage);
