@@ -33,9 +33,11 @@ test("console exposes desktop and accessible mobile recent-conversation controls
 
 test("Console activates all six workspaces and voice input without fake Soon states",async()=>{const html=await readFile(new URL("../index.html",import.meta.url),"utf8");for(const section of ["chat","projects","activity","memory","tools","approvals"]){assert.match(html,new RegExp(`data-section="${section}"`));assert.match(html,new RegExp(`id="${section}"`));}assert.match(html,/id="voiceButton"/);assert.doesNotMatch(html,/Projects<\/span><small>Soon|Activity<\/span><small>Soon|Tools<\/span><small>Soon|Approvals<\/span><small>Soon/);});
 
-test("shared message rendering gives only Nova messages reusable Speak controls and historical loads stay silent",async()=>{const [html,script]=await Promise.all([readFile(new URL("../index.html",import.meta.url),"utf8"),readFile(new URL("../assets/console.js",import.meta.url),"utf8")]);assert.match(html,/class="speak-response"[^>]+aria-label="Speak response"[^>]+hidden/);assert.match(script,/if \(isNova && voiceOutput\.supported\)/);assert.match(script,/autoSpeak: true/);assert.match(script,/for \(const stored of storedMessages\) addMessage\(\{ role: stored\.role, text: stored\.content \}\)/);assert.match(script,/voiceOutput\.stop\(\); conversationHistory\.startNew/);assert.match(script,/selectConversation\(id\) \{\s+voiceOutput\.stop/);assert.match(script,/else\{voiceOutput\.stop\(\);voice\.start\(\);\}/);});
+test("shared message rendering gives only Nova messages reusable Speak controls and historical loads stay silent",async()=>{const [html,script]=await Promise.all([readFile(new URL("../index.html",import.meta.url),"utf8"),readFile(new URL("../assets/console.js",import.meta.url),"utf8")]);assert.match(html,/class="speak-response"[^>]+aria-label="Speak response"[^>]+hidden/);assert.match(script,/if \(isNova && voiceOutput\.supported\)/);assert.match(script,/autoSpeakResponse/);assert.match(script,/for \(const stored of storedMessages\) addMessage\(\{ role: stored\.role, text: stored\.content \}\)/);assert.match(script,/stopVoiceActivity\(\); conversationHistory\.startNew/);assert.match(script,/selectConversation\(id\) \{\s+stopVoiceActivity/);});
 
 test("Console includes compact persistent multilingual voice settings",async()=>{const html=await readFile(new URL("../index.html",import.meta.url),"utf8");for(const id of ["voiceSettingsButton","voiceSettingsDialog","microphoneLanguage","preferredVoice","autoSpeak"])assert.match(html,new RegExp(`id="${id}"`));assert.match(html,/Voice preferences stay in this browser/);});
+
+test("Console exposes local Test Voice diagnostics and conversational Voice Mode",async()=>{const [html,script]=await Promise.all([readFile(new URL("../index.html",import.meta.url),"utf8"),readFile(new URL("../assets/console.js",import.meta.url),"utf8")]);for(const id of ["testVoiceButton","voiceDiagnostic","voiceModeButton","voiceModeStatus"])assert.match(html,new RegExp(`id="${id}"`));assert.match(script,/createVoiceMode/);assert.match(script,/sendMessage\(text,\{autoSpeakResponse:false,throwOnError:true\}\)/);assert.match(script,/voiceMode\.interrupt\(\)/);assert.match(script,/input\.value="";resizeInput\(\);return sendMessage/);});
 
 test("local static handler serves console assets with defensive headers", async () => {
   const serve = createStaticFileHandler({ loadFile: async () => Buffer.from("asset") }); const res = response();
@@ -52,6 +54,12 @@ test("local static handler serves the conversation history browser module", asyn
 test("local static handler serves the browser-native voice output module", async () => {
   const serve = createStaticFileHandler({ loadFile: async (url) => Buffer.from(url.pathname) }); const res = response();
   assert.equal(await serve({ method: "GET", url: "/assets/voice-output.js" }, res), true);
+  assert.equal(res.statusCode, 200); assert.equal(res.headers.get("content-type"), "text/javascript; charset=utf-8");
+});
+
+test("local static handler serves the conversational voice mode module", async () => {
+  const serve = createStaticFileHandler({ loadFile: async (url) => Buffer.from(url.pathname) }); const res = response();
+  assert.equal(await serve({ method: "GET", url: "/assets/voice-mode.js" }, res), true);
   assert.equal(res.statusCode, 200); assert.equal(res.headers.get("content-type"), "text/javascript; charset=utf-8");
 });
 

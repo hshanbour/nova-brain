@@ -66,7 +66,16 @@ export function speechChunks(value, maximum = MAX_CHUNK_CHARACTERS) {
   return chunks;
 }
 
-export function createVoiceOutput({ synthesis, Utterance, storage, preferredVoiceKey = "nova.voice.preferred", autoSpeakKey = "nova.voice.autoSpeak", onState = () => {}, onVoices = () => {} } = {}) {
+function errorName(event) {
+  return String(event?.error || "unknown").replace(/[^a-z0-9_-]/gi, "").slice(0, 60) || "unknown";
+}
+
+export function createVoiceOutput({
+  synthesis, Utterance, storage,
+  preferredVoiceKey = "nova.voice.preferred", autoSpeakKey = "nova.voice.autoSpeak",
+  onState = () => {}, onVoices = () => {}, onDiagnostic = () => {},
+  schedule = (callback, delay) => setTimeout(callback, delay), startDelay = 80
+} = {}) {
   const supported = Boolean(synthesis && Utterance);
   let preferredVoice = storage?.getItem(preferredVoiceKey) || "";
   let autoSpeak = storage?.getItem(autoSpeakKey) === "true";
@@ -82,23 +91,61 @@ export function createVoiceOutput({ synthesis, Utterance, storage, preferredVoic
     if (activeId !== null) { activeId = null; onState({ speaking: false, id: null }); }
   }
 
-  function speak(text, { id = "response", locale } = {}) {
+  function speak(text, { id = "response", locale, onComplete = () => {}, onError = () => {} } = {}) {
     if (!supported) return false;
     const chunks = speechChunks(text); if (!chunks.length) return false;
-    stop(); const current = generation; activeId = id; onState({ speaking: true, id });
+    generation += 1; const current = generation; synthesis.cancel?.(); activeId = id;
+    onState({ speaking: false, starting: true, id });
     const chosenLocale = locale || detectSpeechLocale(text);
-    const voice = selectSpeechVoice(voices, chosenLocale, preferredVoice);
-    let index = 0;
+    let index = 0; let voice; let fallbackUsed = false;
+
+    const finish = () => {
+      if (current !== generation) return;
+      activeId = null; onState({ speaking: false, id: null }); onComplete();
+    };
+    const fail = (reason) => {
+      if (current !== generation) return;
+      generation += 1; synthesis.cancel?.(); activeId = null;
+      const message = `Browser speech failed (${reason}). Try Test Voice or choose another installed voice.`;
+      onDiagnostic(message); onState({ speaking: false, id: null, error: reason }); onError(reason);
+    };
+    const candidates = () => {
+      publishVoices(); const first = selectSpeechVoice(voices, chosenLocale, preferredVoice);
+      const ordered = [first, ...voices.filter((item) => item !== first), null];
+      return ordered.filter((item, position) => ordered.indexOf(item) === position);
+    };
+    let available = [];
     const next = () => {
       if (current !== generation) return;
-      if (index >= chunks.length) { activeId = null; onState({ speaking: false, id: null }); return; }
-      const utterance = new Utterance(chunks[index++]); utterance.lang = voice?.lang || chosenLocale;
+      if (index >= chunks.length) { finish(); return; }
+      const chunk = chunks[index]; let started = false;
+      const utterance = new Utterance(chunk); utterance.lang = voice?.lang || chosenLocale;
       if (voice) utterance.voice = voice;
-      utterance.onend = next;
-      utterance.onerror = () => { if (current === generation) { generation += 1; synthesis.cancel?.(); activeId = null; onState({ speaking: false, id: null, error: true }); } };
+      utterance.onstart = () => { if (current === generation) { started = true; onDiagnostic(`Speaking with ${voice?.name || "browser default"} (${utterance.lang}).`); onState({ speaking: true, starting: false, id, voice: voice?.name || "browser default", locale: utterance.lang }); } };
+      utterance.onend = () => {
+        if (current !== generation) return;
+        if (!started) { retryOrFail("ended-before-start"); return; }
+        index += 1; fallbackUsed = false; next();
+      };
+      utterance.onerror = (event) => { if (current === generation) retryOrFail(errorName(event)); };
       synthesis.speak(utterance);
     };
-    next(); return true;
+    const retryOrFail = (reason) => {
+      if (current !== generation) return;
+      if (!fallbackUsed && available.length) {
+        fallbackUsed = true; synthesis.cancel?.(); voice = available.shift();
+        onDiagnostic(`Browser speech reported ${reason}; retrying with ${voice?.name || "the browser default voice"}.`);
+        schedule(() => { if (current === generation) { if (synthesis.paused) synthesis.resume?.(); next(); } }, startDelay);
+        return;
+      }
+      fail(reason);
+    };
+    schedule(() => {
+      if (current !== generation) return;
+      if (synthesis.paused) synthesis.resume?.();
+      available = candidates(); voice = available.shift(); next();
+    }, startDelay);
+    return true;
   }
 
   return Object.freeze({

@@ -10,6 +10,7 @@ const ASSETS = Object.freeze({
   "/assets/memory-client.js": { file: "../../assets/memory-client.js", type: "text/javascript; charset=utf-8" },
   "/assets/voice-input.js": { file: "../../assets/voice-input.js", type: "text/javascript; charset=utf-8" },
   "/assets/voice-output.js": { file: "../../assets/voice-output.js", type: "text/javascript; charset=utf-8" },
+  "/assets/voice-mode.js": { file: "../../assets/voice-mode.js", type: "text/javascript; charset=utf-8" },
   "/assets/workspace-navigation.js": { file: "../../assets/workspace-navigation.js", type: "text/javascript; charset=utf-8" },
   "/assets/nova-mark.svg": { file: "../../assets/nova-mark.svg", type: "image/svg+xml" }
 });

@@ -5,6 +5,7 @@ import { conversationTitle, createConversationHistory } from "./conversation-his
 import { createVoiceInput } from "./voice-input.js";
 import { MICROPHONE_LANGUAGES } from "./voice-input.js";
 import { createVoiceOutput } from "./voice-output.js";
+import { createVoiceMode } from "./voice-mode.js";
 
 const client = createNovaClient();
 const composer = document.querySelector("#composer");
@@ -22,20 +23,24 @@ const conversationKey = "nova.activeConversationId";
 const conversationHistory = createConversationHistory({ client, api: ownerMemoryClient, key: conversationKey });
 const recentsDrawer = document.querySelector("#recentsDrawer");
 let voiceMessageSequence = 0;
+let voiceMode;
+function showVoiceDiagnostic(message) { const target=document.querySelector("#voiceDiagnostic");if(target)target.textContent=String(message||"").slice(0,240); }
 const voiceOutput = createVoiceOutput({
   synthesis: window.speechSynthesis,
   Utterance: window.SpeechSynthesisUtterance,
   storage: localStorage,
-  onState({ speaking, id }) {
+  onState({ speaking, starting, id }) {
     document.querySelectorAll(".speak-response").forEach((button) => {
-      const active = speaking && button.dataset.voiceId === String(id);
+      const active = (speaking || starting) && button.dataset.voiceId === String(id);
       button.classList.toggle("speaking", active); button.textContent = active ? "■" : "▶";
       button.setAttribute("aria-label", active ? "Stop speaking" : "Speak response");
       button.title = active ? "Stop speaking" : "Speak response";
     });
   },
-  onVoices: populateVoiceChoices
+  onVoices: populateVoiceChoices,
+  onDiagnostic: showVoiceDiagnostic
 });
+function stopVoiceActivity() { if(voiceMode?.isActive())voiceMode.end();else voiceOutput.stop(); }
 
 function resizeInput() { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 176)}px`; }
 function scrollToLatest() { messages.scrollTo({ top: messages.scrollHeight, behavior: "smooth" }); }
@@ -75,7 +80,7 @@ async function refreshRecents() {
 }
 
 async function selectConversation(id) {
-  voiceOutput.stop();
+  stopVoiceActivity();
   renderRecentsState("Loading conversation…"); requestError.hidden = true;
   try {
     const storedMessages = await conversationHistory.select(id);
@@ -125,28 +130,29 @@ function setPending(value) {
   sendButton.querySelector("span:first-child").textContent = value ? "Working" : "Send";
 }
 
-async function sendMessage(message) {
+async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false}={}) {
   requestError.hidden = true; addMessage({ role: "user", text: message }); addThinking(); setPending(true);
   try {
     const result = await client.send(message);
     localStorage.setItem(conversationKey, result.conversationId);
     document.querySelector("#thinkingMessage")?.remove();
-    addMessage({ role: "assistant", text: result.message, metadata: result, autoSpeak: true });
+    addMessage({ role: "assistant", text: result.message, metadata: result, autoSpeak: autoSpeakResponse });
     providerStatus.textContent = `${result.provider || "Agent"} provider · Ready`;
-    await refreshRecents();
+    await refreshRecents(); return result;
   } catch (error) {
     document.querySelector("#thinkingMessage")?.remove(); requestError.textContent = error.message; requestError.hidden = false;
+    if(throwOnError)throw error;
   } finally { setPending(false); input.focus(); }
 }
 
 composer.addEventListener("submit", (event) => {
   event.preventDefault(); const message = input.value.trim(); if (!message || pending) return;
-  voiceOutput.stop(); input.value = ""; resizeInput(); sendMessage(message);
+  stopVoiceActivity(); input.value = ""; resizeInput(); sendMessage(message);
 });
 input.addEventListener("input", resizeInput);
 input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); composer.requestSubmit(); } });
 document.querySelector("#newChatButton").addEventListener("click", () => {
-  voiceOutput.stop(); conversationHistory.startNew(); clearConversation(); renderRecents(conversationHistory.conversations); input.focus();
+  stopVoiceActivity(); conversationHistory.startNew(); clearConversation(); renderRecents(conversationHistory.conversations); input.focus();
 });
 document.querySelector("#refreshRecentsButton").addEventListener("click", refreshRecents);
 document.querySelector("#historyButton").addEventListener("click", () => { recentsDrawer.hidden = false; refreshRecents(); });
@@ -158,7 +164,7 @@ fetch("/api/health").then((response) => response.ok ? response.json() : Promise.
 resizeInput();
 
 function showSection(name) {
-  voiceOutput.stop();
+  stopVoiceActivity();
   const selected = selectWorkspace({ workspaces: document.querySelectorAll("main.workspace"), links: document.querySelectorAll("[data-section]"), name });
   if (selected === "memory") loadMemoryWorkspace();
   if (["projects","activity","tools","approvals"].includes(selected)) loadDashboard(selected);
@@ -274,14 +280,19 @@ document.querySelector("#voiceSettingsButton").addEventListener("click",()=>{voi
 document.querySelectorAll("[data-close-voice-settings]").forEach((button)=>button.addEventListener("click",()=>{voiceSettingsDialog.hidden=true;}));
 preferredVoice.addEventListener("change",()=>voiceOutput.setPreferredVoice(preferredVoice.value));
 autoSpeak.addEventListener("change",()=>voiceOutput.setAutoSpeak(autoSpeak.checked));
+document.querySelector("#testVoiceButton").addEventListener("click",()=>{showVoiceDiagnostic("Starting local browser voice test…");voiceOutput.speak("Nova voice test.",{id:"test-voice",onComplete(){showVoiceDiagnostic("Test Voice completed. Did you hear it?");},onError(reason){showVoiceDiagnostic(`Test Voice failed: ${reason}. Choose another voice and retry.`);}});});
 
 const voiceButton=document.querySelector("#voiceButton");let voiceListening=false;
-const voice=createVoiceInput({SpeechRecognition:window.SpeechRecognition||window.webkitSpeechRecognition,storage:localStorage,onText(text){input.value=text;resizeInput();},onState(state){voiceListening=state==="listening";voiceButton.classList.toggle("listening",voiceListening);voiceButton.setAttribute("aria-label",voiceListening?"Stop voice input":"Start voice input");},onError(message){requestError.textContent=message;requestError.hidden=false;}});
+const voice=createVoiceInput({SpeechRecognition:window.SpeechRecognition||window.webkitSpeechRecognition,storage:localStorage,onText(text){input.value=text;resizeInput();},onFinal(text){voiceMode?.acceptFinal(text);},onEnd(result){voiceMode?.recognitionEnded(result);},onState(state){voiceListening=state==="listening";voiceButton.classList.toggle("listening",voiceListening);if(!voiceMode?.isActive())voiceButton.setAttribute("aria-label",voiceListening?"Stop voice input":"Start voice input");},onError(message){if(voiceMode?.isActive())voiceMode.end();requestError.textContent=message;requestError.hidden=false;}});
 microphoneLanguage.value=voice.getLanguage();
 microphoneLanguage.addEventListener("change",()=>voice.setLanguage(microphoneLanguage.value));
 document.querySelector("#voiceInputSupport").textContent=voice.supported?"The selected language applies to the next recording.":"Speech recognition is unavailable in this browser.";
 if(!voice.supported){voiceButton.classList.add("unsupported");voiceButton.title="Voice input is not supported in this browser";}
-voiceButton.addEventListener("click",()=>{requestError.hidden=true;if(voiceListening)voice.stop();else{voiceOutput.stop();voice.start();}});
+const voiceModeButton=document.querySelector("#voiceModeButton");const voiceModeStatus=document.querySelector("#voiceModeStatus");
+const voiceModeLabels={idle:"Voice idle",listening:"Listening…",thinking:"Thinking…",speaking:"Nova speaking…",error:"Voice needs attention"};
+voiceMode=createVoiceMode({startRecognition:()=>voice.start(),stopRecognition:()=>voice.stop(),stopSpeech:()=>voiceOutput.stop(),sendTurn:(text)=>{input.value="";resizeInput();return sendMessage(text,{autoSpeakResponse:false,throwOnError:true});},speakResponse:(text,options)=>voiceOutput.speak(text,options),onState({active,state}){voiceModeStatus.textContent=voiceModeLabels[state]||state;voiceModeButton.classList.toggle("active",active);voiceModeButton.setAttribute("aria-label",active?"End Voice":"Start Voice");voiceModeButton.querySelector("span:last-child").textContent=active?"End Voice":"Start Voice";voiceButton.setAttribute("aria-label",active&&state==="speaking"?"Interrupt Nova and speak":voiceListening?"Stop voice input":"Start voice input");},onError(message){requestError.textContent=message;requestError.hidden=false;}});
+voiceModeButton.addEventListener("click",()=>{requestError.hidden=true;if(voiceMode.isActive())voiceMode.end();else if(!voice.supported||!voiceOutput.supported){requestError.textContent="Conversational Voice requires browser speech recognition and speech output.";requestError.hidden=false;}else voiceMode.start();});
+voiceButton.addEventListener("click",()=>{requestError.hidden=true;if(voiceMode.isActive()){if(voiceMode.getState()==="speaking")voiceMode.interrupt();return;}if(voiceListening)voice.stop();else{voiceOutput.stop();voice.start();}});
 
 await restoreConversation();
 await refreshRecents();
