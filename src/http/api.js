@@ -7,7 +7,8 @@ import {
   validateOwnerProfilePatch,
   validateMemoryCreate,
   validateMemoryPatch,
-  validateListLimit
+  validateListLimit,
+  validateListOffset
 } from "./validation.js";
 
 class StorageUnavailableError extends Error {}
@@ -113,8 +114,9 @@ export function createApi({ agent, config, storage, initialize, ownerId }) {
 
         const conversationMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
         if (conversationMatch && request.method === "GET") {
-          await ready(); const limit = validateListLimit(url.searchParams.get("limit"), 50, 100);
-          sendJson(response, 200, { messages: await storage.listMessages(decodeURIComponent(conversationMatch[1]), ownerId, { limit }) }); return;
+          await ready(); const limit = validateListLimit(url.searchParams.get("limit"), 100, 100); const offset = validateListOffset(url.searchParams.get("offset"));
+          const messages = await storage.listMessages(decodeURIComponent(conversationMatch[1]), ownerId, { limit, offset });
+          sendJson(response, 200, { messages, ...(messages.length === limit ? { nextOffset: offset + limit } : {}) }); return;
         }
 
         if (request.method === "POST" && pathname === "/api/missed-call") {

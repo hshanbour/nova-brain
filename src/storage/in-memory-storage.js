@@ -42,10 +42,11 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       messages.set(conversationId, [...(messages.get(conversationId) || []), entry]);
       conversation.updatedAt = entry.createdAt; return copy(entry);
     },
-    async listMessages(conversationId, ownerId, { limit = 30 } = {}) {
+    async listMessages(conversationId, ownerId, { limit = 30, offset = 0 } = {}) {
       const conversation = conversations.get(conversationId);
       if (!conversation || conversation.ownerId !== ownerId) return [];
-      return (messages.get(conversationId) || []).slice(-limit).map(copy);
+      const history = messages.get(conversationId) || []; const end = history.length - offset; const start = Math.max(0, end - limit);
+      return end <= 0 ? [] : history.slice(start, end).map(copy);
     },
     async createMemory(input) {
       const timestamp = now(clock); const memory = { id: input.id || randomUUID(), ...copy(input), createdAt: timestamp, updatedAt: timestamp };

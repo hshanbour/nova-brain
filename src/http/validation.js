@@ -118,3 +118,9 @@ export function validateListLimit(value, fallback, max) {
   const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) throw new ValidationError(`limit must be an integer between 1 and ${max}.`);
   return parsed;
 }
+
+export function validateListOffset(value, max = 100_000) {
+  if (value === null || value === "") return 0;
+  const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 0 || parsed > max) throw new ValidationError(`offset must be an integer between 0 and ${max}.`);
+  return parsed;
+}

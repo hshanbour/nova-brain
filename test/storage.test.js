@@ -33,6 +33,7 @@ test("conversations persist ordered messages and bounded history", async () => {
   await storage.appendMessage({ conversationId: "conversation-a", ownerId: OWNER_ID, role: "user", content: "three" });
   const recent = await storage.listMessages("conversation-a", OWNER_ID, { limit: 2 });
   assert.deepEqual(recent.map(({ content }) => content), ["two", "three"]); assert.ok(recent[0].sequence < recent[1].sequence);
+  assert.deepEqual((await storage.listMessages("conversation-a", OWNER_ID, { limit: 2, offset: 2 })).map(({ content }) => content), ["one"]);
   assert.equal((await storage.listConversations(OWNER_ID))[0].id, "conversation-a");
 });
 

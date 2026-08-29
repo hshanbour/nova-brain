@@ -24,6 +24,13 @@ test("selecting a conversation loads chronological messages and resumes its exac
   assert.equal(client.conversationId, "conversation-a"); assert.equal(storage.getItem("nova.activeConversationId"), "conversation-a");
 });
 
+test("selecting a long conversation collects bounded pages into complete chronological history", async () => {
+  const offsets = []; const storage = localState(); const client = createNovaClient({ fetchImpl: async () => { throw new Error("not used"); } });
+  const api = { async messages(_id, { offset }) { offsets.push(offset); return offset === 0 ? { messages: [{ sequence: 101, content: "new" }], nextOffset: 100 } : { messages: [{ sequence: 1, content: "old" }] }; } };
+  const history = createConversationHistory({ client, storage, api });
+  assert.deepEqual((await history.select("long-chat")).map(({ content }) => content), ["old", "new"]); assert.deepEqual(offsets, [0, 100]);
+});
+
 test("sending after reopening appends to the same conversation id", async () => {
   const requests = []; const storage = localState();
   const client = createNovaClient({ fetchImpl: async (_url, options) => { requests.push(JSON.parse(options.body)); return { ok: true, status: 200, async json() { return { message: "continued", conversationId: "conversation-a" }; } }; } });

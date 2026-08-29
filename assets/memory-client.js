@@ -19,5 +19,5 @@ export const ownerMemoryClient = Object.freeze({
   update: (id, patch) => request(`/api/memories/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
   forget: (id) => request(`/api/memories/${encodeURIComponent(id)}`, { method: "DELETE" }),
   conversations: () => request("/api/conversations"),
-  messages: (id) => request(`/api/conversations/${encodeURIComponent(id)}/messages`)
+  messages: (id, { offset = 0, limit = 100 } = {}) => request(`/api/conversations/${encodeURIComponent(id)}/messages?limit=${limit}&offset=${offset}`)
 });

@@ -50,8 +50,8 @@ export function createPostgresStorage({ connectionString }) {
       if (!rows[0]) throw new Error("Conversation not found.");
       await run("UPDATE nova_conversations SET updated_at=now() WHERE id=$1 AND owner_id=$2", [conversationId, ownerId]); return messageRow(rows[0]);
     },
-    async listMessages(conversationId, ownerId, { limit = 30 } = {}) {
-      const rows = await run(`SELECT * FROM (SELECT * FROM nova_messages WHERE conversation_id=$1 AND owner_id=$2 ORDER BY sequence DESC LIMIT $3) recent ORDER BY sequence ASC`, [conversationId, ownerId, limit]); return rows.map(messageRow);
+    async listMessages(conversationId, ownerId, { limit = 30, offset = 0 } = {}) {
+      const rows = await run(`SELECT * FROM (SELECT * FROM nova_messages WHERE conversation_id=$1 AND owner_id=$2 ORDER BY sequence DESC LIMIT $3 OFFSET $4) recent ORDER BY sequence ASC`, [conversationId, ownerId, limit, offset]); return rows.map(messageRow);
     },
     async createMemory(input) {
       const rows = await run(`INSERT INTO nova_memories (id,owner_id,category,content,provenance,privacy,sensitivity,scope,project_id,confidence,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`, [input.id || randomUUID(), input.ownerId, input.category, input.content, input.provenance, input.privacy, input.sensitivity, input.scope, input.projectId || null, input.confidence ?? null, input.status || "active"]); return memoryRow(rows[0]);

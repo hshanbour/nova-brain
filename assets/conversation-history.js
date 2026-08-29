@@ -22,10 +22,15 @@ export function createConversationHistory({ client, api, storage = localStorage,
   }
   async function select(id) {
     if (typeof id !== "string" || !id) throw new Error("Conversation is unavailable.");
-    const result = await api.messages(id);
-    if (!Array.isArray(result?.messages)) throw new Error("Nova returned unreadable conversation history.");
+    const pages = []; let offset = 0;
+    do {
+      const result = await api.messages(id, { offset, limit: 100 });
+      if (!Array.isArray(result?.messages)) throw new Error("Nova returned unreadable conversation history.");
+      pages.unshift(result.messages); offset = Number.isInteger(result.nextOffset) && result.nextOffset > offset && result.nextOffset <= 100_000 ? result.nextOffset : 0;
+    } while (offset);
+    const savedMessages = pages.flat();
     client.resume(id); storage.setItem(key, id);
-    return [...result.messages].sort((left, right) => Number(left.sequence) - Number(right.sequence));
+    return savedMessages.sort((left, right) => Number(left.sequence) - Number(right.sequence));
   }
   function startNew() { client.reset(); storage.removeItem(key); }
   async function restore() {
