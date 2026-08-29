@@ -8,7 +8,7 @@ import { createActionPolicy } from "./policy/action-policy.js";
 import { createStorage } from "./storage/storage-factory.js";
 import { INITIAL_MEMORIES, INITIAL_OWNER_PROFILE, INITIAL_PROJECTS, OWNER_ID } from "./identity/initial-context.js";
 
-export function createApp({ environment = process.env, storage: storageOverride } = {}) {
+export function createApp({ environment = process.env, storage: storageOverride, logger = console } = {}) {
   const config = readConfig(environment);
   const storage = storageOverride || createStorage(config);
   const initialize = () => storage.initialize({ owner: INITIAL_OWNER_PROFILE, projects: INITIAL_PROJECTS, memories: INITIAL_MEMORIES });
@@ -28,5 +28,5 @@ export function createApp({ environment = process.env, storage: storageOverride 
     memoryLimit: config.memoryRetrievalLimit
   });
 
-  return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry });
+  return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, logger });
 }

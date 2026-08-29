@@ -32,3 +32,16 @@ test("tool registry rejects invalid, duplicate, and unknown tools", async () => 
   );
   await assert.rejects(() => registry.execute("unknown"), /Unknown tool/);
 });
+
+test("tool registry enforces required, type, and additional-property schemas server-side", async () => {
+  const registry = createToolRegistry();
+  registry.register({
+    name: "read",
+    inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false },
+    async execute(input) { return input; }
+  });
+  await assert.rejects(() => registry.execute("read", {}), /Missing required/);
+  await assert.rejects(() => registry.execute("read", { path: 7 }), /Invalid tool argument type/);
+  await assert.rejects(() => registry.execute("read", { path: "README.md", secret: true }), /Unknown tool argument/);
+  assert.deepEqual(await registry.execute("read", { path: "README.md" }), { path: "README.md" });
+});

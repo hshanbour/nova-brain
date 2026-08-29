@@ -149,6 +149,7 @@ export function createAgent({
       } catch (error) {
         await storage.updateRun(run.id, ownerId, { status: "failed", error: error instanceof AgentStepLimitError || error instanceof AgentToolCallLimitError ? error.message : "Execution failed safely.", completedAt: new Date().toISOString() });
         await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_failed", status: "failed", summary: error instanceof AgentStepLimitError || error instanceof AgentToolCallLimitError ? error.message : "Execution failed safely." });
+        error.runId ||= run.id;
         throw error;
       }
     },

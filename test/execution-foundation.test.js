@@ -5,6 +5,7 @@ import { INITIAL_OWNER_PROFILE, INITIAL_PROJECTS, OWNER_ID } from "../src/identi
 import { createActionPolicy, ApprovalRequiredError, RISK_LEVELS } from "../src/policy/action-policy.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { registerDeveloperTools, registerSystemTools } from "../src/tools/developer-tools.js";
+import { createOpenAIModelProvider, toolDefinition } from "../src/providers/openai-model-provider.js";
 
 async function foundation() { const storage=createInMemoryStorage();await storage.initialize({owner:INITIAL_OWNER_PROFILE,projects:INITIAL_PROJECTS});const policy=createActionPolicy({storage,ownerId:OWNER_ID,approvedBranch:"feat/nova-brain-mvp-foundation"});return {storage,registry:createToolRegistry({policy})}; }
 
@@ -17,5 +18,27 @@ test("approved action authorizes only its exact tool, arguments, and run",async(
 test("real registry exposes usable reads and fail-closed unconfigured writes",async()=>{const {storage,registry}=await foundation();registerDeveloperTools(registry,{root:process.cwd(),environment:{}});registerSystemTools(registry,{storage,ownerId:OWNER_ID});const tools=registry.list();assert.ok(tools.some((tool)=>tool.name==="repo_read"&&tool.available));assert.ok(tools.some((tool)=>tool.name==="repo_apply_patch"&&!tool.available&&tool.configurationStatus==="configuration_required"));assert.ok(tools.some((tool)=>tool.name==="test_run"&&tool.available));const result=await registry.execute("repo_read",{path:"package.json"});assert.match(result.content,/nova-brain/);await assert.rejects(()=>registry.execute("repo_read",{path:"../outside"}),/outside/);await assert.rejects(()=>registry.execute("repo_apply_patch",{}),/unavailable/);});
 
 test("serverless registry uses remote reads while local-only search, Git state, and tests stay unavailable",async()=>{const {registry}=await foundation();registerDeveloperTools(registry,{environment:{VERCEL:"1"}});const tools=registry.list();assert.equal(tools.find((tool)=>tool.name==="repo_read").available,true);for(const name of ["repo_search","git_status","repo_diff","test_run"])assert.equal(tools.find((tool)=>tool.name===name).available,false);});
+
+test("the real serverless executable set serializes safely and reaches a normal OpenAI response", async () => {
+  const { storage, registry } = await foundation();
+  registerDeveloperTools(registry, { environment: { VERCEL: "1" } });
+  registerSystemTools(registry, { storage, ownerId: OWNER_ID });
+  const executable = registry.list({ executableOnly: true });
+  assert.deepEqual(executable.map(({ name }) => name), ["repo_list", "repo_read", "project_list", "memory_forget"]);
+  assert.doesNotThrow(() => executable.map(toolDefinition));
+  let sent;
+  const provider = createOpenAIModelProvider({
+    apiKey: "test-secret",
+    model: "test-model",
+    async fetchImpl(_url, options) {
+      sent = JSON.parse(options.body);
+      return { ok: true, status: 200, async json() { return { output_text: "Hello from Nova." }; } };
+    }
+  });
+  assert.deepEqual(await provider.generate({ message: "Hello.", conversationHistory: [], context: {}, tools: executable }), { type: "final", message: "Hello from Nova." });
+  assert.equal(sent.tools.find(({ name }) => name === "repo_list").strict, false);
+  assert.equal(sent.tools.find(({ name }) => name === "project_list").strict, false);
+  assert.equal(sent.tools.some(({ name }) => name === "repo_search"), false);
+});
 
 test("configured repository writes remain bound away from main and secrets are redacted in approvals",async()=>{const {storage,registry}=await foundation();registerDeveloperTools(registry,{root:process.cwd(),environment:{NOVA_BRAIN_GITHUB_TOKEN:"server-secret",NOVA_BRAIN_GITHUB_REPOSITORY:"hshanbour/nova-brain",NOVA_BRAIN_DEVELOPMENT_BRANCH:"feat/nova-brain-mvp-foundation"}});const write=registry.list().find((tool)=>tool.name==="repo_apply_patch");assert.equal(write.available,true);await assert.rejects(()=>registry.execute("repo_apply_patch",{path:"README.md",content:"x",expectedSha:"abc",message:"test",branch:"main"}),/not approved/);registry.register({name:"secret_action",riskLevel:RISK_LEVELS.SENSITIVE,available:true,async execute(){return true;}});try{await registry.execute("secret_action",{apiKey:"must-not-appear"});}catch{}const approval=(await storage.listApprovals(OWNER_ID))[0];assert.equal(approval.arguments.apiKey,"[REDACTED]");assert.equal(JSON.stringify(approval).includes("must-not-appear"),false);});

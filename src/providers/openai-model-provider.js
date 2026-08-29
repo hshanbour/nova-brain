@@ -1,17 +1,60 @@
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 
-function toolDefinition(tool) {
+function assertStrictSchema(schema, path = "parameters") {
+  if (!schema || schema.type !== "object" || !schema.properties || schema.additionalProperties !== false) {
+    throw new Error(`Strict OpenAI tool schema must be a closed object at ${path}.`);
+  }
+
+  const propertyNames = Object.keys(schema.properties);
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  if (propertyNames.some((name) => !required.includes(name))) {
+    throw new Error(`Strict OpenAI tool schema must require every property at ${path}.`);
+  }
+
+  for (const [name, definition] of Object.entries(schema.properties)) {
+    if (definition?.type === "object") assertStrictSchema(definition, `${path}.${name}`);
+    if (definition?.type === "array" && definition.items?.type === "object") {
+      assertStrictSchema(definition.items, `${path}.${name}[]`);
+    }
+  }
+}
+
+export function toolDefinition(tool) {
+  const strict = tool.strict === true;
+  const parameters = tool.inputSchema || {
+    type: "object",
+    properties: {},
+    additionalProperties: false
+  };
+
+  if (strict) assertStrictSchema(parameters);
+
   return {
     type: "function",
     name: tool.name,
     description: tool.description || "",
-    parameters: tool.inputSchema || {
-      type: "object",
-      properties: {},
-      additionalProperties: true
-    },
-    strict: Boolean(tool.inputSchema)
+    parameters,
+    strict
   };
+}
+
+function safeUpstreamDetail(value) {
+  const text = typeof value === "string" ? value : "";
+  return text
+    .replace(/Bearer\s+[A-Za-z0-9._~-]+/gi, "Bearer [redacted]")
+    .replace(/sk-[A-Za-z0-9_-]+/g, "[redacted]")
+    .slice(0, 500);
+}
+
+export class OpenAIProviderError extends Error {
+  constructor(status, detail = "") {
+    super(`OpenAI request failed with status ${status}.`);
+    this.name = "OpenAIProviderError";
+    this.code = "OPENAI_UPSTREAM_ERROR";
+    this.service = "openai";
+    this.upstreamStatus = status;
+    this.safeDetail = safeUpstreamDetail(detail);
+  }
 }
 
 function initialInput({ message, conversationHistory, context }) {
@@ -96,7 +139,9 @@ export function createOpenAIModelProvider({ apiKey, model, fetchImpl = fetch }) 
       });
 
       if (!response.ok) {
-        throw new Error(`OpenAI request failed with status ${response.status}.`);
+        let detail = "";
+        try { detail = await response.text(); } catch {}
+        throw new OpenAIProviderError(response.status, detail);
       }
 
       const payload = await response.json();

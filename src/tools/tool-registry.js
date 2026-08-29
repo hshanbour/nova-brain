@@ -1,6 +1,31 @@
 export function createToolRegistry({ policy } = {}) {
   const tools = new Map();
 
+  function validateSchemaInput(schema, input, name) {
+    if (!schema) return;
+    const properties = schema.properties || {};
+    for (const field of schema.required || []) {
+      if (!(field in input)) throw new Error(`Missing required tool argument: ${name}.${field}`);
+    }
+    if (schema.additionalProperties === false) {
+      for (const field of Object.keys(input)) {
+        if (!(field in properties)) throw new Error(`Unknown tool argument: ${name}.${field}`);
+      }
+    }
+    for (const [field, definition] of Object.entries(properties)) {
+      if (!(field in input)) continue;
+      if (definition.type === "string" && typeof input[field] !== "string") {
+        throw new Error(`Invalid tool argument type: ${name}.${field}`);
+      }
+      if (definition.type === "number" && typeof input[field] !== "number") {
+        throw new Error(`Invalid tool argument type: ${name}.${field}`);
+      }
+      if (definition.type === "boolean" && typeof input[field] !== "boolean") {
+        throw new Error(`Invalid tool argument type: ${name}.${field}`);
+      }
+    }
+  }
+
   return Object.freeze({
     register(tool) {
       if (!tool?.name || typeof tool.execute !== "function") {
@@ -35,6 +60,7 @@ export function createToolRegistry({ policy } = {}) {
 
       if (tool.available === false) throw new Error(`Tool is unavailable: ${name}`);
 
+      validateSchemaInput(tool.inputSchema, input, name);
       if (tool.validate) await tool.validate(input);
       if (policy) await policy.authorize(tool, input, context);
 

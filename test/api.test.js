@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import { createApp } from "../src/app.js";
+import { createApi } from "../src/http/api.js";
+import { OpenAIProviderError } from "../src/providers/openai-model-provider.js";
 
 function request({ method, url, body, headers = {} }) {
   const stream = Readable.from(body ? [body] : []);
@@ -246,3 +248,22 @@ test("storage failures are fail-closed and health reports degradation", async ()
 });
 
 test("execution foundation APIs expose real projects, tools, runs, activity, and approvals without caching",async()=>{const app=createApp({environment:{}});const sent=response();await app.handle(request({method:"POST",url:"/api/agent",headers:{"content-type":"application/json"},body:JSON.stringify({message:"Inspect Nova",context:{projectId:"nova-brain"}})}),sent);for(const path of ["/api/projects","/api/tools","/api/runs","/api/activity","/api/approvals"]){const res=response();await app.handle(request({method:"GET",url:path}),res);assert.equal(res.statusCode,200);assert.equal(res.headers.get("cache-control"),"no-store");}const tools=response();await app.handle(request({method:"GET",url:"/api/tools"}),tools);assert.ok(JSON.parse(tools.body).tools.some((tool)=>tool.name==="repo_read"));const projects=response();await app.handle(request({method:"GET",url:"/api/projects"}),projects);assert.deepEqual(JSON.parse(projects.body).projects.map(({id})=>id),["nova-brain","sharp-cuts","uk-missed-call-recovery"]);});
+
+test("API logs bounded structured OpenAI diagnostics while returning a generic error", async () => {
+  const entries=[];
+  const upstream=new OpenAIProviderError(400,'invalid schema sk-secret-value'); upstream.runId="run-safe-id";
+  const app=createApi({
+    agent:{tools:{list(){return[];}},async run(){throw upstream;}},
+    config:{allowedOrigins:[],maxBodyBytes:64*1024},
+    storage:{provider:"memory",durable:false}, initialize:async()=>{}, ownerId:"owner",
+    logger:{error(...args){entries.push(args);}}
+  });
+  const res=response();
+  await app.handle(request({method:"POST",url:"/api/agent",headers:{"content-type":"application/json"},body:JSON.stringify({message:"Hello."})}),res);
+  assert.equal(res.statusCode,500);
+  assert.deepEqual(JSON.parse(res.body),{error:"Internal server error"});
+  assert.match(res.headers.get("x-request-id"),/^[0-9a-f-]{36}$/);
+  assert.equal(entries[0][1].upstreamStatus,400);
+  assert.equal(entries[0][1].runId,"run-safe-id");
+  assert.equal(JSON.stringify(entries).includes("sk-secret-value"),false);
+});

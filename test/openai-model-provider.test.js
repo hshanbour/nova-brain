@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createOpenAIModelProvider } from "../src/providers/openai-model-provider.js";
+import { createOpenAIModelProvider, OpenAIProviderError, toolDefinition } from "../src/providers/openai-model-provider.js";
 
 function jsonResponse(payload) {
   return { ok: true, status: 200, async json() { return payload; } };
@@ -65,7 +65,7 @@ test("OpenAI provider translates Responses API tool calls and results", async ()
   const secondBody = JSON.parse(requests[1].options.body);
   assert.equal(requests[0].options.headers.Authorization, "Bearer test-secret");
   assert.equal(firstBody.tools[0].name, "lookup");
-  assert.equal(firstBody.tools[0].strict, true);
+  assert.equal(firstBody.tools[0].strict, false);
   assert.equal(secondBody.previous_response_id, "resp_1");
   assert.deepEqual(secondBody.input, [
     {
@@ -81,7 +81,7 @@ test("OpenAI provider failures do not expose response bodies or API keys", async
     apiKey: "secret-key",
     model: "test-model",
     async fetchImpl() {
-      return { ok: false, status: 401 };
+      return { ok: false, status: 401, async text() { return 'invalid sk-secret-key Authorization: Bearer abc.def'; } };
     }
   });
 
@@ -93,6 +93,33 @@ test("OpenAI provider failures do not expose response bodies or API keys", async
         context: {},
         tools: []
       }),
-    (error) => error.message === "OpenAI request failed with status 401."
+    (error) => error instanceof OpenAIProviderError &&
+      error.message === "OpenAI request failed with status 401." &&
+      error.upstreamStatus === 401 &&
+      !error.safeDetail.includes("sk-secret-key") &&
+      !error.safeDetail.includes("abc.def")
   );
+});
+
+test("tool definitions default to non-strict and support no, optional, and required arguments", () => {
+  const definitions = [
+    toolDefinition({ name: "no_args" }),
+    toolDefinition({ name: "optional", inputSchema: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false } }),
+    toolDefinition({ name: "required", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } })
+  ];
+  assert.deepEqual(definitions.map(({ strict }) => strict), [false, false, false]);
+  assert.deepEqual(definitions[0].parameters, { type: "object", properties: {}, additionalProperties: false });
+});
+
+test("explicit strict schemas are validated before an OpenAI request", () => {
+  assert.throws(() => toolDefinition({
+    name: "invalid_optional_strict",
+    strict: true,
+    inputSchema: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false }
+  }), /require every property/);
+  assert.equal(toolDefinition({
+    name: "valid_strict",
+    strict: true,
+    inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false }
+  }).strict, true);
 });

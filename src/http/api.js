@@ -1,4 +1,5 @@
 import { readJsonBody } from "./body.js";
+import { randomUUID } from "node:crypto";
 import { AgentStepLimitError, AgentToolCallLimitError } from "../agent/agent.js";
 import {
   ValidationError,
@@ -32,9 +33,11 @@ function setCorsHeaders(request, response, allowedOrigins) {
   }
 }
 
-export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools }) {
+export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, logger = console }) {
   return Object.freeze({
     async handle(request, response) {
+      const requestId = randomUUID();
+      response.setHeader("X-Request-Id", requestId);
       setCorsHeaders(request, response, config.allowedOrigins);
 
       if (request.method === "OPTIONS") {
@@ -172,7 +175,15 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           return;
         }
 
-        console.error("Nova Brain request failed", { name: error?.name || "Error" });
+        logger.error("Nova Brain request failed", {
+          name: error?.name || "Error",
+          code: error?.code || "INTERNAL_ERROR",
+          service: error?.service,
+          upstreamStatus: error?.upstreamStatus,
+          requestId,
+          runId: error?.runId,
+          detail: error?.safeDetail
+        });
         sendJson(response, 500, { error: "Internal server error" });
       }
     }
