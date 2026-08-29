@@ -201,6 +201,28 @@ test("owner profile and memory APIs expose controlled private CRUD", async () =>
   assert.deepEqual(JSON.parse(removed.body), { success: true });
 });
 
+test("conversation APIs return recents newest-first and messages chronologically without caching", async () => {
+  const app = createApp({ environment: {} });
+  for (const message of ["Conversation A", "Conversation B"]) {
+    const sent = response();
+    await app.handle(request({ method: "POST", url: "/api/agent", headers: { "content-type": "application/json" }, body: JSON.stringify({ message }) }), sent);
+  }
+  const recent = response(); await app.handle(request({ method: "GET", url: "/api/conversations" }), recent);
+  const conversations = JSON.parse(recent.body).conversations;
+  assert.equal(recent.headers.get("cache-control"), "no-store"); assert.equal(conversations.length, 2);
+  assert.deepEqual(conversations.map(({ title }) => title).sort(), ["Conversation A", "Conversation B"]);
+  const history = response(); await app.handle(request({ method: "GET", url: `/api/conversations/${conversations[0].id}/messages` }), history);
+  assert.deepEqual(JSON.parse(history.body).messages.map(({ role }) => role), ["user", "assistant"]);
+});
+
+test("unknown and malformed conversation access returns no owner data", async () => {
+  const app = createApp({ environment: {} });
+  for (const path of ["/api/conversations/not-owned/messages", "/api/conversations/%2F/messages"]) {
+    const res = response(); await app.handle(request({ method: "GET", url: path }), res);
+    assert.equal(res.statusCode, 200); assert.deepEqual(JSON.parse(res.body), { messages: [] });
+  }
+});
+
 test("memory API rejects unsupported categories and invalid project scope", async () => {
   const app = createApp({ environment: {} });
   for (const payload of [

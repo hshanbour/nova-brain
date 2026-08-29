@@ -33,7 +33,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       conversations.set(id, conversation); messages.set(id, []); return copy(conversation);
     },
     async listConversations(ownerId, { limit = 20 } = {}) {
-      return [...conversations.values()].filter((item) => item.ownerId === ownerId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit).map(copy);
+      return [...conversations.values()].filter((item) => item.ownerId === ownerId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id)).slice(0, limit).map(copy);
     },
     async appendMessage({ conversationId, ownerId, role, content }) {
       const conversation = conversations.get(conversationId);

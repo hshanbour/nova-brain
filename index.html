@@ -28,6 +28,10 @@
         <button class="nav-item" type="button" disabled><span class="nav-icon">⌘</span><span>Tools</span><small>Soon</small></button>
         <button class="nav-item" type="button" disabled><span class="nav-icon">◈</span><span>Approvals</span><small>Soon</small></button>
       </nav>
+      <section class="recents" aria-labelledby="recentsHeading">
+        <div class="recents-heading"><h2 id="recentsHeading">Recent conversations</h2><button type="button" id="refreshRecentsButton" aria-label="Refresh recent conversations">↻</button></div>
+        <div class="recents-list" id="recentsList" aria-live="polite"><p class="recents-state">Loading conversations…</p></div>
+      </section>
       <div class="sidebar-footer">
         <div class="system-state"><span class="status-dot"></span><span><strong>Nova online</strong><small id="providerStatus">Checking provider…</small></span></div>
         <p>Private preview · Owner access only</p>
@@ -37,7 +41,7 @@
     <main class="workspace" id="chat">
       <header class="topbar">
         <div><p class="eyebrow">Command center</p><h1>Chat with Nova</h1></div>
-        <button class="new-chat-button" id="newChatButton" type="button" aria-label="Start a new conversation"><span>＋</span><span>New conversation</span></button>
+        <div class="chat-actions"><button class="new-chat-button history-button" id="historyButton" type="button" aria-label="Open recent conversations"><span>☰</span><span>Recents</span></button><button class="new-chat-button" id="newChatButton" type="button" aria-label="Start a new conversation"><span>＋</span><span>New conversation</span></button></div>
       </header>
       <section class="conversation" aria-label="Conversation with Nova Brain">
         <div class="messages" id="messages" role="log" aria-live="polite" aria-relevant="additions">
@@ -93,6 +97,10 @@
     </nav>
   </div>
 
+  <section class="recents-drawer" id="recentsDrawer" role="dialog" aria-modal="true" aria-labelledby="mobileRecentsHeading" hidden>
+    <div class="recents-drawer-panel"><div class="recents-drawer-heading"><div><p class="eyebrow">History</p><h2 id="mobileRecentsHeading">Recent conversations</h2></div><button type="button" id="closeRecentsButton" aria-label="Close recent conversations">×</button></div><div class="recents-list" id="mobileRecentsList" aria-live="polite"></div></div>
+  </section>
+
   <template id="messageTemplate">
     <article class="message"><div class="avatar"></div><div class="message-content"><div class="message-heading"><strong></strong><time></time></div><div class="message-body"></div><div class="execution-meta" hidden></div></div></article>
   </template>
@@ -107,6 +115,6 @@
       <div class="dialog-actions"><button type="button" class="secondary-button" data-close-memory>Cancel</button><button type="submit" class="send-button" id="saveMemoryButton">Save memory</button></div>
     </form>
   </section>
-  <script type="module" src="/assets/console.js?v=owner-memory-v3"></script>
+  <script type="module" src="/assets/console.js?v=conversation-history-v1"></script>
 </body>
 </html>

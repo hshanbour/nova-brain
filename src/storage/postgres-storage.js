@@ -44,7 +44,7 @@ export function createPostgresStorage({ connectionString }) {
       const rows = await run(`INSERT INTO nova_conversations (id,owner_id,title) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET id=EXCLUDED.id WHERE nova_conversations.owner_id=EXCLUDED.owner_id RETURNING *`, [id, ownerId, title]);
       return conversationRow(rows[0]);
     },
-    async listConversations(ownerId, { limit = 20 } = {}) { return (await run("SELECT * FROM nova_conversations WHERE owner_id=$1 ORDER BY updated_at DESC LIMIT $2", [ownerId, limit])).map(conversationRow); },
+    async listConversations(ownerId, { limit = 20 } = {}) { return (await run("SELECT * FROM nova_conversations WHERE owner_id=$1 ORDER BY updated_at DESC, id ASC LIMIT $2", [ownerId, limit])).map(conversationRow); },
     async appendMessage({ conversationId, ownerId, role, content }) {
       const rows = await run(`INSERT INTO nova_messages (id,conversation_id,owner_id,role,content) SELECT $1,$2,$3,$4,$5 WHERE EXISTS (SELECT 1 FROM nova_conversations WHERE id=$2 AND owner_id=$3) RETURNING *`, [randomUUID(), conversationId, ownerId, role, content]);
       if (!rows[0]) throw new Error("Conversation not found.");

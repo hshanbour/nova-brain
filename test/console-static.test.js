@@ -24,10 +24,23 @@ test("console exposes the controlled Mohammad owner profile and Memory workspace
   assert.match(script, /data-close-memory/);
 });
 
+test("console exposes desktop and accessible mobile recent-conversation controls without replacing Memory navigation", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(html, /id="recentsList"/); assert.match(html, /id="mobileRecentsList"/);
+  assert.match(html, /id="recentsDrawer"[^>]+role="dialog"[^>]+aria-modal="true"[^>]+hidden/);
+  assert.match(html, /href="#memory"[^>]+data-section="memory"/);
+});
+
 test("local static handler serves console assets with defensive headers", async () => {
   const serve = createStaticFileHandler({ loadFile: async () => Buffer.from("asset") }); const res = response();
   assert.equal(await serve({ method: "GET", url: "/assets/console.js" }, res), true);
   assert.equal(res.statusCode, 200); assert.equal(res.headers.get("content-type"), "text/javascript; charset=utf-8"); assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+});
+
+test("local static handler serves the conversation history browser module", async () => {
+  const serve = createStaticFileHandler({ loadFile: async (url) => Buffer.from(url.pathname) }); const res = response();
+  assert.equal(await serve({ method: "GET", url: "/assets/conversation-history.js" }, res), true);
+  assert.equal(res.statusCode, 200); assert.equal(res.headers.get("content-type"), "text/javascript; charset=utf-8");
 });
 
 test("local static handler ignores unknown and non-GET routes", async () => {

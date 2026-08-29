@@ -1,6 +1,7 @@
 import { createNovaClient } from "./api-client.js";
 import { ownerMemoryClient } from "./memory-client.js";
 import { selectWorkspace } from "./workspace-navigation.js";
+import { conversationTitle, createConversationHistory } from "./conversation-history.js";
 
 const client = createNovaClient();
 const composer = document.querySelector("#composer");
@@ -15,10 +16,59 @@ let pending = false;
 let currentProfile;
 let memoryRecords = [];
 const conversationKey = "nova.activeConversationId";
+const conversationHistory = createConversationHistory({ client, api: ownerMemoryClient, key: conversationKey });
+const recentsDrawer = document.querySelector("#recentsDrawer");
 
 function resizeInput() { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 176)}px`; }
 function scrollToLatest() { messages.scrollTo({ top: messages.scrollHeight, behavior: "smooth" }); }
 function timeLabel() { return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date()); }
+function updatedLabel(value) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? "Saved conversation" : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date); }
+
+function clearConversation() {
+  messages.querySelectorAll(".message").forEach((message) => message.remove()); welcome.hidden = false;
+  requestError.hidden = true; input.value = ""; resizeInput();
+}
+
+function recentItems(conversations) {
+  const activeId = client.conversationId;
+  return conversations.map((conversation) => {
+    const button = document.createElement("button"); button.type = "button"; button.className = "recent-conversation"; button.dataset.conversationId = conversation.id;
+    if (conversation.id === activeId) { button.classList.add("active"); button.setAttribute("aria-current", "true"); }
+    const title = document.createElement("strong"); title.textContent = conversationTitle(conversation.title); title.title = conversation.title || "Untitled conversation";
+    const date = document.createElement("small"); date.textContent = updatedLabel(conversation.updatedAt);
+    button.append(title, date); return button;
+  });
+}
+
+function renderRecents(conversations) {
+  for (const list of [document.querySelector("#recentsList"), document.querySelector("#mobileRecentsList")]) {
+    if (!conversations.length) list.innerHTML = '<p class="recents-state">No previous conversations yet.</p>';
+    else list.replaceChildren(...recentItems(conversations));
+  }
+}
+
+function renderRecentsState(message, error = false) {
+  for (const list of [document.querySelector("#recentsList"), document.querySelector("#mobileRecentsList")]) list.innerHTML = `<p class="recents-state${error ? " error" : ""}">${message}</p>`;
+}
+
+async function refreshRecents() {
+  try { renderRecents(await conversationHistory.refresh()); }
+  catch { renderRecentsState("Conversation history is unavailable. Chat still works.", true); }
+}
+
+async function selectConversation(id) {
+  renderRecentsState("Loading conversation…"); requestError.hidden = true;
+  try {
+    const storedMessages = await conversationHistory.select(id);
+    clearConversation();
+    for (const stored of storedMessages) addMessage({ role: stored.role, text: stored.content });
+    if (!storedMessages.length) welcome.hidden = false;
+    recentsDrawer.hidden = true; await refreshRecents(); input.focus();
+  } catch (cause) {
+    requestError.textContent = cause.message || "Conversation history could not be loaded."; requestError.hidden = false;
+    await refreshRecents();
+  }
+}
 
 function addMessage({ role, text, metadata }) {
   welcome.hidden = true;
@@ -59,6 +109,7 @@ async function sendMessage(message) {
     document.querySelector("#thinkingMessage")?.remove();
     addMessage({ role: "assistant", text: result.message, metadata: result });
     providerStatus.textContent = `${result.provider || "Agent"} provider · Ready`;
+    await refreshRecents();
   } catch (error) {
     document.querySelector("#thinkingMessage")?.remove(); requestError.textContent = error.message; requestError.hidden = false;
   } finally { setPending(false); input.focus(); }
@@ -71,9 +122,14 @@ composer.addEventListener("submit", (event) => {
 input.addEventListener("input", resizeInput);
 input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); composer.requestSubmit(); } });
 document.querySelector("#newChatButton").addEventListener("click", () => {
-  client.reset(); localStorage.removeItem(conversationKey); messages.querySelectorAll(".message").forEach((message) => message.remove()); welcome.hidden = false;
-  requestError.hidden = true; input.value = ""; resizeInput(); input.focus();
+  conversationHistory.startNew(); clearConversation(); renderRecents(conversationHistory.conversations); input.focus();
 });
+document.querySelector("#refreshRecentsButton").addEventListener("click", refreshRecents);
+document.querySelector("#historyButton").addEventListener("click", () => { recentsDrawer.hidden = false; refreshRecents(); });
+document.querySelector("#closeRecentsButton").addEventListener("click", () => { recentsDrawer.hidden = true; });
+recentsDrawer.addEventListener("click", (event) => { if (event.target === recentsDrawer) recentsDrawer.hidden = true; });
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !recentsDrawer.hidden) recentsDrawer.hidden = true; });
+for (const list of document.querySelectorAll(".recents-list")) list.addEventListener("click", (event) => { const button = event.target.closest("[data-conversation-id]"); if (button) selectConversation(button.dataset.conversationId); });
 fetch("/api/health").then((response) => response.ok ? response.json() : Promise.reject()).then((health) => { providerStatus.textContent = `${health.provider} provider · Ready`; }).catch(() => { providerStatus.textContent = "Status unavailable"; });
 resizeInput();
 
@@ -85,13 +141,10 @@ function showSection(name) {
 document.querySelectorAll("[data-section]").forEach((link) => link.addEventListener("click", (event) => { event.preventDefault(); const name = link.dataset.section; history.replaceState(null, "", `#${name}`); showSection(name); }));
 
 async function restoreConversation() {
-  const id = localStorage.getItem(conversationKey); if (!id) return;
   try {
-    const { messages: storedMessages } = await ownerMemoryClient.messages(id);
-    if (!storedMessages.length) return;
-    client.resume(id);
-    for (const stored of storedMessages) addMessage({ role: stored.role, text: stored.content });
-  } catch { localStorage.removeItem(conversationKey); }
+    const restored = await conversationHistory.restore(); if (!restored) return;
+    for (const stored of restored.messages) addMessage({ role: stored.role, text: stored.content });
+  } catch { requestError.textContent = "The previous conversation could not be restored. You can start a new chat."; requestError.hidden = false; }
 }
 
 function memoryCard(memory) {
@@ -161,4 +214,5 @@ document.querySelector("#memoryList").addEventListener("click", async (event) =>
 document.querySelector("#memoryFilter").addEventListener("change", loadMemoryWorkspace);
 
 await restoreConversation();
+await refreshRecents();
 showSection(location.hash === "#memory" ? "memory" : "chat");
