@@ -69,6 +69,12 @@ No integrations are configured today. Future adapters should own credentials, ve
 
 `src/config/env.js` centralizes model/storage selection and bounded execution limits. Storage auto-detects standard server-side PostgreSQL variables and never serializes them into HTTP responses. Selecting `openai` requires `OPENAI_API_KEY` and `OPENAI_MODEL`; selecting `mock` requires no credentials. `.env.example` contains names and safe defaults only. Secrets belong in Vercel Project Settings or a local ignored env file.
 
+### Voice Benchmark isolation
+
+Nova Voice V2 Phase 0 lives under `src/benchmark/` and `/api/voice-benchmark/*`. It is an evaluation harness, not the production Voice V2 architecture. OpenAI, Deepgram, Azure, and ElevenLabs calls are made only by server-side adapters. Execution is denied unless `NOVA_VOICE_BENCHMARK_PAID_CALLS_APPROVED=true`, and all durable cost reservations for the owner count toward `NOVA_VOICE_BENCHMARK_BUDGET_USD`, which cannot exceed USD 2.00.
+
+Benchmark sessions and result metadata use dedicated PostgreSQL tables. They are never inserted into Nova long-term memory. Owner microphone bytes exist only in the browser and request lifecycle; neither storage implementation accepts raw-audio fields. The initial comparison uses short batch requests, so measured latency is request start to complete transcript or complete playable audio—not realtime first-token latency.
+
 ### Validation and security
 
 `src/http/validation.js` validates all JSON inputs and allowlists mutable profile/memory fields. `src/http/api.js` limits JSON bodies, disables caching of private responses, emits safe errors, uses defensive headers, and only enables CORS for configured origins. Storage failure is fail-closed for private endpoints. Vercel Authentication is the current Preview boundary; application-level authentication and owner authorization remain mandatory before public or Production exposure.

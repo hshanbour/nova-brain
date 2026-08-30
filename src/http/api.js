@@ -12,6 +12,7 @@ import {
   validateListOffset,
   validateApprovalDecision
 } from "./validation.js";
+import { BenchmarkBudgetError, BenchmarkLockedError, BenchmarkUnavailableError, BenchmarkValidationError } from "../benchmark/service.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -33,7 +34,7 @@ function setCorsHeaders(request, response, allowedOrigins) {
   }
 }
 
-export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, logger = console }) {
+export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, logger = console }) {
   return Object.freeze({
     async handle(request, response) {
       const requestId = randomUUID();
@@ -82,6 +83,27 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
 
         if (request.method === "GET" && pathname === "/api/owner/profile") {
           await ready(); sendJson(response, 200, { owner: await storage.getOwner(ownerId) }); return;
+        }
+
+        if (request.method === "GET" && pathname === "/api/voice-benchmark/readiness") {
+          await ready(); sendJson(response, 200, await voiceBenchmark.readiness()); return;
+        }
+        if (request.method === "POST" && pathname === "/api/voice-benchmark/sessions") {
+          await ready(); sendJson(response, 201, { session: await voiceBenchmark.createSession() }); return;
+        }
+        const benchmarkSessionMatch = pathname.match(/^\/api\/voice-benchmark\/sessions\/([^/]+)$/);
+        if (benchmarkSessionMatch && request.method === "GET") {
+          await ready(); const session = await voiceBenchmark.getSession(decodeURIComponent(benchmarkSessionMatch[1])); sendJson(response, session ? 200 : 404, session ? { session } : { error: "Benchmark session not found" }); return;
+        }
+        if (request.method === "POST" && pathname === "/api/voice-benchmark/stt") {
+          await ready(); const result = await voiceBenchmark.runStt(await readJsonBody(request, config.voiceBenchmark.maxBodyBytes)); sendJson(response, 200, { result }); return;
+        }
+        if (request.method === "POST" && pathname === "/api/voice-benchmark/tts") {
+          await ready(); const result = await voiceBenchmark.runTts(await readJsonBody(request, config.maxBodyBytes)); sendJson(response, 200, { result }); return;
+        }
+        const benchmarkRatingMatch = pathname.match(/^\/api\/voice-benchmark\/results\/([^/]+)\/ratings$/);
+        if (benchmarkRatingMatch && request.method === "PATCH") {
+          await ready(); const result = await voiceBenchmark.rate(decodeURIComponent(benchmarkRatingMatch[1]), await readJsonBody(request, config.maxBodyBytes)); sendJson(response, 200, { result }); return;
         }
 
         if (request.method === "PATCH" && pathname === "/api/owner/profile") {
@@ -166,6 +188,11 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         if (error instanceof StorageUnavailableError) {
           sendJson(response, 503, { error: "Nova's private storage is temporarily unavailable." }); return;
         }
+
+        if (error instanceof BenchmarkValidationError) { sendJson(response, 400, { error: error.message }); return; }
+        if (error instanceof BenchmarkLockedError) { sendJson(response, 403, { error: error.message, code: "BENCHMARK_PAID_CALLS_LOCKED" }); return; }
+        if (error instanceof BenchmarkUnavailableError) { sendJson(response, 503, { error: error.message, code: "BENCHMARK_PROVIDER_UNAVAILABLE" }); return; }
+        if (error instanceof BenchmarkBudgetError) { sendJson(response, 402, { error: error.message, code: "BENCHMARK_BUDGET_CAP" }); return; }
 
         if (
           error instanceof AgentStepLimitError ||

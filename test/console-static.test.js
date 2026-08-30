@@ -31,7 +31,9 @@ test("console exposes desktop and accessible mobile recent-conversation controls
   assert.match(html, /href="#memory"[^>]+data-section="memory"/);
 });
 
-test("Console activates all six workspaces and voice input without fake Soon states",async()=>{const html=await readFile(new URL("../index.html",import.meta.url),"utf8");for(const section of ["chat","projects","activity","memory","tools","approvals"]){assert.match(html,new RegExp(`data-section="${section}"`));assert.match(html,new RegExp(`id="${section}"`));}assert.match(html,/id="voiceButton"/);assert.doesNotMatch(html,/Projects<\/span><small>Soon|Activity<\/span><small>Soon|Tools<\/span><small>Soon|Approvals<\/span><small>Soon/);});
+test("Console activates all seven workspaces and voice input without fake Soon states",async()=>{const html=await readFile(new URL("../index.html",import.meta.url),"utf8");for(const section of ["chat","projects","activity","memory","tools","approvals","voice-benchmark"]){assert.match(html,new RegExp(`data-section="${section}"`));assert.match(html,new RegExp(`id="${section}"`));}assert.match(html,/id="voiceButton"/);assert.doesNotMatch(html,/Projects<\/span><small>Soon|Activity<\/span><small>Soon|Tools<\/span><small>Soon|Approvals<\/span><small>Soon/);});
+
+test("Voice Benchmark is isolated, privacy-labelled, blind-rated, and paid-call locked",async()=>{const [html,script]=await Promise.all([readFile(new URL("../index.html",import.meta.url),"utf8"),readFile(new URL("../assets/voice-benchmark.js",import.meta.url),"utf8")]);for(const id of ["benchmarkSttSample","benchmarkRecordButton","benchmarkRunStt","benchmarkTtsSample","benchmarkRunTts","benchmarkSpend"])assert.match(html,new RegExp(`id="${id}"`));assert.match(html,/Owner-only · Preview/);assert.match(html,/raw audio is not persisted/i);assert.match(script,/Paid provider calls locked/);assert.match(script,/Submit ratings and reveal/);assert.doesNotMatch(html+script,/OPENAI_API_KEY|DEEPGRAM_API_KEY|AZURE_SPEECH_KEY|ELEVENLABS_API_KEY|sk-[A-Za-z0-9]/);});
 
 test("shared message rendering gives only Nova messages reusable Speak controls and historical loads stay silent",async()=>{const [html,script]=await Promise.all([readFile(new URL("../index.html",import.meta.url),"utf8"),readFile(new URL("../assets/console.js",import.meta.url),"utf8")]);assert.match(html,/class="speak-response"[^>]+aria-label="Speak response"[^>]+hidden/);assert.match(script,/if \(isNova && voiceOutput\.supported\)/);assert.match(script,/autoSpeakResponse/);assert.match(script,/for \(const stored of storedMessages\) addMessage\(\{ role: stored\.role, text: stored\.content \}\)/);assert.match(script,/stopVoiceActivity\(\); conversationHistory\.startNew/);assert.match(script,/selectConversation\(id\) \{\s+stopVoiceActivity/);});
 
@@ -63,6 +65,11 @@ test("local static handler serves the conversational voice mode module", async (
   const serve = createStaticFileHandler({ loadFile: async (url) => Buffer.from(url.pathname) }); const res = response();
   assert.equal(await serve({ method: "GET", url: "/assets/voice-mode.js" }, res), true);
   assert.equal(res.statusCode, 200); assert.equal(res.headers.get("content-type"), "text/javascript; charset=utf-8");
+});
+
+test("local static handler serves the isolated voice benchmark module", async () => {
+  const serve = createStaticFileHandler({ loadFile: async (url) => Buffer.from(url.pathname) }); const res = response();
+  assert.equal(await serve({ method: "GET", url: "/assets/voice-benchmark.js" }, res), true); assert.equal(res.statusCode, 200); assert.equal(res.headers.get("content-type"), "text/javascript; charset=utf-8");
 });
 
 test("local static handler ignores unknown and non-GET routes", async () => {

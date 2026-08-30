@@ -7,6 +7,8 @@ import { registerDeveloperTools, registerSystemTools } from "./tools/developer-t
 import { createActionPolicy } from "./policy/action-policy.js";
 import { createStorage } from "./storage/storage-factory.js";
 import { INITIAL_MEMORIES, INITIAL_OWNER_PROFILE, INITIAL_PROJECTS, OWNER_ID } from "./identity/initial-context.js";
+import { createBenchmarkProviders } from "./benchmark/providers.js";
+import { createVoiceBenchmark } from "./benchmark/service.js";
 
 export function createApp({ environment = process.env, storage: storageOverride, logger = console } = {}) {
   const config = readConfig(environment);
@@ -27,6 +29,8 @@ export function createApp({ environment = process.env, storage: storageOverride,
     historyLimit: config.conversationHistoryLimit,
     memoryLimit: config.memoryRetrievalLimit
   });
+  const benchmarkProviders = createBenchmarkProviders({ config: config.voiceBenchmark });
+  const voiceBenchmark = createVoiceBenchmark({ config, storage, ownerId: OWNER_ID, providers: benchmarkProviders });
 
-  return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, logger });
+  return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, voiceBenchmark, logger });
 }

@@ -63,8 +63,29 @@ export function readConfig(environment = process.env) {
       vercelConfigured: Boolean(environment.NOVA_BRAIN_VERCEL_TOKEN && environment.NOVA_BRAIN_VERCEL_PROJECT_ID)
     }),
     allowedOrigins: parseOrigins(environment.CORS_ALLOWED_ORIGINS),
-    maxBodyBytes: 64 * 1024
+    maxBodyBytes: 64 * 1024,
+    voiceBenchmark: Object.freeze({
+      paidCallsApproved: environment.NOVA_VOICE_BENCHMARK_PAID_CALLS_APPROVED === "true",
+      budgetUsd: parseMoney(environment.NOVA_VOICE_BENCHMARK_BUDGET_USD, "NOVA_VOICE_BENCHMARK_BUDGET_USD", 2),
+      maxAudioBytes: 2 * 1024 * 1024,
+      maxBodyBytes: 3 * 1024 * 1024,
+      credentials: Object.freeze({
+        openai: environment.OPENAI_API_KEY || null,
+        deepgram: environment.DEEPGRAM_API_KEY || null,
+        elevenlabs: environment.ELEVENLABS_API_KEY || null,
+        elevenlabsVoiceId: environment.ELEVENLABS_VOICE_ID || null,
+        azureKey: environment.AZURE_SPEECH_KEY || null,
+        azureRegion: environment.AZURE_SPEECH_REGION || null
+      })
+    })
   });
+}
+
+function parseMoney(value, name, defaultValue) {
+  if (value === undefined || value === "") return defaultValue;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 2) throw new Error(`${name} must be greater than 0 and no more than 2.00.`);
+  return Math.round(parsed * 100) / 100;
 }
 
 function parseInteger(value, name, { defaultValue, min, max }) {

@@ -6,6 +6,7 @@ import { createVoiceInput } from "./voice-input.js";
 import { MICROPHONE_LANGUAGES } from "./voice-input.js";
 import { createVoiceOutput, hasLanguageVoice } from "./voice-output.js";
 import { createVoiceMode } from "./voice-mode.js";
+import { initialiseVoiceBenchmark } from "./voice-benchmark.js";
 
 const client = createNovaClient();
 const composer = document.querySelector("#composer");
@@ -16,6 +17,7 @@ const sendButton = document.querySelector("#sendButton");
 const requestError = document.querySelector("#requestError");
 const template = document.querySelector("#messageTemplate");
 const providerStatus = document.querySelector("#providerStatus");
+const voiceBenchmark = initialiseVoiceBenchmark({ document, navigator, MediaRecorder: window.MediaRecorder, URL });
 let pending = false;
 let currentProfile;
 let memoryRecords = [];
@@ -168,6 +170,7 @@ function showSection(name) {
   const selected = selectWorkspace({ workspaces: document.querySelectorAll("main.workspace"), links: document.querySelectorAll("[data-section]"), name });
   if (selected === "memory") loadMemoryWorkspace();
   if (["projects","activity","tools","approvals"].includes(selected)) loadDashboard(selected);
+  if (selected === "voice-benchmark") voiceBenchmark.refresh().catch(() => {});
 }
 
 document.querySelectorAll("[data-section]").forEach((link) => link.addEventListener("click", (event) => { event.preventDefault(); const name = link.dataset.section; history.replaceState(null, "", `#${name}`); showSection(name); }));
@@ -299,4 +302,4 @@ voiceButton.addEventListener("click",()=>{requestError.hidden=true;if(voiceMode.
 
 await restoreConversation();
 await refreshRecents();
-showSection(["#projects","#activity","#memory","#tools","#approvals"].includes(location.hash)?location.hash.slice(1):"chat");
+showSection(["#projects","#activity","#memory","#tools","#approvals","#voice-benchmark"].includes(location.hash)?location.hash.slice(1):"chat");

@@ -27,6 +27,7 @@
         <a class="nav-item" href="#memory" data-section="memory"><span class="nav-icon">◫</span><span>Memory</span></a>
         <a class="nav-item" href="#tools" data-section="tools"><span class="nav-icon">⌘</span><span>Tools</span></a>
         <a class="nav-item" href="#approvals" data-section="approvals"><span class="nav-icon">◈</span><span>Approvals</span></a>
+        <a class="nav-item" href="#voice-benchmark" data-section="voice-benchmark"><span class="nav-icon">◉</span><span>Voice Benchmark</span></a>
       </nav>
       <section class="recents" aria-labelledby="recentsHeading">
         <div class="recents-heading"><h2 id="recentsHeading">Recent conversations</h2><button type="button" id="refreshRecentsButton" aria-label="Refresh recent conversations">↻</button></div>
@@ -94,6 +95,18 @@
       </div>
     </main>
 
+    <main class="workspace benchmark-workspace" id="voice-benchmark" hidden>
+      <header class="topbar"><div><p class="eyebrow">Nova Voice V2 · Phase 0</p><h1>Voice Benchmark</h1></div><span class="benchmark-private">Owner-only · Preview</span></header>
+      <div class="benchmark-scroll">
+        <section class="benchmark-banner" aria-labelledby="benchmarkStatusHeading"><div><p class="eyebrow">Safety gate</p><h2 id="benchmarkStatusHeading">Checking benchmark readiness…</h2><p id="benchmarkStatusText">No provider call can run until explicit owner approval is enabled server-side.</p></div><div class="benchmark-budget"><strong id="benchmarkSpend">$0.00 / $2.00</strong><small>hard lifetime cap</small></div></section>
+        <div class="benchmark-grid">
+          <section class="benchmark-panel" aria-labelledby="sttBenchmarkHeading"><div class="section-heading"><div><p class="eyebrow">Speech to text</p><h2 id="sttBenchmarkHeading">Five fixed recordings</h2></div></div><label>Test script<select id="benchmarkSttSample"></select></label><blockquote id="benchmarkSttScript" dir="auto"></blockquote><div class="benchmark-recording"><button class="secondary-button" id="benchmarkRecordButton" type="button">Record sample</button><button class="secondary-button" id="benchmarkStopButton" type="button" disabled>Stop</button><audio id="benchmarkRecordingPlayback" controls hidden></audio><span id="benchmarkRecordingStatus" role="status">Audio stays in this browser unless you run an approved test.</span></div><div id="benchmarkSttProviders" class="provider-list"></div><button class="send-button benchmark-run" id="benchmarkRunStt" type="button" disabled>Run selected STT providers</button><div id="benchmarkSttResults" class="benchmark-results" aria-live="polite"></div></section>
+          <section class="benchmark-panel" aria-labelledby="ttsBenchmarkHeading"><div class="section-heading"><div><p class="eyebrow">Text to speech</p><h2 id="ttsBenchmarkHeading">Blind voice comparison</h2></div></div><label>Test script<select id="benchmarkTtsSample"></select></label><blockquote id="benchmarkTtsScript" dir="auto"></blockquote><div id="benchmarkTtsProviders" class="provider-list"></div><button class="send-button benchmark-run" id="benchmarkRunTts" type="button" disabled>Generate blind voice set</button><p class="privacy-note">Providers stay hidden behind Voice A/B/C until you submit ratings. Generated audio is kept only in this page session.</p><div id="benchmarkTtsResults" class="benchmark-results" aria-live="polite"></div></section>
+        </div>
+        <section class="benchmark-panel benchmark-summary"><div class="section-heading"><div><p class="eyebrow">Durable metadata</p><h2>Session results</h2></div><button class="secondary-button" id="benchmarkNewSession" type="button">New benchmark session</button></div><p id="benchmarkSummary">No benchmark session has been started. Transcripts, scores, timings, cost estimates, and ratings are stored separately from Nova memory; raw audio is not persisted.</p></section>
+      </div>
+    </main>
+
     <nav class="mobile-nav" aria-label="Mobile navigation">
       <a href="#chat" class="active" data-section="chat"><span>⌁</span><small>Chat</small></a>
       <a href="#projects" data-section="projects"><span>◇</span><small>Projects</small></a>
@@ -101,6 +114,7 @@
       <a href="#memory" data-section="memory"><span>◫</span><small>Memory</small></a>
       <a href="#tools" data-section="tools"><span>⌘</span><small>Tools</small></a>
       <a href="#approvals" data-section="approvals"><span>◈</span><small>Approvals</small></a>
+      <a href="#voice-benchmark" data-section="voice-benchmark"><span>◉</span><small>Voice Lab</small></a>
     </nav>
   </div>
 
