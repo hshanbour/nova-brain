@@ -39,6 +39,8 @@ test("Console includes compact persistent multilingual voice settings",async()=>
 
 test("Console exposes local Test Voice diagnostics and conversational Voice Mode",async()=>{const [html,script]=await Promise.all([readFile(new URL("../index.html",import.meta.url),"utf8"),readFile(new URL("../assets/console.js",import.meta.url),"utf8")]);for(const id of ["testVoiceButton","voiceDiagnostic","voiceModeButton","voiceModeStatus"])assert.match(html,new RegExp(`id="${id}"`));assert.match(script,/createVoiceMode/);assert.match(script,/sendMessage\(text,\{autoSpeakResponse:false,throwOnError:true\}\)/);assert.match(script,/voiceMode\.interrupt\(\)/);assert.match(script,/input\.value="";resizeInput\(\);return sendMessage/);});
 
+test("Voice Mode keeps its primary locale visible and uses the same durable chat path",async()=>{const [html,script]=await Promise.all([readFile(new URL("../index.html",import.meta.url),"utf8"),readFile(new URL("../assets/console.js",import.meta.url),"utf8")]);assert.match(html,/id="voiceModeLanguage"/);assert.match(html,/Primary recognition language/);assert.match(script,/setMicrophoneLanguage/);assert.match(script,/voiceMode\.recognitionError\(error\)/);assert.match(script,/client\.send\(message\)/);assert.match(script,/await refreshRecents\(\); return result/);assert.match(script,/Understanding…/);});
+
 test("local static handler serves console assets with defensive headers", async () => {
   const serve = createStaticFileHandler({ loadFile: async () => Buffer.from("asset") }); const res = response();
   assert.equal(await serve({ method: "GET", url: "/assets/console.js" }, res), true);

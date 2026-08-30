@@ -22,11 +22,16 @@ export function selectSpeechVoice(voices = [], locale = "en-GB", preferred = "")
   const normal = String(locale).toLowerCase();
   const prefix = normal.split("-")[0];
   const saved = voices.find((voice) => voice.voiceURI === preferred || voice.name === preferred);
-  if (saved && String(saved.lang).toLowerCase().split("-")[0] === prefix) return saved;
   const exact = voices.find((voice) => String(voice.lang).toLowerCase() === normal);
   if (exact) return exact;
+  if (saved && String(saved.lang).toLowerCase().split("-")[0] === prefix) return saved;
   return voices.find((voice) => String(voice.lang).toLowerCase().split("-")[0] === prefix) ||
     voices.find((voice) => voice.default) || voices[0];
+}
+
+export function hasLanguageVoice(voices = [], locale = "") {
+  const prefix = String(locale).toLowerCase().split("-")[0];
+  return Boolean(prefix && voices.some((voice) => String(voice.lang || "").toLowerCase().split("-")[0] === prefix));
 }
 
 export function sanitiseSpeechText(value = "") {
@@ -74,7 +79,8 @@ export function createVoiceOutput({
   synthesis, Utterance, storage,
   preferredVoiceKey = "nova.voice.preferred", autoSpeakKey = "nova.voice.autoSpeak",
   onState = () => {}, onVoices = () => {}, onDiagnostic = () => {},
-  schedule = (callback, delay) => setTimeout(callback, delay), startDelay = 80
+  schedule = (callback, delay) => setTimeout(callback, delay), startDelay = 80, chunkDelay = 35,
+  rate = 1, pitch = 1, volume = 1
 } = {}) {
   const supported = Boolean(synthesis && Utterance);
   let preferredVoice = storage?.getItem(preferredVoiceKey) || "";
@@ -121,11 +127,24 @@ export function createVoiceOutput({
       const chunk = chunks[index]; let started = false;
       const utterance = new Utterance(chunk); utterance.lang = voice?.lang || chosenLocale;
       if (voice) utterance.voice = voice;
-      utterance.onstart = () => { if (current === generation) { started = true; onDiagnostic(`Speaking with ${voice?.name || "browser default"} (${utterance.lang}).`); onState({ speaking: true, starting: false, id, voice: voice?.name || "browser default", locale: utterance.lang }); } };
+      utterance.rate = rate; utterance.pitch = pitch; utterance.volume = volume;
+      utterance.onstart = () => {
+        if (current !== generation) return;
+        started = true;
+        const compatible = hasLanguageVoice([voice].filter(Boolean), chosenLocale);
+        const compatibleInstalled = hasLanguageVoice(voices, chosenLocale);
+        const diagnostic = chosenLocale.toLowerCase().startsWith("ar") && !compatible
+          ? `${compatibleInstalled ? "Arabic browser voice unavailable." : "No Arabic browser voice is installed."} Using fallback voice ${voice?.name || "browser default"} (${utterance.lang}).`
+          : `Speaking with ${voice?.name || "browser default"} (${utterance.lang}).`;
+        onDiagnostic(diagnostic);
+        onState({ speaking: true, starting: false, id, voice: voice?.name || "browser default", locale: utterance.lang, requestedLocale: chosenLocale, fallback: !compatible });
+      };
       utterance.onend = () => {
         if (current !== generation) return;
         if (!started) { retryOrFail("ended-before-start"); return; }
-        index += 1; fallbackUsed = false; next();
+        index += 1; fallbackUsed = false;
+        if (index >= chunks.length) finish();
+        else schedule(() => { if (current === generation) next(); }, chunkDelay);
       };
       utterance.onerror = (event) => { if (current === generation) retryOrFail(errorName(event)); };
       synthesis.speak(utterance);

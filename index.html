@@ -41,7 +41,7 @@
     <main class="workspace" id="chat">
       <header class="topbar">
         <div><p class="eyebrow">Command center</p><h1>Chat with Nova</h1></div>
-        <div class="chat-actions"><span class="voice-mode-status" id="voiceModeStatus" role="status">Voice idle</span><button class="new-chat-button voice-mode-button" id="voiceModeButton" type="button" aria-label="Start Voice"><span>●</span><span>Start Voice</span></button><button class="new-chat-button voice-settings-button" id="voiceSettingsButton" type="button" aria-label="Open voice settings"><span>◉</span><span>Voice</span></button><button class="new-chat-button history-button" id="historyButton" type="button" aria-label="Open recent conversations"><span>☰</span><span>Recents</span></button><button class="new-chat-button" id="newChatButton" type="button" aria-label="Start a new conversation"><span>＋</span><span>New conversation</span></button></div>
+        <div class="chat-actions"><span class="voice-mode-status" id="voiceModeStatus" role="status">Voice idle</span><label class="voice-language-control"><span>Mic</span><select id="voiceModeLanguage" aria-label="Voice Mode microphone language"></select></label><button class="new-chat-button voice-mode-button" id="voiceModeButton" type="button" aria-label="Start Voice"><span>●</span><span>Start Voice</span></button><button class="new-chat-button voice-settings-button" id="voiceSettingsButton" type="button" aria-label="Open voice settings"><span>◉</span><span>Voice</span></button><button class="new-chat-button history-button" id="historyButton" type="button" aria-label="Open recent conversations"><span>☰</span><span>Recents</span></button><button class="new-chat-button" id="newChatButton" type="button" aria-label="Start a new conversation"><span>＋</span><span>New conversation</span></button></div>
       </header>
       <section class="conversation" aria-label="Conversation with Nova Brain">
         <div class="messages" id="messages" role="log" aria-live="polite" aria-relevant="additions">
@@ -114,7 +114,7 @@
   <section id="voiceSettingsDialog" class="memory-dialog voice-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="voiceSettingsTitle" hidden>
     <form method="dialog">
       <div class="dialog-heading"><div><p class="eyebrow">Browser-native audio</p><h2 id="voiceSettingsTitle">Voice settings</h2></div><button type="button" class="dialog-close" data-close-voice-settings aria-label="Close voice settings">×</button></div>
-      <fieldset><legend>Voice input</legend><label>Microphone language<select id="microphoneLanguage"></select></label><p id="voiceInputSupport" class="privacy-note"></p></fieldset>
+      <fieldset><legend>Voice input</legend><label>Primary recognition language<select id="microphoneLanguage"></select></label><p id="voiceInputSupport" class="privacy-note"></p></fieldset>
       <fieldset><legend>Voice output</legend><label>Preferred browser voice<select id="preferredVoice"></select></label><label class="toggle-label"><input id="autoSpeak" type="checkbox"> Automatically speak new Nova responses</label><div class="voice-test-row"><button type="button" class="secondary-button" id="testVoiceButton">Test Voice</button><span id="voiceDiagnostic" role="status">Ready to test browser speech.</span></div><p id="voiceOutputSupport" class="privacy-note"></p></fieldset>
       <p class="privacy-note">Voice preferences stay in this browser and are not saved to Nova memory.</p>
       <div class="dialog-actions"><button type="button" class="secondary-button" data-close-voice-settings>Done</button></div>
@@ -131,6 +131,6 @@
       <div class="dialog-actions"><button type="button" class="secondary-button" data-close-memory>Cancel</button><button type="submit" class="send-button" id="saveMemoryButton">Save memory</button></div>
     </form>
   </section>
-  <script type="module" src="/assets/console.js?v=conversational-voice-v1"></script>
+  <script type="module" src="/assets/console.js?v=voice-session-v2"></script>
 </body>
 </html>
