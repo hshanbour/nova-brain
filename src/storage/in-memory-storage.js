@@ -5,7 +5,7 @@ function copy(value) { return value === undefined ? undefined : structuredClone(
 function now(clock) { return clock().toISOString(); }
 
 export function createInMemoryStorage({ clock = () => new Date() } = {}) {
-  const owners = new Map(); const projects = new Map(); const conversations = new Map(); const messages = new Map(); const memories = new Map(); const runs = new Map(); const approvals = new Map(); const activity = []; const benchmarkSessions = new Map(); const benchmarkResults = new Map();
+  const owners = new Map(); const projects = new Map(); const conversations = new Map(); const messages = new Map(); const memories = new Map(); const runs = new Map(); const approvals = new Map(); const activity = []; const benchmarkSessions = new Map(); const benchmarkResults = new Map(); const benchmarkBudgets = new Map();
   let sequence = 0;
 
   return Object.freeze({
@@ -90,10 +90,17 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async createVoiceBenchmarkSession(input) { const session = { id: input.id || randomUUID(), ownerId: input.ownerId, budgetUsd: input.budgetUsd, createdAt: input.createdAt || now(clock) }; benchmarkSessions.set(session.id, session); return copy(session); },
     async getVoiceBenchmarkSession(id, ownerId) { const session = benchmarkSessions.get(id); return copy(session?.ownerId === ownerId ? session : null); },
     async createVoiceBenchmarkResult(input) { const allowed = sanitiseBenchmark(input); const result = { ...allowed, createdAt: now(clock), updatedAt: now(clock), latencyMs: null, transcript: null, metrics: null, ratings: null, revealed: false, error: null }; benchmarkResults.set(result.id, result); return copy(result); },
+    async reserveVoiceBenchmarkResult(input, budgetUsd) {
+      const spent = benchmarkBudgets.get(input.ownerId) ?? [...benchmarkResults.values()].filter((item) => item.ownerId === input.ownerId).reduce((sum, item) => sum + Number(item.estimatedCostUsd || 0), 0);
+      const next = spent + Number(input.estimatedCostUsd || 0); if (next > budgetUsd + Number.EPSILON) return null;
+      benchmarkBudgets.set(input.ownerId, next);
+      const allowed = sanitiseBenchmark(input); const result = { ...allowed, createdAt: now(clock), updatedAt: now(clock), latencyMs: null, transcript: null, metrics: null, ratings: null, revealed: false, error: null }; benchmarkResults.set(result.id, result); return copy(result);
+    },
     async updateVoiceBenchmarkResult(id, ownerId, patch) { const current = benchmarkResults.get(id); if (!current || current.ownerId !== ownerId) return null; const updated = { ...current, ...sanitiseBenchmark(patch), id, ownerId, updatedAt: now(clock) }; benchmarkResults.set(id, updated); return copy(updated); },
     async listVoiceBenchmarkResults(sessionId, ownerId) { return [...benchmarkResults.values()].filter((item) => item.sessionId === sessionId && item.ownerId === ownerId).sort((a,b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)).map(copy); },
-    async sumVoiceBenchmarkCost(ownerId) { return [...benchmarkResults.values()].filter((item) => item.ownerId === ownerId).reduce((sum, item) => sum + Number(item.estimatedCostUsd || 0), 0); }
+    async sumVoiceBenchmarkCost(ownerId) { return benchmarkBudgets.get(ownerId) ?? [...benchmarkResults.values()].filter((item) => item.ownerId === ownerId).reduce((sum, item) => sum + Number(item.estimatedCostUsd || 0), 0); }
   });
 }
 
 function sanitiseBenchmark(input) { const { audio, audioBase64, audioData, ...safe } = copy(input || {}); return safe; }
+

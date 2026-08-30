@@ -92,7 +92,14 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     model text, voice text, metadata jsonb NOT NULL DEFAULT '{}'::jsonb, revealed boolean NOT NULL DEFAULT false, error text,
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `CREATE TABLE IF NOT EXISTS nova_voice_benchmark_budgets (
+    owner_id text PRIMARY KEY REFERENCES nova_owners(id) ON DELETE CASCADE,
+    reserved_usd numeric NOT NULL DEFAULT 0 CHECK (reserved_usd >= 0),
+    cap_usd numeric NOT NULL CHECK (cap_usd > 0 AND cap_usd <= 2),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_owner_cost_idx ON nova_voice_benchmark_results (owner_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_session_idx ON nova_voice_benchmark_results (session_id, created_at)`,
   `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3) ON CONFLICT (version) DO NOTHING`
 ]);
+

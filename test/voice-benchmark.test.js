@@ -40,6 +40,16 @@ test("hard budget cap includes durable reservations across sessions", async () =
   assert.throws(() => readConfig({ NOVA_VOICE_BENCHMARK_BUDGET_USD: "2.01" }), /no more than 2/);
 });
 
+test("simultaneous benchmark requests cannot race past the hard budget cap", async () => {
+  let calls = 0; const config = benchmarkConfig({ NOVA_VOICE_BENCHMARK_BUDGET_USD: "0.01" });
+  const { benchmark, session } = await service({ config, providers: { async transcribe() { calls += 1; return { transcript: STT_SAMPLES[0].text, model: "test-stt" }; }, async synthesise() {} } });
+  const input = { sessionId: session.id, providerId: "openai", sampleId: "stt-a", audioBase64: "YXVkaW8=", mimeType: "audio/webm", durationSeconds: 30 };
+  const outcomes = await Promise.allSettled(Array.from({ length: 5 }, () => benchmark.runStt(input)));
+  assert.equal(outcomes.filter(({ status }) => status === "fulfilled").length, 4);
+  assert.equal(outcomes.filter(({ reason }) => reason instanceof BenchmarkBudgetError).length, 1);
+  assert.equal(calls, 4);
+});
+
 test("storage persists benchmark metadata but strips raw audio and enforces owner isolation", async () => {
   const { storage, session } = await service();
   const result = await storage.createVoiceBenchmarkResult({ id: "result-1", sessionId: session.id, ownerId: "owner-a", kind: "stt", providerId: "openai", sampleId: "stt-a", label: "OpenAI", status: "running", estimatedCostUsd: 0.001, audio: Buffer.from("private"), audioBase64: "private", audioData: "private" });
@@ -71,3 +81,4 @@ test("provider adapters use the intended endpoints and never include upstream se
   const providers = createBenchmarkProviders({ config: benchmarkConfig().voiceBenchmark, fetchImpl }); await providers.transcribe("openai", { audio: Buffer.from("audio"), mimeType: "audio/webm", locale: "ar-JO" }); assert.match(calls[0].url, /\/v1\/audio\/transcriptions$/); assert.match(calls[0].options.headers.Authorization, /^Bearer /);
   await assert.rejects(providers.synthesise("openai", { text: "hello", locale: "en-GB" }), (error) => error instanceof BenchmarkProviderError && error.upstreamStatus === 401 && !error.message.includes("secret"));
 });
+

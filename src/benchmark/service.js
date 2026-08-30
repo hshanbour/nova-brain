@@ -11,12 +11,10 @@ export function createVoiceBenchmark({ config, storage, ownerId, providers, cloc
   const benchmarkConfig = config.voiceBenchmark;
   const provider = (kind, id) => PROVIDERS[kind].find((item) => item.id === id);
   const sample = (kind, id) => (kind === "stt" ? STT_SAMPLES : TTS_SAMPLES).find((item) => item.id === id);
-  const assertExecution = async (kind, providerId, estimate) => {
+  const assertExecution = (kind, providerId) => {
     if (!benchmarkConfig.paidCallsApproved) throw new BenchmarkLockedError();
     const selected = provider(kind, providerId); if (!selected) throw new BenchmarkValidationError("Unknown benchmark provider.");
     if (!providerConfigured(benchmarkConfig, selected)) throw new BenchmarkUnavailableError(selected.name);
-    const spent = await storage.sumVoiceBenchmarkCost(ownerId);
-    if (spent + estimate > benchmarkConfig.budgetUsd + Number.EPSILON) throw new BenchmarkBudgetError();
     return selected;
   };
   return Object.freeze({
@@ -32,19 +30,21 @@ export function createVoiceBenchmark({ config, storage, ownerId, providers, cloc
       const audio = decodeAudio(input?.audioBase64); const durationSeconds = boundedNumber(input?.durationSeconds, 0.1, 30, "durationSeconds");
       if (audio.length > benchmarkConfig.maxAudioBytes) throw new BenchmarkValidationError("Audio sample is too large.");
       const selected = provider("stt", input?.providerId); const estimate = selected ? estimateCost({ kind: "stt", provider: selected, durationSeconds }) : 0;
-      await assertSession(input?.sessionId); await assertExecution("stt", input?.providerId, estimate);
+      await assertSession(input?.sessionId); assertExecution("stt", input?.providerId);
       const resultId = randomUUID(); const started = clock();
-      await storage.createVoiceBenchmarkResult({ id: resultId, sessionId: input.sessionId, ownerId, kind: "stt", providerId: input.providerId, sampleId: selectedSample.id, label: selected.name, status: "running", estimatedCostUsd: estimate, metadata: { durationSeconds, mimeType: safeMime(input?.mimeType), pricingBasis: "audio minute" } });
+      const reserved = await storage.reserveVoiceBenchmarkResult({ id: resultId, sessionId: input.sessionId, ownerId, kind: "stt", providerId: input.providerId, sampleId: selectedSample.id, label: selected.name, status: "running", estimatedCostUsd: estimate, metadata: { durationSeconds, mimeType: safeMime(input?.mimeType), pricingBasis: "audio minute" } }, benchmarkConfig.budgetUsd);
+      if (!reserved) throw new BenchmarkBudgetError();
       try { const output = await providers.transcribe(input.providerId, { audio, mimeType: safeMime(input.mimeType), locale: selectedSample.locale }); const metrics = scoreTranscript(selectedSample.text, output.transcript); return storage.updateVoiceBenchmarkResult(resultId, ownerId, { status: "completed", latencyMs: clock() - started, transcript: output.transcript, metrics, model: output.model }); }
       catch (error) { await storage.updateVoiceBenchmarkResult(resultId, ownerId, { status: "failed", latencyMs: clock() - started, error: "Provider request failed." }); throw error; }
     },
     async runTts(input) {
       const selectedSample = sample("tts", input?.sampleId); if (!selectedSample) throw new BenchmarkValidationError("Unknown TTS sample.");
       const selected = provider("tts", input?.providerId); const estimate = selected ? estimateCost({ kind: "tts", provider: selected, text: selectedSample.text }) : 0;
-      await assertSession(input?.sessionId); await assertExecution("tts", input?.providerId, estimate);
+      await assertSession(input?.sessionId); assertExecution("tts", input?.providerId);
       const assignments = blindLabels(PROVIDERS.tts.map((item) => item.id), `${input.sessionId}:${selectedSample.id}`); const label = assignments.find((item) => item.providerId === input.providerId)?.label;
       const resultId = randomUUID(); const started = clock();
-      await storage.createVoiceBenchmarkResult({ id: resultId, sessionId: input.sessionId, ownerId, kind: "tts", providerId: input.providerId, sampleId: selectedSample.id, label, status: "running", estimatedCostUsd: estimate, metadata: { locale: selectedSample.locale, characters: selectedSample.text.length, pricingBasis: "1,000 characters" } });
+      const reserved = await storage.reserveVoiceBenchmarkResult({ id: resultId, sessionId: input.sessionId, ownerId, kind: "tts", providerId: input.providerId, sampleId: selectedSample.id, label, status: "running", estimatedCostUsd: estimate, metadata: { locale: selectedSample.locale, characters: selectedSample.text.length, pricingBasis: "1,000 characters" } }, benchmarkConfig.budgetUsd);
+      if (!reserved) throw new BenchmarkBudgetError();
       try { const output = await providers.synthesise(input.providerId, selectedSample); const result = await storage.updateVoiceBenchmarkResult(resultId, ownerId, { status: "completed", latencyMs: clock() - started, model: output.model, voice: output.voice }); return { ...presentResult(result), audioBase64: output.audio.toString("base64"), mimeType: output.mimeType }; }
       catch (error) { await storage.updateVoiceBenchmarkResult(resultId, ownerId, { status: "failed", latencyMs: clock() - started, error: "Provider request failed." }); throw error; }
     },
@@ -58,3 +58,4 @@ function presentResult(result) { if (result.kind !== "tts" || result.revealed) r
 function decodeAudio(value) { if (typeof value !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) throw new BenchmarkValidationError("A base64 audio sample is required."); const audio = Buffer.from(value, "base64"); if (!audio.length) throw new BenchmarkValidationError("Audio sample is empty."); return audio; }
 function boundedNumber(value, min, max, name) { const number = Number(value); if (!Number.isFinite(number) || number < min || number > max) throw new BenchmarkValidationError(`${name} must be between ${min} and ${max}.`); return number; }
 function safeMime(value) { const mime = String(value || "").toLowerCase(); if (!/^audio\/(webm|wav|x-wav|ogg|mp4|mpeg)(;\s*codecs=[a-z0-9.-]+)?$/.test(mime)) throw new BenchmarkValidationError("Unsupported audio format."); return mime; }
+
