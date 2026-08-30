@@ -81,4 +81,3 @@ test("provider adapters use the intended endpoints and never include upstream se
   const providers = createBenchmarkProviders({ config: benchmarkConfig().voiceBenchmark, fetchImpl }); await providers.transcribe("openai", { audio: Buffer.from("audio"), mimeType: "audio/webm", locale: "ar-JO" }); assert.match(calls[0].url, /\/v1\/audio\/transcriptions$/); assert.match(calls[0].options.headers.Authorization, /^Bearer /);
   await assert.rejects(providers.synthesise("openai", { text: "hello", locale: "en-GB" }), (error) => error instanceof BenchmarkProviderError && error.upstreamStatus === 401 && !error.message.includes("secret"));
 });
-

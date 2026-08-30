@@ -102,4 +102,3 @@ export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_session_idx ON nova_voice_benchmark_results (session_id, created_at)`,
   `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3) ON CONFLICT (version) DO NOTHING`
 ]);
-

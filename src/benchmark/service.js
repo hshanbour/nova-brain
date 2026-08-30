@@ -58,4 +58,3 @@ function presentResult(result) { if (result.kind !== "tts" || result.revealed) r
 function decodeAudio(value) { if (typeof value !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) throw new BenchmarkValidationError("A base64 audio sample is required."); const audio = Buffer.from(value, "base64"); if (!audio.length) throw new BenchmarkValidationError("Audio sample is empty."); return audio; }
 function boundedNumber(value, min, max, name) { const number = Number(value); if (!Number.isFinite(number) || number < min || number > max) throw new BenchmarkValidationError(`${name} must be between ${min} and ${max}.`); return number; }
 function safeMime(value) { const mime = String(value || "").toLowerCase(); if (!/^audio\/(webm|wav|x-wav|ogg|mp4|mpeg)(;\s*codecs=[a-z0-9.-]+)?$/.test(mime)) throw new BenchmarkValidationError("Unsupported audio format."); return mime; }
-
