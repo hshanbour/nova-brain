@@ -5,6 +5,7 @@ import { createVoiceService, VoiceProviderError, VoiceTimeoutError, VoiceValidat
 import { sanitiseSpeechText } from "../src/voice/speech-text.js";
 import { createApp } from "../src/app.js";
 import { createApi } from "../src/http/api.js";
+import { createVoiceV2Client } from "../assets/voice-v2-client.js";
 
 const environment = { OPENAI_API_KEY: "openai-super-secret", ELEVENLABS_API_KEY: "eleven-super-secret", ELEVENLABS_VOICE_ID: "owner-voice-id" };
 function request({ method = "GET", url, body, headers = {} }) { const chunks = body === undefined ? [] : [Buffer.from(body)]; return { method, url, headers, async *[Symbol.asyncIterator]() { yield* chunks; } }; }
@@ -22,6 +23,38 @@ test("GPT-Transcribe request preserves mixed language by using hints without for
   const service = createVoiceService({ config: readConfig(environment), fetchImpl }); const result = await service.transcribe({ audioBase64: "YXVkaW8=", mimeType: "audio/webm;codecs=opus", durationSeconds: 1 });
   assert.equal(result.transcript, "مرحبا Nova API رقم 35"); assert.equal(call.url, "https://api.openai.com/v1/audio/transcriptions"); assert.match(call.options.headers.Authorization, /^Bearer /);
   assert.equal(call.options.body.get("model"), "gpt-transcribe"); assert.equal(call.options.body.has("language"), false); assert.match(call.options.body.get("prompt"), /Sharp Cuts.*API.*numbers/s);
+});
+
+test("multi-chunk WebM survives client base64 and server multipart decoding intact", async () => {
+  const source = new Blob([
+    new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]),
+    new Uint8Array([0x01, 0x02]),
+    new Uint8Array([0x03, 0x04]),
+    new Uint8Array([0x05, 0x06])
+  ], { type: "audio/webm;codecs=opus" });
+  let clientPayload;
+  const client = createVoiceV2Client({ fetchImpl: async (_url, options) => {
+    clientPayload = JSON.parse(options.body);
+    return new Response(JSON.stringify({ transcript: "complete container" }), { status: 200, headers: { "content-type": "application/json" } });
+  } });
+  await client.transcribe({ audio: source, mimeType: source.type, durationSeconds: 1.2 });
+
+  const original = new Uint8Array(await source.arrayBuffer());
+  assert.deepEqual(new Uint8Array(Buffer.from(clientPayload.audioBase64, "base64")), original);
+  assert.equal(clientPayload.mimeType, "audio/webm;codecs=opus");
+  assert.equal(clientPayload.durationSeconds, 1.2);
+
+  const service = createVoiceService({ config: readConfig(environment), fetchImpl: async (url, options) => {
+    assert.equal(url, "https://api.openai.com/v1/audio/transcriptions");
+    assert.equal(options.body.get("model"), "gpt-transcribe");
+    const file = options.body.get("file");
+    assert.equal(file.name, "voice.webm"); assert.equal(file.type, source.type); assert.equal(file.size, original.length);
+    const uploaded = new Uint8Array(await file.arrayBuffer());
+    assert.deepEqual(uploaded, original); assert.deepEqual([...uploaded.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
+    return new Response(JSON.stringify({ text: "complete container" }), { status: 200, headers: { "content-type": "application/json" } });
+  } });
+  const result = await service.transcribe(clientPayload);
+  assert.equal(result.transcript, "complete container");
 });
 
 test("Voice V2 validates mime type, duration and audio size before provider calls", async () => {
@@ -48,6 +81,15 @@ test("provider errors never include upstream bodies or secrets", async () => {
   await assert.rejects(service.synthesise({ text: "Hello" }), (error) => error instanceof VoiceProviderError && error.upstreamStatus === 401 && !error.message.includes("secret"));
 });
 
+test("transcription failures retain only bounded safe diagnostic metadata", async () => {
+  const service = createVoiceService({ config: readConfig(environment), fetchImpl: async () => new Response(JSON.stringify({ error: { code: "invalid_value", type: "invalid_request_error", message: "Invalid file format for audio/webm secret-provider-body" } }), { status: 400, headers: { "content-type": "application/json" } }) });
+  await assert.rejects(service.transcribe({ audioBase64: "YXVkaW8=", mimeType: "audio/webm;codecs=opus", durationSeconds: 1.25 }), (error) => {
+    assert.ok(error instanceof VoiceProviderError); assert.equal(error.upstreamStatus, 400); assert.equal(error.category, "invalid_audio"); assert.equal(error.providerCode, "invalid_value");
+    assert.deepEqual(error.safeDetail, { operation: "transcribe", mimeType: "audio/webm;codecs=opus", fileName: "voice.webm", audioBytes: 5, durationSeconds: 1.25 });
+    assert.doesNotMatch(JSON.stringify(error), /secret-provider-body|openai-super-secret/); return true;
+  });
+});
+
 test("voice provider timeout remains bounded and reports no secret detail", async () => {
   const service = createVoiceService({ config: readConfig(environment), fetchImpl: async (_url, { signal }) => { assert.equal(signal.aborted, true); throw new DOMException("aborted", "AbortError"); }, schedule(callback) { callback(); return 1; }, cancelSchedule() {} });
   await assert.rejects(service.transcribe({ audioBase64: "YXVkaW8=", mimeType: "audio/webm", durationSeconds: 1 }), VoiceTimeoutError);
@@ -62,4 +104,14 @@ test("speech API returns no-store audio bytes rather than exposing provider meta
 test("Voice V2 API rejects invalid recordings with bounded safe errors", async () => {
   const app = createApp({ environment }); const result = await api(app, { method: "POST", url: "/api/voice/transcribe", headers: { "content-type": "application/json" }, body: JSON.stringify({ audioBase64: "YXVkaW8=", mimeType: "text/plain", durationSeconds: 1 }) });
   assert.equal(result.status, 400); assert.equal(result.body.code, "VOICE_VALIDATION"); assert.doesNotMatch(JSON.stringify(result.body), /super-secret|owner-voice-id/);
+});
+
+test("Voice V2 API logs safe provider category while keeping its 502 generic", async () => {
+  const entries = []; const failure = new VoiceProviderError("openai transcription", "OpenAI transcription request failed.", 400, "invalid_audio", "invalid_value");
+  failure.safeDetail = { operation: "transcribe", mimeType: "audio/webm", fileName: "voice.webm", audioBytes: 42, durationSeconds: 1 };
+  const handler = createApi({ config: readConfig({}), agent: {}, storage: {}, initialize: async () => {}, ownerId: "owner", voiceBenchmark: {}, voiceService: { async transcribe() { throw failure; } }, logger: { error(...args) { entries.push(args); } } });
+  const res = response(); await handler.handle(request({ method: "POST", url: "/api/voice/transcribe", headers: { "content-type": "application/json" }, body: JSON.stringify({ audioBase64: "YXVkaW8=", mimeType: "audio/webm", durationSeconds: 1 }) }), res);
+  assert.equal(res.statusCode, 502); assert.deepEqual(JSON.parse(res.body), { error: "Voice provider request failed. Your written conversation is safe.", code: "VOICE_PROVIDER_ERROR" });
+  assert.equal(entries[0][0], "Nova voice provider failed"); assert.equal(entries[0][1].category, "invalid_audio"); assert.equal(entries[0][1].upstreamStatus, 400); assert.deepEqual(entries[0][1].detail, failure.safeDetail);
+  assert.doesNotMatch(JSON.stringify({ response: JSON.parse(res.body), entries }), /super-secret|owner-voice-id|secret-provider-body/);
 });

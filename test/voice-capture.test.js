@@ -40,12 +40,17 @@ test("playback monitor detects sustained owner speech for barge-in", async () =>
   await flow.capture.destroy(); assert.equal(flow.tracks[0].stopped, true);
 });
 
-test("capture is ready before Listening and retains only bounded pre-roll before speech", async () => {
+test("100 ms capture retains the complete WebM stream and initialization header", async () => {
   const flow = setup(); await flow.capture.connect(); const events = []; let recording;
   flow.capture.listen({ onReady: () => events.push("ready"), onAudio: (value) => { recording = value; events.push("audio"); } });
   assert.deepEqual(events, ["ready"]); assert.equal(flow.recorder().timeslice, 100);
-  for (const value of ["old-1", "old-2", "old-3", "pre-1", "pre-2", "pre-3"]) flow.recorder().emit(value);
+  const webmHeader = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]);
+  flow.recorder().emit(webmHeader);
+  for (const value of ["chunk-2", "chunk-3", "chunk-4", "chunk-5"]) flow.recorder().emit(value);
   flow.setLevel(0.1); flow.run(); flow.run(); flow.recorder().emit("spoken"); flow.setLevel(0); for (let index = 0; index < 15; index += 1) flow.run();
-  assert.deepEqual(events, ["ready", "audio"]); const text = await recording.audio.text();
-  assert.doesNotMatch(text, /old-/); assert.match(text, /pre-1pre-2pre-3spoken/); assert.equal(recording.preRollMs, 300);
+  assert.deepEqual(events, ["ready", "audio"]);
+  const bytes = new Uint8Array(await recording.audio.arrayBuffer());
+  assert.deepEqual([...bytes.subarray(0, 4)], [...webmHeader]);
+  assert.match(new TextDecoder().decode(bytes.subarray(4)), /^chunk-2chunk-3chunk-4chunk-5spokenrecorded$/);
+  assert.equal("preRollMs" in recording, false);
 });

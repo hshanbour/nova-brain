@@ -220,7 +220,10 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         if (error instanceof VoiceValidationError) { sendJson(response, 400, { error: error.message, code: "VOICE_VALIDATION" }); return; }
         if (error instanceof VoiceUnavailableError) { sendJson(response, 503, { error: error.message, code: "VOICE_UNAVAILABLE" }); return; }
         if (error instanceof VoiceTimeoutError) { sendJson(response, 504, { error: "Voice provider timed out. Please try again.", code: error.code }); return; }
-        if (error instanceof VoiceProviderError) { sendJson(response, 502, { error: "Voice provider request failed. Your written conversation is safe.", code: error.code }); return; }
+        if (error instanceof VoiceProviderError) {
+          logger.error("Nova voice provider failed", { requestId, service: error.service, upstreamStatus: error.upstreamStatus, category: error.category, providerCode: error.providerCode, detail: error.safeDetail });
+          sendJson(response, 502, { error: "Voice provider request failed. Your written conversation is safe.", code: error.code }); return;
+        }
 
         if (
           error instanceof AgentStepLimitError ||

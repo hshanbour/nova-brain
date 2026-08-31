@@ -8,7 +8,7 @@ export class VoiceValidationError extends Error { constructor(message) { super(m
 export class VoiceUnavailableError extends Error { constructor(message) { super(message); this.name = "VoiceUnavailableError"; } }
 export class VoiceTimeoutError extends Error { constructor(service) { super(`${service} timed out.`); this.name = "VoiceTimeoutError"; this.service = service; this.code = "VOICE_TIMEOUT"; } }
 export class VoiceProviderError extends Error {
-  constructor(service, message, upstreamStatus) { super(message); this.name = "VoiceProviderError"; this.service = service; this.upstreamStatus = upstreamStatus; this.code = "VOICE_PROVIDER_ERROR"; }
+  constructor(service, message, upstreamStatus, category = "upstream", providerCode) { super(message); this.name = "VoiceProviderError"; this.service = service; this.upstreamStatus = upstreamStatus; this.category = category; this.providerCode = providerCode; this.code = "VOICE_PROVIDER_ERROR"; }
 }
 
 export function createVoiceService({ config, fetchImpl = fetch, schedule = setTimeout, cancelSchedule = clearTimeout }) {
@@ -32,8 +32,11 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
       const form = new FormData();
       form.append("model", voice.sttModel);
       form.append("prompt", "Nova Brain conversation. Preserve Arabic and English code-switching, names and terms including Mohammad, Luton, Sharp Cuts, Nova Brain, GitHub, API, booking, and missed-call recovery. Preserve numbers exactly.");
-      form.append("file", new Blob([audio], { type: mimeType }), `voice.${extension(mimeType)}`);
-      const data = await timedRequest(fetchImpl, OPENAI_TRANSCRIPTIONS, { method: "POST", headers: { Authorization: `Bearer ${voice.openAIApiKey}` }, body: form }, voice.requestTimeoutMs, "OpenAI transcription", schedule, cancelSchedule, (response) => safeJson(response, "OpenAI transcription"));
+      const fileName = `voice.${extension(mimeType)}`;
+      form.append("file", new Blob([audio], { type: mimeType }), fileName);
+      let data;
+      try { data = await timedRequest(fetchImpl, OPENAI_TRANSCRIPTIONS, { method: "POST", headers: { Authorization: `Bearer ${voice.openAIApiKey}` }, body: form }, voice.requestTimeoutMs, "OpenAI transcription", schedule, cancelSchedule, (response) => safeJson(response, "OpenAI transcription")); }
+      catch (error) { if (error instanceof VoiceProviderError) error.safeDetail = { operation: "transcribe", mimeType, fileName, audioBytes: audio.length, durationSeconds }; throw error; }
       const transcript = String(data?.text || "").trim();
       return { transcript, model: voice.sttModel, durationSeconds };
     },
@@ -66,10 +69,26 @@ async function timedRequest(fetchImpl, url, options, timeoutMs, service, schedul
 }
 
 async function safeJson(response, service) {
-  if (!response.ok) throw new VoiceProviderError(service.toLowerCase(), `${service} request failed.`, response.status);
+  if (!response.ok) {
+    const failure = await classifyProviderFailure(response);
+    throw new VoiceProviderError(service.toLowerCase(), `${service} request failed.`, response.status, failure.category, failure.providerCode);
+  }
   try { return await response.json(); }
   catch { throw new VoiceProviderError(service.toLowerCase(), `${service} returned an invalid response.`); }
 }
+
+async function classifyProviderFailure(response) {
+  let body; try { body = await response.json(); } catch { body = null; }
+  const status = Number(response.status); const providerCode = safeProviderCode(body?.error?.code || body?.code);
+  const description = `${body?.error?.type || ""} ${body?.error?.message || ""} ${providerCode || ""}`.toLowerCase();
+  if (status === 401 || status === 403) return { category: "authentication", providerCode };
+  if (status === 429) return { category: /quota|billing|credit/.test(description) ? "quota" : "rate_limit", providerCode };
+  if ((status === 400 || status === 415 || status === 422) && /audio|media|file|format|decode|codec|webm/.test(description)) return { category: "invalid_audio", providerCode };
+  if (status === 400 || status === 404 || status === 422) return { category: /model/.test(description) ? "model" : "invalid_request", providerCode };
+  return { category: status >= 500 ? "upstream" : "provider", providerCode };
+}
+
+function safeProviderCode(value) { const code = typeof value === "string" ? value.trim() : ""; return /^[a-z0-9_.-]{1,64}$/i.test(code) ? code : undefined; }
 
 function decodeAudio(value) {
   if (typeof value !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) throw new VoiceValidationError("A base64 voice recording is required.");
