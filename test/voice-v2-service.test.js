@@ -1,0 +1,65 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readConfig } from "../src/config/env.js";
+import { createVoiceService, VoiceProviderError, VoiceTimeoutError, VoiceValidationError } from "../src/voice/voice-service.js";
+import { sanitiseSpeechText } from "../src/voice/speech-text.js";
+import { createApp } from "../src/app.js";
+import { createApi } from "../src/http/api.js";
+
+const environment = { OPENAI_API_KEY: "openai-super-secret", ELEVENLABS_API_KEY: "eleven-super-secret", ELEVENLABS_VOICE_ID: "owner-voice-id" };
+function request({ method = "GET", url, body, headers = {} }) { const chunks = body === undefined ? [] : [Buffer.from(body)]; return { method, url, headers, async *[Symbol.asyncIterator]() { yield* chunks; } }; }
+function response() { const headers = new Map(); return { statusCode: 0, setHeader(name, value) { headers.set(name.toLowerCase(), value); }, end(value = "") { this.body = Buffer.isBuffer(value) ? value : Buffer.from(String(value)); }, headers }; }
+async function api(app, options) { const res = response(); await app.handle(request(options), res); return { status: res.statusCode, body: JSON.parse(res.body.toString()), headers: res.headers }; }
+
+test("Voice V2 readiness exposes models and limits without exposing credentials or the voice id", async () => {
+  const app = createApp({ environment }); const result = await api(app, { url: "/api/voice/readiness" }); assert.equal(result.status, 200); assert.equal(result.body.available, true);
+  assert.equal(result.body.stt.model, "gpt-transcribe"); assert.equal(result.body.tts.model, "eleven_v3_conversational"); assert.equal(result.body.rawAudioPolicy, "ephemeral-request-only");
+  const serialized = JSON.stringify(result.body); for (const secret of Object.values(environment)) assert.equal(serialized.includes(secret), false);
+});
+
+test("GPT-Transcribe request preserves mixed language by using hints without forcing one language", async () => {
+  let call; const fetchImpl = async (url, options) => { call = { url, options }; return new Response(JSON.stringify({ text: "مرحبا Nova API رقم 35" }), { status: 200, headers: { "content-type": "application/json" } }); };
+  const service = createVoiceService({ config: readConfig(environment), fetchImpl }); const result = await service.transcribe({ audioBase64: "YXVkaW8=", mimeType: "audio/webm;codecs=opus", durationSeconds: 1 });
+  assert.equal(result.transcript, "مرحبا Nova API رقم 35"); assert.equal(call.url, "https://api.openai.com/v1/audio/transcriptions"); assert.match(call.options.headers.Authorization, /^Bearer /);
+  assert.equal(call.options.body.get("model"), "gpt-transcribe"); assert.equal(call.options.body.has("language"), false); assert.match(call.options.body.get("prompt"), /Sharp Cuts.*API.*numbers/s);
+});
+
+test("Voice V2 validates mime type, duration and audio size before provider calls", async () => {
+  let calls = 0; const service = createVoiceService({ config: readConfig(environment), fetchImpl: async () => { calls += 1; } });
+  await assert.rejects(service.transcribe({ audioBase64: "YXVkaW8=", mimeType: "text/plain", durationSeconds: 1 }), VoiceValidationError);
+  await assert.rejects(service.transcribe({ audioBase64: "YXVkaW8=", mimeType: "audio/webm", durationSeconds: 31 }), VoiceValidationError);
+  await assert.rejects(service.transcribe({ audioBase64: Buffer.alloc(2 * 1024 * 1024 + 1).toString("base64"), mimeType: "audio/webm", durationSeconds: 1 }), VoiceValidationError); assert.equal(calls, 0);
+});
+
+test("ElevenLabs uses the owner-selected voice and conversational multilingual model with sanitised natural text", async () => {
+  let call; const fetchImpl = async (url, options) => { call = { url, options }; return new Response(Buffer.from("mp3"), { status: 200, headers: { "content-type": "audio/mpeg" } }); };
+  const service = createVoiceService({ config: readConfig(environment), fetchImpl }); const result = await service.synthesise({ text: "## Hello 😊 [Mohammad](https://example.com)\n```json\n{\"tool\":true}\n```\nTool trace: hidden" });
+  assert.match(call.url, /owner-voice-id\/stream/); assert.equal(call.options.headers["xi-api-key"], environment.ELEVENLABS_API_KEY);
+  const payload = JSON.parse(call.options.body); assert.equal(payload.model_id, "eleven_v3_conversational"); assert.equal(payload.text, "Hello Mohammad"); assert.equal(result.spokenText, "Hello Mohammad");
+});
+
+test("speech sanitisation removes markdown, emoji, URLs, tool traces and JSON while bounding output", () => {
+  assert.equal(sanitiseSpeechText("Hi 😊 **Mohammad** https://example.com\nMetadata: private"), "Hi Mohammad");
+  assert.equal(sanitiseSpeechText('{"tool":"secret"}'), ""); assert.ok(sanitiseSpeechText("Sentence. ".repeat(500), 120).length <= 120);
+});
+
+test("provider errors never include upstream bodies or secrets", async () => {
+  const service = createVoiceService({ config: readConfig(environment), fetchImpl: async () => new Response("api key leaked eleven-super-secret", { status: 401 }) });
+  await assert.rejects(service.synthesise({ text: "Hello" }), (error) => error instanceof VoiceProviderError && error.upstreamStatus === 401 && !error.message.includes("secret"));
+});
+
+test("voice provider timeout remains bounded and reports no secret detail", async () => {
+  const service = createVoiceService({ config: readConfig(environment), fetchImpl: async (_url, { signal }) => { assert.equal(signal.aborted, true); throw new DOMException("aborted", "AbortError"); }, schedule(callback) { callback(); return 1; }, cancelSchedule() {} });
+  await assert.rejects(service.transcribe({ audioBase64: "YXVkaW8=", mimeType: "audio/webm", durationSeconds: 1 }), VoiceTimeoutError);
+});
+
+test("speech API returns no-store audio bytes rather than exposing provider metadata", async () => {
+  const handler = createApi({ config: readConfig({}), agent: {}, storage: {}, initialize: async () => {}, ownerId: "owner", voiceBenchmark: {}, voiceService: { async synthesise() { return { audio: Buffer.from("mp3"), mimeType: "audio/mpeg", model: "eleven_v3_conversational" }; } } });
+  const res = response(); await handler.handle(request({ method: "POST", url: "/api/voice/speech", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "Hello" }) }), res);
+  assert.equal(res.statusCode, 200); assert.equal(res.body.toString(), "mp3"); assert.equal(res.headers.get("content-type"), "audio/mpeg"); assert.equal(res.headers.get("cache-control"), "no-store"); assert.equal(res.headers.get("x-nova-voice-model"), "eleven_v3_conversational");
+});
+
+test("Voice V2 API rejects invalid recordings with bounded safe errors", async () => {
+  const app = createApp({ environment }); const result = await api(app, { method: "POST", url: "/api/voice/transcribe", headers: { "content-type": "application/json" }, body: JSON.stringify({ audioBase64: "YXVkaW8=", mimeType: "text/plain", durationSeconds: 1 }) });
+  assert.equal(result.status, 400); assert.equal(result.body.code, "VOICE_VALIDATION"); assert.doesNotMatch(JSON.stringify(result.body), /super-secret|owner-voice-id/);
+});

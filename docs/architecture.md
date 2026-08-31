@@ -75,6 +75,14 @@ Nova Voice V2 Phase 0 lives under `src/benchmark/` and `/api/voice-benchmark/*`.
 
 Benchmark sessions and result metadata use dedicated PostgreSQL tables. They are never inserted into Nova long-term memory. Owner microphone bytes exist only in the browser and request lifecycle; neither storage implementation accepts raw-audio fields. The initial comparison uses short batch requests, so measured latency is request start to complete transcript or complete playable audio—not realtime first-token latency.
 
+### Nova Voice V2
+
+Premium Start Voice is a channel adapter around the same `POST /api/agent` conversation path as typed chat. Browser `getUserMedia`, `MediaRecorder`, and Web Audio energy analysis capture a bounded turn and stop after sustained silence. `POST /api/voice/transcribe` sends ephemeral audio server-side to OpenAI `gpt-transcribe` without forcing one recognition language; the resulting transcript is submitted through the existing console `sendMessage()` function, preserving owner identity, conversation history, relevant memory, projects, tools, approvals, activity, and execution limits.
+
+Only the returned owner-facing assistant message is sent to `POST /api/voice/speech`. Server-side sanitisation removes markup, URLs, emoji noise, code blocks, JSON-shaped output, and internal/tool-labelled lines before ElevenLabs `eleven_v3_conversational` synthesises the configured `ELEVENLABS_VOICE_ID`. Keys and the voice identifier remain server-only. Audio is returned with `no-store`, played from an ephemeral browser object URL, and discarded after playback.
+
+The browser controller owns the explicit `idle`, `connecting`, `listening`, `transcribing`, `thinking`, `speaking`, `interrupted`, `retrying`, and `error` states. Playback completion automatically begins another recording. A higher sustained microphone-energy threshold monitors playback for barge-in, immediately aborts pending speech, stops audio, and returns to listening. `End Voice` aborts requests, cancels timers, stops recorders/playback, closes the audio graph, and releases every microphone track. Echo cancellation is requested, but acoustic barge-in quality still depends on the owner's physical browser, microphone, speakers, and room.
+
 ### Validation and security
 
 `src/http/validation.js` validates all JSON inputs and allowlists mutable profile/memory fields. `src/http/api.js` limits JSON bodies, disables caching of private responses, emits safe errors, uses defensive headers, and only enables CORS for configured origins. Storage failure is fail-closed for private endpoints. Vercel Authentication is the current Preview boundary; application-level authentication and owner authorization remain mandatory before public or Production exposure.

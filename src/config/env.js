@@ -64,6 +64,20 @@ export function readConfig(environment = process.env) {
     }),
     allowedOrigins: parseOrigins(environment.CORS_ALLOWED_ORIGINS),
     maxBodyBytes: 64 * 1024,
+    voiceV2: Object.freeze({
+      sttModel: "gpt-transcribe",
+      ttsModel: "eleven_v3_conversational",
+      openAIApiKey: environment.OPENAI_API_KEY || null,
+      elevenLabsApiKey: environment.ELEVENLABS_API_KEY || null,
+      elevenLabsVoiceId: environment.ELEVENLABS_VOICE_ID || null,
+      minDurationSeconds: 0.2,
+      maxDurationSeconds: 30,
+      maxAudioBytes: 2 * 1024 * 1024,
+      maxBodyBytes: 3 * 1024 * 1024,
+      maxSpeechAudioBytes: 8 * 1024 * 1024,
+      maxSpeechCharacters: 1800,
+      requestTimeoutMs: 25_000
+    }),
     voiceBenchmark: Object.freeze({
       paidCallsApproved: environment.NOVA_VOICE_BENCHMARK_PAID_CALLS_APPROVED === "true",
       budgetUsd: parseMoney(environment.NOVA_VOICE_BENCHMARK_BUDGET_USD, "NOVA_VOICE_BENCHMARK_BUDGET_USD", 2),

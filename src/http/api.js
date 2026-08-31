@@ -13,6 +13,7 @@ import {
   validateApprovalDecision
 } from "./validation.js";
 import { BenchmarkBudgetError, BenchmarkLockedError, BenchmarkUnavailableError, BenchmarkValidationError } from "../benchmark/service.js";
+import { VoiceProviderError, VoiceTimeoutError, VoiceUnavailableError, VoiceValidationError } from "../voice/voice-service.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -25,6 +26,17 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
+function sendAudio(response, payload) {
+  response.statusCode = 200;
+  response.setHeader("Content-Type", payload.mimeType);
+  response.setHeader("Content-Length", payload.audio.length);
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("Referrer-Policy", "no-referrer");
+  response.setHeader("X-Nova-Voice-Model", payload.model);
+  response.end(payload.audio);
+}
+
 function setCorsHeaders(request, response, allowedOrigins) {
   const origin = request.headers?.origin;
 
@@ -34,7 +46,7 @@ function setCorsHeaders(request, response, allowedOrigins) {
   }
 }
 
-export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, logger = console }) {
+export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, voiceService, logger = console }) {
   return Object.freeze({
     async handle(request, response) {
       const requestId = randomUUID();
@@ -79,6 +91,18 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           const result = await agent.run(input);
           sendJson(response, 200, result);
           return;
+        }
+
+        if (request.method === "GET" && pathname === "/api/voice/readiness") {
+          sendJson(response, 200, voiceService.readiness()); return;
+        }
+        if (request.method === "POST" && pathname === "/api/voice/transcribe") {
+          const result = await voiceService.transcribe(await readJsonBody(request, config.voiceV2.maxBodyBytes));
+          sendJson(response, 200, result); return;
+        }
+        if (request.method === "POST" && pathname === "/api/voice/speech") {
+          const result = await voiceService.synthesise(await readJsonBody(request, config.maxBodyBytes));
+          sendAudio(response, result); return;
         }
 
         if (request.method === "GET" && pathname === "/api/owner/profile") {
@@ -193,6 +217,10 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         if (error instanceof BenchmarkLockedError) { sendJson(response, 403, { error: error.message, code: "BENCHMARK_PAID_CALLS_LOCKED" }); return; }
         if (error instanceof BenchmarkUnavailableError) { sendJson(response, 503, { error: error.message, code: "BENCHMARK_PROVIDER_UNAVAILABLE" }); return; }
         if (error instanceof BenchmarkBudgetError) { sendJson(response, 402, { error: error.message, code: "BENCHMARK_BUDGET_CAP" }); return; }
+        if (error instanceof VoiceValidationError) { sendJson(response, 400, { error: error.message, code: "VOICE_VALIDATION" }); return; }
+        if (error instanceof VoiceUnavailableError) { sendJson(response, 503, { error: error.message, code: "VOICE_UNAVAILABLE" }); return; }
+        if (error instanceof VoiceTimeoutError) { sendJson(response, 504, { error: "Voice provider timed out. Please try again.", code: error.code }); return; }
+        if (error instanceof VoiceProviderError) { sendJson(response, 502, { error: "Voice provider request failed. Your written conversation is safe.", code: error.code }); return; }
 
         if (
           error instanceof AgentStepLimitError ||

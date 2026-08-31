@@ -9,6 +9,7 @@ The repository provides a small, serverless-compatible agent runtime:
 - `GET /` serves Nova Console V1, a responsive interface connected to the live agent API.
 - `GET /api/health` returns a machine-readable health response.
 - `POST /api/agent` accepts a validated agent request and runs a bounded model/tool loop.
+- Premium Start Voice records bounded microphone turns with `MediaRecorder`, transcribes through server-side OpenAI GPT-Transcribe, reuses `POST /api/agent`, and plays the owner-selected ElevenLabs voice.
 - `POST /api/missed-call` preserves the original scaffold endpoint as a validated intake placeholder.
 - The agent, model providers, tools, durable storage, configuration, and HTTP adapter are separate modules.
 - The Memory workspace exposes controlled owner-profile editing and explicit long-term-memory create, edit, filter, and forget operations.
@@ -83,6 +84,18 @@ Content-Type: application/json
 The default `mock` provider makes this endpoint usable without credentials. Its response is deliberately deterministic, not AI-generated.
 
 The response preserves the existing `message`, `conversationId`, `provider`, and `toolCalls` fields and adds `steps`, the number of model steps used. `toolCalls` contains only normalized execution metadata; raw provider responses and credentials are never returned.
+
+### Nova Voice V2
+
+```http
+GET  /api/voice/readiness
+POST /api/voice/transcribe
+POST /api/voice/speech
+```
+
+Start Voice is a continuous browser channel for the existing Nova agent—not a separate voice agent. It uses `getUserMedia`, `MediaRecorder`, and bounded silence detection; no browser `SpeechRecognition` locale is imposed on the premium path. Recorded bytes are sent only to the same-origin transcription endpoint and are not persisted. The transcript enters the exact typed-chat submission function, so durable conversations, memory retrieval, projects, tools, approvals, and activity behave identically.
+
+The speech endpoint accepts only Nova's owner-facing assistant message, sanitises it, enforces a character limit, and returns no-store ElevenLabs audio. `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, and `ELEVENLABS_VOICE_ID` remain server-only. Browser-native recognition and speech controls remain available as explicitly labelled legacy utilities and are never used as a silent fallback when Voice V2 fails.
 
 ### Missed-call intake placeholder
 
