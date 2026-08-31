@@ -87,6 +87,7 @@ export function readConfig(environment = process.env) {
       capabilityCacheMs: 10 * 60 * 1000,
       capabilityTimeoutMs: 5_000,
       ttsRetryDelayMs: 200,
+      ttsConcurrencyRetryDelayMs: 1_200,
       requestTimeoutMs: 25_000,
       ttsFirstByteTimeoutMs: 10_000,
       ttsStreamStallTimeoutMs: 8_000,
@@ -127,4 +128,3 @@ function parseInteger(value, name, { defaultValue, min, max }) {
 
   return parsed;
 }
-

@@ -116,6 +116,22 @@ test("a stalled ElevenLabs stream is distinct from first-byte timeout and retrie
   assert.equal(calls, 2);
 });
 
+test("an immediate post-cancellation concurrency collision waits for provider release before retrying", async () => {
+  let calls = 0; const delays = [];
+  const service = createVoiceService({
+    config: config({ ttsRetryDelayMs: 200, ttsConcurrencyRetryDelayMs: 1_200 }),
+    schedule(callback, delay) { delays.push(delay); callback(); return delays.length; },
+    cancelSchedule() {},
+    fetchImpl: withCapabilities(async () => {
+      calls += 1;
+      if (calls === 1) return new Response(JSON.stringify({ detail: { status: "concurrent_limit_exceeded" } }), { status: 429, headers: { "content-type": "application/json" } });
+      return new Response(Buffer.from("recovered-mp3"), { status: 200, headers: { "content-type": "audio/mpeg" } });
+    })
+  });
+  const result = await service.synthesise({ text: "Recover after End Voice." });
+  assert.equal(result.audio.toString(), "recovered-mp3"); assert.equal(calls, 2); assert.ok(delays.includes(1_200));
+});
+
 test("client cancellation aborts ElevenLabs generation and is never retried", async () => {
   let calls = 0; const controller = new AbortController();
   const service = createVoiceService({ config: config(), fetchImpl: withCapabilities(async (_url, { signal }) => {
@@ -160,4 +176,3 @@ test("incremental playback reports a later stream failure once and clears stale 
   await new Promise((resolve) => setImmediate(resolve)); players[0].end(); await new Promise((resolve) => setImmediate(resolve));
   assert.equal(errors, 1); assert.equal(ended, 0); assert.equal(players.length, 1);
 });
-

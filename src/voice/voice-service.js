@@ -149,7 +149,12 @@ async function synthesiseChunk(text, { voice, model, fetchImpl, schedule, cancel
     } catch (error) {
       if (error instanceof VoiceProviderError) error.safeDetail = { operation: "synthesise", model: model.id, textCharacters: text.length, chunkIndex: index, chunkCount, attempt, retryCount: attempt - 1, providerRequestId: error.providerRequestId, phase: error.category };
       onEvent({ phase: "request_failed", chunkIndex: index, chunkCount, textCharacters: text.length, attempt, retryCount: attempt - 1, category: error?.category || "unknown", upstreamStatus: error?.upstreamStatus, durationMs: Date.now() - startedAt, model: model.id, outputFormat: voice.ttsOutputFormat });
-      if (attempt === 1 && retryableTtsFailure(error) && !signal?.aborted) { await boundedDelay(schedule, cancelSchedule, voice.ttsRetryDelayMs, signal); continue; }
+      if (attempt === 1 && retryableTtsFailure(error) && !signal?.aborted) {
+        const retryDelayMs = error.providerCode === "concurrent_limit_exceeded"
+          ? Math.max(voice.ttsRetryDelayMs, voice.ttsConcurrencyRetryDelayMs || 0)
+          : voice.ttsRetryDelayMs;
+        await boundedDelay(schedule, cancelSchedule, retryDelayMs, signal); continue;
+      }
       throw error;
     }
   }
@@ -325,4 +330,3 @@ function decodeAudio(value) {
 function validateMime(value) { const mime = String(value || "").toLowerCase().replace(/;\s*/, ";"); if (!MIME_TYPES.has(mime)) throw new VoiceValidationError("Unsupported voice recording format."); return mime; }
 function boundedNumber(value, min, max, name) { const number = Number(value); if (!Number.isFinite(number) || number < min || number > max) throw new VoiceValidationError(`${name} must be between ${min} and ${max}.`); return number; }
 function extension(type) { if (type.includes("wav")) return "wav"; if (type.includes("ogg")) return "ogg"; if (type.includes("mp4")) return "m4a"; if (type.includes("mpeg")) return "mp3"; return "webm"; }
-
