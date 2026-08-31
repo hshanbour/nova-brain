@@ -34,7 +34,7 @@ export function createVoiceV2({
   }
 
   function recover(message, delayMs = retryDelayMs) {
-    if (!active) return; publish("error"); onError(message); reportTiming("error"); retry("Voice is recovering…", delayMs);
+    if (!active) return; abortPending(); capture.stop(); playback.stop(); publish("error"); onError(message); reportTiming("error"); retry("Voice is recovering…", delayMs);
   }
 
   function fatal(message) {

@@ -105,9 +105,9 @@ function preferredRecorderOptions(MediaRecorder) {
 }
 
 export function createAudioPlayback({ Audio, URL }) {
-  let player; let objectUrl; let generation = 0; let iterator;
+  let player; let objectUrl; let generation = 0; let iterator; let settlePlayback;
   const clearPlayer = () => { if (player) { player.pause(); player.removeAttribute?.("src"); player.load?.(); } if (objectUrl) URL.revokeObjectURL(objectUrl); player = objectUrl = undefined; };
-  const stop = () => { generation += 1; clearPlayer(); Promise.resolve(iterator?.return?.()).catch(() => {}); iterator = undefined; };
+  const stop = () => { generation += 1; settlePlayback?.(); settlePlayback = undefined; clearPlayer(); Promise.resolve(iterator?.return?.()).catch(() => {}); iterator = undefined; };
   return Object.freeze({
     play(source, { onStarted, onEnded, onError, onChunkStarted } = {}) {
       stop(); const current = generation; iterator = toAudioStream(source)[Symbol.asyncIterator]();
@@ -135,12 +135,14 @@ export function createAudioPlayback({ Audio, URL }) {
       clearPlayer(); objectUrl = URL.createObjectURL(blob); player = new Audio(objectUrl); player.preload = "auto";
       const activePlayer = player;
       const release = () => { if (player === activePlayer) clearPlayer(); };
+      const settle = (callback) => { if (settlePlayback === cancel) settlePlayback = undefined; callback(); };
+      const cancel = () => resolve(); settlePlayback = cancel;
       let began = false;
       const started = () => { if (began || current !== generation) return; began = true; onStarted(); };
       activePlayer.addEventListener("playing", started, { once: true });
-      activePlayer.addEventListener("ended", () => { if (current !== generation) return; release(); resolve(); }, { once: true });
-      activePlayer.addEventListener("error", () => { if (current !== generation) return; release(); reject(new Error("Audio playback failed.")); }, { once: true });
-      Promise.resolve(activePlayer.play()).then(started).catch((error) => { if (current === generation) { release(); reject(error); } });
+      activePlayer.addEventListener("ended", () => { if (current !== generation) return; release(); settle(resolve); }, { once: true });
+      activePlayer.addEventListener("error", () => { if (current !== generation) return; release(); settle(() => reject(new Error("Audio playback failed."))); }, { once: true });
+      Promise.resolve(activePlayer.play()).then(started).catch((error) => { if (current === generation) { release(); settle(() => reject(error)); } });
     });
   }
 

@@ -46,11 +46,11 @@ function speechEvent(chunk) {
   return JSON.stringify({ type: "audio", index: chunk.index, chunkCount: chunk.chunkCount, mimeType: chunk.mimeType, audioBase64: chunk.audio.toString("base64") }) + "\n";
 }
 
-async function sendSpeechStream(response, stream, { model, logger, requestId }) {
+async function sendSpeechStream(response, stream, { logger, requestId }) {
   const iterator = stream[Symbol.asyncIterator]();
   const first = await iterator.next();
   if (first.done) throw new VoiceProviderError("elevenlabs", "ElevenLabs returned empty audio.", undefined, "unknown");
-  setSpeechHeaders(response, model);
+  setSpeechHeaders(response, first.value.model);
   response.flushHeaders?.();
   try {
     await writeChunk(response, speechEvent(first.value));
@@ -128,7 +128,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         }
 
         if (request.method === "GET" && pathname === "/api/voice/readiness") {
-          sendJson(response, 200, voiceService.readiness()); return;
+          sendJson(response, 200, await voiceService.readiness()); return;
         }
         if (request.method === "POST" && pathname === "/api/voice/transcribe") {
           const result = await voiceService.transcribe(await readJsonBody(request, config.voiceV2.maxBodyBytes));
@@ -141,7 +141,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           response.once?.("close", () => { if (!response.writableEnded) abort(); });
           const events = (event) => logger.info("Nova voice speech timing", { requestId, ...event });
           const stream = voiceService.streamSpeech(await readJsonBody(request, config.maxBodyBytes), { signal: controller.signal, onEvent: events });
-          await sendSpeechStream(response, stream, { model: config.voiceV2.ttsModel, logger, requestId }); return;
+          await sendSpeechStream(response, stream, { logger, requestId }); return;
         }
 
         if (request.method === "GET" && pathname === "/api/owner/profile") {

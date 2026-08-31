@@ -28,7 +28,7 @@ export function sanitiseSpeechText(value, maxCharacters = 1800) {
   return text;
 }
 
-export function chunkSpeechText(text, { firstChunkCharacters = 180, nextChunkCharacters = 420, maxChunks = 8 } = {}) {
+export function chunkSpeechText(text, { firstChunkCharacters = 140, nextChunkCharacters = 360, maxChunks = 8 } = {}) {
   const source = String(text || "").replace(/\s+/g, " ").trim();
   if (!source) return [];
   const chunks = [];

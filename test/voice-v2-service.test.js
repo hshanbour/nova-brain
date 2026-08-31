@@ -8,13 +8,22 @@ import { createApi } from "../src/http/api.js";
 import { createVoiceV2Client } from "../assets/voice-v2-client.js";
 
 const environment = { OPENAI_API_KEY: "openai-super-secret", ELEVENLABS_API_KEY: "eleven-super-secret", ELEVENLABS_VOICE_ID: "owner-voice-id" };
+const models = [{ model_id: "eleven_v3_conversational", can_do_text_to_speech: true, languages: [{ language_id: "ar", name: "Arabic" }, { language_id: "en", name: "English" }] }, { model_id: "eleven_flash_v2_5", can_do_text_to_speech: true }];
+function withCapabilities(handler = async () => new Response(Buffer.from("mp3"), { status: 200, headers: { "content-type": "audio/mpeg" } }), { availableModels = models, voice = { voice_id: environment.ELEVENLABS_VOICE_ID, high_quality_base_model_ids: ["eleven_v3_conversational"] } } = {}) {
+  return async (url, options) => {
+    if (url === "https://api.elevenlabs.io/v1/models") return new Response(JSON.stringify(availableModels), { status: 200, headers: { "content-type": "application/json" } });
+    if (String(url).startsWith("https://api.elevenlabs.io/v1/voices/")) return new Response(JSON.stringify(voice), { status: 200, headers: { "content-type": "application/json" } });
+    return handler(url, options);
+  };
+}
 function request({ method = "GET", url, body, headers = {} }) { const chunks = body === undefined ? [] : [Buffer.from(body)]; return { method, url, headers, async *[Symbol.asyncIterator]() { yield* chunks; } }; }
 function response() { const headers = new Map(); return { statusCode: 0, chunks: [], setHeader(name, value) { headers.set(name.toLowerCase(), value); }, write(value = "") { this.chunks.push(Buffer.isBuffer(value) ? value : Buffer.from(String(value))); return true; }, end(value = "") { if (value) this.write(value); this.body = Buffer.concat(this.chunks); this.writableEnded = true; }, headers }; }
 async function api(app, options) { const res = response(); await app.handle(request(options), res); return { status: res.statusCode, body: JSON.parse(res.body.toString()), headers: res.headers }; }
 
 test("Voice V2 readiness exposes models and limits without exposing credentials or the voice id", async () => {
-  const app = createApp({ environment }); const result = await api(app, { url: "/api/voice/readiness" }); assert.equal(result.status, 200); assert.equal(result.body.available, true);
+  const app = createApp({ environment, voiceFetchImpl: withCapabilities() }); const result = await api(app, { url: "/api/voice/readiness" }); assert.equal(result.status, 200); assert.equal(result.body.available, true);
   assert.equal(result.body.stt.model, "gpt-transcribe"); assert.equal(result.body.tts.model, "eleven_v3_conversational"); assert.equal(result.body.rawAudioPolicy, "ephemeral-request-only");
+  assert.equal(result.body.tts.status, "Verified"); assert.equal(result.body.tts.capability, "account-model-and-voice-access-verified"); assert.equal(result.body.tts.fallbackUsed, false);
   const serialized = JSON.stringify(result.body); for (const secret of Object.values(environment)) assert.equal(serialized.includes(secret), false);
 });
 
@@ -66,9 +75,33 @@ test("Voice V2 validates mime type, duration and audio size before provider call
 
 test("ElevenLabs uses the owner-selected voice and conversational multilingual model with sanitised natural text", async () => {
   let call; const fetchImpl = async (url, options) => { call = { url, options }; return new Response(Buffer.from("mp3"), { status: 200, headers: { "content-type": "audio/mpeg" } }); };
-  const service = createVoiceService({ config: readConfig(environment), fetchImpl }); const result = await service.synthesise({ text: "## Hello 😊 [Mohammad](https://example.com)\n```json\n{\"tool\":true}\n```\nTool trace: hidden" });
+  const service = createVoiceService({ config: readConfig(environment), fetchImpl: withCapabilities(fetchImpl) }); const result = await service.synthesise({ text: "## Hello 😊 [Mohammad](https://example.com)\n```json\n{\"tool\":true}\n```\nTool trace: hidden" });
   assert.match(call.url, /owner-voice-id\/stream/); assert.equal(call.options.headers["xi-api-key"], environment.ELEVENLABS_API_KEY);
   const payload = JSON.parse(call.options.body); assert.equal(payload.model_id, "eleven_v3_conversational"); assert.equal(payload.text, "Hello Mohammad"); assert.equal(result.spokenText, "Hello Mohammad");
+});
+
+test("capability preflight selects only an account-supported TTS model and exposes a visible fallback", async () => {
+  const service = createVoiceService({ config: readConfig(environment), fetchImpl: withCapabilities(undefined, { availableModels: [{ model_id: "eleven_flash_v2_5", can_do_text_to_speech: true }] }) });
+  const readiness = await service.readiness();
+  assert.equal(readiness.available, true); assert.equal(readiness.tts.model, "eleven_flash_v2_5"); assert.equal(readiness.tts.fallbackUsed, true); assert.equal(readiness.tts.selection, "low-latency-multilingual-fallback");
+});
+
+test("capability preflight catches an unavailable model set before a paid speech request", async () => {
+  let speechCalls = 0;
+  const service = createVoiceService({ config: readConfig(environment), fetchImpl: withCapabilities(async () => { speechCalls += 1; return new Response(Buffer.from("unexpected")); }, { availableModels: [{ model_id: "image-only", can_do_text_to_speech: false }] }) });
+  const readiness = await service.readiness();
+  assert.equal(readiness.available, false); assert.equal(readiness.tts.status, "Unavailable"); assert.equal(readiness.tts.errorCategory, "model"); assert.equal(speechCalls, 0);
+});
+
+test("unsupported_model is classified, never retried, and does not expose the provider body", async () => {
+  let calls = 0;
+  const service = createVoiceService({ config: readConfig(environment), fetchImpl: withCapabilities(async () => {
+    calls += 1; return new Response(JSON.stringify({ detail: { code: "unsupported_model", message: "secret provider explanation" } }), { status: 400, headers: { "content-type": "application/json", "request-id": "safe-model-request" } });
+  }) });
+  await assert.rejects(service.synthesise({ text: "Hello" }), (error) => {
+    assert.ok(error instanceof VoiceProviderError); assert.equal(error.category, "model"); assert.equal(error.providerCode, "unsupported_model"); assert.equal(error.safeDetail.attempt, 1); assert.doesNotMatch(JSON.stringify(error), /secret provider explanation/); return true;
+  });
+  assert.equal(calls, 1);
 });
 
 test("speech sanitisation removes markdown, emoji, URLs, tool traces and JSON while bounding output", () => {
@@ -77,7 +110,7 @@ test("speech sanitisation removes markdown, emoji, URLs, tool traces and JSON wh
 });
 
 test("ElevenLabs 401 is safely categorized and never retried", async () => {
-  let calls = 0; const service = createVoiceService({ config: readConfig(environment), fetchImpl: async () => { calls += 1; return new Response(JSON.stringify({ detail: { status: "invalid_api_key", message: "Invalid API key eleven-super-secret" } }), { status: 401, headers: { "content-type": "application/json", "request-id": "el-safe-request-1" } }); } });
+  let calls = 0; const service = createVoiceService({ config: readConfig(environment), fetchImpl: withCapabilities(async () => { calls += 1; return new Response(JSON.stringify({ detail: { status: "invalid_api_key", message: "Invalid API key eleven-super-secret" } }), { status: 401, headers: { "content-type": "application/json", "request-id": "el-safe-request-1" } }); }) });
   await assert.rejects(service.synthesise({ text: "Hello" }), (error) => {
     assert.ok(error instanceof VoiceProviderError); assert.equal(error.upstreamStatus, 401); assert.equal(error.category, "authentication"); assert.equal(error.providerCode, "invalid_api_key");
     assert.deepEqual(error.safeDetail, { operation: "synthesise", model: "eleven_v3_conversational", textCharacters: 5, chunkIndex: 0, chunkCount: 1, attempt: 1, retryCount: 0, providerRequestId: "el-safe-request-1", phase: "authentication" });
@@ -91,18 +124,18 @@ test("ElevenLabs quota-shaped 401 and voice access denial receive distinct safe 
     [401, { status: "quota_exceeded", message: "This request exceeds your quota limit" }, "quota"],
     [403, { code: "voice_access_denied", type: "authorization_error", message: "Voice unavailable" }, "voice_access"]
   ]) {
-    const service = createVoiceService({ config: readConfig(environment), fetchImpl: async () => new Response(JSON.stringify({ detail }), { status, headers: { "content-type": "application/json" } }) });
+    const service = createVoiceService({ config: readConfig(environment), fetchImpl: withCapabilities(async () => new Response(JSON.stringify({ detail }), { status, headers: { "content-type": "application/json" } })) });
     await assert.rejects(service.synthesise({ text: "Hello" }), (error) => error instanceof VoiceProviderError && error.category === category);
   }
 });
 
 test("ElevenLabs retries one retryable failure with a fresh request and returns one audio result", async () => {
   let calls = 0; const requests = []; const base = readConfig(environment); const config = { ...base, voiceV2: { ...base.voiceV2, ttsRetryDelayMs: 0 } };
-  const service = createVoiceService({ config, fetchImpl: async (_url, options) => {
+  const service = createVoiceService({ config, fetchImpl: withCapabilities(async (_url, options) => {
     calls += 1; requests.push(options);
     if (calls === 1) return new Response(JSON.stringify({ detail: { code: "rate_limit_exceeded", type: "rate_limit_error", message: "Try later" } }), { status: 429, headers: { "content-type": "application/json", "request-id": "el-retry-1" } });
     return new Response(Buffer.from("one-final-mp3"), { status: 200, headers: { "content-type": "audio/mpeg" } });
-  } });
+  }) });
   const result = await service.synthesise({ text: "Hello once" }); assert.equal(result.audio.toString(), "one-final-mp3"); assert.equal(calls, 2);
   assert.notEqual(requests[0], requests[1]); assert.notEqual(requests[0].headers, requests[1].headers); assert.equal(requests[0].headers["xi-api-key"], environment.ELEVENLABS_API_KEY); assert.equal(requests[1].headers["xi-api-key"], environment.ELEVENLABS_API_KEY);
 });

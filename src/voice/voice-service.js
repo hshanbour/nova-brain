@@ -1,7 +1,10 @@
 import { chunkSpeechText, sanitiseSpeechText } from "./speech-text.js";
+import { elevenLabsRequestBody, selectElevenLabsModel } from "./elevenlabs-models.js";
 
 const OPENAI_TRANSCRIPTIONS = "https://api.openai.com/v1/audio/transcriptions";
 const ELEVENLABS_BASE = "https://api.elevenlabs.io/v1/text-to-speech";
+const ELEVENLABS_MODELS = "https://api.elevenlabs.io/v1/models";
+const ELEVENLABS_VOICES = "https://api.elevenlabs.io/v1/voices";
 const MIME_TYPES = new Set(["audio/webm", "audio/webm;codecs=opus", "audio/ogg", "audio/ogg;codecs=opus", "audio/mp4", "audio/mpeg", "audio/wav", "audio/x-wav"]);
 
 export class VoiceValidationError extends Error { constructor(message) { super(message); this.name = "VoiceValidationError"; } }
@@ -13,8 +16,21 @@ export class VoiceProviderError extends Error {
 
 export function createVoiceService({ config, fetchImpl = fetch, schedule = setTimeout, cancelSchedule = clearTimeout }) {
   const voice = config.voiceV2;
-  async function* streamSpeech(input, { signal, onEvent = () => {} } = {}) {
+  let capabilityPromise; let capabilityCheckedAt = 0;
+
+  async function capabilities({ refresh = false } = {}) {
     if (!voice.elevenLabsApiKey || !voice.elevenLabsVoiceId) throw new VoiceUnavailableError("ElevenLabs speech is not configured.");
+    const fresh = capabilityPromise && Date.now() - capabilityCheckedAt < voice.capabilityCacheMs;
+    if (!refresh && fresh) return capabilityPromise;
+    capabilityCheckedAt = Date.now();
+    capabilityPromise = verifyElevenLabsCapabilities({ voice, fetchImpl, schedule, cancelSchedule }).catch((error) => {
+      capabilityPromise = undefined; capabilityCheckedAt = 0; throw error;
+    });
+    return capabilityPromise;
+  }
+
+  async function* streamSpeech(input, { signal, onEvent = () => {} } = {}) {
+    const capability = await capabilities();
     const text = sanitiseSpeechText(input?.text, voice.maxSpeechCharacters);
     if (!text) throw new VoiceValidationError("Nova's reply does not contain speakable owner-facing text.");
     const chunks = chunkSpeechText(text, {
@@ -26,24 +42,41 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
     const streamStartedAt = Date.now();
     for (let index = 0; index < chunks.length; index += 1) {
       if (signal?.aborted) throw cancelledProviderError();
-      const result = await synthesiseChunk(chunks[index], { voice, fetchImpl, schedule, cancelSchedule, signal, onEvent, index, chunkCount: chunks.length, previousText: chunks[index - 1], nextText: chunks[index + 1] });
+      const result = await synthesiseChunk(chunks[index], { voice, model: capability.model, fetchImpl, schedule, cancelSchedule, signal, onEvent, index, chunkCount: chunks.length, previousText: chunks[index - 1], nextText: chunks[index + 1] });
       totalAudioBytes += result.audio.length;
       if (totalAudioBytes > voice.maxSpeechAudioBytes) throw new VoiceProviderError("elevenlabs", "ElevenLabs audio exceeded Nova's response limit.", undefined, "invalid_request");
       yield { ...result, index, chunkCount: chunks.length, spokenText: chunks[index] };
     }
-    onEvent({ phase: "stream_complete", chunkCount: chunks.length, textCharacters: text.length, audioBytes: totalAudioBytes, durationMs: Date.now() - streamStartedAt, model: voice.ttsModel, outputFormat: "mp3_44100_128" });
+    onEvent({ phase: "stream_complete", chunkCount: chunks.length, textCharacters: text.length, audioBytes: totalAudioBytes, durationMs: Date.now() - streamStartedAt, model: capability.model.id, outputFormat: voice.ttsOutputFormat });
   }
 
   return Object.freeze({
-    readiness() {
+    async readiness(options) {
+      let capability; let failure;
+      if (voice.elevenLabsApiKey && voice.elevenLabsVoiceId) {
+        try { capability = await capabilities(options); }
+        catch (error) { failure = error; }
+      }
       return {
-        available: Boolean(voice.openAIApiKey && voice.elevenLabsApiKey && voice.elevenLabsVoiceId),
+        available: Boolean(voice.openAIApiKey && capability),
         rawAudioPolicy: "ephemeral-request-only",
         stt: { model: voice.sttModel, status: voice.openAIApiKey ? "Configured" : "Missing" },
-        tts: { model: voice.ttsModel, voice: "Owner-selected ElevenLabs voice", status: voice.elevenLabsApiKey && voice.elevenLabsVoiceId ? "Configured" : "Missing" },
+        tts: {
+          model: capability?.model.id || voice.ttsModel,
+          preferredModel: voice.ttsModel,
+          outputFormat: voice.ttsOutputFormat,
+          voice: "Owner-selected ElevenLabs voice",
+          status: capability ? "Verified" : voice.elevenLabsApiKey && voice.elevenLabsVoiceId ? "Unavailable" : "Missing",
+          capability: capability ? "account-model-and-voice-access-verified" : undefined,
+          selection: capability?.model.reason,
+          fallbackUsed: capability?.model.fallbackUsed || false,
+          voiceCompatibility: capability?.voiceCompatibility,
+          errorCategory: safeReadinessCategory(failure)
+        },
         limits: { maxDurationSeconds: voice.maxDurationSeconds, maxAudioBytes: voice.maxAudioBytes, maxSpeechCharacters: voice.maxSpeechCharacters }
       };
     },
+    capabilities,
     async transcribe(input) {
       if (!voice.openAIApiKey) throw new VoiceUnavailableError("OpenAI transcription is not configured.");
       const audio = decodeAudio(input?.audioBase64);
@@ -71,30 +104,30 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
   });
 }
 
-async function synthesiseChunk(text, { voice, fetchImpl, schedule, cancelSchedule, signal, onEvent, index, chunkCount, previousText, nextText }) {
-  const url = `${ELEVENLABS_BASE}/${encodeURIComponent(voice.elevenLabsVoiceId)}/stream?output_format=mp3_44100_128`;
+async function synthesiseChunk(text, { voice, model, fetchImpl, schedule, cancelSchedule, signal, onEvent, index, chunkCount, previousText, nextText }) {
+  const url = `${ELEVENLABS_BASE}/${encodeURIComponent(voice.elevenLabsVoiceId)}/stream?output_format=${encodeURIComponent(voice.ttsOutputFormat)}`;
   let attempt = 0;
   while (attempt < 2) {
     attempt += 1;
     const startedAt = Date.now();
-    onEvent({ phase: "request_started", chunkIndex: index, chunkCount, textCharacters: text.length, attempt, model: voice.ttsModel, outputFormat: "mp3_44100_128" });
+    onEvent({ phase: "request_started", chunkIndex: index, chunkCount, textCharacters: text.length, attempt, model: model.id, outputFormat: voice.ttsOutputFormat });
     try {
       const result = await consumeElevenLabsStream(fetchImpl, url, {
         method: "POST",
         headers: { "xi-api-key": voice.elevenLabsApiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
-        body: JSON.stringify({ text, model_id: voice.ttsModel, ...(previousText ? { previous_text: previousText } : {}), ...(nextText ? { next_text: nextText } : {}) })
-      }, { voice, schedule, cancelSchedule, signal, onEvent, index, chunkCount, attempt, startedAt });
-      return { audio: result.audio, mimeType: "audio/mpeg", model: voice.ttsModel, retryCount: attempt - 1, timing: result.timing };
+        body: JSON.stringify(elevenLabsRequestBody({ text, model, previousText, nextText }))
+      }, { voice, model, schedule, cancelSchedule, signal, onEvent, index, chunkCount, attempt, startedAt });
+      return { audio: result.audio, mimeType: "audio/mpeg", model: model.id, retryCount: attempt - 1, timing: result.timing };
     } catch (error) {
-      if (error instanceof VoiceProviderError) error.safeDetail = { operation: "synthesise", model: voice.ttsModel, textCharacters: text.length, chunkIndex: index, chunkCount, attempt, retryCount: attempt - 1, providerRequestId: error.providerRequestId, phase: error.category };
-      onEvent({ phase: "request_failed", chunkIndex: index, chunkCount, textCharacters: text.length, attempt, retryCount: attempt - 1, category: error?.category || "unknown", upstreamStatus: error?.upstreamStatus, durationMs: Date.now() - startedAt, model: voice.ttsModel, outputFormat: "mp3_44100_128" });
+      if (error instanceof VoiceProviderError) error.safeDetail = { operation: "synthesise", model: model.id, textCharacters: text.length, chunkIndex: index, chunkCount, attempt, retryCount: attempt - 1, providerRequestId: error.providerRequestId, phase: error.category };
+      onEvent({ phase: "request_failed", chunkIndex: index, chunkCount, textCharacters: text.length, attempt, retryCount: attempt - 1, category: error?.category || "unknown", upstreamStatus: error?.upstreamStatus, durationMs: Date.now() - startedAt, model: model.id, outputFormat: voice.ttsOutputFormat });
       if (attempt === 1 && retryableTtsFailure(error) && !signal?.aborted) { await boundedDelay(schedule, cancelSchedule, voice.ttsRetryDelayMs, signal); continue; }
       throw error;
     }
   }
 }
 
-async function consumeElevenLabsStream(fetchImpl, url, options, { voice, schedule, cancelSchedule, signal, onEvent, index, chunkCount, attempt, startedAt }) {
+async function consumeElevenLabsStream(fetchImpl, url, options, { voice, model, schedule, cancelSchedule, signal, onEvent, index, chunkCount, attempt, startedAt }) {
   const controller = new AbortController();
   const unlink = linkAbort(signal, controller);
   let timeoutCategory = "provider_timeout_first_byte";
@@ -109,7 +142,7 @@ async function consumeElevenLabsStream(fetchImpl, url, options, { voice, schedul
       error.providerRequestId = failure.providerRequestId;
       throw error;
     }
-    onEvent({ phase: "upstream_connected", chunkIndex: index, chunkCount, attempt, durationMs: Date.now() - startedAt, model: voice.ttsModel, outputFormat: "mp3_44100_128" });
+    onEvent({ phase: "upstream_connected", chunkIndex: index, chunkCount, attempt, durationMs: Date.now() - startedAt, model: model.id, outputFormat: voice.ttsOutputFormat });
     const announced = Number(response.headers.get("content-length") || 0);
     if (announced > voice.maxSpeechAudioBytes) throw new VoiceProviderError("elevenlabs", "ElevenLabs audio exceeded Nova's response limit.", undefined, "invalid_request");
     if (!response.body?.getReader) throw new VoiceProviderError("elevenlabs", "ElevenLabs returned an invalid audio stream.", undefined, "unknown");
@@ -124,7 +157,7 @@ async function consumeElevenLabsStream(fetchImpl, url, options, { voice, schedul
         if (!value?.byteLength) { timer = schedule(() => { timeoutCategory = firstByteAt ? "provider_stream_stalled" : "provider_timeout_first_byte"; controller.abort(); }, firstByteAt ? voice.ttsStreamStallTimeoutMs : voice.ttsFirstByteTimeoutMs); continue; }
         if (!firstByteAt) {
           firstByteAt = Date.now();
-          onEvent({ phase: "first_upstream_byte", chunkIndex: index, chunkCount, attempt, durationMs: firstByteAt - startedAt, model: voice.ttsModel, outputFormat: "mp3_44100_128" });
+          onEvent({ phase: "first_upstream_byte", chunkIndex: index, chunkCount, attempt, durationMs: firstByteAt - startedAt, model: model.id, outputFormat: voice.ttsOutputFormat });
         }
         const part = Buffer.from(value); bytes += part.length;
         if (bytes > voice.maxSpeechAudioBytes) throw new VoiceProviderError("elevenlabs", "ElevenLabs audio exceeded Nova's response limit.", undefined, "invalid_request");
@@ -138,7 +171,7 @@ async function consumeElevenLabsStream(fetchImpl, url, options, { voice, schedul
     }
     if (!bytes) throw new VoiceProviderError("elevenlabs", "ElevenLabs returned empty audio.", undefined, "unknown");
     const completedAt = Date.now();
-    onEvent({ phase: "chunk_complete", chunkIndex: index, chunkCount, attempt, retryCount: attempt - 1, textCharacters: JSON.parse(options.body).text.length, audioBytes: bytes, firstByteMs: firstByteAt - startedAt, durationMs: completedAt - startedAt, model: voice.ttsModel, outputFormat: "mp3_44100_128" });
+    onEvent({ phase: "chunk_complete", chunkIndex: index, chunkCount, attempt, retryCount: attempt - 1, textCharacters: JSON.parse(options.body).text.length, audioBytes: bytes, firstByteMs: firstByteAt - startedAt, durationMs: completedAt - startedAt, model: model.id, outputFormat: voice.ttsOutputFormat });
     return { audio: Buffer.concat(parts), timing: { upstreamConnectedMs: undefined, firstByteMs: firstByteAt - startedAt, completeMs: completedAt - startedAt } };
   } catch (error) {
     if (error instanceof VoiceProviderError || error instanceof VoiceValidationError) throw error;
@@ -156,6 +189,22 @@ async function timedRequest(fetchImpl, url, options, timeoutMs, service, schedul
   try { const response = await fetchImpl(url, { ...options, signal: controller.signal }); return await consume(response); }
   catch (error) { if (error instanceof VoiceProviderError || error instanceof VoiceValidationError) throw error; if (controller.signal.aborted || error?.name === "AbortError") throw new VoiceTimeoutError(service); throw new VoiceProviderError(service.toLowerCase(), `${service} could not be reached.`); }
   finally { cancelSchedule(timer); }
+}
+
+async function verifyElevenLabsCapabilities({ voice, fetchImpl, schedule, cancelSchedule }) {
+  const headers = { "xi-api-key": voice.elevenLabsApiKey, Accept: "application/json" };
+  const [models, selectedVoice] = await Promise.all([
+    timedRequest(fetchImpl, ELEVENLABS_MODELS, { headers }, voice.capabilityTimeoutMs, "ElevenLabs capabilities", schedule, cancelSchedule, (response) => safeJson(response, "ElevenLabs capabilities")),
+    timedRequest(fetchImpl, `${ELEVENLABS_VOICES}/${encodeURIComponent(voice.elevenLabsVoiceId)}`, { headers }, voice.capabilityTimeoutMs, "ElevenLabs voice", schedule, cancelSchedule, (response) => safeJson(response, "ElevenLabs voice"))
+  ]);
+  const model = selectElevenLabsModel(models, voice.ttsModel);
+  if (!model) throw new VoiceProviderError("elevenlabs", "No supported multilingual ElevenLabs speech model is available.", 400, "model", "unsupported_model");
+  if (!selectedVoice || selectedVoice.voice_id !== voice.elevenLabsVoiceId) throw new VoiceProviderError("elevenlabs", "The selected ElevenLabs voice is unavailable.", 403, "voice_access", "voice_access_denied");
+  const highQualityModels = Array.isArray(selectedVoice.high_quality_base_model_ids) ? selectedVoice.high_quality_base_model_ids : [];
+  return Object.freeze({
+    model,
+    voiceCompatibility: highQualityModels.includes(model.id) ? "high-quality-model-listed" : "voice-access-verified"
+  });
 }
 
 async function safeJson(response, service) {
@@ -187,6 +236,11 @@ async function classifyProviderFailure(response) {
 
 function safeProviderCode(value) { const code = typeof value === "string" ? value.trim() : ""; return /^[a-z0-9_.-]{1,64}$/i.test(code) ? code : undefined; }
 function safeProviderRequestId(value) { const id = typeof value === "string" ? value.trim() : ""; return /^[a-z0-9_.:-]{1,128}$/i.test(id) ? id : undefined; }
+function safeReadinessCategory(error) {
+  if (error instanceof VoiceTimeoutError) return "timeout";
+  if (error instanceof VoiceProviderError && ["authentication", "quota", "voice_access", "model", "rate_limit", "provider_5xx", "provider_rejected", "unknown"].includes(error.category)) return error.category;
+  return error ? "unavailable" : undefined;
+}
 function retryableTtsFailure(error) {
   return error instanceof VoiceProviderError && ["rate_limit", "provider_5xx", "provider_timeout_first_byte", "provider_stream_stalled"].includes(error.category);
 }

@@ -11,7 +11,7 @@ import { createBenchmarkProviders } from "./benchmark/providers.js";
 import { createVoiceBenchmark } from "./benchmark/service.js";
 import { createVoiceService } from "./voice/voice-service.js";
 
-export function createApp({ environment = process.env, storage: storageOverride, logger = console } = {}) {
+export function createApp({ environment = process.env, storage: storageOverride, logger = console, voiceFetchImpl } = {}) {
   const config = readConfig(environment);
   const storage = storageOverride || createStorage(config);
   const initialize = () => storage.initialize({ owner: INITIAL_OWNER_PROFILE, projects: INITIAL_PROJECTS, memories: INITIAL_MEMORIES });
@@ -32,7 +32,7 @@ export function createApp({ environment = process.env, storage: storageOverride,
   });
   const benchmarkProviders = createBenchmarkProviders({ config: config.voiceBenchmark });
   const voiceBenchmark = createVoiceBenchmark({ config, storage, ownerId: OWNER_ID, providers: benchmarkProviders });
-  const voiceService = createVoiceService({ config });
+  const voiceService = createVoiceService({ config, ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}) });
 
   return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, voiceBenchmark, voiceService, logger });
 }

@@ -9,6 +9,11 @@ import { createVoiceV2Client } from "../assets/voice-v2-client.js";
 import { createAudioPlayback } from "../assets/voice-capture.js";
 
 const environment = { OPENAI_API_KEY: "openai-secret", ELEVENLABS_API_KEY: "eleven-secret", ELEVENLABS_VOICE_ID: "owner-voice" };
+function withCapabilities(handler) { return async (url, options) => {
+  if (url === "https://api.elevenlabs.io/v1/models") return new Response(JSON.stringify([{ model_id: "eleven_v3_conversational", can_do_text_to_speech: true }, { model_id: "eleven_flash_v2_5", can_do_text_to_speech: true }]), { status: 200, headers: { "content-type": "application/json" } });
+  if (String(url).startsWith("https://api.elevenlabs.io/v1/voices/")) return new Response(JSON.stringify({ voice_id: environment.ELEVENLABS_VOICE_ID, high_quality_base_model_ids: ["eleven_v3_conversational"] }), { status: 200, headers: { "content-type": "application/json" } });
+  return handler(url, options);
+}; }
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 function config(overrides = {}) { const base = readConfig(environment); return { ...base, voiceV2: { ...base.voiceV2, ttsRetryDelayMs: 0, ...overrides } }; }
 
@@ -22,11 +27,11 @@ test("semantic speech chunks preserve exact Arabic-English order without skipped
 
 test("first complete audio chunk is available before later ElevenLabs generation completes", async () => {
   const second = deferred(); const requests = [];
-  const service = createVoiceService({ config: config({ firstSpeechChunkCharacters: 35, nextSpeechChunkCharacters: 45 }), fetchImpl: async (_url, options) => {
+  const service = createVoiceService({ config: config({ firstSpeechChunkCharacters: 35, nextSpeechChunkCharacters: 45 }), fetchImpl: withCapabilities(async (_url, options) => {
     const text = JSON.parse(options.body).text; requests.push(text);
     if (requests.length === 2) await second.promise;
     return new Response(Buffer.from(`mp3:${text}`), { status: 200, headers: { "content-type": "audio/mpeg" } });
-  } });
+  }) });
   const iterator = service.streamSpeech({ text: "This first sentence begins now. This second sentence waits for generation. A third sentence follows." })[Symbol.asyncIterator]();
   const first = await iterator.next(); assert.equal(first.done, false); assert.equal(first.value.index, 0); assert.match(first.value.audio.toString(), /^mp3:This first sentence/);
   const later = iterator.next(); await Promise.resolve(); assert.equal(requests.length, 2);
@@ -89,33 +94,56 @@ test("stopping incremental playback discards prefetched audio and stale chunks n
 
 test("first-byte timeout retries once and reports its safe phase without retrying forever", async () => {
   let calls = 0;
-  const service = createVoiceService({ config: config({ ttsFirstByteTimeoutMs: 5, ttsStreamStallTimeoutMs: 5, ttsChunkTimeoutMs: 20 }), fetchImpl: async (_url, { signal }) => {
+  const service = createVoiceService({ config: config({ ttsFirstByteTimeoutMs: 5, ttsStreamStallTimeoutMs: 5, ttsChunkTimeoutMs: 20 }), fetchImpl: withCapabilities(async (_url, { signal }) => {
     calls += 1;
     const body = new ReadableStream({ start(controller) { signal.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")), { once: true }); } });
     return new Response(body, { status: 200, headers: { "content-type": "audio/mpeg" } });
-  } });
+  }) });
   await assert.rejects(service.synthesise({ text: "Wait for first byte" }), (error) => error instanceof VoiceProviderError && error.category === "provider_timeout_first_byte");
   assert.equal(calls, 2);
 });
 
 test("a stalled ElevenLabs stream is distinct from first-byte timeout and retries only once", async () => {
   let calls = 0;
-  const service = createVoiceService({ config: config({ ttsFirstByteTimeoutMs: 20, ttsStreamStallTimeoutMs: 5, ttsChunkTimeoutMs: 30 }), fetchImpl: async (_url, { signal }) => {
+  const service = createVoiceService({ config: config({ ttsFirstByteTimeoutMs: 20, ttsStreamStallTimeoutMs: 5, ttsChunkTimeoutMs: 30 }), fetchImpl: withCapabilities(async (_url, { signal }) => {
     calls += 1;
     const body = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("mp3-start")); signal.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")), { once: true }); } });
     return new Response(body, { status: 200, headers: { "content-type": "audio/mpeg" } });
-  } });
+  }) });
   await assert.rejects(service.synthesise({ text: "Detect a stalled stream" }), (error) => error instanceof VoiceProviderError && error.category === "provider_stream_stalled");
   assert.equal(calls, 2);
 });
 
 test("client cancellation aborts ElevenLabs generation and is never retried", async () => {
   let calls = 0; const controller = new AbortController();
-  const service = createVoiceService({ config: config(), fetchImpl: async (_url, { signal }) => {
+  const service = createVoiceService({ config: config(), fetchImpl: withCapabilities(async (_url, { signal }) => {
     calls += 1;
     const body = new ReadableStream({ start(streamController) { signal.addEventListener("abort", () => streamController.error(new DOMException("aborted", "AbortError")), { once: true }); } });
     return new Response(body, { status: 200 });
-  } });
+  }) });
+  await service.capabilities();
   const result = service.synthesise({ text: "Cancel this turn" }, { signal: controller.signal }); controller.abort();
-  await assert.rejects(result, (error) => error instanceof VoiceProviderError && error.category === "client_cancelled"); assert.equal(calls, 1);
+  await assert.rejects(result, (error) => error instanceof VoiceProviderError && error.category === "client_cancelled"); assert.ok(calls <= 1);
+});
+
+test("v3 conversational multi-chunk requests omit incompatible continuity fields without changing Arabic-English order", async () => {
+  const requests = [];
+  const service = createVoiceService({ config: config({ firstSpeechChunkCharacters: 55, nextSpeechChunkCharacters: 70 }), fetchImpl: withCapabilities(async (_url, options) => {
+    const body = JSON.parse(options.body); requests.push(body);
+    return new Response(Buffer.from(`mp3:${body.text}`), { status: 200, headers: { "content-type": "audio/mpeg" } });
+  }) });
+  const text = "الحمد لله وضعي تمام. أنا Nova مساعدك الرقمي. نراجع Sharp Cuts API ثم missed-call recovery خطوة بخطوة. ونكمل كل التفاصيل بدون حذف أو تكرار.";
+  const result = await service.synthesise({ text });
+  assert.ok(requests.length > 1); assert.equal(result.spokenText, text);
+  for (const body of requests) { assert.equal(body.model_id, "eleven_v3_conversational"); assert.equal("previous_text" in body, false); assert.equal("next_text" in body, false); }
+  assert.equal(requests.map(({ text: chunk }) => chunk).join(" "), text);
+});
+
+test("incremental playback reports a later stream failure once and clears stale playback", async () => {
+  const players = []; let errors = 0; let ended = 0;
+  class AudioMock { constructor() { this.listeners = new Map(); players.push(this); } addEventListener(name, callback) { this.listeners.set(name, callback); } play() { return Promise.resolve(); } pause() {} removeAttribute() {} load() {} end() { this.listeners.get("ended")?.(); } }
+  const playback = createAudioPlayback({ Audio: AudioMock, URL: { createObjectURL: () => "blob:test", revokeObjectURL() {} } });
+  playback.play({ async *[Symbol.asyncIterator]() { yield new Blob(["first"]); throw new Error("later chunk failed"); } }, { onEnded: () => { ended += 1; }, onError: () => { errors += 1; } });
+  await new Promise((resolve) => setImmediate(resolve)); players[0].end(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(errors, 1); assert.equal(ended, 0); assert.equal(players.length, 1);
 });

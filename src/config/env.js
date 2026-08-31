@@ -1,3 +1,5 @@
+import { ELEVENLABS_DEFAULT_TTS_MODEL, ELEVENLABS_OUTPUT_FORMAT } from "../voice/elevenlabs-models.js";
+
 const SUPPORTED_MODEL_PROVIDERS = new Set(["mock", "openai"]);
 const SUPPORTED_STORAGE_PROVIDERS = new Set(["auto", "memory", "postgres"]);
 
@@ -66,7 +68,8 @@ export function readConfig(environment = process.env) {
     maxBodyBytes: 64 * 1024,
     voiceV2: Object.freeze({
       sttModel: "gpt-transcribe",
-      ttsModel: "eleven_v3_conversational",
+      ttsModel: ELEVENLABS_DEFAULT_TTS_MODEL,
+      ttsOutputFormat: ELEVENLABS_OUTPUT_FORMAT,
       openAIApiKey: environment.OPENAI_API_KEY || null,
       elevenLabsApiKey: environment.ELEVENLABS_API_KEY || null,
       elevenLabsVoiceId: environment.ELEVENLABS_VOICE_ID || null,
@@ -77,8 +80,10 @@ export function readConfig(environment = process.env) {
       maxSpeechAudioBytes: 8 * 1024 * 1024,
       maxSpeechCharacters: 1800,
       maxSpeechChunks: 8,
-      firstSpeechChunkCharacters: 180,
-      nextSpeechChunkCharacters: 420,
+      firstSpeechChunkCharacters: 140,
+      nextSpeechChunkCharacters: 360,
+      capabilityCacheMs: 10 * 60 * 1000,
+      capabilityTimeoutMs: 5_000,
       ttsRetryDelayMs: 200,
       requestTimeoutMs: 25_000,
       ttsFirstByteTimeoutMs: 10_000,

@@ -36,7 +36,7 @@ export function createVoiceV2Client({ fetchImpl = globalThis.fetch, now = () => 
       return {
         audio,
         stream,
-        model: response.headers.get("x-nova-voice-model") || "eleven_v3_conversational",
+        model: response.headers.get("x-nova-voice-model") || "unknown",
         timing: { requestStartedAt, responseHeadersAt, firstAudioByteAt, firstPlayableAt }
       };
     }

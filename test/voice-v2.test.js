@@ -113,6 +113,12 @@ test("TTS failure preserves the written Nova turn and never invokes browser spee
   assert.equal(flow.timers.at(-1).delay, 250); flow.runTimer(); assert.equal(flow.mode.getState(), "listening"); assert.equal(flow.counts().sends, 1);
 });
 
+test("a later streamed TTS failure clears active state and re-arms Listening without a duplicate turn", async () => {
+  const flow = setup(); await flow.mode.start(); assert.equal(await flow.audio(), true); flow.started(); flow.playbackError();
+  assert.equal(flow.mode.getState(), "retrying"); assert.equal(flow.counts().sends, 1); assert.ok(flow.events.slice(-6).includes("playback-stop")); assert.ok(flow.events.slice(-6).includes("capture-stop"));
+  flow.runTimer(); assert.equal(flow.mode.getState(), "listening"); assert.equal(flow.counts().sends, 1);
+});
+
 test("Arabic-English mixed transcripts pass unchanged into the existing Nova pipeline", async () => {
   const mixed = "محمد، check Nova Brain API وSharp Cuts booking رقم 079 123 4567"; const flow = setup({ transcript: mixed }); await flow.mode.start(); await flow.audio(); assert.deepEqual(flow.transcripts, [mixed]); assert.ok(flow.events.includes(`send:${mixed}`));
 });
