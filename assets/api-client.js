@@ -9,13 +9,14 @@ export function createNovaClient({ fetchImpl = globalThis.fetch, endpoint = "/ap
     get conversationId() { return conversationId; },
     resume(id) { conversationId = typeof id === "string" && id ? id : undefined; },
     reset() { conversationId = undefined; },
-    async send(message) {
+    async send(message, { signal } = {}) {
       const payload = { message };
       if (conversationId) payload.conversationId = conversationId;
       let response;
       try {
-        response = await fetchImpl(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      } catch {
+        response = await fetchImpl(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, signal, body: JSON.stringify(payload) });
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
         throw new NovaApiError("Nova could not be reached. Check your connection and try again.");
       }
       let result;

@@ -2,57 +2,95 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createVoiceV2 } from "../assets/voice-v2.js";
 
-function setup({ connectError, transcript = "مرحبا Nova، راجع Sharp Cuts API رقم 35", transcribeError, sendError, speechError } = {}) {
-  const events = []; const timers = []; let handlers; let barge; let playbackCallbacks; let sends = 0; let speechCalls = 0;
+function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
+
+function setup({ connectError, connectGate, transcript = "مرحبا Nova، راجع Sharp Cuts API رقم 35", transcribeError, sendError, speechError, manualReady = false, transcribeGate, agentGate, speechGate } = {}) {
+  const events = []; const timers = []; const timings = []; let handlers; let barge; let playbackCallbacks; let sends = 0; let speechCalls = 0; let clock = 0;
   const capture = {
-    async connect() { events.push("connect"); if (connectError) throw connectError; },
-    listen(next) { handlers = next; events.push("listen"); },
+    async connect() { events.push("connect"); if (connectGate) await connectGate.promise; if (connectError) throw connectError; },
+    listen(next) { handlers = next; events.push("listen-arm"); if (!manualReady) { events.push("listen-ready"); next.onReady(); } },
     watchForBargeIn(callback) { barge = callback; events.push("watch-barge"); },
     stop() { events.push("capture-stop"); }, async destroy() { events.push("destroy"); }
   };
   const client = {
-    async transcribe({ signal }) { events.push("transcribe"); assert.equal(signal instanceof AbortSignal, true); if (transcribeError) throw transcribeError; return { transcript }; },
-    async speech(text, { signal }) { speechCalls += 1; events.push(`speech:${text}`); assert.equal(signal instanceof AbortSignal, true); if (speechError) throw speechError; return { audio: new Blob(["mp3"], { type: "audio/mpeg" }) }; }
+    async transcribe({ signal }) { events.push("transcribe"); assert.equal(signal instanceof AbortSignal, true); if (transcribeGate) await transcribeGate.promise; if (transcribeError) throw transcribeError; clock += 40; return { transcript }; },
+    async speech(text, { signal }) { speechCalls += 1; events.push(`speech:${text}`); assert.equal(signal instanceof AbortSignal, true); if (speechGate) await speechGate.promise; if (speechError) throw speechError; clock += 80; return { audio: new Blob(["mp3"], { type: "audio/mpeg" }) }; }
   };
   const playback = { play(_audio, callbacks) { playbackCallbacks = callbacks; events.push("play"); }, stop() { events.push("playback-stop"); } };
   const states = []; const errors = []; const transcripts = [];
   const mode = createVoiceV2({ capture, client, playback,
-    async sendTurn(text) { sends += 1; events.push(`send:${text}`); if (sendError) throw sendError; return { message: `Nova reply to ${text}`, conversationId: "conversation-1" }; },
-    onTranscript: (text) => transcripts.push(text), onState: ({ state }) => states.push(state), onError: (message) => errors.push(message),
-    schedule(callback, delay) { const timer = { callback, delay, cancelled: false }; timers.push(timer); return timer; }, cancelSchedule(timer) { timer.cancelled = true; }
+    async sendTurn(text, { signal, prepareAssistant }) {
+      sends += 1; events.push(`send:${text}`); assert.equal(signal instanceof AbortSignal, true); if (agentGate) await agentGate.promise; if (sendError) throw sendError; clock += 120;
+      const result = { message: `Nova reply to ${text}`, conversationId: "conversation-1" }; let preparedAssistant; let preparationError;
+      try { preparedAssistant = await prepareAssistant(result.message, result); } catch (error) { preparationError = error; }
+      events.push("render-assistant"); events.push("refresh-recents-background");
+      return { ...result, preparedAssistant, preparationError };
+    },
+    onTranscript: (text) => transcripts.push(text), onState: ({ state }) => states.push(state), onError: (message) => errors.push(message), onTiming: (value) => timings.push(value),
+    now: () => clock, schedule(callback, delay) { const timer = { callback, delay, cancelled: false }; timers.push(timer); return timer; }, cancelSchedule(timer) { timer.cancelled = true; }
   });
   return {
-    mode, events, states, errors, transcripts, timers,
-    audio: (recording = { audio: new Blob(["audio"], { type: "audio/webm" }), mimeType: "audio/webm", durationSeconds: 1 }) => handlers.onAudio(recording),
-    noSpeech: () => handlers.onNoSpeech(), barge: () => barge(), ended: () => playbackCallbacks.onEnded(), playbackError: () => playbackCallbacks.onError(),
+    mode, events, states, errors, transcripts, timings, timers,
+    ready: () => { events.push("listen-ready"); handlers.onReady(); },
+    audio: (recording = { audio: new Blob(["audio"], { type: "audio/webm" }), mimeType: "audio/webm", durationSeconds: 1, endedAt: clock }) => handlers.onAudio(recording),
+    noSpeech: () => handlers.onNoSpeech(), barge: () => barge(),
+    started: () => { clock += 5; playbackCallbacks.onStarted(); },
+    ended: () => { clock += 500; playbackCallbacks.onEnded(); },
+    playbackError: () => playbackCallbacks.onError(),
     runTimer: (index = timers.length - 1) => { const timer = timers[index]; if (!timer.cancelled) timer.callback(); },
     counts: () => ({ sends, speechCalls })
   };
 }
 
-test("Start Voice continuously runs listen, transcribe, existing Nova turn, ElevenLabs audio, then listens again", async () => {
+test("Start Voice runs the authoritative Nova turn, starts TTS before rendering, then listens again", async () => {
   const flow = setup(); assert.equal(await flow.mode.start(), true); assert.equal(flow.mode.getState(), "listening");
-  assert.equal(await flow.audio(), true); assert.equal(flow.mode.getState(), "speaking"); assert.equal(flow.counts().sends, 1); assert.equal(flow.counts().speechCalls, 1);
-  assert.deepEqual(flow.states.slice(0, 6), ["connecting", "listening", "transcribing", "thinking", "speaking"]); assert.ok(flow.events.includes("play"));
-  flow.ended(); assert.equal(flow.mode.getState(), "listening"); assert.equal(flow.events.filter((item) => item === "listen").length, 2);
+  assert.equal(await flow.audio(), true); assert.equal(flow.mode.getState(), "speaking");
+  assert.ok(flow.events.indexOf("speech:Nova reply to مرحبا Nova، راجع Sharp Cuts API رقم 35") < flow.events.indexOf("render-assistant"));
+  assert.ok(flow.events.indexOf("render-assistant") < flow.events.indexOf("refresh-recents-background"));
+  assert.equal(flow.counts().sends, 1); assert.equal(flow.counts().speechCalls, 1); assert.ok(flow.events.includes("play"));
+  flow.started(); flow.ended(); assert.equal(flow.mode.getState(), "listening"); assert.equal(flow.events.filter((item) => item === "listen-arm").length, 2);
 });
 
-test("barge-in stops Nova playback and returns to listening without duplicating a turn", async () => {
-  const flow = setup(); await flow.mode.start(); await flow.audio(); const sends = flow.counts().sends; flow.barge();
-  assert.ok(flow.states.includes("interrupted")); assert.equal(flow.mode.getState(), "listening"); assert.equal(flow.counts().sends, sends); assert.ok(flow.events.slice(-5).includes("playback-stop"));
+test("Listening is not published until MediaRecorder reports capture ready", async () => {
+  const flow = setup({ manualReady: true }); await flow.mode.start(); assert.equal(flow.mode.getState(), "getting_ready"); assert.equal(flow.states.includes("listening"), false);
+  flow.ready(); assert.equal(flow.mode.getState(), "listening");
 });
 
-test("End Voice cancels capture, playback, retries, and prevents late completion", async () => {
-  const flow = setup(); flow.mode.end(); await flow.mode.start();
-  const process = flow.audio(); flow.mode.end(); await process;
+test("timing diagnostics measure zero-overhead TTS dispatch and immediate handoff", async () => {
+  const flow = setup(); await flow.mode.start(); await flow.audio(); flow.started(); flow.ended();
+  const final = flow.timings.at(-1); assert.equal(final.stage, "listening-ready"); assert.deepEqual(final.measurements, { turnEndToSttStart: 0, stt: 40, transcriptToAgent: 0, agent: 120, assistantToTtsStart: 0, tts: 80, audioReadyToStart: 5, audioEndToListening: 0 });
+});
+
+test("barge-in aborts stale TTS/playback and re-arms without duplicating a turn", async () => {
+  const gate = deferred(); const flow = setup({ speechGate: gate }); await flow.mode.start(); const processing = flow.audio(); await Promise.resolve(); await Promise.resolve();
+  assert.equal(flow.mode.getState(), "speaking"); const sends = flow.counts().sends; flow.barge(); assert.ok(flow.states.includes("interrupted")); assert.equal(flow.mode.getState(), "listening");
+  gate.resolve(); await processing; assert.equal(flow.counts().sends, sends); assert.equal(flow.events.includes("play"), false); assert.ok(flow.events.slice(-6).includes("playback-stop"));
+});
+
+test("End Voice cancels pending transcription and prevents late completion", async () => {
+  const gate = deferred(); const flow = setup({ transcribeGate: gate }); await flow.mode.start(); const process = flow.audio(); flow.mode.end(); gate.resolve(); await process;
   assert.equal(flow.mode.isActive(), false); assert.equal(flow.mode.getState(), "idle"); assert.equal(flow.counts().sends, 0); assert.ok(flow.events.includes("destroy"));
 });
 
-test("duplicate recorder completion cannot create duplicate Nova turns", async () => {
+test("End Voice during connecting or capture arming closes late microphone resources", async () => {
+  const connectGate = deferred(); const connecting = setup({ connectGate }); const start = connecting.mode.start(); connecting.mode.end(); connectGate.resolve(); assert.equal(await start, false); assert.equal(connecting.mode.getState(), "idle"); assert.equal(connecting.events.filter((item) => item === "destroy").length, 2);
+  const arming = setup({ manualReady: true }); await arming.mode.start(); assert.equal(arming.mode.getState(), "getting_ready"); arming.mode.end(); arming.ready(); assert.equal(arming.mode.getState(), "idle");
+});
+
+test("End Voice cancels thinking and TTS states without stale playback", async () => {
+  const agentGate = deferred(); const thinking = setup({ agentGate }); await thinking.mode.start(); const thinkingTurn = thinking.audio(); await Promise.resolve(); thinking.mode.end(); agentGate.resolve(); await thinkingTurn; assert.equal(thinking.events.includes("play"), false);
+  const speechGate = deferred(); const speaking = setup({ speechGate }); await speaking.mode.start(); const speakingTurn = speaking.audio(); await Promise.resolve(); await Promise.resolve(); speaking.mode.end(); speechGate.resolve(); await speakingTurn; assert.equal(speaking.events.includes("play"), false);
+});
+
+test("End Voice during active playback ignores late audio completion", async () => {
+  const flow = setup(); await flow.mode.start(); await flow.audio(); flow.started(); const listens = flow.events.filter((item) => item === "listen-arm").length; flow.mode.end(); flow.ended(); assert.equal(flow.mode.getState(), "idle"); assert.equal(flow.events.filter((item) => item === "listen-arm").length, listens);
+});
+
+test("duplicate recorder completion cannot create duplicate Nova turns during fast handoff", async () => {
   const flow = setup(); await flow.mode.start(); const first = flow.audio(); const duplicate = flow.audio(); assert.equal(await duplicate, false); await first; assert.equal(flow.counts().sends, 1);
 });
 
-test("no speech retries listening without sending a message", async () => {
+test("no speech retries only after readiness and never sends a message", async () => {
   const flow = setup(); await flow.mode.start(); flow.noSpeech(); assert.equal(flow.mode.getState(), "retrying"); assert.equal(flow.timers.at(-1).delay, 900); flow.runTimer(); assert.equal(flow.mode.getState(), "listening"); assert.equal(flow.counts().sends, 0);
 });
 
@@ -64,10 +102,10 @@ test("STT failure recovers without sending or speaking", async () => {
   const flow = setup({ transcribeError: new Error("upstream") }); await flow.mode.start(); assert.equal(await flow.audio(), false); assert.ok(flow.states.includes("error")); assert.equal(flow.mode.getState(), "retrying"); assert.equal(flow.counts().sends, 0); assert.equal(flow.counts().speechCalls, 0);
 });
 
-test("TTS failure preserves the written Nova turn and recovers without browser speech fallback", async () => {
-  const flow = setup({ speechError: new Error("tts failed") }); await flow.mode.start(); assert.equal(await flow.audio(), false); assert.equal(flow.counts().sends, 1); assert.equal(flow.mode.getState(), "retrying"); assert.match(flow.errors.at(-1), /written reply is safe/i); assert.equal(flow.events.includes("play"), false);
+test("TTS failure preserves the written Nova turn and never invokes browser speech", async () => {
+  const flow = setup({ speechError: new Error("tts failed") }); await flow.mode.start(); assert.equal(await flow.audio(), false); assert.equal(flow.counts().sends, 1); assert.ok(flow.events.includes("render-assistant")); assert.equal(flow.mode.getState(), "retrying"); assert.match(flow.errors.at(-1), /written reply is safe/i); assert.equal(flow.events.includes("play"), false);
 });
 
-test("Arabic-English mixed transcripts pass unchanged into the existing Nova send pipeline", async () => {
+test("Arabic-English mixed transcripts pass unchanged into the existing Nova pipeline", async () => {
   const mixed = "محمد، check Nova Brain API وSharp Cuts booking رقم 079 123 4567"; const flow = setup({ transcript: mixed }); await flow.mode.start(); await flow.audio(); assert.deepEqual(flow.transcripts, [mixed]); assert.ok(flow.events.includes(`send:${mixed}`));
 });

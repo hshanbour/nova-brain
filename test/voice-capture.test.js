@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { createMediaVoiceCapture } from "../assets/voice-capture.js";
 
 function setup() {
-  const timers = []; let clock = 0; let level = 0; let constraints; const tracks = [{ stopped: false, stop() { this.stopped = true; } }];
+  const timers = []; let clock = 0; let level = 0; let constraints; let activeRecorder; const tracks = [{ stopped: false, stop() { this.stopped = true; } }];
   const stream = { getTracks: () => tracks };
   class Recorder {
     static isTypeSupported(type) { return type.startsWith("audio/webm"); }
-    constructor(_stream, options) { this.mimeType = options.mimeType; this.state = "inactive"; this.listeners = new Map(); }
+    constructor(_stream, options) { this.mimeType = options.mimeType; this.state = "inactive"; this.listeners = new Map(); activeRecorder = this; }
     addEventListener(name, callback) { this.listeners.set(name, callback); }
-    start() { this.state = "recording"; }
+    start(timeslice) { this.timeslice = timeslice; this.state = "recording"; }
+    emit(value) { this.listeners.get("dataavailable")?.({ data: new Blob([value], { type: this.mimeType }) }); }
     stop() { if (this.state !== "recording") return; this.state = "inactive"; this.listeners.get("dataavailable")?.({ data: new Blob(["recorded"], { type: this.mimeType }) }); this.listeners.get("stop")?.(); }
   }
   const analyser = { fftSize: 16, smoothingTimeConstant: 0, getByteTimeDomainData(data) { data.fill(Math.max(0, Math.min(255, Math.round(128 + level * 128)))); } };
@@ -18,7 +19,7 @@ function setup() {
     now: () => clock, schedule(callback, delay) { const timer = { callback, delay, cancelled: false }; timers.push(timer); return timer; }, cancelSchedule(timer) { timer.cancelled = true; }
   });
   const run = () => { const timer = timers.find((item) => !item.cancelled && !item.ran); if (!timer) throw new Error("No scheduled VAD sample."); timer.ran = true; clock += timer.delay; timer.callback(); };
-  return { capture, setLevel(value) { level = value; }, run, tracks, constraints: () => constraints };
+  return { capture, setLevel(value) { level = value; }, run, tracks, recorder: () => activeRecorder, constraints: () => constraints };
 }
 
 test("MediaRecorder VAD ends a spoken turn after bounded silence", async () => {
@@ -35,6 +36,16 @@ test("MediaRecorder VAD reports bounded no-speech without producing an audio tur
 });
 
 test("playback monitor detects sustained owner speech for barge-in", async () => {
-  const flow = setup(); await flow.capture.connect(); let barges = 0; flow.capture.watchForBargeIn(() => { barges += 1; }); flow.setLevel(0.1); flow.run(); flow.run(); flow.run(); assert.equal(barges, 1);
+  const flow = setup(); await flow.capture.connect(); let barges = 0; flow.capture.watchForBargeIn(() => { barges += 1; }); flow.setLevel(0.1); flow.run(); flow.run(); assert.equal(barges, 1);
   await flow.capture.destroy(); assert.equal(flow.tracks[0].stopped, true);
+});
+
+test("capture is ready before Listening and retains only bounded pre-roll before speech", async () => {
+  const flow = setup(); await flow.capture.connect(); const events = []; let recording;
+  flow.capture.listen({ onReady: () => events.push("ready"), onAudio: (value) => { recording = value; events.push("audio"); } });
+  assert.deepEqual(events, ["ready"]); assert.equal(flow.recorder().timeslice, 100);
+  for (const value of ["old-1", "old-2", "old-3", "pre-1", "pre-2", "pre-3"]) flow.recorder().emit(value);
+  flow.setLevel(0.1); flow.run(); flow.run(); flow.recorder().emit("spoken"); flow.setLevel(0); for (let index = 0; index < 15; index += 1) flow.run();
+  assert.deepEqual(events, ["ready", "audio"]); const text = await recording.audio.text();
+  assert.doesNotMatch(text, /old-/); assert.match(text, /pre-1pre-2pre-3spoken/); assert.equal(recording.preRollMs, 300);
 });

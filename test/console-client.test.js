@@ -25,3 +25,10 @@ test("console client handles network and invalid response failures", async () =>
   await assert.rejects(() => unavailable.send("Hello"), /Nova could not be reached/);
   await assert.rejects(() => incomplete.send("Hello"), /incomplete response/);
 });
+
+test("console client forwards cancellation and preserves AbortError", async () => {
+  const controller = new AbortController(); let receivedSignal;
+  const client = createNovaClient({ fetchImpl: async (_url, options) => { receivedSignal = options.signal; const error = new Error("cancelled"); error.name = "AbortError"; throw error; } });
+  await assert.rejects(() => client.send("Cancel this turn", { signal: controller.signal }), (error) => error.name === "AbortError");
+  assert.equal(receivedSignal, controller.signal);
+});

@@ -134,17 +134,23 @@ function setPending(value) {
   sendButton.querySelector("span:first-child").textContent = value ? "Working" : "Send";
 }
 
-async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false}={}) {
+async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,signal,prepareAssistant}={}) {
   requestError.hidden = true; addMessage({ role: "user", text: message }); addThinking(); setPending(true);
   try {
-    const result = await client.send(message);
+    const result = await client.send(message,{signal});
     localStorage.setItem(conversationKey, result.conversationId);
+    let preparedAssistant; let preparationError;
+    if (prepareAssistant) {
+      try { preparedAssistant = await prepareAssistant(result.message, result); }
+      catch (error) { preparationError = error; }
+    }
     document.querySelector("#thinkingMessage")?.remove();
     addMessage({ role: "assistant", text: result.message, metadata: result, autoSpeak: autoSpeakResponse });
     providerStatus.textContent = `${result.provider || "Agent"} provider · Ready`;
-    await refreshRecents(); return result;
+    void refreshRecents(); return { ...result, preparedAssistant, preparationError };
   } catch (error) {
-    document.querySelector("#thinkingMessage")?.remove(); requestError.textContent = error.message; requestError.hidden = false;
+    document.querySelector("#thinkingMessage")?.remove();
+    if(error?.name!=="AbortError"){requestError.textContent = error.message; requestError.hidden = false;}
     if(throwOnError)throw error;
   } finally { setPending(false); input.focus(); }
 }
@@ -295,10 +301,10 @@ microphoneLanguage.addEventListener("change",()=>setMicrophoneLanguage(microphon
 document.querySelector("#voiceInputSupport").textContent=voice.supported?"Browser recognition uses this primary locale for every listen and restart; it does not reliably auto-detect Arabic and English together.":"Speech recognition is unavailable in this browser.";
 if(!voice.supported){voiceButton.classList.add("unsupported");voiceButton.title="Voice input is not supported in this browser";}
 const voiceModeButton=document.querySelector("#voiceModeButton");const endVoiceButton=document.querySelector("#endVoiceButton");const voiceModeStatus=document.querySelector("#voiceModeStatus");
-const voiceModeLabels={idle:"Voice idle",connecting:"Connecting microphone…",listening:"Listening…",transcribing:"Transcribing…",thinking:"Nova thinking…",speaking:"Nova speaking… · speak to interrupt",interrupted:"Interrupted · listening…",retrying:"No speech · retrying…",error:"Voice needs attention"};
+const voiceModeLabels={idle:"Voice idle",connecting:"Connecting microphone…",getting_ready:"Getting ready…",listening:"Listening…",transcribing:"Transcribing…",thinking:"Nova thinking…",speaking:"Nova speaking… · speak to interrupt",interrupted:"Interrupted · getting ready…",retrying:"No speech · retrying…",error:"Voice needs attention"};
 const capture=createMediaVoiceCapture({mediaDevices:navigator.mediaDevices,MediaRecorder:window.MediaRecorder,AudioContext:window.AudioContext||window.webkitAudioContext});
 const voiceClient=createVoiceV2Client();const playback=createAudioPlayback({Audio:window.Audio,URL});
-voiceV2=createVoiceV2({capture,client:voiceClient,playback,sendTurn:(text)=>{input.value="";resizeInput();return sendMessage(text,{autoSpeakResponse:false,throwOnError:true});},onTranscript(text){input.value=text;resizeInput();},onState({active,state}){voiceModeStatus.dataset.state=state;voiceModeStatus.textContent=voiceModeLabels[state]||state;voiceModeButton.classList.toggle("active",active);voiceModeButton.disabled=active;endVoiceButton.disabled=!active;voiceButton.disabled=active&&state!=="speaking";voiceButton.setAttribute("aria-label",active&&state==="speaking"?"Interrupt Nova and speak":voiceListening?"Stop legacy voice input":"Start legacy voice input");},onNotice(message){voiceModeStatus.textContent=message;},onError(message){requestError.textContent=message;requestError.hidden=false;}});
+voiceV2=createVoiceV2({capture,client:voiceClient,playback,sendTurn:(text,{signal,prepareAssistant})=>{input.value="";resizeInput();return sendMessage(text,{autoSpeakResponse:false,throwOnError:true,signal,prepareAssistant});},onTranscript(text){input.value=text;resizeInput();},onState({active,state}){voiceModeStatus.dataset.state=state;voiceModeStatus.textContent=voiceModeLabels[state]||state;voiceModeButton.classList.toggle("active",active);voiceModeButton.disabled=active;endVoiceButton.disabled=!active;voiceButton.disabled=active&&state!=="speaking";voiceButton.setAttribute("aria-label",active&&state==="speaking"?"Interrupt Nova and speak":voiceListening?"Stop legacy voice input":"Start legacy voice input");},onTiming(timing){console.info("[nova-voice-timing]",timing);showVoiceDiagnostic(`Voice turn ${timing.turnId}: ${timing.stage}. ${Object.entries(timing.measurements).map(([name,value])=>`${name} ${value} ms`).join(" · ")}`);},onNotice(message){voiceModeStatus.textContent=message;},onError(message){requestError.textContent=message;requestError.hidden=false;}});
 voiceModeButton.addEventListener("click",async()=>{requestError.hidden=true;if(!capture.supported){requestError.textContent="Start Voice requires MediaRecorder, microphone access, and Web Audio support.";requestError.hidden=false;return;}try{const readiness=await voiceClient.readiness();if(!readiness.available)throw new Error("Voice V2 providers are not fully configured in this Preview.");await voiceV2.start();}catch(error){requestError.textContent=error.message||"Voice V2 could not start.";requestError.hidden=false;}});
 endVoiceButton.addEventListener("click",()=>voiceV2.end());
 voiceButton.addEventListener("click",()=>{requestError.hidden=true;if(voiceV2.isActive()){voiceV2.interrupt();return;}if(voiceListening)voice.stop();else{voiceOutput.stop();voice.start();}});

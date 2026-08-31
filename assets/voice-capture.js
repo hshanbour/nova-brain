@@ -2,7 +2,7 @@ export function createMediaVoiceCapture({
   mediaDevices, MediaRecorder, AudioContext,
   schedule = (callback, delay) => setTimeout(callback, delay), cancelSchedule = (timer) => clearTimeout(timer),
   now = () => Date.now(), sampleIntervalMs = 50, silenceMs = 700, noSpeechMs = 8_000, maxDurationMs = 30_000,
-  speechThreshold = 0.035, bargeThreshold = 0.065
+  speechThreshold = 0.035, bargeThreshold = 0.065, recorderTimesliceMs = 100, preRollMs = 300, bargeFrames = 2
 }) {
   let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false;
   const supported = Boolean(mediaDevices?.getUserMedia && MediaRecorder && AudioContext);
@@ -17,22 +17,30 @@ export function createMediaVoiceCapture({
     source = context.createMediaStreamSource(stream); source.connect(analyser); if (context.state === "suspended") await context.resume();
   }
 
-  function listen({ onAudio, onNoSpeech, onError }) {
-    clearTimer(); stopRecorder(); const current = ++generation; listening = true;
-    const chunks = []; let speechFrames = 0; let heardSpeech = false; let silenceStarted = 0; let noiseFloor = 0.008; const startedAt = now();
+  function listen({ onReady, onAudio, onNoSpeech, onError }) {
+    clearTimer(); stopRecorder(); const current = ++generation;
+    const preRoll = []; const chunks = []; const preRollChunks = Math.max(1, Math.ceil(preRollMs / recorderTimesliceMs));
+    let speechFrames = 0; let heardSpeech = false; let silenceStarted = 0; let noiseFloor = 0.008; const startedAt = now();
     try { recorder = new MediaRecorder(stream, preferredRecorderOptions(MediaRecorder)); }
     catch (error) { listening = false; onError?.(error); return; }
     const activeRecorder = recorder;
-    activeRecorder.addEventListener("dataavailable", (event) => { if (current === generation && event.data?.size) chunks.push(event.data); });
+    activeRecorder.addEventListener("dataavailable", (event) => {
+      if (current !== generation || !event.data?.size) return;
+      if (heardSpeech) chunks.push(event.data);
+      else { preRoll.push(event.data); while (preRoll.length > preRollChunks) preRoll.shift(); }
+    });
     activeRecorder.addEventListener("error", (event) => { if (current === generation) onError?.(event.error || new Error("Microphone recording failed.")); });
     activeRecorder.addEventListener("stop", () => {
       if (current !== generation) return;
       clearTimer(); listening = false;
-      const durationSeconds = Math.max(0, (now() - startedAt) / 1000);
-      if (!heardSpeech || !chunks.length) { onNoSpeech?.(); return; }
-      onAudio?.({ audio: new Blob(chunks, { type: activeRecorder.mimeType || "audio/webm" }), mimeType: activeRecorder.mimeType || "audio/webm", durationSeconds });
+      const endedAt = now(); const durationSeconds = Math.max(0, (endedAt - startedAt) / 1000);
+      if (!heardSpeech || (!preRoll.length && !chunks.length)) { onNoSpeech?.(); return; }
+      onAudio?.({ audio: new Blob([...preRoll, ...chunks], { type: activeRecorder.mimeType || "audio/webm" }), mimeType: activeRecorder.mimeType || "audio/webm", durationSeconds, endedAt, preRollMs });
     });
-    activeRecorder.start(250);
+    try { activeRecorder.start(recorderTimesliceMs); listening = activeRecorder.state === "recording"; }
+    catch (error) { listening = false; onError?.(error); return; }
+    if (!listening) { onError?.(new Error("Microphone recorder did not become ready.")); return; }
+    onReady?.({ startedAt, preRollMs });
     const sample = () => {
       if (current !== generation || !listening) return;
       const elapsed = now() - startedAt; const level = rms();
@@ -52,7 +60,7 @@ export function createMediaVoiceCapture({
     const sample = () => {
       if (current !== generation) return;
       if (rms() >= bargeThreshold) frames += 1; else frames = 0;
-      if (frames >= 3) { clearTimer(); onBargeIn?.(); return; }
+      if (frames >= bargeFrames) { clearTimer(); onBargeIn?.(); return; }
       timer = schedule(sample, sampleIntervalMs);
     };
     timer = schedule(sample, sampleIntervalMs);
@@ -72,11 +80,13 @@ export function createAudioPlayback({ Audio, URL }) {
   let player; let objectUrl;
   const stop = () => { if (player) { player.pause(); player.removeAttribute?.("src"); player.load?.(); } if (objectUrl) URL.revokeObjectURL(objectUrl); player = objectUrl = undefined; };
   return Object.freeze({
-    play(blob, { onEnded, onError } = {}) {
+    play(blob, { onStarted, onEnded, onError } = {}) {
       stop(); objectUrl = URL.createObjectURL(blob); player = new Audio(objectUrl); player.preload = "auto";
+      let started = false; const reportStarted = () => { if (started) return; started = true; onStarted?.(); };
+      player.addEventListener("playing", reportStarted, { once: true });
       player.addEventListener("ended", () => { stop(); onEnded?.(); }, { once: true });
       player.addEventListener("error", () => { stop(); onError?.(); }, { once: true });
-      Promise.resolve(player.play()).catch(() => { stop(); onError?.(); });
+      Promise.resolve(player.play()).then(reportStarted).catch(() => { stop(); onError?.(); });
     },
     stop
   });
