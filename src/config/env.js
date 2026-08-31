@@ -80,7 +80,7 @@ export function readConfig(environment = process.env) {
       maxSpeechAudioBytes: 8 * 1024 * 1024,
       maxSpeechCharacters: 1800,
       maxSpeechChunks: 8,
-      firstSpeechChunkCharacters: 140,
+      firstSpeechChunkCharacters: 60,
       nextSpeechChunkCharacters: 360,
       capabilityCacheMs: 10 * 60 * 1000,
       capabilityTimeoutMs: 5_000,
@@ -125,3 +125,4 @@ function parseInteger(value, name, { defaultValue, min, max }) {
 
   return parsed;
 }
+

@@ -1,8 +1,8 @@
 export function createMediaVoiceCapture({
   mediaDevices, MediaRecorder, AudioContext,
   schedule = (callback, delay) => setTimeout(callback, delay), cancelSchedule = (timer) => clearTimeout(timer),
-  now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 1_350, shortFragmentSilenceMs = 1_650,
-  longUtteranceSilenceMs = 1_200, resumedSpeechBonusMs = 100, maxEndpointSilenceMs = 1_800,
+  now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 1_800, shortFragmentSilenceMs = 2_250,
+  longUtteranceSilenceMs = 1_600, resumedSpeechBonusMs = 150, maxEndpointSilenceMs = 2_500,
   noSpeechMs = 8_000, maxDurationMs = 30_000,
   speechThreshold = 0.035, bargeThreshold = 0.065, recorderTimesliceMs = 100, bargeFrames = 2
 }) {
@@ -155,3 +155,4 @@ export function createAudioPlayback({ Audio, URL }) {
     };
   }
 }
+

@@ -8,6 +8,7 @@ function ownerContext(profile, message) {
     fullName: profile.fullName,
     preferredName: profile.preferredName,
     arabicName: profile.arabicName,
+    gender: facts.gender,
     currentLocation: facts.currentLocation,
     languages: facts.languages,
     profession: facts.profession,
@@ -35,3 +36,4 @@ export async function retrieveAgentContext({ storage, ownerId, message, projectI
 export function buildSystemContext(retrieved) {
   return `${NOVA_COMMUNICATION_POLICY}\n\nThe following is minimal private owner context selected for this request. Use it internally to assist the owner. Do not repeat private details unless relevant to the owner's request.\n${JSON.stringify(retrieved)}`;
 }
+

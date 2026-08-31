@@ -25,6 +25,8 @@ test("semantic speech chunks preserve exact Arabic-English order without skipped
   for (const chunk of chunks) { assert.equal(/^\s|\s$/.test(chunk), false); assert.equal(chunk.includes("  "), false); }
 });
 
+test("production first speech segment stays short, natural, and clause-safe",()=>{const chunks=chunkSpeechText("تمام محمد، خلينا نراجع Preview deployment أول، وبعدها نفحص API والنتائج بالتفصيل.",{firstChunkCharacters:60,nextChunkCharacters:360});assert.ok(chunks[0].length>=30&&chunks[0].length<=70);assert.match(chunks[0],/[،,:]$/u);assert.equal(chunks.join(" "),"تمام محمد، خلينا نراجع Preview deployment أول، وبعدها نفحص API والنتائج بالتفصيل.");});
+
 test("first complete audio chunk is available before later ElevenLabs generation completes", async () => {
   const second = deferred(); const requests = [];
   const service = createVoiceService({ config: config({ firstSpeechChunkCharacters: 35, nextSpeechChunkCharacters: 45 }), fetchImpl: withCapabilities(async (_url, options) => {
@@ -147,3 +149,4 @@ test("incremental playback reports a later stream failure once and clears stale 
   await new Promise((resolve) => setImmediate(resolve)); players[0].end(); await new Promise((resolve) => setImmediate(resolve));
   assert.equal(errors, 1); assert.equal(ended, 0); assert.equal(players.length, 1);
 });
+

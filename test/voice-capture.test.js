@@ -27,9 +27,9 @@ function setup(options = {}) {
 
 test("MediaRecorder VAD finalizes substantial speech after a patient bounded endpoint", async () => {
   const flow = setup(); await flow.capture.connect(); let recording;
-  flow.capture.listen({ onAudio: (value) => { recording = value; } }); flow.speakFor(1_500); flow.pauseFor(1_400);
-  assert.ok(recording.audio instanceof Blob); assert.match(recording.mimeType, /^audio\/webm/); assert.ok(recording.durationSeconds >= 2.8 && recording.durationSeconds <= 3);
-  assert.ok(recording.endpointGraceMs >= 1_200 && recording.endpointGraceMs <= 1_500);
+  flow.capture.listen({ onAudio: (value) => { recording = value; } }); flow.speakFor(1_500); flow.pauseFor(1_850);
+  assert.ok(recording.audio instanceof Blob); assert.match(recording.mimeType, /^audio\/webm/); assert.ok(recording.durationSeconds >= 3.25 && recording.durationSeconds <= 3.5);
+  assert.ok(recording.endpointGraceMs >= 1_700 && recording.endpointGraceMs <= 1_900);
   assert.deepEqual(flow.constraints(), { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
 });
 
@@ -51,7 +51,7 @@ test("100 ms capture retains the complete WebM stream and initialization header"
   const webmHeader = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]);
   flow.recorder().emit(webmHeader);
   for (const value of ["chunk-2", "chunk-3", "chunk-4", "chunk-5"]) flow.recorder().emit(value);
-  flow.speakFor(1_500); flow.recorder().emit("spoken"); flow.pauseFor(1_400);
+  flow.speakFor(1_500); flow.recorder().emit("spoken"); flow.pauseFor(1_850);
   assert.deepEqual(events, ["ready", "audio"]);
   const bytes = new Uint8Array(await recording.audio.arrayBuffer());
   assert.deepEqual([...bytes.subarray(0, 4)], [...webmHeader]);
@@ -59,23 +59,25 @@ test("100 ms capture retains the complete WebM stream and initialization header"
   assert.equal("preRollMs" in recording, false);
 });
 
-for (const hesitationMs of [500, 700, 1_000]) {
+for (const hesitationMs of [500, 700, 1_000, 1_300]) {
   test(`${hesitationMs} ms natural hesitation resumes the same recording and turn`, async () => {
     const flow = setup(); await flow.capture.connect(); const endpointEvents = []; const recordings = [];
     flow.capture.listen({ onAudio: (value) => recordings.push(value), onEndpoint: (value) => endpointEvents.push(value) });
     flow.recorder().emit(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3])); flow.speakFor(1_500); flow.recorder().emit("before-pause");
     flow.pauseFor(hesitationMs); assert.equal(recordings.length, 0);
-    flow.speakFor(300); flow.recorder().emit("after-pause"); flow.pauseFor(1_500);
+    flow.speakFor(300); flow.recorder().emit("after-pause"); flow.pauseFor(2_000);
     assert.equal(recordings.length, 1); assert.match(await recordings[0].audio.text(), /before-pauseafter-pause/);
     assert.ok(endpointEvents.some(({ phase }) => phase === "possible-end")); assert.ok(endpointEvents.some(({ phase }) => phase === "resumed"));
   });
 }
 
+test("1,500 ms pause after a short fragment remains the same turn",async()=>{const flow=setup();await flow.capture.connect();const recordings=[];flow.capture.listen({onAudio:(value)=>recordings.push(value)});flow.recorder().emit(new Uint8Array([0x1a,0x45,0xdf,0xa3]));flow.speakFor(500);flow.recorder().emit("before");flow.pauseFor(1_500);assert.equal(recordings.length,0);flow.speakFor(300);flow.recorder().emit("after");flow.pauseFor(2_000);assert.equal(recordings.length,1);assert.match(await recordings[0].audio.text(),/beforeafter/);});
+
 test("several pauses in one long Arabic utterance remain one complete turn", async () => {
   const flow = setup(); await flow.capture.connect(); const recordings = [];
   flow.capture.listen({ onAudio: (value) => recordings.push(value) }); flow.recorder().emit(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]));
   for (const [speech, pause] of [["أنا أريد", 700], ["أن نراجع المشروع", 900], ["ونكمل الخطة", 1_000]]) { flow.speakFor(1_000); flow.recorder().emit(speech); flow.pauseFor(pause); assert.equal(recordings.length, 0); }
-  flow.speakFor(500); flow.recorder().emit("اليوم"); flow.pauseFor(1_550);
+  flow.speakFor(500); flow.recorder().emit("اليوم"); flow.pauseFor(2_100);
   assert.equal(recordings.length, 1); const text = await recordings[0].audio.text(); for (const part of ["أنا أريد", "أن نراجع المشروع", "ونكمل الخطة", "اليوم"]) assert.match(text, new RegExp(part));
 });
 
@@ -83,7 +85,7 @@ test("Arabic-English code-switching with pauses stays one turn without duplicate
   const flow = setup(); await flow.capture.connect(); const recordings = [];
   flow.capture.listen({ onAudio: (value) => recordings.push(value) }); flow.recorder().emit(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]));
   for (const part of ["راجع Sharp Cuts", "وبعدين Nova Brain API", "رقم 35"]) { flow.speakFor(900); flow.recorder().emit(part); flow.pauseFor(700); assert.equal(recordings.length, 0); }
-  flow.speakFor(300); flow.pauseFor(1_550); assert.equal(recordings.length, 1);
+  flow.speakFor(300); flow.pauseFor(2_100); assert.equal(recordings.length, 1);
   const text = await recordings[0].audio.text(); assert.match(text, /Sharp Cuts.*Nova Brain API.*35/s);
 });
 
@@ -92,3 +94,4 @@ test("End Voice during endpoint grace discards the pending turn", async () => {
   flow.capture.listen({ onAudio: () => { audio += 1; }, onEndpoint: ({ phase }) => { if (phase === "possible-end") endpoint += 1; } });
   flow.speakFor(1_500); flow.pauseFor(500); assert.equal(endpoint, 1); flow.capture.stop(); assert.equal(audio, 0);
 });
+

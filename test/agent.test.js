@@ -6,6 +6,7 @@ import { INITIAL_OWNER_PROFILE, OWNER_ID } from "../src/identity/initial-context
 import { createMockModelProvider } from "../src/providers/mock-model-provider.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { ApprovalRequiredError } from "../src/policy/action-policy.js";
+import { buildSystemContext, retrieveAgentContext } from "../src/memory/context-retriever.js";
 
 function scriptedProvider(outputs, onGenerate = () => {}) {
   let index = 0;
@@ -226,3 +227,6 @@ test("conversation history is preserved across agent turns", async () => {
 });
 
 test("agent stops a sensitive run in waiting-for-approval state",async()=>{const storage=testStorage();const approval={id:"approval-1",tool:"sensitive",status:"pending"};const registry={list(){return[{name:"sensitive"}];},async execute(){throw new ApprovalRequiredError(approval);}};const agent=createTestAgent({storage,toolRegistry:registry,modelProvider:scriptedProvider([{type:"tool_calls",toolCalls:[{id:"call-1",name:"sensitive",arguments:{target:"one"}}]}])});const result=await agent.run({message:"Sensitive action",conversationId:"approval-chat"});assert.equal(result.runStatus,"waiting_for_approval");assert.equal(result.approval.id,"approval-1");assert.equal(result.toolCalls[0].status,"waiting_for_approval");assert.equal((await storage.listRuns(OWNER_ID))[0].status,"waiting_for_approval");});
+
+test("durable system context enforces male owner address and natural Jordanian Arabic",async()=>{const storage=testStorage();const context=await retrieveAgentContext({storage,ownerId:OWNER_ID,message:"احكي معي عن Nova Brain"});const prompt=buildSystemContext(context);assert.equal(context.owner.gender,"male");assert.match(prompt,/masculine Arabic grammar/);assert.match(prompt,/Jordanian\/Levantine Arabic/);assert.match(prompt,/Never use feminine/);assert.match(prompt,/Do not use forced vocatives/);});
+
