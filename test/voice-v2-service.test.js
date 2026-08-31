@@ -86,6 +86,22 @@ test("capability preflight selects only an account-supported TTS model and expos
   assert.equal(readiness.available, true); assert.equal(readiness.tts.model, "eleven_flash_v2_5"); assert.equal(readiness.tts.fallbackUsed, true); assert.equal(readiness.tts.selection, "low-latency-multilingual-fallback");
 });
 
+test("scoped TTS keys verify the owner voice through a bounded direct speech probe when metadata reads are denied", async () => {
+  const speechRequests = [];
+  const service = createVoiceService({ config: readConfig(environment), fetchImpl: async (url, options) => {
+    if (url === "https://api.elevenlabs.io/v1/models" || String(url).startsWith("https://api.elevenlabs.io/v1/voices/")) {
+      return new Response(JSON.stringify({ detail: { status: "missing_permissions" } }), { status: 401, headers: { "content-type": "application/json" } });
+    }
+    speechRequests.push({ url, body: JSON.parse(options.body) });
+    return new Response(Buffer.from("verified-mp3"), { status: 200, headers: { "content-type": "audio/mpeg" } });
+  } });
+  const readiness = await service.readiness();
+  assert.equal(readiness.available, true); assert.equal(readiness.tts.model, "eleven_v3_conversational");
+  assert.equal(readiness.tts.capability, "direct-speech-generation-verified"); assert.equal(readiness.tts.voiceCompatibility, "owner-voice-generation-verified");
+  assert.equal(speechRequests.length, 1); assert.match(speechRequests[0].url, /owner-voice-id\/stream\?output_format=mp3_44100_128/);
+  assert.deepEqual(speechRequests[0].body, { text: "Nova is ready.", model_id: "eleven_v3_conversational" });
+});
+
 test("capability preflight catches an unavailable model set before a paid speech request", async () => {
   let speechCalls = 0;
   const service = createVoiceService({ config: readConfig(environment), fetchImpl: withCapabilities(async () => { speechCalls += 1; return new Response(Buffer.from("unexpected")); }, { availableModels: [{ model_id: "image-only", can_do_text_to_speech: false }] }) });

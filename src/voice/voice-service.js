@@ -1,5 +1,5 @@
 import { chunkSpeechText, sanitiseSpeechText } from "./speech-text.js";
-import { elevenLabsRequestBody, selectElevenLabsModel } from "./elevenlabs-models.js";
+import { elevenLabsModelCandidates, elevenLabsRequestBody, selectElevenLabsModel } from "./elevenlabs-models.js";
 
 const OPENAI_TRANSCRIPTIONS = "https://api.openai.com/v1/audio/transcriptions";
 const ELEVENLABS_BASE = "https://api.elevenlabs.io/v1/text-to-speech";
@@ -67,7 +67,7 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
           outputFormat: voice.ttsOutputFormat,
           voice: "Owner-selected ElevenLabs voice",
           status: capability ? "Verified" : voice.elevenLabsApiKey && voice.elevenLabsVoiceId ? "Unavailable" : "Missing",
-          capability: capability ? "account-model-and-voice-access-verified" : undefined,
+          capability: capability?.verification,
           selection: capability?.model.reason,
           fallbackUsed: capability?.model.fallbackUsed || false,
           voiceCompatibility: capability?.voiceCompatibility,
@@ -193,18 +193,35 @@ async function timedRequest(fetchImpl, url, options, timeoutMs, service, schedul
 
 async function verifyElevenLabsCapabilities({ voice, fetchImpl, schedule, cancelSchedule }) {
   const headers = { "xi-api-key": voice.elevenLabsApiKey, Accept: "application/json" };
-  const [models, selectedVoice] = await Promise.all([
-    timedRequest(fetchImpl, ELEVENLABS_MODELS, { headers }, voice.capabilityTimeoutMs, "ElevenLabs capabilities", schedule, cancelSchedule, (response) => safeJson(response, "ElevenLabs capabilities")),
-    timedRequest(fetchImpl, `${ELEVENLABS_VOICES}/${encodeURIComponent(voice.elevenLabsVoiceId)}`, { headers }, voice.capabilityTimeoutMs, "ElevenLabs voice", schedule, cancelSchedule, (response) => safeJson(response, "ElevenLabs voice"))
-  ]);
-  const model = selectElevenLabsModel(models, voice.ttsModel);
-  if (!model) throw new VoiceProviderError("elevenlabs", "No supported multilingual ElevenLabs speech model is available.", 400, "model", "unsupported_model");
-  if (!selectedVoice || selectedVoice.voice_id !== voice.elevenLabsVoiceId) throw new VoiceProviderError("elevenlabs", "The selected ElevenLabs voice is unavailable.", 403, "voice_access", "voice_access_denied");
-  const highQualityModels = Array.isArray(selectedVoice.high_quality_base_model_ids) ? selectedVoice.high_quality_base_model_ids : [];
-  return Object.freeze({
-    model,
-    voiceCompatibility: highQualityModels.includes(model.id) ? "high-quality-model-listed" : "voice-access-verified"
-  });
+  try {
+    const [models, selectedVoice] = await Promise.all([
+      timedRequest(fetchImpl, ELEVENLABS_MODELS, { headers }, voice.capabilityTimeoutMs, "ElevenLabs capabilities", schedule, cancelSchedule, (response) => safeJson(response, "ElevenLabs capabilities")),
+      timedRequest(fetchImpl, `${ELEVENLABS_VOICES}/${encodeURIComponent(voice.elevenLabsVoiceId)}`, { headers }, voice.capabilityTimeoutMs, "ElevenLabs voice", schedule, cancelSchedule, (response) => safeJson(response, "ElevenLabs voice"))
+    ]);
+    const model = selectElevenLabsModel(models, voice.ttsModel);
+    if (!model) throw new VoiceProviderError("elevenlabs", "No supported multilingual ElevenLabs speech model is available.", 400, "model", "unsupported_model");
+    if (!selectedVoice || selectedVoice.voice_id !== voice.elevenLabsVoiceId) throw new VoiceProviderError("elevenlabs", "The selected ElevenLabs voice is unavailable.", 403, "voice_access", "voice_access_denied");
+    const highQualityModels = Array.isArray(selectedVoice.high_quality_base_model_ids) ? selectedVoice.high_quality_base_model_ids : [];
+    return Object.freeze({
+      model,
+      verification: "account-model-and-voice-access-verified",
+      voiceCompatibility: highQualityModels.includes(model.id) ? "high-quality-model-listed" : "voice-access-verified"
+    });
+  } catch (error) {
+    if (!(error instanceof VoiceProviderError) || !["authentication", "provider_rejected"].includes(error.category)) throw error;
+  }
+
+  for (const candidate of elevenLabsModelCandidates(voice.ttsModel)) {
+    const model = Object.freeze({ ...candidate, fallbackUsed: candidate.id !== voice.ttsModel });
+    try {
+      await synthesiseChunk("Nova is ready.", { voice, model, fetchImpl, schedule, cancelSchedule, onEvent: () => {}, index: 0, chunkCount: 1 });
+      return Object.freeze({ model, verification: "direct-speech-generation-verified", voiceCompatibility: "owner-voice-generation-verified" });
+    } catch (error) {
+      if (error instanceof VoiceProviderError && ["model", "invalid_request"].includes(error.category)) continue;
+      throw error;
+    }
+  }
+  throw new VoiceProviderError("elevenlabs", "No supported multilingual ElevenLabs speech model is available.", 400, "model", "unsupported_model");
 }
 
 async function safeJson(response, service) {
