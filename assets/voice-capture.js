@@ -105,17 +105,51 @@ function preferredRecorderOptions(MediaRecorder) {
 }
 
 export function createAudioPlayback({ Audio, URL }) {
-  let player; let objectUrl;
-  const stop = () => { if (player) { player.pause(); player.removeAttribute?.("src"); player.load?.(); } if (objectUrl) URL.revokeObjectURL(objectUrl); player = objectUrl = undefined; };
+  let player; let objectUrl; let generation = 0; let iterator;
+  const clearPlayer = () => { if (player) { player.pause(); player.removeAttribute?.("src"); player.load?.(); } if (objectUrl) URL.revokeObjectURL(objectUrl); player = objectUrl = undefined; };
+  const stop = () => { generation += 1; clearPlayer(); Promise.resolve(iterator?.return?.()).catch(() => {}); iterator = undefined; };
   return Object.freeze({
-    play(blob, { onStarted, onEnded, onError } = {}) {
-      stop(); objectUrl = URL.createObjectURL(blob); player = new Audio(objectUrl); player.preload = "auto";
-      let started = false; const reportStarted = () => { if (started) return; started = true; onStarted?.(); };
-      player.addEventListener("playing", reportStarted, { once: true });
-      player.addEventListener("ended", () => { stop(); onEnded?.(); }, { once: true });
-      player.addEventListener("error", () => { stop(); onError?.(); }, { once: true });
-      Promise.resolve(player.play()).then(reportStarted).catch(() => { stop(); onError?.(); });
+    play(source, { onStarted, onEnded, onError, onChunkStarted } = {}) {
+      stop(); const current = generation; iterator = toAudioStream(source)[Symbol.asyncIterator]();
+      let started = false;
+      const run = async () => {
+        let item = await iterator.next();
+        while (!item.done && current === generation) {
+          const next = iterator.next().then((value) => ({ value }), (error) => ({ error }));
+          await playBlob(item.value, current, () => {
+            onChunkStarted?.();
+            if (!started) { started = true; onStarted?.(); }
+          });
+          if (current !== generation) return;
+          const prefetched = await next; if (prefetched.error) throw prefetched.error; item = prefetched.value;
+        }
+        if (current === generation) { clearPlayer(); iterator = undefined; onEnded?.(); }
+      };
+      run().catch((error) => { if (current === generation && error?.name !== "AbortError") { stop(); onError?.(error); } });
     },
     stop
   });
+
+  function playBlob(blob, current, onStarted) {
+    return new Promise((resolve, reject) => {
+      clearPlayer(); objectUrl = URL.createObjectURL(blob); player = new Audio(objectUrl); player.preload = "auto";
+      const activePlayer = player;
+      const release = () => { if (player === activePlayer) clearPlayer(); };
+      let began = false;
+      const started = () => { if (began || current !== generation) return; began = true; onStarted(); };
+      activePlayer.addEventListener("playing", started, { once: true });
+      activePlayer.addEventListener("ended", () => { if (current !== generation) return; release(); resolve(); }, { once: true });
+      activePlayer.addEventListener("error", () => { if (current !== generation) return; release(); reject(new Error("Audio playback failed.")); }, { once: true });
+      Promise.resolve(activePlayer.play()).then(started).catch((error) => { if (current === generation) { release(); reject(error); } });
+    });
+  }
+
+  function toAudioStream(source) {
+    if (source?.[Symbol.asyncIterator]) return source;
+    return {
+      async *[Symbol.asyncIterator]() {
+        if (source) yield source;
+      }
+    };
+  }
 }

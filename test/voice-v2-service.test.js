@@ -9,7 +9,7 @@ import { createVoiceV2Client } from "../assets/voice-v2-client.js";
 
 const environment = { OPENAI_API_KEY: "openai-super-secret", ELEVENLABS_API_KEY: "eleven-super-secret", ELEVENLABS_VOICE_ID: "owner-voice-id" };
 function request({ method = "GET", url, body, headers = {} }) { const chunks = body === undefined ? [] : [Buffer.from(body)]; return { method, url, headers, async *[Symbol.asyncIterator]() { yield* chunks; } }; }
-function response() { const headers = new Map(); return { statusCode: 0, setHeader(name, value) { headers.set(name.toLowerCase(), value); }, end(value = "") { this.body = Buffer.isBuffer(value) ? value : Buffer.from(String(value)); }, headers }; }
+function response() { const headers = new Map(); return { statusCode: 0, chunks: [], setHeader(name, value) { headers.set(name.toLowerCase(), value); }, write(value = "") { this.chunks.push(Buffer.isBuffer(value) ? value : Buffer.from(String(value))); return true; }, end(value = "") { if (value) this.write(value); this.body = Buffer.concat(this.chunks); this.writableEnded = true; }, headers }; }
 async function api(app, options) { const res = response(); await app.handle(request(options), res); return { status: res.statusCode, body: JSON.parse(res.body.toString()), headers: res.headers }; }
 
 test("Voice V2 readiness exposes models and limits without exposing credentials or the voice id", async () => {
@@ -80,7 +80,7 @@ test("ElevenLabs 401 is safely categorized and never retried", async () => {
   let calls = 0; const service = createVoiceService({ config: readConfig(environment), fetchImpl: async () => { calls += 1; return new Response(JSON.stringify({ detail: { status: "invalid_api_key", message: "Invalid API key eleven-super-secret" } }), { status: 401, headers: { "content-type": "application/json", "request-id": "el-safe-request-1" } }); } });
   await assert.rejects(service.synthesise({ text: "Hello" }), (error) => {
     assert.ok(error instanceof VoiceProviderError); assert.equal(error.upstreamStatus, 401); assert.equal(error.category, "authentication"); assert.equal(error.providerCode, "invalid_api_key");
-    assert.deepEqual(error.safeDetail, { operation: "synthesise", model: "eleven_v3_conversational", textCharacters: 5, attempt: 1, retryCount: 0, providerRequestId: "el-safe-request-1" });
+    assert.deepEqual(error.safeDetail, { operation: "synthesise", model: "eleven_v3_conversational", textCharacters: 5, chunkIndex: 0, chunkCount: 1, attempt: 1, retryCount: 0, providerRequestId: "el-safe-request-1", phase: "authentication" });
     assert.doesNotMatch(JSON.stringify(error), /eleven-super-secret|Invalid API key/); return true;
   });
   assert.equal(calls, 1);
@@ -121,10 +121,12 @@ test("voice provider timeout remains bounded and reports no secret detail", asyn
   await assert.rejects(service.transcribe({ audioBase64: "YXVkaW8=", mimeType: "audio/webm", durationSeconds: 1 }), VoiceTimeoutError);
 });
 
-test("speech API returns no-store audio bytes rather than exposing provider metadata", async () => {
-  const handler = createApi({ config: readConfig({}), agent: {}, storage: {}, initialize: async () => {}, ownerId: "owner", voiceBenchmark: {}, voiceService: { async synthesise() { return { audio: Buffer.from("mp3"), mimeType: "audio/mpeg", model: "eleven_v3_conversational" }; } } });
+test("speech API streams no-store ordered playable chunks without exposing provider metadata", async () => {
+  const handler = createApi({ config: readConfig({}), agent: {}, storage: {}, initialize: async () => {}, ownerId: "owner", voiceBenchmark: {}, voiceService: { async *streamSpeech() { yield { audio: Buffer.from("mp3"), mimeType: "audio/mpeg", model: "eleven_v3_conversational", index: 0, chunkCount: 1 }; } }, logger: { info() {}, error() {} } });
   const res = response(); await handler.handle(request({ method: "POST", url: "/api/voice/speech", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "Hello" }) }), res);
-  assert.equal(res.statusCode, 200); assert.equal(res.body.toString(), "mp3"); assert.equal(res.headers.get("content-type"), "audio/mpeg"); assert.equal(res.headers.get("cache-control"), "no-store"); assert.equal(res.headers.get("x-nova-voice-model"), "eleven_v3_conversational");
+  const events = res.body.toString().trim().split("\n").map(JSON.parse);
+  assert.equal(res.statusCode, 200); assert.equal(Buffer.from(events[0].audioBase64, "base64").toString(), "mp3"); assert.equal(events[1].type, "end");
+  assert.equal(res.headers.get("content-type"), "application/x-ndjson; charset=utf-8"); assert.equal(res.headers.get("cache-control"), "no-store"); assert.equal(res.headers.get("x-nova-voice-model"), "eleven_v3_conversational"); assert.equal(res.headers.get("x-nova-voice-protocol"), "semantic-audio-stream-v1");
 });
 
 test("Voice V2 API rejects invalid recordings with bounded safe errors", async () => {
@@ -137,7 +139,7 @@ test("Voice V2 API logs safe provider category while keeping its 502 generic", a
   failure.safeDetail = { operation: "transcribe", mimeType: "audio/webm", fileName: "voice.webm", audioBytes: 42, durationSeconds: 1 };
   const handler = createApi({ config: readConfig({}), agent: {}, storage: {}, initialize: async () => {}, ownerId: "owner", voiceBenchmark: {}, voiceService: { async transcribe() { throw failure; } }, logger: { error(...args) { entries.push(args); } } });
   const res = response(); await handler.handle(request({ method: "POST", url: "/api/voice/transcribe", headers: { "content-type": "application/json" }, body: JSON.stringify({ audioBase64: "YXVkaW8=", mimeType: "audio/webm", durationSeconds: 1 }) }), res);
-  assert.equal(res.statusCode, 502); assert.deepEqual(JSON.parse(res.body), { error: "Voice provider request failed. Your written conversation is safe.", code: "VOICE_PROVIDER_ERROR" });
+  assert.equal(res.statusCode, 502); assert.deepEqual(JSON.parse(res.body), { error: "Voice provider request failed. Your written conversation is safe.", code: "VOICE_PROVIDER_ERROR", category: "invalid_audio" });
   assert.equal(entries[0][0], "Nova voice provider failed"); assert.equal(entries[0][1].category, "invalid_audio"); assert.equal(entries[0][1].upstreamStatus, 400); assert.deepEqual(entries[0][1].detail, failure.safeDetail);
   assert.doesNotMatch(JSON.stringify({ response: JSON.parse(res.body), entries }), /super-secret|owner-voice-id|secret-provider-body/);
 });

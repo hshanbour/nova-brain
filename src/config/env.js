@@ -76,8 +76,14 @@ export function readConfig(environment = process.env) {
       maxBodyBytes: 3 * 1024 * 1024,
       maxSpeechAudioBytes: 8 * 1024 * 1024,
       maxSpeechCharacters: 1800,
+      maxSpeechChunks: 8,
+      firstSpeechChunkCharacters: 180,
+      nextSpeechChunkCharacters: 420,
       ttsRetryDelayMs: 200,
-      requestTimeoutMs: 25_000
+      requestTimeoutMs: 25_000,
+      ttsFirstByteTimeoutMs: 10_000,
+      ttsStreamStallTimeoutMs: 8_000,
+      ttsChunkTimeoutMs: 45_000
     }),
     voiceBenchmark: Object.freeze({
       paidCallsApproved: environment.NOVA_VOICE_BENCHMARK_PAID_CALLS_APPROVED === "true",

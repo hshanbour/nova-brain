@@ -67,6 +67,11 @@ export function createVoiceV2({
           capture.watchForBargeIn(() => interrupt()); mark("ttsStartedAt");
           const speech = await client.speech(message, { signal: abortController.signal });
           if (!valid(current)) throw abortError();
+          if (speech?.timing) {
+            mark("ttsResponseHeadersAt", speech.timing.responseHeadersAt);
+            mark("ttsFirstAudioByteAt", speech.timing.firstAudioByteAt);
+            mark("ttsFirstPlayableAt", speech.timing.firstPlayableAt);
+          }
           mark("audioAvailableAt"); return speech;
         }
       });
@@ -77,7 +82,7 @@ export function createVoiceV2({
       }
       const speech = result.preparedAssistant;
       if (!speech?.audio) { recover("Nova's written reply is safe, but ElevenLabs returned no playable audio.", ttsRecoveryDelayMs); return false; }
-      playback.play(speech.audio, {
+      playback.play(speech.stream || speech.audio, {
         onStarted: () => { if (valid(current)) { mark("audioStartedAt"); reportTiming("audio-started"); } },
         onEnded: () => { if (valid(current)) { mark("audioEndedAt"); listen({ afterAudio: true }); } },
         onError: () => { if (valid(current)) recover("Nova's written reply is safe, but audio playback failed.", ttsRecoveryDelayMs); }
@@ -121,6 +126,9 @@ function timingSnapshot(timing, stage) {
       transcriptToAgent: difference("agentRequestStartedAt", "transcriptAvailableAt"),
       agent: difference("assistantAvailableAt", "agentRequestStartedAt"),
       assistantToTtsStart: difference("ttsStartedAt", "assistantAvailableAt"),
+      ttsResponseHeaders: difference("ttsResponseHeadersAt", "ttsStartedAt"),
+      ttsFirstAudioByte: difference("ttsFirstAudioByteAt", "ttsStartedAt"),
+      ttsFirstPlayable: difference("ttsFirstPlayableAt", "ttsStartedAt"),
       tts: difference("audioAvailableAt", "ttsStartedAt"),
       audioReadyToStart: difference("audioStartedAt", "audioAvailableAt"),
       playback: difference("audioEndedAt", "audioStartedAt"),

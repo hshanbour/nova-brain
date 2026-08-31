@@ -1,5 +1,6 @@
 import { readJsonBody } from "./body.js";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { AgentStepLimitError, AgentToolCallLimitError } from "../agent/agent.js";
 import {
   ValidationError,
@@ -26,15 +27,48 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
-function sendAudio(response, payload) {
+function setSpeechHeaders(response, model) {
   response.statusCode = 200;
-  response.setHeader("Content-Type", payload.mimeType);
-  response.setHeader("Content-Length", payload.audio.length);
+  response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
   response.setHeader("Cache-Control", "no-store");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Referrer-Policy", "no-referrer");
-  response.setHeader("X-Nova-Voice-Model", payload.model);
-  response.end(payload.audio);
+  response.setHeader("X-Nova-Voice-Model", model);
+  response.setHeader("X-Nova-Voice-Protocol", "semantic-audio-stream-v1");
+}
+
+async function writeChunk(response, value) {
+  if (response.write(value) !== false) return;
+  await once(response, "drain");
+}
+
+function speechEvent(chunk) {
+  return JSON.stringify({ type: "audio", index: chunk.index, chunkCount: chunk.chunkCount, mimeType: chunk.mimeType, audioBase64: chunk.audio.toString("base64") }) + "\n";
+}
+
+async function sendSpeechStream(response, stream, { model, logger, requestId }) {
+  const iterator = stream[Symbol.asyncIterator]();
+  const first = await iterator.next();
+  if (first.done) throw new VoiceProviderError("elevenlabs", "ElevenLabs returned empty audio.", undefined, "unknown");
+  setSpeechHeaders(response, model);
+  response.flushHeaders?.();
+  try {
+    await writeChunk(response, speechEvent(first.value));
+    while (true) {
+      const item = await iterator.next();
+      if (item.done) break;
+      await writeChunk(response, speechEvent(item.value));
+    }
+    await writeChunk(response, JSON.stringify({ type: "end" }) + "\n");
+    response.end();
+  } catch (error) {
+    const log = error?.category === "client_cancelled" ? logger.info.bind(logger) : logger.error.bind(logger);
+    log("Nova voice stream failed", { requestId, service: error?.service, upstreamStatus: error?.upstreamStatus, category: error?.category || "unknown", providerCode: error?.providerCode, detail: error?.safeDetail });
+    if (!response.writableEnded && !response.destroyed) {
+      await writeChunk(response, JSON.stringify({ type: "error", code: error?.code || "VOICE_PROVIDER_ERROR", category: error?.category || "unknown" }) + "\n").catch(() => {});
+      response.end();
+    }
+  }
 }
 
 function setCorsHeaders(request, response, allowedOrigins) {
@@ -101,8 +135,13 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           sendJson(response, 200, result); return;
         }
         if (request.method === "POST" && pathname === "/api/voice/speech") {
-          const result = await voiceService.synthesise(await readJsonBody(request, config.maxBodyBytes));
-          sendAudio(response, result); return;
+          const controller = new AbortController();
+          const abort = () => controller.abort();
+          request.once?.("aborted", abort);
+          response.once?.("close", () => { if (!response.writableEnded) abort(); });
+          const events = (event) => logger.info("Nova voice speech timing", { requestId, ...event });
+          const stream = voiceService.streamSpeech(await readJsonBody(request, config.maxBodyBytes), { signal: controller.signal, onEvent: events });
+          await sendSpeechStream(response, stream, { model: config.voiceV2.ttsModel, logger, requestId }); return;
         }
 
         if (request.method === "GET" && pathname === "/api/owner/profile") {
@@ -219,10 +258,19 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         if (error instanceof BenchmarkBudgetError) { sendJson(response, 402, { error: error.message, code: "BENCHMARK_BUDGET_CAP" }); return; }
         if (error instanceof VoiceValidationError) { sendJson(response, 400, { error: error.message, code: "VOICE_VALIDATION" }); return; }
         if (error instanceof VoiceUnavailableError) { sendJson(response, 503, { error: error.message, code: "VOICE_UNAVAILABLE" }); return; }
-        if (error instanceof VoiceTimeoutError) { sendJson(response, 504, { error: "Voice provider timed out. Please try again.", code: error.code }); return; }
+        if (error instanceof VoiceTimeoutError) {
+          logger.error("Nova voice provider timed out", { requestId, service: error.service, category: "provider_timeout_first_byte" });
+          sendJson(response, 504, { error: "Voice provider timed out. Please try again.", code: error.code, category: "provider_timeout_first_byte" }); return;
+        }
         if (error instanceof VoiceProviderError) {
+          if (error.category === "client_cancelled") {
+            logger.info("Nova voice stream cancelled", { requestId, service: error.service, category: error.category, detail: error.safeDetail });
+            if (!response.writableEnded && !response.destroyed) sendJson(response, 499, { error: "Voice request cancelled.", code: error.code, category: error.category });
+            return;
+          }
           logger.error("Nova voice provider failed", { requestId, service: error.service, upstreamStatus: error.upstreamStatus, category: error.category, providerCode: error.providerCode, detail: error.safeDetail });
-          sendJson(response, 502, { error: "Voice provider request failed. Your written conversation is safe.", code: error.code }); return;
+          const status = ["provider_timeout_first_byte", "provider_stream_stalled"].includes(error.category) ? 504 : 502;
+          sendJson(response, status, { error: "Voice provider request failed. Your written conversation is safe.", code: error.code, category: error.category || "unknown" }); return;
         }
 
         if (
