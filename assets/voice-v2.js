@@ -2,7 +2,7 @@ export function createVoiceV2({
   capture, client, playback, sendTurn,
   onTranscript = () => {}, onState = () => {}, onError = () => {}, onNotice = () => {}, onTiming = () => {},
   schedule = (callback, delay) => setTimeout(callback, delay), cancelSchedule = (timer) => clearTimeout(timer),
-  now = () => globalThis.performance?.now?.() ?? Date.now(), retryDelayMs = 900
+  now = () => globalThis.performance?.now?.() ?? Date.now(), retryDelayMs = 900, ttsRecoveryDelayMs = 250
 }) {
   let active = false; let state = "idle"; let generation = 0; let retryTimer; let abortController; let turnSequence = 0; let timing;
   const publish = (next, detail = {}) => { state = next; onState({ active, state, ...detail }); };
@@ -23,17 +23,18 @@ export function createVoiceV2({
       },
       onAudio: (recording) => processRecording(recording),
       onNoSpeech: () => retry("No speech detected."),
-      onError: (error) => fatal(error?.message || "Microphone recording failed.")
+      onError: (error) => fatal(error?.message || "Microphone recording failed."),
+      onEndpoint: ({ phase, graceMs }) => { if (valid(current)) publish("listening", { phase: phase === "possible-end" ? "endpoint-grace" : "speech-resumed", graceMs }); }
     });
   }
 
-  function retry(message) {
+  function retry(message, delayMs = retryDelayMs) {
     if (!active) return; clearRetry(); publish("retrying"); onNotice(message);
-    retryTimer = schedule(() => { retryTimer = undefined; if (active) listen(); }, retryDelayMs);
+    retryTimer = schedule(() => { retryTimer = undefined; if (active) listen(); }, delayMs);
   }
 
-  function recover(message) {
-    if (!active) return; publish("error"); onError(message); reportTiming("error"); retry("Voice is recovering…");
+  function recover(message, delayMs = retryDelayMs) {
+    if (!active) return; publish("error"); onError(message); reportTiming("error"); retry("Voice is recovering…", delayMs);
   }
 
   function fatal(message) {
@@ -43,7 +44,14 @@ export function createVoiceV2({
   async function processRecording(recording) {
     if (!active || state !== "listening") return false;
     const current = ++generation; capture.stop(); abortController = new AbortController();
-    timing = { turnId: ++turnSequence, turnEndedAt: Number.isFinite(recording?.endedAt) ? recording.endedAt : now() };
+    const recordingFinalizedAt = Number.isFinite(recording?.endedAt) ? recording.endedAt : now();
+    timing = {
+      turnId: ++turnSequence,
+      speechEndedAt: Number.isFinite(recording?.speechEndedAt) ? recording.speechEndedAt : recordingFinalizedAt,
+      endpointGraceStartedAt: Number.isFinite(recording?.endpointStartedAt) ? recording.endpointStartedAt : undefined,
+      recordingFinalizedAt
+    };
+    reportTiming("recording-finalized");
     mark("sttStartedAt"); publish("transcribing");
     try {
       const { transcript } = await client.transcribe({ ...recording, signal: abortController.signal });
@@ -65,14 +73,14 @@ export function createVoiceV2({
       if (!valid(current)) return false;
       if (result.preparationError) {
         if (result.preparationError?.name === "AbortError") return false;
-        recover("Nova's written reply is safe, but ElevenLabs could not speak it."); return false;
+        recover("Nova's written reply is safe, but ElevenLabs could not speak it.", ttsRecoveryDelayMs); return false;
       }
       const speech = result.preparedAssistant;
-      if (!speech?.audio) { recover("Nova's written reply is safe, but ElevenLabs returned no playable audio."); return false; }
+      if (!speech?.audio) { recover("Nova's written reply is safe, but ElevenLabs returned no playable audio.", ttsRecoveryDelayMs); return false; }
       playback.play(speech.audio, {
         onStarted: () => { if (valid(current)) { mark("audioStartedAt"); reportTiming("audio-started"); } },
         onEnded: () => { if (valid(current)) { mark("audioEndedAt"); listen({ afterAudio: true }); } },
-        onError: () => { if (valid(current)) recover("Nova's written reply is safe, but audio playback failed."); }
+        onError: () => { if (valid(current)) recover("Nova's written reply is safe, but audio playback failed.", ttsRecoveryDelayMs); }
       });
       return true;
     } catch (error) {
@@ -106,13 +114,17 @@ function timingSnapshot(timing, stage) {
     turnId: timing.turnId,
     stage,
     measurements: compact({
-      turnEndToSttStart: difference("sttStartedAt", "turnEndedAt"),
+      intentionalEndpointWait: difference("recordingFinalizedAt", "speechEndedAt"),
+      endpointGrace: difference("recordingFinalizedAt", "endpointGraceStartedAt"),
+      recordingFinalizeToSttStart: difference("sttStartedAt", "recordingFinalizedAt"),
       stt: difference("transcriptAvailableAt", "sttStartedAt"),
       transcriptToAgent: difference("agentRequestStartedAt", "transcriptAvailableAt"),
       agent: difference("assistantAvailableAt", "agentRequestStartedAt"),
       assistantToTtsStart: difference("ttsStartedAt", "assistantAvailableAt"),
       tts: difference("audioAvailableAt", "ttsStartedAt"),
       audioReadyToStart: difference("audioStartedAt", "audioAvailableAt"),
+      playback: difference("audioEndedAt", "audioStartedAt"),
+      speechEndToPlayback: difference("audioStartedAt", "speechEndedAt"),
       audioEndToListening: difference("listeningReadyAt", "audioEndedAt")
     })
   });

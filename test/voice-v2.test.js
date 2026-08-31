@@ -32,7 +32,8 @@ function setup({ connectError, connectGate, transcript = "مرحبا Nova، را
   return {
     mode, events, states, errors, transcripts, timings, timers,
     ready: () => { events.push("listen-ready"); handlers.onReady(); },
-    audio: (recording = { audio: new Blob(["audio"], { type: "audio/webm" }), mimeType: "audio/webm", durationSeconds: 1, endedAt: clock }) => handlers.onAudio(recording),
+    endpoint: (value) => handlers.onEndpoint(value),
+    audio: (recording = { audio: new Blob(["audio"], { type: "audio/webm" }), mimeType: "audio/webm", durationSeconds: 1, endedAt: clock }) => { if (Number.isFinite(recording.endedAt)) clock = Math.max(clock, recording.endedAt); return handlers.onAudio(recording); },
     noSpeech: () => handlers.onNoSpeech(), barge: () => barge(),
     started: () => { clock += 5; playbackCallbacks.onStarted(); },
     ended: () => { clock += 500; playbackCallbacks.onEnded(); },
@@ -57,8 +58,13 @@ test("Listening is not published until MediaRecorder reports capture ready", asy
 });
 
 test("timing diagnostics measure zero-overhead TTS dispatch and immediate handoff", async () => {
-  const flow = setup(); await flow.mode.start(); await flow.audio(); flow.started(); flow.ended();
-  const final = flow.timings.at(-1); assert.equal(final.stage, "listening-ready"); assert.deepEqual(final.measurements, { turnEndToSttStart: 0, stt: 40, transcriptToAgent: 0, agent: 120, assistantToTtsStart: 0, tts: 80, audioReadyToStart: 5, audioEndToListening: 0 });
+  const flow = setup(); await flow.mode.start(); await flow.audio({ audio: new Blob(["audio"], { type: "audio/webm" }), mimeType: "audio/webm", durationSeconds: 2, speechEndedAt: 0, endpointStartedAt: 50, endedAt: 1_350 }); flow.started(); flow.ended();
+  const final = flow.timings.at(-1); assert.equal(final.stage, "listening-ready"); assert.deepEqual(final.measurements, { intentionalEndpointWait: 1_350, endpointGrace: 1_300, recordingFinalizeToSttStart: 0, stt: 40, transcriptToAgent: 0, agent: 120, assistantToTtsStart: 0, tts: 80, audioReadyToStart: 5, playback: 500, speechEndToPlayback: 1_595, audioEndToListening: 0 });
+});
+
+test("endpoint grace remains Listening and resumed speech cancels the pending UI phase", async () => {
+  const flow = setup(); await flow.mode.start(); flow.endpoint({ phase: "possible-end", graceMs: 1_350 }); assert.equal(flow.mode.getState(), "listening");
+  flow.endpoint({ phase: "resumed", graceMs: 1_350 }); assert.equal(flow.mode.getState(), "listening"); assert.equal(flow.counts().sends, 0);
 });
 
 test("barge-in aborts stale TTS/playback and re-arms without duplicating a turn", async () => {
@@ -104,6 +110,7 @@ test("STT failure recovers without sending or speaking", async () => {
 
 test("TTS failure preserves the written Nova turn and never invokes browser speech", async () => {
   const flow = setup({ speechError: new Error("tts failed") }); await flow.mode.start(); assert.equal(await flow.audio(), false); assert.equal(flow.counts().sends, 1); assert.ok(flow.events.includes("render-assistant")); assert.equal(flow.mode.getState(), "retrying"); assert.match(flow.errors.at(-1), /written reply is safe/i); assert.equal(flow.events.includes("play"), false);
+  assert.equal(flow.timers.at(-1).delay, 250); flow.runTimer(); assert.equal(flow.mode.getState(), "listening"); assert.equal(flow.counts().sends, 1);
 });
 
 test("Arabic-English mixed transcripts pass unchanged into the existing Nova pipeline", async () => {

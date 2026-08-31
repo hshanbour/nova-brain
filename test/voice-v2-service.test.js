@@ -76,9 +76,35 @@ test("speech sanitisation removes markdown, emoji, URLs, tool traces and JSON wh
   assert.equal(sanitiseSpeechText('{"tool":"secret"}'), ""); assert.ok(sanitiseSpeechText("Sentence. ".repeat(500), 120).length <= 120);
 });
 
-test("provider errors never include upstream bodies or secrets", async () => {
-  const service = createVoiceService({ config: readConfig(environment), fetchImpl: async () => new Response("api key leaked eleven-super-secret", { status: 401 }) });
-  await assert.rejects(service.synthesise({ text: "Hello" }), (error) => error instanceof VoiceProviderError && error.upstreamStatus === 401 && !error.message.includes("secret"));
+test("ElevenLabs 401 is safely categorized and never retried", async () => {
+  let calls = 0; const service = createVoiceService({ config: readConfig(environment), fetchImpl: async () => { calls += 1; return new Response(JSON.stringify({ detail: { status: "invalid_api_key", message: "Invalid API key eleven-super-secret" } }), { status: 401, headers: { "content-type": "application/json", "request-id": "el-safe-request-1" } }); } });
+  await assert.rejects(service.synthesise({ text: "Hello" }), (error) => {
+    assert.ok(error instanceof VoiceProviderError); assert.equal(error.upstreamStatus, 401); assert.equal(error.category, "authentication"); assert.equal(error.providerCode, "invalid_api_key");
+    assert.deepEqual(error.safeDetail, { operation: "synthesise", model: "eleven_v3_conversational", textCharacters: 5, attempt: 1, retryCount: 0, providerRequestId: "el-safe-request-1" });
+    assert.doesNotMatch(JSON.stringify(error), /eleven-super-secret|Invalid API key/); return true;
+  });
+  assert.equal(calls, 1);
+});
+
+test("ElevenLabs quota-shaped 401 and voice access denial receive distinct safe categories", async () => {
+  for (const [status, detail, category] of [
+    [401, { status: "quota_exceeded", message: "This request exceeds your quota limit" }, "quota"],
+    [403, { code: "voice_access_denied", type: "authorization_error", message: "Voice unavailable" }, "voice_access"]
+  ]) {
+    const service = createVoiceService({ config: readConfig(environment), fetchImpl: async () => new Response(JSON.stringify({ detail }), { status, headers: { "content-type": "application/json" } }) });
+    await assert.rejects(service.synthesise({ text: "Hello" }), (error) => error instanceof VoiceProviderError && error.category === category);
+  }
+});
+
+test("ElevenLabs retries one retryable failure with a fresh request and returns one audio result", async () => {
+  let calls = 0; const requests = []; const base = readConfig(environment); const config = { ...base, voiceV2: { ...base.voiceV2, ttsRetryDelayMs: 0 } };
+  const service = createVoiceService({ config, fetchImpl: async (_url, options) => {
+    calls += 1; requests.push(options);
+    if (calls === 1) return new Response(JSON.stringify({ detail: { code: "rate_limit_exceeded", type: "rate_limit_error", message: "Try later" } }), { status: 429, headers: { "content-type": "application/json", "request-id": "el-retry-1" } });
+    return new Response(Buffer.from("one-final-mp3"), { status: 200, headers: { "content-type": "audio/mpeg" } });
+  } });
+  const result = await service.synthesise({ text: "Hello once" }); assert.equal(result.audio.toString(), "one-final-mp3"); assert.equal(calls, 2);
+  assert.notEqual(requests[0], requests[1]); assert.notEqual(requests[0].headers, requests[1].headers); assert.equal(requests[0].headers["xi-api-key"], environment.ELEVENLABS_API_KEY); assert.equal(requests[1].headers["xi-api-key"], environment.ELEVENLABS_API_KEY);
 });
 
 test("transcription failures retain only bounded safe diagnostic metadata", async () => {

@@ -1,7 +1,9 @@
 export function createMediaVoiceCapture({
   mediaDevices, MediaRecorder, AudioContext,
   schedule = (callback, delay) => setTimeout(callback, delay), cancelSchedule = (timer) => clearTimeout(timer),
-  now = () => Date.now(), sampleIntervalMs = 50, silenceMs = 700, noSpeechMs = 8_000, maxDurationMs = 30_000,
+  now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 1_350, shortFragmentSilenceMs = 1_650,
+  longUtteranceSilenceMs = 1_200, resumedSpeechBonusMs = 100, maxEndpointSilenceMs = 1_800,
+  noSpeechMs = 8_000, maxDurationMs = 30_000,
   speechThreshold = 0.035, bargeThreshold = 0.065, recorderTimesliceMs = 100, bargeFrames = 2
 }) {
   let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false;
@@ -17,10 +19,11 @@ export function createMediaVoiceCapture({
     source = context.createMediaStreamSource(stream); source.connect(analyser); if (context.state === "suspended") await context.resume();
   }
 
-  function listen({ onReady, onAudio, onNoSpeech, onError }) {
+  function listen({ onReady, onAudio, onNoSpeech, onError, onEndpoint }) {
     clearTimer(); stopRecorder(); const current = ++generation;
     const chunks = [];
-    let speechFrames = 0; let heardSpeech = false; let silenceStarted = 0; let noiseFloor = 0.008; const startedAt = now();
+    let speechFrames = 0; let heardSpeech = false; let speechStartedAt = 0; let lastSpeechAt = 0; let voicedMs = 0;
+    let endpointStartedAt = 0; let endpointGraceMs = 0; let resumedEndpoints = 0; let noiseFloor = 0.008; const startedAt = now();
     try { recorder = new MediaRecorder(stream, preferredRecorderOptions(MediaRecorder)); }
     catch (error) { listening = false; onError?.(error); return; }
     const activeRecorder = recorder;
@@ -34,7 +37,11 @@ export function createMediaVoiceCapture({
       clearTimer(); listening = false;
       const endedAt = now(); const durationSeconds = Math.max(0, (endedAt - startedAt) / 1000);
       if (!heardSpeech || !chunks.length) { onNoSpeech?.(); return; }
-      onAudio?.({ audio: new Blob(chunks, { type: activeRecorder.mimeType || "audio/webm" }), mimeType: activeRecorder.mimeType || "audio/webm", durationSeconds, endedAt });
+      onAudio?.({
+        audio: new Blob(chunks, { type: activeRecorder.mimeType || "audio/webm" }), mimeType: activeRecorder.mimeType || "audio/webm",
+        durationSeconds, endedAt, speechEndedAt: lastSpeechAt || endedAt, endpointStartedAt: endpointStartedAt || undefined,
+        endpointGraceMs: endpointStartedAt ? endpointGraceMs : 0, resumedEndpoints
+      });
     });
     try { activeRecorder.start(recorderTimesliceMs); listening = activeRecorder.state === "recording"; }
     catch (error) { listening = false; onError?.(error); return; }
@@ -44,9 +51,23 @@ export function createMediaVoiceCapture({
       if (current !== generation || !listening) return;
       const elapsed = now() - startedAt; const level = rms();
       if (!heardSpeech) noiseFloor = Math.min(0.03, noiseFloor * 0.92 + level * 0.08);
-      if (level >= Math.max(speechThreshold, noiseFloor * 3)) { speechFrames += 1; if (speechFrames >= 2) { heardSpeech = true; silenceStarted = 0; } }
-      else { speechFrames = 0; if (heardSpeech && !silenceStarted) silenceStarted = now(); }
-      if (heardSpeech && silenceStarted && now() - silenceStarted >= silenceMs) { stopRecorder(); return; }
+      if (level >= Math.max(speechThreshold, noiseFloor * 3)) {
+        if (endpointStartedAt) {
+          resumedEndpoints += 1;
+          onEndpoint?.({ phase: "resumed", at: now(), pendingSince: endpointStartedAt, graceMs: endpointGraceMs, resumedEndpoints });
+          endpointStartedAt = 0; endpointGraceMs = 0;
+        }
+        speechFrames += 1; voicedMs += sampleIntervalMs;
+        if (speechFrames >= 2) { if (!heardSpeech) speechStartedAt = now() - sampleIntervalMs; heardSpeech = true; lastSpeechAt = now(); }
+      } else {
+        speechFrames = 0;
+        if (heardSpeech && !endpointStartedAt) {
+          endpointStartedAt = now();
+          endpointGraceMs = adaptiveEndpointSilence({ voicedMs, speechSpanMs: endpointStartedAt - speechStartedAt, resumedEndpoints, endpointSilenceMs, shortFragmentSilenceMs, longUtteranceSilenceMs, resumedSpeechBonusMs, maxEndpointSilenceMs });
+          onEndpoint?.({ phase: "possible-end", at: endpointStartedAt, graceMs: endpointGraceMs, resumedEndpoints });
+        }
+      }
+      if (heardSpeech && endpointStartedAt && now() - endpointStartedAt >= endpointGraceMs) { stopRecorder(); return; }
       if (!heardSpeech && elapsed >= noSpeechMs) { stopRecorder(); return; }
       if (elapsed >= maxDurationMs) { stopRecorder(); return; }
       timer = schedule(sample, sampleIntervalMs);
@@ -68,6 +89,14 @@ export function createMediaVoiceCapture({
   function stop() { generation += 1; clearTimer(); stopRecorder(); }
   async function destroy() { stop(); source?.disconnect?.(); for (const track of stream?.getTracks?.() || []) track.stop(); if (context && context.state !== "closed") await context.close(); stream = context = analyser = source = undefined; }
   return Object.freeze({ supported, connect, listen, watchForBargeIn, stop, destroy });
+}
+
+function adaptiveEndpointSilence({ voicedMs, speechSpanMs, resumedEndpoints, endpointSilenceMs, shortFragmentSilenceMs, longUtteranceSilenceMs, resumedSpeechBonusMs, maxEndpointSilenceMs }) {
+  let graceMs = endpointSilenceMs;
+  if (voicedMs < 800 || speechSpanMs < 1_200) graceMs = shortFragmentSilenceMs;
+  else if (voicedMs >= 2_500 || speechSpanMs >= 4_000) graceMs = longUtteranceSilenceMs;
+  graceMs += Math.min(resumedEndpoints, 3) * resumedSpeechBonusMs;
+  return Math.min(maxEndpointSilenceMs, graceMs);
 }
 
 function preferredRecorderOptions(MediaRecorder) {

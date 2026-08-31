@@ -76,6 +76,7 @@ export function readConfig(environment = process.env) {
       maxBodyBytes: 3 * 1024 * 1024,
       maxSpeechAudioBytes: 8 * 1024 * 1024,
       maxSpeechCharacters: 1800,
+      ttsRetryDelayMs: 200,
       requestTimeoutMs: 25_000
     }),
     voiceBenchmark: Object.freeze({
