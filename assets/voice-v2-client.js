@@ -79,7 +79,9 @@ function audioBlob(event, status) {
   return new Blob([bytes], { type: event.mimeType || "audio/mpeg" });
 }
 
-function streamError(event, status) { return new VoiceV2ApiError("Nova's written reply is safe, but ElevenLabs audio stopped.", status, event.category || "unknown"); }
+function streamError(event, status) { const category=event.category||"unknown";return new VoiceV2ApiError(voiceCategoryMessage(category), status, category); }
+
+function voiceCategoryMessage(category){if(category==="quota")return "Nova's written reply is safe, but ElevenLabs credits are exhausted.";if(category==="authentication")return "Nova's written reply is safe, but ElevenLabs authentication needs attention.";if(category==="voice_access")return "Nova's written reply is safe, but the selected ElevenLabs voice is unavailable.";if(category==="rate_limit")return "Nova's written reply is safe, but ElevenLabs is temporarily busy.";if(["provider_timeout_first_byte","provider_stream_stalled"].includes(category))return "Nova's written reply is safe, but ElevenLabs audio timed out.";return "Nova's written reply is safe, but ElevenLabs audio stopped.";}
 
 async function requestJson(fetchImpl, url, options = {}) {
   let response;
@@ -100,3 +102,4 @@ function bytesToBase64(bytes) {
   for (let index = 0; index < bytes.length; index += size) binary += String.fromCharCode(...bytes.subarray(index, index + size));
   return btoa(binary);
 }
+

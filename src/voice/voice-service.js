@@ -5,6 +5,7 @@ const OPENAI_TRANSCRIPTIONS = "https://api.openai.com/v1/audio/transcriptions";
 const ELEVENLABS_BASE = "https://api.elevenlabs.io/v1/text-to-speech";
 const ELEVENLABS_MODELS = "https://api.elevenlabs.io/v1/models";
 const ELEVENLABS_VOICES = "https://api.elevenlabs.io/v1/voices";
+const ELEVENLABS_SUBSCRIPTION = "https://api.elevenlabs.io/v1/user/subscription";
 const MIME_TYPES = new Set(["audio/webm", "audio/webm;codecs=opus", "audio/ogg", "audio/ogg;codecs=opus", "audio/mp4", "audio/mpeg", "audio/wav", "audio/x-wav"]);
 
 export class VoiceValidationError extends Error { constructor(message) { super(message); this.name = "VoiceValidationError"; } }
@@ -16,7 +17,15 @@ export class VoiceProviderError extends Error {
 
 export function createVoiceService({ config, fetchImpl = fetch, schedule = setTimeout, cancelSchedule = clearTimeout }) {
   const voice = config.voiceV2;
-  let capabilityPromise; let capabilityCheckedAt = 0;
+  let capabilityPromise; let capabilityCheckedAt = 0; let quotaPromise; let quotaCheckedAt = 0;
+
+  async function quota({ refresh = false } = {}) {
+    const fresh = quotaPromise && Date.now() - quotaCheckedAt < voice.capabilityCacheMs;
+    if (!refresh && fresh) return quotaPromise;
+    quotaCheckedAt = Date.now();
+    quotaPromise = readElevenLabsQuota({ voice, fetchImpl, schedule, cancelSchedule }).catch(() => ({ available: false, reason: "scoped-key-metadata-unavailable" }));
+    return quotaPromise;
+  }
 
   async function capabilities({ refresh = false } = {}) {
     if (!voice.elevenLabsApiKey || !voice.elevenLabsVoiceId) throw new VoiceUnavailableError("ElevenLabs speech is not configured.");
@@ -38,16 +47,33 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
       nextChunkCharacters: voice.nextSpeechChunkCharacters,
       maxChunks: voice.maxSpeechChunks
     });
-    let totalAudioBytes = 0;
+    let totalAudioBytes = 0; let generatedCharacters = 0; let providerAttempts = 0;
     const streamStartedAt = Date.now();
-    for (let index = 0; index < chunks.length; index += 1) {
-      if (signal?.aborted) throw cancelledProviderError();
-      const result = await synthesiseChunk(chunks[index], { voice, model: capability.model, fetchImpl, schedule, cancelSchedule, signal, onEvent, index, chunkCount: chunks.length, previousText: chunks[index - 1], nextText: chunks[index + 1] });
-      totalAudioBytes += result.audio.length;
-      if (totalAudioBytes > voice.maxSpeechAudioBytes) throw new VoiceProviderError("elevenlabs", "ElevenLabs audio exceeded Nova's response limit.", undefined, "invalid_request");
-      yield { ...result, index, chunkCount: chunks.length, spokenText: chunks[index] };
-    }
-    onEvent({ phase: "stream_complete", chunkCount: chunks.length, textCharacters: text.length, audioBytes: totalAudioBytes, durationMs: Date.now() - streamStartedAt, model: capability.model.id, outputFormat: voice.ttsOutputFormat });
+    const turnSeed = stableSpeechSeed(text); const controller = new AbortController(); const unlink = linkAbort(signal, controller);
+    const pending = new Map(); const lookahead = Math.max(1, Math.min(2, voice.speechLookahead || 2));
+    const launch = (index) => {
+      if (index >= chunks.length || pending.has(index) || controller.signal.aborted) return;
+      const promise = synthesiseChunk(chunks[index], { voice, model: capability.model, fetchImpl, schedule, cancelSchedule, signal: controller.signal, onEvent, index, chunkCount: chunks.length, previousText: chunks[index - 1], nextText: chunks[index + 1], seed: turnSeed })
+        .then((value) => ({ ok: true, value }), (error) => ({ ok: false, error }));
+      pending.set(index, promise);
+    };
+    for (let index = 0; index < Math.min(lookahead, chunks.length); index += 1) launch(index);
+    try {
+      for (let index = 0; index < chunks.length; index += 1) {
+        if (controller.signal.aborted) throw cancelledProviderError();
+        const settled = await pending.get(index); pending.delete(index);
+        if (!settled.ok) { controller.abort(); throw settled.error; }
+        const result = settled.value; providerAttempts += result.retryCount + 1; generatedCharacters += chunks[index].length;
+        totalAudioBytes += result.audio.length;
+        if (totalAudioBytes > voice.maxSpeechAudioBytes) { controller.abort(); throw new VoiceProviderError("elevenlabs", "ElevenLabs audio exceeded Nova's response limit.", undefined, "invalid_request"); }
+        launch(index + lookahead);
+        yield { ...result, index, chunkCount: chunks.length, spokenText: chunks[index] };
+      }
+      onEvent({ phase: "stream_complete", chunkCount: chunks.length, textCharacters: text.length, generatedCharacters, providerAttempts, audioBytes: totalAudioBytes, estimatedAudioDurationSeconds: estimatedMp3Seconds(totalAudioBytes), durationMs: Date.now() - streamStartedAt, model: capability.model.id, outputFormat: voice.ttsOutputFormat });
+    } catch (error) {
+      onEvent({ phase: "stream_failed", chunkCount: chunks.length, textCharacters: text.length, generatedCharacters, providerAttempts, audioBytes: totalAudioBytes, category: error?.category || "unknown", durationMs: Date.now() - streamStartedAt, model: capability.model.id, outputFormat: voice.ttsOutputFormat });
+      throw error;
+    } finally { controller.abort(); unlink(); }
   }
 
   return Object.freeze({
@@ -57,6 +83,7 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
         try { capability = await capabilities(options); }
         catch (error) { failure = error; }
       }
+      const quotaStatus = await quota(options);
       return {
         available: Boolean(voice.openAIApiKey && capability),
         rawAudioPolicy: "ephemeral-request-only",
@@ -73,7 +100,8 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
           voiceCompatibility: capability?.voiceCompatibility,
           errorCategory: safeReadinessCategory(failure)
         },
-        limits: { maxDurationSeconds: voice.maxDurationSeconds, maxAudioBytes: voice.maxAudioBytes, maxSpeechCharacters: voice.maxSpeechCharacters }
+        quota: quotaStatus,
+        limits: { maxDurationSeconds: voice.maxDurationSeconds, maxAudioBytes: voice.maxAudioBytes, maxSpeechCharacters: voice.maxSpeechCharacters, maxSpeechChunks: voice.maxSpeechChunks, lookahead: voice.speechLookahead }
       };
     },
     capabilities,
@@ -104,7 +132,7 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
   });
 }
 
-async function synthesiseChunk(text, { voice, model, fetchImpl, schedule, cancelSchedule, signal, onEvent, index, chunkCount, previousText, nextText }) {
+async function synthesiseChunk(text, { voice, model, fetchImpl, schedule, cancelSchedule, signal, onEvent, index, chunkCount, previousText, nextText, seed }) {
   const url = `${ELEVENLABS_BASE}/${encodeURIComponent(voice.elevenLabsVoiceId)}/stream?output_format=${encodeURIComponent(voice.ttsOutputFormat)}`;
   let attempt = 0;
   while (attempt < 2) {
@@ -115,7 +143,7 @@ async function synthesiseChunk(text, { voice, model, fetchImpl, schedule, cancel
       const result = await consumeElevenLabsStream(fetchImpl, url, {
         method: "POST",
         headers: { "xi-api-key": voice.elevenLabsApiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
-        body: JSON.stringify(elevenLabsRequestBody({ text, model, previousText, nextText }))
+        body: JSON.stringify(elevenLabsRequestBody({ text, model, previousText, nextText, seed, stability: voice.ttsStability }))
       }, { voice, model, schedule, cancelSchedule, signal, onEvent, index, chunkCount, attempt, startedAt });
       return { audio: result.audio, mimeType: "audio/mpeg", model: model.id, retryCount: attempt - 1, timing: result.timing };
     } catch (error) {
@@ -234,6 +262,18 @@ async function safeJson(response, service) {
   catch { throw new VoiceProviderError(service.toLowerCase(), `${service} returned an invalid response.`); }
 }
 
+async function readElevenLabsQuota({ voice, fetchImpl, schedule, cancelSchedule }) {
+  if (!voice.elevenLabsApiKey) return { available: false, reason: "not-configured" };
+  const data = await timedRequest(fetchImpl, ELEVENLABS_SUBSCRIPTION, { headers: { "xi-api-key": voice.elevenLabsApiKey, Accept: "application/json" } }, voice.capabilityTimeoutMs, "ElevenLabs subscription", schedule, cancelSchedule, (response) => safeJson(response, "ElevenLabs subscription"));
+  const used = finiteInteger(data?.character_count); const limit = finiteInteger(data?.character_limit);
+  return { available: true, tier: safeLabel(data?.tier), status: safeLabel(data?.status), usedCredits: used, creditLimit: limit, remainingCredits: used !== undefined && limit !== undefined ? Math.max(0, limit - used) : undefined, nextResetUnix: finiteInteger(data?.next_character_count_reset_unix), refreshPeriod: safeLabel(data?.character_refresh_period), overageEnabled: data?.max_credit_limit_extension === "unlimited" || Number(data?.max_credit_limit_extension) > 0 };
+}
+
+function stableSpeechSeed(text) { let hash = 2166136261; for (const character of text) { hash ^= character.codePointAt(0); hash = Math.imul(hash, 16777619); } return hash >>> 0; }
+function estimatedMp3Seconds(bytes) { return Math.round((bytes * 8 / 128000) * 10) / 10; }
+function finiteInteger(value) { const parsed = Number(value); return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined; }
+function safeLabel(value) { const label = typeof value === "string" ? value.trim() : ""; return /^[a-z0-9_.-]{1,64}$/i.test(label) ? label : undefined; }
+
 async function classifyProviderFailure(response) {
   let body; try { body = await response.json(); } catch { body = null; }
   const detail = body?.detail && typeof body.detail === "object" ? body.detail : body?.error && typeof body.error === "object" ? body.error : body;
@@ -285,3 +325,4 @@ function decodeAudio(value) {
 function validateMime(value) { const mime = String(value || "").toLowerCase().replace(/;\s*/, ";"); if (!MIME_TYPES.has(mime)) throw new VoiceValidationError("Unsupported voice recording format."); return mime; }
 function boundedNumber(value, min, max, name) { const number = Number(value); if (!Number.isFinite(number) || number < min || number > max) throw new VoiceValidationError(`${name} must be between ${min} and ${max}.`); return number; }
 function extension(type) { if (type.includes("wav")) return "wav"; if (type.includes("ogg")) return "ogg"; if (type.includes("mp4")) return "m4a"; if (type.includes("mpeg")) return "mp3"; return "webm"; }
+

@@ -37,7 +37,7 @@ function setup({ connectError, connectGate, transcript = "مرحبا Nova، را
     noSpeech: () => handlers.onNoSpeech(), barge: () => barge(),
     started: () => { clock += 5; playbackCallbacks.onStarted(); },
     ended: () => { clock += 500; playbackCallbacks.onEnded(); },
-    playbackError: () => playbackCallbacks.onError(),
+    playbackError: (error) => playbackCallbacks.onError(error),
     runTimer: (index = timers.length - 1) => { const timer = timers[index]; if (!timer.cancelled) timer.callback(); },
     counts: () => ({ sends, speechCalls })
   };
@@ -119,6 +119,9 @@ test("a later streamed TTS failure clears active state and re-arms Listening wit
   flow.runTimer(); assert.equal(flow.mode.getState(), "listening"); assert.equal(flow.counts().sends, 1);
 });
 
+test("provider quota exhaustion is never mislabeled as browser playback failure",async()=>{const flow=setup();await flow.mode.start();assert.equal(await flow.audio(),true);flow.started();const error=new Error("stream stopped");error.category="quota";flow.playbackError(error);assert.match(flow.errors.at(-1),/ElevenLabs credits are exhausted/i);assert.doesNotMatch(flow.errors.at(-1),/playback failed/i);assert.equal(flow.mode.getState(),"retrying");});
+
 test("Arabic-English mixed transcripts pass unchanged into the existing Nova pipeline", async () => {
   const mixed = "محمد، check Nova Brain API وSharp Cuts booking رقم 079 123 4567"; const flow = setup({ transcript: mixed }); await flow.mode.start(); await flow.audio(); assert.deepEqual(flow.transcripts, [mixed]); assert.ok(flow.events.includes(`send:${mixed}`));
 });
+

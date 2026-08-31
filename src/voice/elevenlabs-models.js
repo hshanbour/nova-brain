@@ -26,10 +26,12 @@ export function selectElevenLabsModel(models, preferredModel = ELEVENLABS_DEFAUL
   });
 }
 
-export function elevenLabsRequestBody({ text, model, previousText, nextText }) {
+export function elevenLabsRequestBody({ text, model, previousText, nextText, seed, stability }) {
   return {
     text,
     model_id: model.id,
+    ...(Number.isInteger(seed) ? { seed } : {}),
+    ...(Number.isFinite(stability) ? { voice_settings: { stability } } : {}),
     ...(model.continuityText && previousText ? { previous_text: previousText } : {}),
     ...(model.continuityText && nextText ? { next_text: nextText } : {})
   };

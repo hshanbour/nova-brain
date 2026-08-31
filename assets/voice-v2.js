@@ -78,14 +78,14 @@ export function createVoiceV2({
       if (!valid(current)) return false;
       if (result.preparationError) {
         if (result.preparationError?.name === "AbortError") return false;
-        recover("Nova's written reply is safe, but ElevenLabs could not speak it.", ttsRecoveryDelayMs); return false;
+        recover(voiceFailureMessage(result.preparationError), ttsRecoveryDelayMs); return false;
       }
       const speech = result.preparedAssistant;
       if (!speech?.audio) { recover("Nova's written reply is safe, but ElevenLabs returned no playable audio.", ttsRecoveryDelayMs); return false; }
       playback.play(speech.stream || speech.audio, {
         onStarted: () => { if (valid(current)) { mark("audioStartedAt"); reportTiming("audio-started"); } },
         onEnded: () => { if (valid(current)) { mark("audioEndedAt"); listen({ afterAudio: true }); } },
-        onError: () => { if (valid(current)) recover("Nova's written reply is safe, but audio playback failed.", ttsRecoveryDelayMs); }
+        onError: (error) => { if (valid(current)) recover(voiceFailureMessage(error, true), ttsRecoveryDelayMs); }
       });
       return true;
     } catch (error) {
@@ -141,3 +141,5 @@ function timingSnapshot(timing, stage) {
 function compact(value) { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)); }
 function rounded(value) { return Math.round(Math.max(0, value) * 10) / 10; }
 function abortError() { const error = new Error("Voice turn was interrupted."); error.name = "AbortError"; return error; }
+function voiceFailureMessage(error,browserFallback=false){if(error?.category==="quota")return "Nova's written reply is safe, but ElevenLabs credits are exhausted.";if(error?.category==="authentication")return "Nova's written reply is safe, but ElevenLabs authentication needs attention.";if(error?.category==="voice_access")return "Nova's written reply is safe, but the selected ElevenLabs voice is unavailable.";if(error?.category==="rate_limit")return "Nova's written reply is safe, but ElevenLabs is temporarily busy.";if(["provider_timeout_first_byte","provider_stream_stalled"].includes(error?.category))return "Nova's written reply is safe, but ElevenLabs audio timed out.";if(error?.message&&/written reply is safe/i.test(error.message))return error.message;return browserFallback?"Nova's written reply is safe, but audio playback failed.":"Nova's written reply is safe, but ElevenLabs could not speak it.";}
+

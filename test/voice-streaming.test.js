@@ -36,7 +36,7 @@ test("first complete audio chunk is available before later ElevenLabs generation
   }) });
   const iterator = service.streamSpeech({ text: "This first sentence begins now. This second sentence waits for generation. A third sentence follows." })[Symbol.asyncIterator]();
   const first = await iterator.next(); assert.equal(first.done, false); assert.equal(first.value.index, 0); assert.match(first.value.audio.toString(), /^mp3:This first sentence/);
-  const later = iterator.next(); await Promise.resolve(); assert.equal(requests.length, 2);
+  const later = iterator.next(); await Promise.resolve(); assert.equal(requests.length, 3);
   second.resolve(); const next = await later; assert.equal(next.value.index, 1);
 });
 
@@ -137,9 +137,20 @@ test("v3 conversational multi-chunk requests omit incompatible continuity fields
   const text = "الحمد لله وضعي تمام. أنا Nova مساعدك الرقمي. نراجع Sharp Cuts API ثم missed-call recovery خطوة بخطوة. ونكمل كل التفاصيل بدون حذف أو تكرار.";
   const result = await service.synthesise({ text });
   assert.ok(requests.length > 1); assert.equal(result.spokenText, text);
-  for (const body of requests) { assert.equal(body.model_id, "eleven_v3_conversational"); assert.equal("previous_text" in body, false); assert.equal("next_text" in body, false); }
+  for (const body of requests) { assert.equal(body.model_id, "eleven_v3_conversational"); assert.equal("previous_text" in body, false); assert.equal("next_text" in body, false); assert.equal(body.voice_settings.stability,0.5); assert.equal(Number.isInteger(body.seed),true); }
+  assert.equal(new Set(requests.map(({seed})=>seed)).size,1);
   assert.equal(requests.map(({ text: chunk }) => chunk).join(" "), text);
 });
+
+test("balanced 2k 4k and 6k Arabic-mixed text preserves exact order without giant later chunks",()=>{for(const target of [2000,4000,6000]){const unit="تمام محمد، نراجع Preview deployment وAPI latency خطوة بخطوة، وبعدها نكمل الفحص بدون حذف أو تكرار. ";const text=unit.repeat(Math.ceil(target/unit.length)).slice(0,target).trim();const chunks=chunkSpeechText(text,{firstChunkCharacters:60,nextChunkCharacters:120,maxChunks:64});assert.equal(chunks.join(" "),text);assert.ok(chunks.length>10);assert.ok(chunks[0].length<=60);for(const chunk of chunks.slice(1))assert.ok(chunk.length<=120,`chunk ${chunk.length} exceeded 120`);}});
+
+test("server producer keeps at most two ElevenLabs generations active and emits strict order",async()=>{let active=0;let peak=0;const gates=[];const starts=[];const service=createVoiceService({config:config({firstSpeechChunkCharacters:30,nextSpeechChunkCharacters:35,speechLookahead:2}),fetchImpl:withCapabilities(async(_url,options)=>{const body=JSON.parse(options.body);starts.push(body.text);const gate=deferred();gates.push(gate);active+=1;peak=Math.max(peak,active);await gate.promise;active-=1;return new Response(Buffer.from(body.text),{status:200,headers:{"content-type":"audio/mpeg"}});})});const iterator=service.streamSpeech({text:"First clause now. Second clause follows. Third clause follows. Fourth clause finishes."})[Symbol.asyncIterator]();const firstPending=iterator.next();await new Promise(resolve=>setImmediate(resolve));assert.equal(starts.length,2);gates[1].resolve();await Promise.resolve();assert.equal(starts.length,2);gates[0].resolve();const first=await firstPending;assert.equal(first.value.index,0);await new Promise(resolve=>setImmediate(resolve));assert.equal(starts.length,3);await iterator.return();assert.ok(peak<=2);});
+
+test("cancelling long-form generation aborts every active lookahead request",async()=>{const controller=new AbortController();let active=0;let aborted=0;const service=createVoiceService({config:config({firstSpeechChunkCharacters:30,nextSpeechChunkCharacters:35,speechLookahead:2}),fetchImpl:withCapabilities(async(_url,{signal})=>{active+=1;return new Promise((_resolve,reject)=>signal.addEventListener("abort",()=>{aborted+=1;reject(new DOMException("aborted","AbortError"));},{once:true}));})});const pending=service.streamSpeech({text:"First clause now. Second clause follows. Third clause follows. Fourth clause finishes."},{signal:controller.signal})[Symbol.asyncIterator]().next();await new Promise(resolve=>setImmediate(resolve));assert.equal(active,2);controller.abort();await assert.rejects(pending,(error)=>error instanceof VoiceProviderError&&error.category==="client_cancelled");assert.equal(aborted,2);});
+
+test("streamed quota category reaches the browser client with the correct owner message",async()=>{const payload=[JSON.stringify({type:"audio",index:0,chunkCount:2,mimeType:"audio/mpeg",audioBase64:Buffer.from("one").toString("base64")}),JSON.stringify({type:"error",category:"quota"})].join("\n")+"\n";const client=createVoiceV2Client({fetchImpl:async()=>new Response(payload,{status:200,headers:{"content-type":"application/x-ndjson"}})});const speech=await client.speech("long answer");const iterator=speech.stream[Symbol.asyncIterator]();await iterator.next();await assert.rejects(()=>iterator.next(),(error)=>error.category==="quota"&&/credits are exhausted/i.test(error.message)&&!/playback failed/i.test(error.message));});
+
+test("audio playback revokes every completed and cancelled object URL",async()=>{const revoked=[];const players=[];class AudioMock{constructor(url){this.url=url;this.listeners=new Map();players.push(this);}addEventListener(name,callback){this.listeners.set(name,callback);}play(){return Promise.resolve();}pause(){}removeAttribute(){}load(){}end(){this.listeners.get("ended")?.();}}const playback=createAudioPlayback({Audio:AudioMock,URL:{createObjectURL:(_blob)=>`blob:${players.length+1}`,revokeObjectURL:(url)=>revoked.push(url)}});playback.play({async *[Symbol.asyncIterator](){yield new Blob(["one"]);yield new Blob(["two"]);}},{onEnded(){}});await new Promise(resolve=>setImmediate(resolve));players[0].end();await new Promise(resolve=>setImmediate(resolve));playback.stop();assert.equal(revoked.length,2);});
 
 test("incremental playback reports a later stream failure once and clears stale playback", async () => {
   const players = []; let errors = 0; let ended = 0;

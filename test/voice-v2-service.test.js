@@ -13,6 +13,7 @@ function withCapabilities(handler = async () => new Response(Buffer.from("mp3"),
   return async (url, options) => {
     if (url === "https://api.elevenlabs.io/v1/models") return new Response(JSON.stringify(availableModels), { status: 200, headers: { "content-type": "application/json" } });
     if (String(url).startsWith("https://api.elevenlabs.io/v1/voices/")) return new Response(JSON.stringify(voice), { status: 200, headers: { "content-type": "application/json" } });
+    if (url === "https://api.elevenlabs.io/v1/user/subscription") return new Response(JSON.stringify({ tier:"free",status:"active",character_count:1200,character_limit:10000,next_character_count_reset_unix:2000000000,character_refresh_period:"monthly_period",max_credit_limit_extension:0 }), { status: 200, headers: { "content-type": "application/json" } });
     return handler(url, options);
   };
 }
@@ -99,7 +100,7 @@ test("scoped TTS keys verify the owner voice through a bounded direct speech pro
   assert.equal(readiness.available, true); assert.equal(readiness.tts.model, "eleven_v3_conversational");
   assert.equal(readiness.tts.capability, "direct-speech-generation-verified"); assert.equal(readiness.tts.voiceCompatibility, "owner-voice-generation-verified");
   assert.equal(speechRequests.length, 1); assert.match(speechRequests[0].url, /owner-voice-id\/stream\?output_format=mp3_44100_128/);
-  assert.deepEqual(speechRequests[0].body, { text: "Nova is ready.", model_id: "eleven_v3_conversational" });
+  assert.deepEqual(speechRequests[0].body, { text: "Nova is ready.", model_id: "eleven_v3_conversational", voice_settings:{stability:0.5} });
 });
 
 test("capability preflight catches an unavailable model set before a paid speech request", async () => {
@@ -192,3 +193,4 @@ test("Voice V2 API logs safe provider category while keeping its 502 generic", a
   assert.equal(entries[0][0], "Nova voice provider failed"); assert.equal(entries[0][1].category, "invalid_audio"); assert.equal(entries[0][1].upstreamStatus, 400); assert.deepEqual(entries[0][1].detail, failure.safeDetail);
   assert.doesNotMatch(JSON.stringify({ response: JSON.parse(res.body), entries }), /super-secret|owner-voice-id|secret-provider-body/);
 });
+
