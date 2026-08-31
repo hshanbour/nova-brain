@@ -128,7 +128,16 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         }
 
         if (request.method === "GET" && pathname === "/api/voice/readiness") {
-          sendJson(response, 200, await voiceService.readiness()); return;
+          const readiness = await voiceService.readiness();
+          logger.info("Nova voice readiness", {
+            available: readiness.available,
+            sttStatus: readiness.stt?.status,
+            ttsStatus: readiness.tts?.status,
+            model: readiness.tts?.model,
+            fallbackUsed: readiness.tts?.fallbackUsed,
+            errorCategory: readiness.tts?.errorCategory
+          });
+          sendJson(response, 200, readiness); return;
         }
         if (request.method === "POST" && pathname === "/api/voice/transcribe") {
           const result = await voiceService.transcribe(await readJsonBody(request, config.voiceV2.maxBodyBytes));
@@ -295,3 +304,4 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
     }
   });
 }
+
