@@ -11,14 +11,16 @@ export function createSpeakerExtractor({ config, fetchImpl = fetch, clock = Date
 
   async function request(path, body, { signal, requestId, enrollmentAttemptId } = {}) {
     if (!configured) throw new SpeakerExtractorError("Speaker recognition worker is not configured.", "not_configured");
+    const timeoutSignal=AbortSignal.timeout(45_000);const requestSignal=signal&&typeof AbortSignal.any==="function"?AbortSignal.any([signal,timeoutSignal]):timeoutSignal;
     let response;
     try {
       response = await fetchImpl(`${speaker.endpoint.replace(/\/$/, "")}${path}`, {
         method: "POST", headers: { Authorization: `Bearer ${speaker.token}`, "Content-Type": "application/json", Accept: "application/json", ...(requestId?{"X-Nova-Request-Id":requestId}:{}), ...(enrollmentAttemptId?{"X-Nova-Enrollment-Attempt-Id":enrollmentAttemptId}:{}) },
-        body: JSON.stringify(body), signal
+        body: JSON.stringify(body), signal:requestSignal
       });
     } catch (error) {
-      if (error?.name === "AbortError") throw error;
+      if (signal?.aborted) throw error;
+      if (timeoutSignal.aborted) throw new SpeakerExtractorError("Speaker recognition worker timed out.","extractor_timeout");
       throw new SpeakerExtractorError("Speaker recognition worker could not be reached.");
     }
     let data; try { data = await response.json(); } catch { throw new SpeakerExtractorError("Speaker recognition worker returned an unreadable response.", "invalid_response"); }

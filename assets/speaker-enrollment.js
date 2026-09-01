@@ -84,13 +84,15 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
   document.querySelector("#speakerEnrollmentButton").addEventListener("click", async () => {
     reset();
     dialog.hidden = false;
+    button.disabled = true;
+    status.textContent = "Checking the private speaker worker before recording is enabled…";
     await refreshProfiles();
     try {
       const ready = await fetchImpl("/api/voice/readiness").then((value) => value.json());
       if (!ready?.speakerRecognition?.available) {
         button.disabled = true;
         status.textContent = "Speaker recognition worker is not configured in this Preview yet.";
-      }
+      } else { button.disabled = false; status.textContent = "Nothing is recorded until you explicitly start, stop, and confirm each sample."; }
     } catch {
       button.disabled = true;
       status.textContent = "Speaker recognition readiness could not be verified.";
