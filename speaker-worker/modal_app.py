@@ -10,7 +10,7 @@ MODEL_ID = "speechbrain/spkrec-ecapa-voxceleb"
 MODEL_VERSION = "speechbrain/spkrec-ecapa-voxceleb@ecapa-v1"
 app = modal.App("nova-speaker-embedding-preview")
 image = modal.Image.debian_slim(python_version="3.11").apt_install("ffmpeg").pip_install(
-    "fastapi[standard]==0.116.1", "speechbrain==1.0.3", "torch==2.7.1", "torchaudio==2.7.1"
+    "fastapi[standard]==0.116.1", "requests==2.32.5", "speechbrain==1.0.3", "torch==2.7.1", "torchaudio==2.7.1"
 )
 
 
