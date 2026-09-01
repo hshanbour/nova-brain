@@ -38,7 +38,7 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
     button.textContent = "Start sample 1";
     submit.disabled = true;
     updateConfirmations();
-    status.textContent = "Nothing is recorded until you explicitly start and stop each sample.";
+    status.textContent = "Nothing is recorded until you explicitly start, stop, and confirm each sample.";
   };
   const cancel = () => {
     reset();
