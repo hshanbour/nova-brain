@@ -11,6 +11,11 @@ test("console document includes API UI, PWA metadata, and no embedded secrets", 
   assert.doesNotMatch(html, /OPENAI_API_KEY|sk-[A-Za-z0-9]/);
 });
 
+test("console proves protected Preview POST authentication without mutating application data", async () => {
+  const script = await readFile(new URL("../assets/console.js", import.meta.url), "utf8");
+  assert.match(script, /fetch\("\/api\/auth\/probe", \{ method: "POST", credentials: "same-origin" \}\)/);
+});
+
 test("console exposes the controlled Mohammad owner profile and Memory workspace", async () => {
   const [html, script] = await Promise.all([
     readFile(new URL("../index.html", import.meta.url), "utf8"),
