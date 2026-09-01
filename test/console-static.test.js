@@ -14,6 +14,7 @@ test("console document includes API UI, PWA metadata, and no embedded secrets", 
 test("console proves protected Preview POST authentication without mutating application data", async () => {
   const script = await readFile(new URL("../assets/console.js", import.meta.url), "utf8");
   assert.match(script, /fetch\("\/api\/auth\/probe", \{ method: "POST", credentials: "same-origin" \}\)/);
+  assert.match(script, /fetch\("\/api\/speakers\/enroll", \{ method: "HEAD", credentials: "same-origin" \}\)/);
 });
 
 test("console exposes the controlled Mohammad owner profile and Memory workspace", async () => {

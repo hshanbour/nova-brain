@@ -23,6 +23,7 @@ const providerStatus = document.querySelector("#providerStatus");
 const voiceBenchmark = initialiseVoiceBenchmark({ document, navigator, MediaRecorder: window.MediaRecorder, URL });
 initialiseSpeakerEnrollment({ document, navigator, MediaRecorder: window.MediaRecorder });
 fetch("/api/auth/probe", { method: "POST", credentials: "same-origin" }).catch(() => {});
+fetch("/api/speakers/enroll", { method: "HEAD", credentials: "same-origin" }).catch(() => {});
 let pending = false;
 let currentProfile;
 let memoryRecords = [];

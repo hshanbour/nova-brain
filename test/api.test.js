@@ -63,6 +63,15 @@ test("authenticated POST probe is non-mutating and returns a request id", async 
   assert.equal(res.headers.get("cache-control"), "no-store");
 });
 
+test("speaker enrollment route supports a non-mutating authenticated HEAD probe", async () => {
+  const app = createApp({ environment: {} });
+  const res = response();
+  await app.handle(request({ method: "HEAD", url: "/api/speakers/enroll" }), res);
+  assert.equal(res.statusCode, 204);
+  assert.equal(res.body, "");
+  assert.equal(res.headers.get("cache-control"), "no-store");
+});
+
 test("agent endpoint validates and processes JSON input", async () => {
   const app = createApp({ environment: {} });
   const res = response();

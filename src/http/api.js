@@ -181,6 +181,9 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         if(request.method==="GET"&&pathname==="/api/speakers/privacy-status"){
           await ready();sendJson(response,200,{status:await speakerIdentity.privacyStatus()});return;
         }
+        if(request.method==="HEAD"&&pathname==="/api/speakers/enroll"){
+          logger.info("Nova speaker enrollment route probe",{requestId});response.statusCode=204;response.setHeader("Cache-Control","no-store");response.end();return;
+        }
         if(request.method==="DELETE"&&pathname==="/api/speakers/invalid-owner-enrollment"){
           await ready();const input=await readJsonBody(request,config.maxBodyBytes);
           if(input?.confirm!=="PURGE_INVALID_OWNER_ENROLLMENT")throw new Error("Explicit invalid-enrollment purge confirmation is required.");
