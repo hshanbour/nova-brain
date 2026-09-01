@@ -117,6 +117,12 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           return;
         }
 
+        if (request.method === "POST" && pathname === "/api/auth/probe") {
+          logger.info("Nova authenticated POST probe", { requestId });
+          sendJson(response, 200, { success: true, requestId });
+          return;
+        }
+
         if (request.method === "POST" && pathname === "/api/agent") {
           await ready();
           const input = validateAgentRequest(

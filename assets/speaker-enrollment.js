@@ -168,6 +168,7 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
     try {
       const response = await fetchImpl("/api/speakers/enroll", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enrollmentAttemptId, displayName: form.elements.displayName.value, relation: form.elements.relation.value, scope: "household", consent: true, consentActor: form.elements.displayName.value, samples }),
         signal: enrollmentController.signal

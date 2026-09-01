@@ -50,6 +50,19 @@ test("health endpoint returns an online response with defensive headers", async 
   });
 });
 
+test("authenticated POST probe is non-mutating and returns a request id", async () => {
+  const app = createApp({ environment: {} });
+  const res = response();
+
+  await app.handle(request({ method: "POST", url: "/api/auth/probe" }), res);
+
+  assert.equal(res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.success, true);
+  assert.match(body.requestId, /^[0-9a-f-]{36}$/);
+  assert.equal(res.headers.get("cache-control"), "no-store");
+});
+
 test("agent endpoint validates and processes JSON input", async () => {
   const app = createApp({ environment: {} });
   const res = response();
