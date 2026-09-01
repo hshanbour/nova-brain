@@ -173,12 +173,16 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           await ready();sendJson(response,200,{speakers:await speakerIdentity.list()});return;
         }
         if(request.method==="POST"&&pathname==="/api/speakers/enroll"){
+          const controller=new AbortController();const abort=()=>controller.abort();
+          request.once?.("aborted",abort);response.once?.("close",()=>{if(!response.writableEnded)abort();});
           await ready();const input=await readJsonBody(request,config.voiceV2.maxBodyBytes);
           if(input?.consent!==true)throw new Error("Explicit speaker consent is required.");
-          if(!Array.isArray(input.samples)||input.samples.length<3)throw new Error("At least three consented voice samples are required.");
-          const extracted=await Promise.all(input.samples.map((sample)=>speakerExtractor.extract(sample)));
+          if(!Array.isArray(input.samples)||input.samples.length!==3)throw new Error("Exactly three consented voice samples are required.");
+          const extracted=await Promise.all(input.samples.map((sample)=>speakerExtractor.extract(sample,{signal:controller.signal})));
+          if(controller.signal.aborted)return;
           if(extracted.some((item)=>!item.sufficient))throw new Error("Each enrollment sample must contain at least one second of speech.");
           const versions=new Set(extracted.map((item)=>item.extractorVersion));if(versions.size!==1)throw new Error("Enrollment samples must use one extractor version.");
+          if(controller.signal.aborted)return;
           sendJson(response,201,{speaker:await speakerIdentity.enroll({...input,samples:undefined,sampleRepresentations:extracted.map((item)=>item.representation),representationVersion:extracted[0].extractorVersion})});return;
         }
         const speakerMatch=pathname.match(/^\/api\/speakers\/([^/]+)$/);

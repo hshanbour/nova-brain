@@ -138,10 +138,16 @@
     <form id="speakerEnrollmentForm" method="dialog">
       <div class="dialog-heading"><div><p class="eyebrow">Sensitive biometric enrollment</p><h2 id="speakerEnrollmentTitle">Learn a consenting voice</h2></div><button type="button" class="dialog-close" data-close-speaker-enrollment aria-label="Close">×</button></div>
       <p class="privacy-note">Nova sends each sample to the private speaker-embedding worker, immediately discards the raw recording, and stores only an encrypted derived voiceprint. It will not infer emotion, age, ethnicity, health, or accent origin. You can revoke or delete the profile later.</p>
+      <div id="speakerExistingProfiles" class="privacy-note" aria-live="polite"></div>
       <div class="dialog-grid"><label>Display name<input name="displayName" maxlength="100" required></label><label>Relationship<select name="relation"><option value="owner">Owner</option><option value="family">Consenting household member</option></select></label></div>
       <label class="toggle-label"><input name="consent" type="checkbox" required> I am the person speaking, I understand voice recognition is biometric processing, and I explicitly consent to enrollment.</label>
-      <button type="button" class="secondary-button" id="speakerSampleButton">Record sample 1 of 3</button>
-      <p id="speakerEnrollmentStatus" class="privacy-note" role="status">Use three different natural Arabic, English, or mixed sentences, at least two seconds each.</p>
+      <button type="button" class="secondary-button" id="speakerSampleButton">Start sample 1</button>
+      <ol class="speaker-sample-confirmations" aria-label="Enrollment sample status">
+        <li data-speaker-sample-confirmation data-confirmed="false">Sample 1: Not recorded</li>
+        <li data-speaker-sample-confirmation data-confirmed="false">Sample 2: Not recorded</li>
+        <li data-speaker-sample-confirmation data-confirmed="false">Sample 3: Not recorded</li>
+      </ol>
+      <p id="speakerEnrollmentStatus" class="privacy-note" role="status">Nothing is recorded until you explicitly start, stop, and confirm each sample.</p>
       <div class="dialog-actions"><button type="button" class="secondary-button" data-close-speaker-enrollment>Cancel</button><button type="submit" class="send-button" id="speakerEnrollSubmit" disabled>Encrypt and enroll voice</button></div>
     </form>
   </section>
