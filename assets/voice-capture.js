@@ -4,7 +4,7 @@ export function createMediaVoiceCapture({
   now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 1_800, shortFragmentSilenceMs = 2_250,
   longUtteranceSilenceMs = 1_600, resumedSpeechBonusMs = 150, maxEndpointSilenceMs = 2_500,
   noSpeechMs = 8_000, maxDurationMs = 30_000,
-  speechThreshold = 0.035, bargeThreshold = 0.065, recorderTimesliceMs = 100, bargeFrames = 2
+  speechThreshold = 0.035, bargeThreshold = 0.065, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 8
 }) {
   let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false;
   const supported = Boolean(mediaDevices?.getUserMedia && MediaRecorder && AudioContext);
@@ -76,11 +76,14 @@ export function createMediaVoiceCapture({
   }
 
   function watchForBargeIn(onBargeIn) {
-    clearTimer(); const current = ++generation; let frames = 0;
+    clearTimer(); const current = ++generation; let acousticFrames = 0; let speechFrames = 0; let baseline = 0.008;
     const sample = () => {
       if (current !== generation) return;
-      if (rms() >= bargeThreshold) frames += 1; else frames = 0;
-      if (frames >= bargeFrames) { clearTimer(); onBargeIn?.(); return; }
+      const level=rms(); baseline=Math.min(0.035,baseline*0.96+level*0.04);
+      const acoustic=level>=Math.max(bargeThreshold,baseline*2.4);
+      acousticFrames=acoustic?acousticFrames+1:Math.max(0,acousticFrames-2);
+      if(acousticFrames>=bargeAcousticFrames) speechFrames=acoustic?speechFrames+1:Math.max(0,speechFrames-1);
+      if (speechFrames >= bargeSpeechFrames) { clearTimer(); onBargeIn?.({ confirmed:true, voicedMs:speechFrames*sampleIntervalMs }); return; }
       timer = schedule(sample, sampleIntervalMs);
     };
     timer = schedule(sample, sampleIntervalMs);
@@ -105,19 +108,19 @@ function preferredRecorderOptions(MediaRecorder) {
 }
 
 export function createAudioPlayback({ Audio, URL }) {
-  let player; let objectUrl; let generation = 0; let iterator; let settlePlayback;
+  let player; let objectUrl; let generation = 0; let iterator; let settlePlayback; let paused=false;
   const clearPlayer = () => { if (player) { player.pause(); player.removeAttribute?.("src"); player.load?.(); } if (objectUrl) URL.revokeObjectURL(objectUrl); player = objectUrl = undefined; };
-  const stop = () => { generation += 1; settlePlayback?.(); settlePlayback = undefined; clearPlayer(); Promise.resolve(iterator?.return?.()).catch(() => {}); iterator = undefined; };
+  const stop = () => { generation += 1; paused=false; settlePlayback?.(); settlePlayback = undefined; clearPlayer(); Promise.resolve(iterator?.return?.()).catch(() => {}); iterator = undefined; };
   return Object.freeze({
     play(source, { onStarted, onEnded, onError, onChunkStarted } = {}) {
-      stop(); const current = generation; iterator = toAudioStream(source)[Symbol.asyncIterator]();
+      stop(); const current = generation; iterator = toAudioStream(source)[Symbol.asyncIterator](); let chunkIndex=0;
       let started = false;
       const run = async () => {
         let item = await iterator.next();
         while (!item.done && current === generation) {
           const next = iterator.next().then((value) => ({ value }), (error) => ({ error }));
           await playBlob(item.value, current, () => {
-            onChunkStarted?.();
+            onChunkStarted?.({index:chunkIndex++});
             if (!started) { started = true; onStarted?.(); }
           });
           if (current !== generation) return;
@@ -127,6 +130,9 @@ export function createAudioPlayback({ Audio, URL }) {
       };
       run().catch((error) => { if (current === generation && error?.name !== "AbortError") { stop(); onError?.(error); } });
     },
+    pause(){if(!player||paused)return false;paused=true;player.pause();return true;},
+    resume(){if(!player||!paused)return false;paused=false;Promise.resolve(player.play()).catch(()=>{});return true;},
+    checkpoint(){return player?{currentTime:Number(player.currentTime||0),paused}:null;},
     stop
   });
 
@@ -140,7 +146,7 @@ export function createAudioPlayback({ Audio, URL }) {
       let began = false;
       const started = () => { if (began || current !== generation) return; began = true; onStarted(); };
       activePlayer.addEventListener("playing", started, { once: true });
-      activePlayer.addEventListener("ended", () => { if (current !== generation) return; release(); settle(resolve); }, { once: true });
+      activePlayer.addEventListener("ended", () => { if (current !== generation) return; paused=false; release(); settle(resolve); }, { once: true });
       activePlayer.addEventListener("error", () => { if (current !== generation) return; release(); settle(() => reject(new Error("Audio playback failed."))); }, { once: true });
       Promise.resolve(activePlayer.play()).then(started).catch((error) => { if (current === generation) { release(); settle(() => reject(error)); } });
     });
@@ -155,4 +161,3 @@ export function createAudioPlayback({ Audio, URL }) {
     };
   }
 }
-

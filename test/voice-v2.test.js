@@ -4,7 +4,7 @@ import { createVoiceV2 } from "../assets/voice-v2.js";
 
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 
-function setup({ connectError, connectGate, transcript = "مرحبا Nova، راجع Sharp Cuts API رقم 35", transcribeError, sendError, speechError, manualReady = false, transcribeGate, agentGate, speechGate } = {}) {
+function setup({ connectError, connectGate, transcript = "مرحبا Nova، راجع Sharp Cuts API رقم 35", transcribeError, sendError, speechError, manualReady = false, transcribeGate, agentGate, speechGate, checkpointTtlMs } = {}) {
   const events = []; const timers = []; const timings = []; let handlers; let barge; let playbackCallbacks; let sends = 0; let speechCalls = 0; let clock = 0;
   const capture = {
     async connect() { events.push("connect"); if (connectGate) await connectGate.promise; if (connectError) throw connectError; },
@@ -16,7 +16,7 @@ function setup({ connectError, connectGate, transcript = "مرحبا Nova، را
     async transcribe({ signal }) { events.push("transcribe"); assert.equal(signal instanceof AbortSignal, true); if (transcribeGate) await transcribeGate.promise; if (transcribeError) throw transcribeError; clock += 40; return { transcript }; },
     async speech(text, { signal }) { speechCalls += 1; events.push(`speech:${text}`); assert.equal(signal instanceof AbortSignal, true); if (speechGate) await speechGate.promise; if (speechError) throw speechError; clock += 80; return { audio: new Blob(["mp3"], { type: "audio/mpeg" }) }; }
   };
-  const playback = { play(_audio, callbacks) { playbackCallbacks = callbacks; events.push("play"); }, stop() { events.push("playback-stop"); } };
+  let playing=false;let paused=false;const playback = { play(_audio, callbacks) { playbackCallbacks = callbacks;playing=true;paused=false; events.push("play"); }, stop() {playing=false;paused=false;events.push("playback-stop"); },pause(){if(!playing)return false;paused=true;events.push("playback-pause");return true;},resume(){if(!playing||!paused)return false;paused=false;events.push("playback-resume");return true;},checkpoint(){return playing?{currentTime:1,paused}:null;} };
   const states = []; const errors = []; const transcripts = [];
   const mode = createVoiceV2({ capture, client, playback,
     async sendTurn(text, { signal, prepareAssistant }) {
@@ -27,7 +27,7 @@ function setup({ connectError, connectGate, transcript = "مرحبا Nova، را
       return { ...result, preparedAssistant, preparationError };
     },
     onTranscript: (text) => transcripts.push(text), onState: ({ state }) => states.push(state), onError: (message) => errors.push(message), onTiming: (value) => timings.push(value),
-    now: () => clock, schedule(callback, delay) { const timer = { callback, delay, cancelled: false }; timers.push(timer); return timer; }, cancelSchedule(timer) { timer.cancelled = true; }
+    now: () => clock, ...(checkpointTtlMs?{checkpointTtlMs}:{}),schedule(callback, delay) { const timer = { callback, delay, cancelled: false }; timers.push(timer); return timer; }, cancelSchedule(timer) { timer.cancelled = true; }
   });
   return {
     mode, events, states, errors, transcripts, timings, timers,
@@ -39,7 +39,7 @@ function setup({ connectError, connectGate, transcript = "مرحبا Nova، را
     ended: () => { clock += 500; playbackCallbacks.onEnded(); },
     playbackError: (error) => playbackCallbacks.onError(error),
     runTimer: (index = timers.length - 1) => { const timer = timers[index]; if (!timer.cancelled) timer.callback(); },
-    counts: () => ({ sends, speechCalls })
+    counts: () => ({ sends, speechCalls }),advance:(milliseconds)=>{clock+=milliseconds;}
   };
 }
 
@@ -59,7 +59,7 @@ test("Listening is not published until MediaRecorder reports capture ready", asy
 
 test("timing diagnostics measure zero-overhead TTS dispatch and immediate handoff", async () => {
   const flow = setup(); await flow.mode.start(); await flow.audio({ audio: new Blob(["audio"], { type: "audio/webm" }), mimeType: "audio/webm", durationSeconds: 2, speechEndedAt: 0, endpointStartedAt: 50, endedAt: 1_350 }); flow.started(); flow.ended();
-  const final = flow.timings.at(-1); assert.equal(final.stage, "listening-ready"); assert.deepEqual(final.measurements, { intentionalEndpointWait: 1_350, endpointGrace: 1_300, recordingFinalizeToSttStart: 0, stt: 40, transcriptToAgent: 0, agent: 120, assistantToTtsStart: 0, tts: 80, audioReadyToStart: 5, playback: 500, speechEndToPlayback: 1_595, audioEndToListening: 0 });
+  const final = flow.timings.at(-1); assert.equal(final.stage, "listening-ready"); assert.deepEqual(final.measurements, { speechEndToEndpoint:1_350,endpointToStt:0,intentionalEndpointWait: 1_350, endpointGrace: 1_300, recordingFinalizeToSttStart: 0, stt: 40, transcriptToAgent: 0, agent: 120, assistantToTtsStart: 0, tts: 80, audioReadyToStart: 5, playback: 500, speechEndToPlayback: 1_595,totalSpeechEndToAudio:1_595, audioEndToListening: 0 });
 });
 
 test("endpoint grace remains Listening and resumed speech cancels the pending UI phase", async () => {
@@ -72,6 +72,12 @@ test("barge-in aborts stale TTS/playback and re-arms without duplicating a turn"
   assert.equal(flow.mode.getState(), "speaking"); const sends = flow.counts().sends; flow.barge(); assert.ok(flow.states.includes("interrupted")); assert.equal(flow.mode.getState(), "listening");
   gate.resolve(); await processing; assert.equal(flow.counts().sends, sends); assert.equal(flow.events.includes("play"), false); assert.ok(flow.events.slice(-6).includes("playback-stop"));
 });
+
+test("false barge-in followed by silence resumes the same assistant playback",async()=>{const flow=setup();await flow.mode.start();await flow.audio();flow.started();const sends=flow.counts().sends;flow.barge();assert.equal(flow.mode.getState(),"listening");flow.noSpeech();assert.equal(flow.mode.getState(),"speaking");assert.equal(flow.counts().sends,sends);assert.ok(flow.events.includes("playback-pause"));assert.ok(flow.events.includes("playback-resume"));});
+
+test("explicit Arabic continue intent resumes a fresh interrupted checkpoint without a new agent turn",async()=>{const flow=setup({transcript:"كمّل"});await flow.mode.start();await flow.audio();flow.started();flow.barge();const sends=flow.counts().sends;assert.equal(await flow.audio(),true);assert.equal(flow.counts().sends,sends);assert.equal(flow.mode.getState(),"speaking");assert.ok(flow.events.includes("playback-resume"));});
+
+test("stale interruption checkpoints expire instead of resuming unrelated audio",async()=>{const flow=setup({checkpointTtlMs:100});await flow.mode.start();await flow.audio();flow.started();flow.barge();flow.advance(101);flow.noSpeech();assert.equal(flow.mode.getState(),"retrying");assert.equal(flow.events.includes("playback-resume"),false);});
 
 test("End Voice cancels pending transcription and prevents late completion", async () => {
   const gate = deferred(); const flow = setup({ transcribeGate: gate }); await flow.mode.start(); const process = flow.audio(); flow.mode.end(); gate.resolve(); await process;
@@ -124,4 +130,3 @@ test("provider quota exhaustion is never mislabeled as browser playback failure"
 test("Arabic-English mixed transcripts pass unchanged into the existing Nova pipeline", async () => {
   const mixed = "محمد، check Nova Brain API وSharp Cuts booking رقم 079 123 4567"; const flow = setup({ transcript: mixed }); await flow.mode.start(); await flow.audio(); assert.deepEqual(flow.transcripts, [mixed]); assert.ok(flow.events.includes(`send:${mixed}`));
 });
-

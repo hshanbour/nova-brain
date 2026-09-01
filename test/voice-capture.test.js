@@ -39,10 +39,12 @@ test("MediaRecorder VAD reports bounded no-speech without producing an audio tur
   assert.equal(noSpeech, 1); assert.equal(audio, 0);
 });
 
-test("playback monitor detects sustained owner speech for barge-in", async () => {
-  const flow = setup(); await flow.capture.connect(); let barges = 0; flow.capture.watchForBargeIn(() => { barges += 1; }); flow.setLevel(0.1); flow.run(); flow.run(); assert.equal(barges, 1);
+test("playback monitor requires sustained credible speech for barge-in", async () => {
+  const flow = setup(); await flow.capture.connect(); let barges = 0; flow.capture.watchForBargeIn(() => { barges += 1; }); flow.setLevel(0.1); for(let index=0;index<8;index+=1)flow.run();assert.equal(barges,0);flow.run();assert.equal(barges,1);
   await flow.capture.destroy(); assert.equal(flow.tracks[0].stopped, true);
 });
+
+test("short click and 200 ms vocal noise do not trigger permanent barge-in",async()=>{const flow=setup();await flow.capture.connect();let barges=0;flow.capture.watchForBargeIn(()=>{barges+=1;});flow.setLevel(.1);flow.run();flow.setLevel(0);for(let index=0;index<3;index+=1)flow.run();flow.setLevel(.1);for(let index=0;index<4;index+=1)flow.run();flow.setLevel(0);for(let index=0;index<4;index+=1)flow.run();assert.equal(barges,0);});
 
 test("100 ms capture retains the complete WebM stream and initialization header", async () => {
   const flow = setup(); await flow.capture.connect(); const events = []; let recording;
@@ -94,4 +96,3 @@ test("End Voice during endpoint grace discards the pending turn", async () => {
   flow.capture.listen({ onAudio: () => { audio += 1; }, onEndpoint: ({ phase }) => { if (phase === "possible-end") endpoint += 1; } });
   flow.speakFor(1_500); flow.pauseFor(500); assert.equal(endpoint, 1); flow.capture.stop(); assert.equal(audio, 0);
 });
-

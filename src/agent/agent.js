@@ -51,20 +51,28 @@ export function createAgent({
 
   return Object.freeze({
     async run({ message, conversationId = randomUUID(), context = {} }) {
+      const requestStartedAt=Date.now();
       const conversation = await storage.ensureConversation({ id: conversationId, ownerId, title: message.slice(0, 120) });
       if (!conversation) throw new Error("Conversation is unavailable.");
-      const run = await storage.createRun({ ownerId, projectId: context.projectId || null, conversationId, goal: message, status: "planning" });
-      await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_created", status: "completed", summary: "Execution run created." });
-      const conversationHistory = await storage.listMessages(conversationId, ownerId, { limit: historyLimit });
-      const retrieved = await retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit });
+      const contextRetrievalStartedAt=Date.now();
+      const [run,conversationHistory,retrieved] = await Promise.all([
+        storage.createRun({ ownerId, projectId: context.projectId || null, conversationId, goal: message, status: "planning" }),
+        storage.listMessages(conversationId, ownerId, { limit: historyLimit }),
+        retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit })
+      ]);
+      const contextRetrievalCompletedAt=Date.now();
+      await Promise.all([
+        storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_created", status: "completed", summary: "Execution run created." }),
+        storage.appendMessage({ conversationId, ownerId, role: "user", content: message })
+      ]);
       const systemContext = buildSystemContext(retrieved);
-      await storage.appendMessage({ conversationId, ownerId, role: "user", content: message });
       const toolExecutions = [];
       let continuationToken;
       let toolResults = [];
 
       try { for (let step = 1; step <= maxSteps; step += 1) {
         await storage.updateRun(run.id, ownerId, { status: "running", currentStep: step });
+        const agentGenerationStartedAt=Date.now();
         const generated = await modelProvider.generate({
           message,
           context,
@@ -75,6 +83,7 @@ export function createAgent({
           continuationToken
         });
         validateModelOutput(generated);
+        const agentGenerationCompletedAt=Date.now();
 
         if (generated.type === "final") {
           const response = {
@@ -85,12 +94,15 @@ export function createAgent({
             toolCalls: toolExecutions,
             steps: step
             ,runId: run.id,
-            runStatus: "completed"
+            runStatus: "completed",
+            timing:{contextRetrievalMs:contextRetrievalCompletedAt-contextRetrievalStartedAt,preModelMs:agentGenerationStartedAt-requestStartedAt,agentFirstResponseMs:agentGenerationCompletedAt-agentGenerationStartedAt,agentCompleteMs:agentGenerationCompletedAt-agentGenerationStartedAt}
           };
 
           await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: response.message });
           await storage.updateRun(run.id, ownerId, { status: "completed", currentStep: step, result: { message: response.message }, completedAt: new Date().toISOString() });
           await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_completed", status: "completed", summary: "Nova completed the execution run." });
+
+          response.timing.totalMs=Date.now()-requestStartedAt;
 
           return response;
         }

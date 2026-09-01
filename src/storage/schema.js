@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -59,6 +59,23 @@ export const SCHEMA_STATEMENTS = Object.freeze([
   )`,
   `CREATE INDEX IF NOT EXISTS nova_memories_owner_active_idx ON nova_memories (owner_id, status, updated_at DESC)`,
   `CREATE INDEX IF NOT EXISTS nova_memories_project_idx ON nova_memories (owner_id, project_id)`,
+  `CREATE TABLE IF NOT EXISTS nova_speaker_profiles (
+    id text PRIMARY KEY, owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    display_name text NOT NULL, relation text NOT NULL, scope text NOT NULL,
+    enrollment_status text NOT NULL, status text NOT NULL,
+    representation jsonb, representation_version text NOT NULL,
+    consent_at timestamptz NOT NULL, consent_actor text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), revoked_at timestamptz
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_speaker_profiles_owner_active_idx ON nova_speaker_profiles (owner_id, status, updated_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS nova_voice_utterances (
+    id text PRIMARY KEY, owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    conversation_id text NOT NULL REFERENCES nova_conversations(id) ON DELETE CASCADE,
+    speaker_profile_id text REFERENCES nova_speaker_profiles(id) ON DELETE SET NULL,
+    speaker_label text NOT NULL, confidence numeric, text text NOT NULL,
+    started_at_ms integer, ended_at_ms integer, created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_voice_utterances_conversation_idx ON nova_voice_utterances (conversation_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS nova_execution_runs (
     id text PRIMARY KEY, owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
     project_id text REFERENCES nova_projects(id) ON DELETE SET NULL, conversation_id text REFERENCES nova_conversations(id) ON DELETE SET NULL,
@@ -100,5 +117,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
   )`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_owner_cost_idx ON nova_voice_benchmark_results (owner_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_session_idx ON nova_voice_benchmark_results (session_id, created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4) ON CONFLICT (version) DO NOTHING`
 ]);

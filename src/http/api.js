@@ -80,7 +80,7 @@ function setCorsHeaders(request, response, allowedOrigins) {
   }
 }
 
-export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, voiceService, logger = console }) {
+export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, voiceService, speakerIdentity, logger = console }) {
   return Object.freeze({
     async handle(request, response) {
       const requestId = randomUUID();
@@ -123,6 +123,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
             await readJsonBody(request, config.maxBodyBytes)
           );
           const result = await agent.run(input);
+          logger.info("Nova agent timing",{requestId,conversationId:result.conversationId,runId:result.runId,contextRetrievalMs:result.timing?.contextRetrievalMs,agentFirstResponseMs:result.timing?.agentFirstResponseMs,agentCompleteMs:result.timing?.agentCompleteMs,totalMs:result.timing?.totalMs});
           sendJson(response, 200, result);
           return;
         }
@@ -151,6 +152,24 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           const events = (event) => logger.info("Nova voice speech timing", { requestId, ...event });
           const stream = voiceService.streamSpeech(await readJsonBody(request, config.maxBodyBytes), { signal: controller.signal, onEvent: events });
           await sendSpeechStream(response, stream, { logger, requestId }); return;
+        }
+
+        if(request.method==="GET"&&pathname==="/api/speakers"){
+          await ready();sendJson(response,200,{speakers:await speakerIdentity.list()});return;
+        }
+        if(request.method==="POST"&&pathname==="/api/speakers/enroll"){
+          await ready();const input=await readJsonBody(request,config.maxBodyBytes);sendJson(response,201,{speaker:await speakerIdentity.enroll(input)});return;
+        }
+        const speakerMatch=pathname.match(/^\/api\/speakers\/([^/]+)$/);
+        if(speakerMatch&&request.method==="PATCH"){
+          await ready();const speaker=await speakerIdentity.update(decodeURIComponent(speakerMatch[1]),await readJsonBody(request,config.maxBodyBytes));sendJson(response,speaker?200:404,speaker?{speaker}:{error:"Speaker profile not found"});return;
+        }
+        if(speakerMatch&&request.method==="DELETE"){
+          await ready();const deleted=await speakerIdentity.delete(decodeURIComponent(speakerMatch[1]));sendJson(response,deleted?200:404,deleted?{success:true}:{error:"Speaker profile not found"});return;
+        }
+        const speakerRevokeMatch=pathname.match(/^\/api\/speakers\/([^/]+)\/revoke$/);
+        if(speakerRevokeMatch&&request.method==="POST"){
+          await ready();const speaker=await speakerIdentity.revoke(decodeURIComponent(speakerRevokeMatch[1]));sendJson(response,speaker?200:404,speaker?{speaker}:{error:"Speaker profile not found"});return;
         }
 
         if (request.method === "GET" && pathname === "/api/owner/profile") {
@@ -304,4 +323,3 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
     }
   });
 }
-
