@@ -45,14 +45,15 @@ export function createAgent({
   historyLimit = 24,
   memoryLimit = 6,
   verifySpeakerAssertion = () => null,
-  validateSpeakerProfile = async () => false
+  validateSpeakerProfile = async () => false,
+  logger = { info() {}, error() {} }
 }) {
   if (!storage || !ownerId || !modelProvider || !toolRegistry) {
     throw new Error("Agent requires storage, ownerId, modelProvider, and toolRegistry.");
   }
 
   return Object.freeze({
-    async run({ message, conversationId = randomUUID(), context = {} }) {
+    async run({ message, conversationId = randomUUID(), context = {}, requestId }) {
       const requestStartedAt=Date.now();
       const conversation = await storage.ensureConversation({ id: conversationId, ownerId, title: message.slice(0, 120) });
       if (!conversation) throw new Error("Conversation is unavailable.");
@@ -60,6 +61,8 @@ export function createAgent({
       let verifiedSpeaker = context?.voice === true ? verifySpeakerAssertion(context?.speaker?.assertion) : null;
       if(verifiedSpeaker?.match_status==="confirmed"&&!(await validateSpeakerProfile(verifiedSpeaker.speaker_profile_id)))verifiedSpeaker=null;
       const speakerRestricted = context?.voice === true && verifiedSpeaker?.speaker_label !== "owner";
+      const trustedContext=context?.voice===true?{...context,speaker:verifiedSpeaker?.match_status==="confirmed"?{speaker_profile_id:verifiedSpeaker.speaker_profile_id,speaker_label:verifiedSpeaker.speaker_label,match_status:"confirmed"}:{speaker_profile_id:null,speaker_label:"unknown",match_status:verifiedSpeaker?.match_status||"unknown"}}:context;
+      if(context?.voice===true)logger.info("Nova speaker context verified",{requestId,assertionVerified:Boolean(verifiedSpeaker),matchStatus:trustedContext.speaker.match_status,speakerCategory:trustedContext.speaker.speaker_label,recognizedProfileId:trustedContext.speaker.speaker_profile_id,ownerPrivateContext:!speakerRestricted});
       const [run,conversationHistory,retrieved] = await Promise.all([
         storage.createRun({ ownerId, projectId: context.projectId || null, conversationId, goal: message, status: "planning" }),
         speakerRestricted ? Promise.resolve([]) : storage.listMessages(conversationId, ownerId, { limit: historyLimit }),
@@ -80,7 +83,7 @@ export function createAgent({
         const agentGenerationStartedAt=Date.now();
         const generated = await modelProvider.generate({
           message,
-          context,
+          context:trustedContext,
           systemContext,
           conversationHistory,
           tools: toolRegistry.list({ executableOnly: true }),
@@ -136,7 +139,7 @@ export function createAgent({
           await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "tool_started", tool: call.name, status: "running", summary: `Started ${call.name}.` });
 
           try {
-            const result = await toolRegistry.execute(call.name, call.arguments, { ...context, runId: run.id });
+            const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id });
             execution.status = "completed";
             execution.result = result;
             toolResults.push({ id: call.id, output: { ok: true, result } });

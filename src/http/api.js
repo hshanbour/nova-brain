@@ -128,7 +128,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           const input = validateAgentRequest(
             await readJsonBody(request, config.maxBodyBytes)
           );
-          const result = await agent.run(input);
+          const result = await agent.run({ ...input, requestId });
           logger.info("Nova agent timing",{requestId,conversationId:result.conversationId,runId:result.runId,contextRetrievalMs:result.timing?.contextRetrievalMs,agentFirstResponseMs:result.timing?.agentFirstResponseMs,agentCompleteMs:result.timing?.agentCompleteMs,totalMs:result.timing?.totalMs});
           sendJson(response, 200, result);
           return;
@@ -148,21 +148,25 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         }
         if (request.method === "POST" && pathname === "/api/voice/transcribe") {
           const input = await readJsonBody(request, config.voiceV2.maxBodyBytes); const startedAt = Date.now();
-          const [transcription, extracted] = await Promise.allSettled([voiceService.transcribe(input), speakerExtractor?.extract?.(input) || Promise.reject(new Error("not configured"))]);
+          logger.info?.("Nova speaker recognition started",{requestId,durationSeconds:Number(input?.durationSeconds)||0,extractorConfigured:Boolean(speakerExtractor?.configured)});
+          const [transcription, extracted, storageReady] = await Promise.allSettled([voiceService.transcribe(input), speakerExtractor?.extract?.(input,{requestId}) || Promise.reject(new Error("not configured")), ready()]);
           if (transcription.status === "rejected") throw transcription.reason;
           let speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: config.speakerRecognition.modelVersion, match_status: "unknown" };
-          let speakerRecognitionMs;
+          let speakerRecognitionMs;let candidateCount=0;
+          if(storageReady.status==="rejected")throw storageReady.reason;
           if (extracted.status === "fulfilled") {
             speakerRecognitionMs = extracted.value.latencyMs;
             if (extracted.value.sufficient) {
               const match = await speakerIdentity.recognize(extracted.value.representation);
+              candidateCount=match.candidateCount||0;
               speaker = match.state === "confirmed"
                 ? { speaker_profile_id: match.speakerProfileId, speaker_label: match.relation === "owner" ? "owner" : "enrolled_member", confidence: match.confidence, extractor_version: extracted.value.extractorVersion, match_status: "confirmed" }
-                : { ...speaker, extractor_version: extracted.value.extractorVersion, match_status: "unknown" };
-            } else speaker.match_status = "insufficient_speech";
-          }
+                : { ...speaker,confidence:match.confidence||0, extractor_version: extracted.value.extractorVersion, match_status: match.state === "uncertain" ? "uncertain" : "unknown" };
+            } else {speaker.match_status = "insufficient_speech";candidateCount=await speakerIdentity.candidateCount();}
+          } else {candidateCount=await speakerIdentity.candidateCount();logger.error?.("Nova speaker recognition failed",{requestId,stage:"speaker_embedding",code:extracted.reason?.code||"unknown"});}
           speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
           if(speaker.match_status==="confirmed"&&!speaker.assertion)speaker={speaker_profile_id:null,speaker_label:"unknown",confidence:0,extractor_version:speaker.extractor_version,match_status:"unknown",assertion:null};
+          logger.info?.("Nova speaker recognition completed",{requestId,extractorDurationMs:Number.isFinite(speakerRecognitionMs)?speakerRecognitionMs:null,candidateCount,matchStatus:speaker.match_status,confidence:speaker.confidence,recognizedProfileId:speaker.speaker_profile_id,speakerCategory:speaker.speaker_label,assertionIssued:Boolean(speaker.assertion)});
           sendJson(response, 200, { ...transcription.value, speaker, timing: { sttAndSpeakerMs: Date.now() - startedAt, ...(Number.isFinite(speakerRecognitionMs) ? { speakerRecognitionMs } : {}) } }); return;
         }
         if (request.method === "POST" && pathname === "/api/voice/speech") {

@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 
-export const SPEAKER_UNKNOWN = Object.freeze({ state: "unknown", speakerProfileId: null, confidence: 0 });
+export const SPEAKER_UNKNOWN = Object.freeze({ state: "unknown", speakerProfileId: null, confidence: 0, candidateCount: 0 });
 
 function publicProfile(profile) {
   if (!profile) return null;
@@ -61,6 +61,7 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
     async list() { return (await storage.listSpeakerProfiles(ownerId)).map(publicProfile); },
     async getByEnrollmentAttempt(enrollmentAttemptId){return publicProfile(await storage.getSpeakerProfileByEnrollmentAttempt(ownerId,enrollmentAttemptId));},
     async isActiveProfile(id) { if(!id)return false;return (await storage.listSpeakerProfiles(ownerId)).some((profile)=>profile.id===id&&profile.status==="active"); },
+    async candidateCount() { return (await storage.listSpeakerProfiles(ownerId)).filter((profile)=>profile.status==="active").length; },
     async privacyStatus() { return storage.speakerPrivacyStatus(ownerId); },
     async purgeInvalidOwnerEnrollment() { return storage.purgeInvalidOwnerSpeakerEnrollment(ownerId); },
     async update(id, patch) {
@@ -86,8 +87,10 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
       const candidates = (await storage.listSpeakerProfiles(ownerId, { includeRepresentation: true })).map((profile)=>({...profile,representation:reveal(profile.representation)})).filter((profile) => profile.status === "active" && profile.representation);
       const ranked = candidates.map((profile) => ({ profile, confidence: cosine(probe, profile.representation) })).sort((a, b) => b.confidence - a.confidence);
       const best = ranked[0]; const second = ranked[1];
-      if (!best || best.confidence < threshold || (second && best.confidence - second.confidence < ambiguityMargin)) return SPEAKER_UNKNOWN;
-      return { state: "confirmed", speakerProfileId: best.profile.id, displayName: best.profile.displayName, relation: best.profile.relation, scope: best.profile.scope, confidence: Math.round(best.confidence * 1000) / 1000 };
+      const confidence=best?Math.round(best.confidence*1000)/1000:0;
+      if (!best || best.confidence < threshold) return { state:"unknown",speakerProfileId:null,confidence,candidateCount:candidates.length };
+      if (second && best.confidence - second.confidence < ambiguityMargin) return { state:"uncertain",speakerProfileId:null,confidence,candidateCount:candidates.length };
+      return { state: "confirmed", speakerProfileId: best.profile.id, displayName: best.profile.displayName, relation: best.profile.relation, scope: best.profile.scope, confidence, candidateCount:candidates.length };
     },
     async recordUtterance(input) {
       return storage.createVoiceUtterance({ id: randomUUID(), ownerId, conversationId: input.conversationId, speakerProfileId: input.speakerProfileId || null, speakerLabel: input.speakerLabel || "unknown", confidence: Number.isFinite(input.confidence) ? input.confidence : null, text: input.text, startedAtMs: input.startedAtMs ?? null, endedAtMs: input.endedAtMs ?? null });

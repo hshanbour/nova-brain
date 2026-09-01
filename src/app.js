@@ -35,7 +35,8 @@ export function createApp({ environment = process.env, storage: storageOverride,
     historyLimit: config.conversationHistoryLimit,
     memoryLimit: config.memoryRetrievalLimit,
     verifySpeakerAssertion: speakerAssertions.verify,
-    validateSpeakerProfile: speakerIdentity.isActiveProfile
+    validateSpeakerProfile: speakerIdentity.isActiveProfile,
+    logger
   });
   const benchmarkProviders = createBenchmarkProviders({ config: config.voiceBenchmark });
   const voiceBenchmark = createVoiceBenchmark({ config, storage, ownerId: OWNER_ID, providers: benchmarkProviders });
