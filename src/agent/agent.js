@@ -44,7 +44,8 @@ export function createAgent({
   maxToolCallsPerStep = 4,
   historyLimit = 24,
   memoryLimit = 6,
-  verifySpeakerAssertion = () => null
+  verifySpeakerAssertion = () => null,
+  validateSpeakerProfile = async () => false
 }) {
   if (!storage || !ownerId || !modelProvider || !toolRegistry) {
     throw new Error("Agent requires storage, ownerId, modelProvider, and toolRegistry.");
@@ -56,7 +57,8 @@ export function createAgent({
       const conversation = await storage.ensureConversation({ id: conversationId, ownerId, title: message.slice(0, 120) });
       if (!conversation) throw new Error("Conversation is unavailable.");
       const contextRetrievalStartedAt=Date.now();
-      const verifiedSpeaker = context?.voice === true ? verifySpeakerAssertion(context?.speaker?.assertion) : null;
+      let verifiedSpeaker = context?.voice === true ? verifySpeakerAssertion(context?.speaker?.assertion) : null;
+      if(verifiedSpeaker?.match_status==="confirmed"&&!(await validateSpeakerProfile(verifiedSpeaker.speaker_profile_id)))verifiedSpeaker=null;
       const speakerRestricted = context?.voice === true && verifiedSpeaker?.speaker_label !== "owner";
       const [run,conversationHistory,retrieved] = await Promise.all([
         storage.createRun({ ownerId, projectId: context.projectId || null, conversationId, goal: message, status: "planning" }),

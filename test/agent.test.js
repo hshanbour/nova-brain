@@ -58,10 +58,12 @@ test("agent returns a stable response and records a conversation turn", async ()
 
 test("unverified and non-owner voice turns cannot retrieve owner memories or prior conversation history",async()=>{
   const storage=testStorage();await storage.createMemory({id:"private-memory",ownerId:OWNER_ID,category:"identity",content:"OWNER SECRET VALUE",privacy:"private",sensitivity:"sensitive",scope:"global",provenance:"owner-explicit",status:"active"});await storage.ensureConversation({id:"shared-voice",ownerId:OWNER_ID});await storage.appendMessage({conversationId:"shared-voice",ownerId:OWNER_ID,role:"assistant",content:"PRIVATE PRIOR TURN"});
-  const observed=[];const agent=createTestAgent({storage,modelProvider:scriptedProvider([{type:"final",message:"safe"}],(input)=>observed.push(input)),toolRegistry:createToolRegistry(),verifySpeakerAssertion:(token)=>token==="wife-signed"?{speaker_label:"enrolled_member",match_status:"confirmed"}:null});
+  const observed=[];const agent=createTestAgent({storage,modelProvider:scriptedProvider([{type:"final",message:"safe"}],(input)=>observed.push(input)),toolRegistry:createToolRegistry(),verifySpeakerAssertion:(token)=>token==="wife-signed"?{speaker_profile_id:"wife",speaker_label:"enrolled_member",match_status:"confirmed"}:null,validateSpeakerProfile:async()=>true});
   await agent.run({message:"What do you know?",conversationId:"shared-voice",context:{voice:true,speaker:{speaker_label:"owner",assertion:"wife-signed"}}});
   assert.deepEqual(observed[0].conversationHistory,[]);assert.doesNotMatch(observed[0].systemContext,/OWNER SECRET VALUE|PRIVATE PRIOR TURN/);assert.match(observed[0].systemContext,/do not use or reveal the owner's private memories/i);
 });
+
+test("a signed owner assertion is rejected after its profile is deleted",async()=>{const storage=testStorage();await storage.createMemory({id:"private-memory",ownerId:OWNER_ID,category:"identity",content:"OWNER SECRET VALUE",privacy:"private",sensitivity:"sensitive",scope:"global",provenance:"owner-explicit",status:"active"});const observed=[];const agent=createTestAgent({storage,modelProvider:scriptedProvider([{type:"final",message:"safe"}],(input)=>observed.push(input)),toolRegistry:createToolRegistry(),verifySpeakerAssertion:()=>({speaker_profile_id:"deleted-owner",speaker_label:"owner",match_status:"confirmed"}),validateSpeakerProfile:async()=>false});await agent.run({message:"private data",context:{voice:true,speaker:{assertion:"still-signed"}}});assert.deepEqual(observed[0].conversationHistory,[]);assert.doesNotMatch(observed[0].systemContext,/OWNER SECRET VALUE/);});
 
 test("agent executes one tool call and returns the next final response", async () => {
   const registry = createToolRegistry();

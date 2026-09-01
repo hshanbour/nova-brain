@@ -172,6 +172,14 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         if(request.method==="GET"&&pathname==="/api/speakers"){
           await ready();sendJson(response,200,{speakers:await speakerIdentity.list()});return;
         }
+        if(request.method==="GET"&&pathname==="/api/speakers/privacy-status"){
+          await ready();sendJson(response,200,{status:await speakerIdentity.privacyStatus()});return;
+        }
+        if(request.method==="DELETE"&&pathname==="/api/speakers/invalid-owner-enrollment"){
+          await ready();const input=await readJsonBody(request,config.maxBodyBytes);
+          if(input?.confirm!=="PURGE_INVALID_OWNER_ENROLLMENT")throw new Error("Explicit invalid-enrollment purge confirmation is required.");
+          sendJson(response,200,{success:true,purged:await speakerIdentity.purgeInvalidOwnerEnrollment(),status:await speakerIdentity.privacyStatus()});return;
+        }
         if(request.method==="POST"&&pathname==="/api/speakers/enroll"){
           const controller=new AbortController();const abort=()=>controller.abort();
           request.once?.("aborted",abort);response.once?.("close",()=>{if(!response.writableEnded)abort();});
@@ -180,7 +188,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           if(!Array.isArray(input.samples)||input.samples.length!==3)throw new Error("Exactly three consented voice samples are required.");
           const extracted=await Promise.all(input.samples.map((sample)=>speakerExtractor.extract(sample,{signal:controller.signal})));
           if(controller.signal.aborted)return;
-          if(extracted.some((item)=>!item.sufficient))throw new Error("Each enrollment sample must contain at least one second of speech.");
+          if(extracted.some((item)=>!item.sufficient||item.quality!=="accepted"))throw new Error("Each enrollment sample must contain at least one second of clear speech and pass the quality check.");
           const versions=new Set(extracted.map((item)=>item.extractorVersion));if(versions.size!==1)throw new Error("Enrollment samples must use one extractor version.");
           if(controller.signal.aborted)return;
           sendJson(response,201,{speaker:await speakerIdentity.enroll({...input,samples:undefined,sampleRepresentations:extracted.map((item)=>item.representation),representationVersion:extracted[0].extractorVersion})});return;

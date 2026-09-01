@@ -24,6 +24,7 @@ export function createApp({ environment = process.env, storage: storageOverride,
   registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID });
   const modelProvider = createModelProvider(config);
   const speakerAssertions = createSpeakerAssertions({ key: config.speakerRecognition.assertionKey });
+  const speakerIdentity = createSpeakerIdentity({ storage, ownerId: OWNER_ID, threshold: config.speakerRecognition.threshold, ambiguityMargin: config.speakerRecognition.ambiguityMargin, embeddingKey: config.speakerRecognition.embeddingKey, requireEncryption: Boolean(config.speakerRecognition.endpoint) });
   const agent = createAgent({
     storage,
     ownerId: OWNER_ID,
@@ -33,12 +34,12 @@ export function createApp({ environment = process.env, storage: storageOverride,
     maxToolCallsPerStep: config.maxToolCallsPerStep,
     historyLimit: config.conversationHistoryLimit,
     memoryLimit: config.memoryRetrievalLimit,
-    verifySpeakerAssertion: speakerAssertions.verify
+    verifySpeakerAssertion: speakerAssertions.verify,
+    validateSpeakerProfile: speakerIdentity.isActiveProfile
   });
   const benchmarkProviders = createBenchmarkProviders({ config: config.voiceBenchmark });
   const voiceBenchmark = createVoiceBenchmark({ config, storage, ownerId: OWNER_ID, providers: benchmarkProviders });
   const voiceService = createVoiceService({ config, ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}) });
-  const speakerIdentity = createSpeakerIdentity({ storage, ownerId: OWNER_ID, threshold: config.speakerRecognition.threshold, ambiguityMargin: config.speakerRecognition.ambiguityMargin, embeddingKey: config.speakerRecognition.embeddingKey, requireEncryption: Boolean(config.speakerRecognition.endpoint) });
   const speakerExtractor = createSpeakerExtractor({ config, ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}) });
 
   return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerAssertions, logger });

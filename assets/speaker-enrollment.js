@@ -12,6 +12,7 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
   let startedAt;
   let chunks = [];
   let pendingSample;
+  let explicitStop = false;
   let attempt = 0;
   let enrollmentController;
 
@@ -21,7 +22,8 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
   };
   const updateConfirmations = () => confirmations.forEach((item, index) => {
     const confirmed = index < samples.length;
-    item.textContent = `Sample ${index + 1}: ${confirmed ? "Confirmed" : "Not recorded"}`;
+    const duration = confirmed ? ` (${samples[index].durationSeconds.toFixed(1)} seconds)` : "";
+    item.textContent = `Sample ${index + 1}: ${confirmed ? `Confirmed${duration}` : "Not recorded"}`;
     item.dataset.confirmed = String(confirmed);
   });
   const reset = () => {
@@ -33,6 +35,7 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
     chunks = [];
     samples = [];
     pendingSample = undefined;
+    explicitStop = false;
     recorder = undefined;
     button.disabled = false;
     button.textContent = "Start sample 1";
@@ -90,8 +93,10 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
   });
   document.querySelectorAll("[data-close-speaker-enrollment]").forEach((item) => item.addEventListener("click", cancel));
 
-  button.addEventListener("click", async () => {
+  button.addEventListener("click", async (event) => {
+    if (!event.isTrusted) { status.textContent = "Enrollment controls require your direct physical browser action."; return; }
     if (recorder?.state === "recording") {
+      explicitStop = true;
       recorder.stop();
       return;
     }
@@ -121,6 +126,8 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
       const durationSeconds = (now() - startedAt) / 1000;
       stopTracks();
       if (currentAttempt !== attempt) { chunks = []; return; }
+      if (!explicitStop) { chunks = []; recorder = undefined; button.textContent = `Start sample ${sampleNumber}`; status.textContent = `Sample ${sampleNumber} was discarded because you did not explicitly stop it.`; return; }
+      explicitStop = false;
       if (durationSeconds < 2) {
         chunks = [];
         button.textContent = `Start sample ${sampleNumber}`;
@@ -130,11 +137,12 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
       const blob = new Blob(chunks, { type: recorder.mimeType });
       chunks = [];
       pendingSample = { audioBase64: bytesToBase64(new Uint8Array(await blob.arrayBuffer())), mimeType: blob.type, durationSeconds };
+      confirmations[sampleNumber - 1].textContent = `Sample ${sampleNumber}: Recorded ${durationSeconds.toFixed(1)} seconds — awaiting your confirmation`;
       recorder = undefined;
       button.textContent = `Confirm sample ${sampleNumber}`;
       button.disabled = false;
       submit.disabled = true;
-      status.textContent = `Sample ${sampleNumber} stopped. It is not accepted yet. Click Confirm sample ${sampleNumber} to accept it, or Cancel to discard the attempt.`;
+      status.textContent = `Sample ${sampleNumber} stopped after ${durationSeconds.toFixed(1)} seconds. It is not accepted yet. Click Confirm sample ${sampleNumber} to accept it, or Cancel to discard the attempt.`;
     });
     recorder.start(100);
     button.textContent = `Stop sample ${sampleNumber}`;

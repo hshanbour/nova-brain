@@ -58,6 +58,9 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
       return publicProfile(profile);
     },
     async list() { return (await storage.listSpeakerProfiles(ownerId)).map(publicProfile); },
+    async isActiveProfile(id) { if(!id)return false;return (await storage.listSpeakerProfiles(ownerId)).some((profile)=>profile.id===id&&profile.status==="active"); },
+    async privacyStatus() { return storage.speakerPrivacyStatus(ownerId); },
+    async purgeInvalidOwnerEnrollment() { return storage.purgeInvalidOwnerSpeakerEnrollment(ownerId); },
     async update(id, patch) {
       const allowed = {};
       if (typeof patch.displayName === "string" && patch.displayName.trim()) allowed.displayName = patch.displayName.trim();

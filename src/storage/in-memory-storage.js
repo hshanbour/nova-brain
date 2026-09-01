@@ -73,6 +73,19 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async listSpeakerProfiles(ownerId,{includeRepresentation=false}={}) { return [...speakerProfiles.values()].filter((item)=>item.ownerId===ownerId).map((item)=>{const value=copy(item);if(!includeRepresentation)delete value.representation;return value;}); },
     async updateSpeakerProfile(id,ownerId,patch) { const current=speakerProfiles.get(id);if(!current||current.ownerId!==ownerId)return null;const updated={...current,...copy(patch),id,ownerId,createdAt:current.createdAt,updatedAt:now(clock)};speakerProfiles.set(id,updated);return copy(updated); },
     async deleteSpeakerProfile(id,ownerId) { const current=speakerProfiles.get(id);if(!current||current.ownerId!==ownerId)return false;speakerProfiles.delete(id);return true; },
+    async purgeInvalidOwnerSpeakerEnrollment(ownerId) {
+      const targets=[...speakerProfiles.values()].filter((item)=>item.ownerId===ownerId&&item.relation==="owner");const targetIds=targets.map((item)=>item.id);
+      for(const id of targetIds)speakerProfiles.delete(id);
+      let utterancesScrubbed=0;
+      for(const [id,item] of voiceUtterances){if(item.ownerId===ownerId&&(targetIds.includes(item.speakerProfileId)||item.speakerLabel==="owner")){voiceUtterances.set(id,{...item,speakerProfileId:null,speakerLabel:"unknown",confidence:null});utterancesScrubbed+=1;}}
+      let auditReferencesDeleted=0;
+      for(let index=activity.length-1;index>=0;index-=1){const item=activity[index];if(item.ownerId===ownerId&&(item.action?.startsWith("speaker_")||item.metadata?.speakerProfileId)){activity.splice(index,1);auditReferencesDeleted+=1;}}
+      return {profilesDeleted:targetIds.length,voiceprintsDeleted:targets.filter((item)=>item.representation).length,utterancesScrubbed,auditReferencesDeleted};
+    },
+    async speakerPrivacyStatus(ownerId) {
+      const ownerProfiles=[...speakerProfiles.values()].filter((item)=>item.ownerId===ownerId&&item.relation==="owner");
+      const ownerProfileIds=new Set(ownerProfiles.map((item)=>item.id));return {ownerProfiles:ownerProfiles.length,encryptedVoiceprints:ownerProfiles.filter((item)=>item.representation).length,linkedUtterances:[...voiceUtterances.values()].filter((item)=>item.ownerId===ownerId&&(ownerProfileIds.has(item.speakerProfileId)||item.speakerLabel==="owner")).length,identifyingAuditReferences:activity.filter((item)=>item.ownerId===ownerId&&(item.action?.startsWith("speaker_")||item.metadata?.speakerProfileId)).length,rawAudioObjects:0};
+    },
     async createVoiceUtterance(input) { const utterance={...copy(input),createdAt:now(clock)};voiceUtterances.set(utterance.id,utterance);return copy(utterance); },
     async listVoiceUtterances(conversationId,ownerId,{limit=100}={}) { return [...voiceUtterances.values()].filter((item)=>item.ownerId===ownerId&&item.conversationId===conversationId).slice(-limit).map(copy); },
     async createRun({ id = randomUUID(), ownerId, projectId = null, conversationId = null, goal, status = "planning" }) {

@@ -65,11 +65,20 @@ class SpeakerEmbedding:
                 if rate != 16000:
                     waveform = torchaudio.functional.resample(waveform, rate, 16000)
                 speech_seconds = waveform.shape[-1] / 16000
-                if speech_seconds < 1.0:
+                if speech_seconds < 2.0:
                     raise HTTPException(status_code=422, detail="Insufficient speech")
+                samples = waveform.squeeze(0)
+                frames = samples.unfold(0, 480, 160)
+                frame_rms = frames.square().mean(dim=1).sqrt()
+                noise_floor = torch.quantile(frame_rms, 0.2)
+                active_threshold = max(0.008, float(noise_floor) * 3.0)
+                voiced_seconds = float((frame_rms >= active_threshold).sum()) * 0.01
+                clipping_ratio = float((samples.abs() >= 0.995).float().mean())
+                if voiced_seconds < 1.0 or clipping_ratio > 0.02:
+                    raise HTTPException(status_code=422, detail="Insufficient speech quality")
                 with torch.inference_mode():
                     vector = self.encoder.encode_batch(waveform).squeeze().cpu().tolist()
-                return {"embedding": vector, "model": MODEL_VERSION, "speechSeconds": round(speech_seconds, 3), "quality": "accepted"}
+                return {"embedding": vector, "model": MODEL_VERSION, "speechSeconds": round(voiced_seconds, 3), "quality": "accepted"}
             finally:
                 if path:
                     try: os.unlink(path)
