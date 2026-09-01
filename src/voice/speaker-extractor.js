@@ -45,7 +45,13 @@ export function createSpeakerExtractor({ config, fetchImpl = fetch, clock = Date
       if (typeof audioBase64 !== "string" || !audioBase64 || Buffer.byteLength(audioBase64, "base64") > speaker.maxAudioBytes) throw new SpeakerExtractorError("Invalid speaker-recognition audio.", "invalid_audio");
       const startedAt = clock(); const result = await request("/embed", { audioBase64, mimeType, durationSeconds: duration }, { signal, requestId, enrollmentAttemptId });
       if (!Array.isArray(result.embedding) || result.embedding.length < 64 || result.embedding.some((value) => !Number.isFinite(value))) throw new SpeakerExtractorError("Speaker recognition worker returned an invalid embedding.", "invalid_embedding");
-      return { sufficient: true, representation: result.embedding, extractorVersion: result.model || speaker.modelVersion, speechSeconds: result.speechSeconds ?? duration, quality: result.quality || "accepted", latencyMs: clock() - startedAt };
+      const speechSeconds = Number(result.speechSeconds ?? duration);
+      const quality = result.quality || "accepted";
+      const latencyMs = clock() - startedAt;
+      if (!Number.isFinite(speechSeconds) || speechSeconds < speaker.minSpeechSeconds || quality !== "accepted") {
+        return { sufficient: false, reason: "insufficient_speech", durationSeconds: Number.isFinite(speechSeconds) ? speechSeconds : 0, extractorVersion: result.model || speaker.modelVersion, quality, latencyMs };
+      }
+      return { sufficient: true, representation: result.embedding, extractorVersion: result.model || speaker.modelVersion, speechSeconds, quality, latencyMs };
     }
   });
 }
