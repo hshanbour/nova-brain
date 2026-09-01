@@ -93,6 +93,17 @@ export function readConfig(environment = process.env) {
       ttsStreamStallTimeoutMs: 8_000,
       ttsChunkTimeoutMs: 45_000
     }),
+    speakerRecognition: Object.freeze({
+      endpoint: environment.NOVA_SPEAKER_EXTRACTOR_URL || null,
+      token: environment.NOVA_SPEAKER_EXTRACTOR_TOKEN || null,
+      assertionKey: environment.NOVA_SPEAKER_ASSERTION_KEY || null,
+      embeddingKey: environment.NOVA_SPEAKER_EMBEDDING_KEY || null,
+      modelVersion: environment.NOVA_SPEAKER_EXTRACTOR_MODEL || "speechbrain/spkrec-ecapa-voxceleb@ecapa-v1",
+      minSpeechSeconds: 1.0,
+      maxAudioBytes: 2 * 1024 * 1024,
+      threshold: 0.86,
+      ambiguityMargin: 0.05
+    }),
     voiceBenchmark: Object.freeze({
       paidCallsApproved: environment.NOVA_VOICE_BENCHMARK_PAID_CALLS_APPROVED === "true",
       budgetUsd: parseMoney(environment.NOVA_VOICE_BENCHMARK_BUDGET_USD, "NOVA_VOICE_BENCHMARK_BUDGET_USD", 2),

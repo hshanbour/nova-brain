@@ -80,7 +80,7 @@ function setCorsHeaders(request, response, allowedOrigins) {
   }
 }
 
-export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, voiceService, speakerIdentity, logger = console }) {
+export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerAssertions, logger = console }) {
   return Object.freeze({
     async handle(request, response) {
       const requestId = randomUUID();
@@ -129,7 +129,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         }
 
         if (request.method === "GET" && pathname === "/api/voice/readiness") {
-          const readiness = await voiceService.readiness();
+          const [readiness, speaker] = await Promise.all([voiceService.readiness(), speakerExtractor?.readiness?.() || Promise.resolve({ status: "Missing", available: false })]);
           logger.info("Nova voice readiness", {
             available: readiness.available,
             sttStatus: readiness.stt?.status,
@@ -138,11 +138,26 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
             fallbackUsed: readiness.tts?.fallbackUsed,
             errorCategory: readiness.tts?.errorCategory
           });
-          sendJson(response, 200, readiness); return;
+          sendJson(response, 200, { ...readiness, speakerRecognition: speaker }); return;
         }
         if (request.method === "POST" && pathname === "/api/voice/transcribe") {
-          const result = await voiceService.transcribe(await readJsonBody(request, config.voiceV2.maxBodyBytes));
-          sendJson(response, 200, result); return;
+          const input = await readJsonBody(request, config.voiceV2.maxBodyBytes); const startedAt = Date.now();
+          const [transcription, extracted] = await Promise.allSettled([voiceService.transcribe(input), speakerExtractor?.extract?.(input) || Promise.reject(new Error("not configured"))]);
+          if (transcription.status === "rejected") throw transcription.reason;
+          let speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: config.speakerRecognition.modelVersion, match_status: "unknown" };
+          let speakerRecognitionMs;
+          if (extracted.status === "fulfilled") {
+            speakerRecognitionMs = extracted.value.latencyMs;
+            if (extracted.value.sufficient) {
+              const match = await speakerIdentity.recognize(extracted.value.representation);
+              speaker = match.state === "confirmed"
+                ? { speaker_profile_id: match.speakerProfileId, speaker_label: match.relation === "owner" ? "owner" : "enrolled_member", confidence: match.confidence, extractor_version: extracted.value.extractorVersion, match_status: "confirmed" }
+                : { ...speaker, extractor_version: extracted.value.extractorVersion, match_status: "unknown" };
+            } else speaker.match_status = "insufficient_speech";
+          }
+          speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
+          if(speaker.match_status==="confirmed"&&!speaker.assertion)speaker={speaker_profile_id:null,speaker_label:"unknown",confidence:0,extractor_version:speaker.extractor_version,match_status:"unknown",assertion:null};
+          sendJson(response, 200, { ...transcription.value, speaker, timing: { sttAndSpeakerMs: Date.now() - startedAt, ...(Number.isFinite(speakerRecognitionMs) ? { speakerRecognitionMs } : {}) } }); return;
         }
         if (request.method === "POST" && pathname === "/api/voice/speech") {
           const controller = new AbortController();
@@ -158,7 +173,13 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           await ready();sendJson(response,200,{speakers:await speakerIdentity.list()});return;
         }
         if(request.method==="POST"&&pathname==="/api/speakers/enroll"){
-          await ready();const input=await readJsonBody(request,config.maxBodyBytes);sendJson(response,201,{speaker:await speakerIdentity.enroll(input)});return;
+          await ready();const input=await readJsonBody(request,config.voiceV2.maxBodyBytes);
+          if(input?.consent!==true)throw new Error("Explicit speaker consent is required.");
+          if(!Array.isArray(input.samples)||input.samples.length<3)throw new Error("At least three consented voice samples are required.");
+          const extracted=await Promise.all(input.samples.map((sample)=>speakerExtractor.extract(sample)));
+          if(extracted.some((item)=>!item.sufficient))throw new Error("Each enrollment sample must contain at least one second of speech.");
+          const versions=new Set(extracted.map((item)=>item.extractorVersion));if(versions.size!==1)throw new Error("Enrollment samples must use one extractor version.");
+          sendJson(response,201,{speaker:await speakerIdentity.enroll({...input,samples:undefined,sampleRepresentations:extracted.map((item)=>item.representation),representationVersion:extracted[0].extractorVersion})});return;
         }
         const speakerMatch=pathname.match(/^\/api\/speakers\/([^/]+)$/);
         if(speakerMatch&&request.method==="PATCH"){

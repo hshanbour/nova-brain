@@ -11,6 +11,8 @@ import { createBenchmarkProviders } from "./benchmark/providers.js";
 import { createVoiceBenchmark } from "./benchmark/service.js";
 import { createVoiceService } from "./voice/voice-service.js";
 import { createSpeakerIdentity } from "./voice/speaker-identity.js";
+import { createSpeakerExtractor } from "./voice/speaker-extractor.js";
+import { createSpeakerAssertions } from "./voice/speaker-assertion.js";
 
 export function createApp({ environment = process.env, storage: storageOverride, logger = console, voiceFetchImpl } = {}) {
   const config = readConfig(environment);
@@ -21,6 +23,7 @@ export function createApp({ environment = process.env, storage: storageOverride,
   registerDeveloperTools(toolRegistry, { environment });
   registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID });
   const modelProvider = createModelProvider(config);
+  const speakerAssertions = createSpeakerAssertions({ key: config.speakerRecognition.assertionKey });
   const agent = createAgent({
     storage,
     ownerId: OWNER_ID,
@@ -29,12 +32,14 @@ export function createApp({ environment = process.env, storage: storageOverride,
     maxSteps: config.maxAgentSteps,
     maxToolCallsPerStep: config.maxToolCallsPerStep,
     historyLimit: config.conversationHistoryLimit,
-    memoryLimit: config.memoryRetrievalLimit
+    memoryLimit: config.memoryRetrievalLimit,
+    verifySpeakerAssertion: speakerAssertions.verify
   });
   const benchmarkProviders = createBenchmarkProviders({ config: config.voiceBenchmark });
   const voiceBenchmark = createVoiceBenchmark({ config, storage, ownerId: OWNER_ID, providers: benchmarkProviders });
   const voiceService = createVoiceService({ config, ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}) });
-  const speakerIdentity = createSpeakerIdentity({ storage, ownerId: OWNER_ID });
+  const speakerIdentity = createSpeakerIdentity({ storage, ownerId: OWNER_ID, threshold: config.speakerRecognition.threshold, ambiguityMargin: config.speakerRecognition.ambiguityMargin, embeddingKey: config.speakerRecognition.embeddingKey, requireEncryption: Boolean(config.speakerRecognition.endpoint) });
+  const speakerExtractor = createSpeakerExtractor({ config, ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}) });
 
-  return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, voiceBenchmark, voiceService, speakerIdentity, logger });
+  return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerAssertions, logger });
 }

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 
 export const SPEAKER_UNKNOWN = Object.freeze({ state: "unknown", speakerProfileId: null, confidence: 0 });
 
@@ -35,14 +35,25 @@ export function contextPolicyForSpeaker(match) {
   return "public_only";
 }
 
-export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date(), threshold = 0.86, ambiguityMargin = 0.05 } = {}) {
+export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date(), threshold = 0.86, ambiguityMargin = 0.05, embeddingKey, requireEncryption = false } = {}) {
   if (!storage || !ownerId) throw new Error("Speaker identity requires storage and owner scope.");
+  const key = typeof embeddingKey === "string" && embeddingKey.length >= 32 ? createHash("sha256").update(embeddingKey).digest() : null;
+  const protect = (representation) => {
+    if (!key) { if (requireEncryption) throw new Error("Speaker embedding encryption is not configured."); return representation; }
+    const iv=randomBytes(12);const cipher=createCipheriv("aes-256-gcm",key,iv);const ciphertext=Buffer.concat([cipher.update(JSON.stringify(representation),"utf8"),cipher.final()]);
+    return { algorithm:"aes-256-gcm",iv:iv.toString("base64"),tag:cipher.getAuthTag().toString("base64"),ciphertext:ciphertext.toString("base64") };
+  };
+  const reveal = (stored) => {
+    if (Array.isArray(stored)) return stored;
+    if (!key || stored?.algorithm!=="aes-256-gcm") return null;
+    try { const decipher=createDecipheriv("aes-256-gcm",key,Buffer.from(stored.iv,"base64"));decipher.setAuthTag(Buffer.from(stored.tag,"base64"));return JSON.parse(Buffer.concat([decipher.update(Buffer.from(stored.ciphertext,"base64")),decipher.final()]).toString("utf8")); } catch { return null; }
+  };
   const audit = (action, summary, metadata = {}) => storage.appendActivity({ ownerId, action, status: "completed", summary, metadata });
   return Object.freeze({
     async enroll({ displayName, relation = "member", scope = "household", consent, consentActor, sampleRepresentations, representationVersion = "synthetic-v1" }) {
       if (consent !== true || typeof consentActor !== "string" || !consentActor.trim()) throw new Error("Explicit speaker consent is required.");
       if (typeof displayName !== "string" || !displayName.trim()) throw new Error("Speaker display name is required.");
-      const profile = await storage.createSpeakerProfile({ id: randomUUID(), ownerId, displayName: displayName.trim(), relation, scope, enrollmentStatus: "enrolled", status: "active", representation: centroid(sampleRepresentations), representationVersion, consentAt: clock().toISOString(), consentActor: consentActor.trim() });
+      const profile = await storage.createSpeakerProfile({ id: randomUUID(), ownerId, displayName: displayName.trim(), relation, scope, enrollmentStatus: "enrolled", status: "active", representation: protect(centroid(sampleRepresentations)), representationVersion, consentAt: clock().toISOString(), consentActor: consentActor.trim() });
       await audit("speaker_enrolled", "A consented speaker profile was enrolled.", { speakerProfileId: profile.id, relation, representationVersion, sampleCount: sampleRepresentations.length });
       return publicProfile(profile);
     },
@@ -67,7 +78,7 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
     },
     async recognize(representation) {
       const probe = normalized(representation);
-      const candidates = (await storage.listSpeakerProfiles(ownerId, { includeRepresentation: true })).filter((profile) => profile.status === "active" && profile.representation);
+      const candidates = (await storage.listSpeakerProfiles(ownerId, { includeRepresentation: true })).map((profile)=>({...profile,representation:reveal(profile.representation)})).filter((profile) => profile.status === "active" && profile.representation);
       const ranked = candidates.map((profile) => ({ profile, confidence: cosine(probe, profile.representation) })).sort((a, b) => b.confidence - a.confidence);
       const best = ranked[0]; const second = ranked[1];
       if (!best || best.confidence < threshold || (second && best.confidence - second.confidence < ambiguityMargin)) return SPEAKER_UNKNOWN;

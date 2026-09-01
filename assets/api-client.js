@@ -9,9 +9,10 @@ export function createNovaClient({ fetchImpl = globalThis.fetch, endpoint = "/ap
     get conversationId() { return conversationId; },
     resume(id) { conversationId = typeof id === "string" && id ? id : undefined; },
     reset() { conversationId = undefined; },
-    async send(message, { signal } = {}) {
+    async send(message, { signal, context } = {}) {
       const payload = { message };
       if (conversationId) payload.conversationId = conversationId;
+      if (context && typeof context === "object") payload.context = context;
       let response;
       try {
         response = await fetchImpl(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, signal, body: JSON.stringify(payload) });

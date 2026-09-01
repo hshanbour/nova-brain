@@ -37,3 +37,7 @@ export function buildSystemContext(retrieved) {
   return `${NOVA_COMMUNICATION_POLICY}\n\nThe following is minimal private owner context selected for this request. Use it internally to assist the owner. Do not repeat private details unless relevant to the owner's request.\n${JSON.stringify(retrieved)}`;
 }
 
+export function buildSpeakerSafeSystemContext(speaker) {
+  const label = speaker?.speaker_label === "enrolled_member" ? "an explicitly enrolled household member" : "an unknown speaker";
+  return `${NOVA_COMMUNICATION_POLICY}\n\nThe current voice turn is from ${label}. Do not use or reveal the owner's private memories, personal profile, project details, account data, secrets, or approvals. Use only the current request and general public knowledge. If owner-only context is needed, ask the owner to speak and be confidently recognized.`;
+}

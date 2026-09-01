@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { buildSystemContext, retrieveAgentContext } from "../memory/context-retriever.js";
+import { buildSpeakerSafeSystemContext, buildSystemContext, retrieveAgentContext } from "../memory/context-retriever.js";
 import { ApprovalRequiredError } from "../policy/action-policy.js";
 
 export class AgentStepLimitError extends Error {}
@@ -43,7 +43,8 @@ export function createAgent({
   maxSteps = 5,
   maxToolCallsPerStep = 4,
   historyLimit = 24,
-  memoryLimit = 6
+  memoryLimit = 6,
+  verifySpeakerAssertion = () => null
 }) {
   if (!storage || !ownerId || !modelProvider || !toolRegistry) {
     throw new Error("Agent requires storage, ownerId, modelProvider, and toolRegistry.");
@@ -55,17 +56,19 @@ export function createAgent({
       const conversation = await storage.ensureConversation({ id: conversationId, ownerId, title: message.slice(0, 120) });
       if (!conversation) throw new Error("Conversation is unavailable.");
       const contextRetrievalStartedAt=Date.now();
+      const verifiedSpeaker = context?.voice === true ? verifySpeakerAssertion(context?.speaker?.assertion) : null;
+      const speakerRestricted = context?.voice === true && verifiedSpeaker?.speaker_label !== "owner";
       const [run,conversationHistory,retrieved] = await Promise.all([
         storage.createRun({ ownerId, projectId: context.projectId || null, conversationId, goal: message, status: "planning" }),
-        storage.listMessages(conversationId, ownerId, { limit: historyLimit }),
-        retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit })
+        speakerRestricted ? Promise.resolve([]) : storage.listMessages(conversationId, ownerId, { limit: historyLimit }),
+        speakerRestricted ? Promise.resolve(null) : retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit })
       ]);
       const contextRetrievalCompletedAt=Date.now();
       await Promise.all([
         storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_created", status: "completed", summary: "Execution run created." }),
         storage.appendMessage({ conversationId, ownerId, role: "user", content: message })
       ]);
-      const systemContext = buildSystemContext(retrieved);
+      const systemContext = speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker) : buildSystemContext(retrieved);
       const toolExecutions = [];
       let continuationToken;
       let toolResults = [];

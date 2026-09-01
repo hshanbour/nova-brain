@@ -9,6 +9,7 @@ import { createVoiceV2Client } from "./voice-v2-client.js";
 import { createAudioPlayback, createMediaVoiceCapture } from "./voice-capture.js";
 import { createVoiceV2 } from "./voice-v2.js";
 import { initialiseVoiceBenchmark } from "./voice-benchmark.js";
+import { initialiseSpeakerEnrollment } from "./speaker-enrollment.js";
 
 const client = createNovaClient();
 const composer = document.querySelector("#composer");
@@ -20,6 +21,7 @@ const requestError = document.querySelector("#requestError");
 const template = document.querySelector("#messageTemplate");
 const providerStatus = document.querySelector("#providerStatus");
 const voiceBenchmark = initialiseVoiceBenchmark({ document, navigator, MediaRecorder: window.MediaRecorder, URL });
+initialiseSpeakerEnrollment({ document, navigator, MediaRecorder: window.MediaRecorder });
 let pending = false;
 let currentProfile;
 let memoryRecords = [];
@@ -134,10 +136,10 @@ function setPending(value) {
   sendButton.querySelector("span:first-child").textContent = value ? "Working" : "Send";
 }
 
-async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,signal,prepareAssistant}={}) {
+async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,signal,prepareAssistant,context}={}) {
   requestError.hidden = true; addMessage({ role: "user", text: message }); addThinking(); setPending(true);
   try {
-    const result = await client.send(message,{signal});
+    const result = await client.send(message,{signal,context});
     localStorage.setItem(conversationKey, result.conversationId);
     let preparedAssistant; let preparationError;
     if (prepareAssistant) {
@@ -304,7 +306,7 @@ const voiceModeButton=document.querySelector("#voiceModeButton");const endVoiceB
 const voiceModeLabels={idle:"Voice idle",connecting:"Connecting microphone…",getting_ready:"Getting ready…",listening:"Listening…",transcribing:"Transcribing…",thinking:"Nova thinking…",speaking:"Nova speaking… · speak to interrupt",interrupted:"Interrupted · getting ready…",retrying:"No speech · retrying…",error:"Voice needs attention"};
 const capture=createMediaVoiceCapture({mediaDevices:navigator.mediaDevices,MediaRecorder:window.MediaRecorder,AudioContext:window.AudioContext||window.webkitAudioContext});
 const voiceClient=createVoiceV2Client();const playback=createAudioPlayback({Audio:window.Audio,URL});
-voiceV2=createVoiceV2({capture,client:voiceClient,playback,sendTurn:(text,{signal,prepareAssistant})=>{input.value="";resizeInput();return sendMessage(text,{autoSpeakResponse:false,throwOnError:true,signal,prepareAssistant});},onTranscript(text){input.value=text;resizeInput();},onState({active,state}){voiceModeStatus.dataset.state=state;voiceModeStatus.textContent=voiceModeLabels[state]||state;voiceModeButton.classList.toggle("active",active);voiceModeButton.disabled=active;endVoiceButton.disabled=!active;voiceButton.disabled=active&&state!=="speaking";voiceButton.setAttribute("aria-label",active&&state==="speaking"?"Interrupt Nova and speak":voiceListening?"Stop legacy voice input":"Start legacy voice input");},onTiming(timing){console.info("[nova-voice-timing]",timing);showVoiceDiagnostic(`Voice turn ${timing.turnId}: ${timing.stage}. ${Object.entries(timing.measurements).map(([name,value])=>`${name} ${value} ms`).join(" · ")}`);},onNotice(message){voiceModeStatus.textContent=message;},onError(message){requestError.textContent=message;requestError.hidden=false;}});
+voiceV2=createVoiceV2({capture,client:voiceClient,playback,sendTurn:(text,{signal,prepareAssistant,speaker})=>{input.value="";resizeInput();return sendMessage(text,{autoSpeakResponse:false,throwOnError:true,signal,prepareAssistant,context:{voice:true,speaker}});},onTranscript(text){input.value=text;resizeInput();},onState({active,state}){voiceModeStatus.dataset.state=state;voiceModeStatus.textContent=voiceModeLabels[state]||state;voiceModeButton.classList.toggle("active",active);voiceModeButton.disabled=active;endVoiceButton.disabled=!active;voiceButton.disabled=active&&state!=="speaking";voiceButton.setAttribute("aria-label",active&&state==="speaking"?"Interrupt Nova and speak":voiceListening?"Stop legacy voice input":"Start legacy voice input");},onTiming(timing){console.info("[nova-voice-timing]",timing);showVoiceDiagnostic(`Voice turn ${timing.turnId}: ${timing.stage}. ${Object.entries(timing.measurements).map(([name,value])=>`${name} ${value} ms`).join(" · ")}`);},onNotice(message){voiceModeStatus.textContent=message;},onError(message){requestError.textContent=message;requestError.hidden=false;}});
 voiceModeButton.addEventListener("click",async()=>{requestError.hidden=true;if(!capture.supported){requestError.textContent="Start Voice requires MediaRecorder, microphone access, and Web Audio support.";requestError.hidden=false;return;}try{const readiness=await voiceClient.readiness();if(!readiness.available)throw new Error("Voice V2 providers are not fully configured in this Preview.");await voiceV2.start();}catch(error){requestError.textContent=error.message||"Voice V2 could not start.";requestError.hidden=false;}});
 endVoiceButton.addEventListener("click",()=>voiceV2.end());
 voiceButton.addEventListener("click",()=>{requestError.hidden=true;if(voiceV2.isActive()){voiceV2.interrupt();return;}if(voiceListening)voice.stop();else{voiceOutput.stop();voice.start();}});

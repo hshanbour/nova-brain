@@ -56,9 +56,11 @@ export function createVoiceV2({
     reportTiming("recording-finalized");
     mark("sttStartedAt"); publish("transcribing");
     try {
-      const { transcript } = await client.transcribe({ ...recording, signal: abortController.signal });
+      const transcribed = await client.transcribe({ ...recording, signal: abortController.signal });
+      const { transcript, speaker } = transcribed;
       if (!valid(current)) return false;
       mark("transcriptAvailableAt");
+      if(Number.isFinite(transcribed?.timing?.speakerRecognitionMs))timing.speakerRecognitionMs=transcribed.timing.speakerRecognitionMs;
       const text = String(transcript || "").trim();
       if(interruptionProbe&&(!text||isContinueIntent(text)))return resumeInterrupted(text?"Continuing Nova's interrupted response.":"No speech was understood. Resuming Nova.");
       if (!text) { retry("No speech was understood."); return false; }
@@ -66,6 +68,7 @@ export function createVoiceV2({
       onTranscript(text); publish("thinking"); mark("agentRequestStartedAt");
       const result = await sendTurn(text, {
         signal: abortController.signal,
+        speaker,
         prepareAssistant: async (message,assistantResult) => {
           if (!valid(current)) throw abortError();
           if(assistantResult?.timing){timing.contextRetrievalMs=assistantResult.timing.contextRetrievalMs;timing.agentFirstResponseMs=assistantResult.timing.agentFirstResponseMs;timing.agentCompleteMs=assistantResult.timing.agentCompleteMs;}
@@ -143,6 +146,7 @@ function timingSnapshot(timing, stage) {
       endpointGrace: difference("recordingFinalizedAt", "endpointGraceStartedAt"),
       recordingFinalizeToSttStart: difference("sttStartedAt", "recordingFinalizedAt"),
       stt: difference("transcriptAvailableAt", "sttStartedAt"),
+      speakerRecognition: timing.speakerRecognitionMs,
       contextRetrieval: timing.contextRetrievalMs,
       transcriptToAgent: difference("agentRequestStartedAt", "transcriptAvailableAt"),
       agent: difference("assistantAvailableAt", "agentRequestStartedAt"),

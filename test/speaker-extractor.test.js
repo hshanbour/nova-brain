@@ -1,0 +1,13 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readConfig } from "../src/config/env.js";
+import { createSpeakerExtractor, SpeakerExtractorError } from "../src/voice/speaker-extractor.js";
+
+const environment={NOVA_SPEAKER_EXTRACTOR_URL:"https://worker.example",NOVA_SPEAKER_EXTRACTOR_TOKEN:"private-token",NOVA_SPEAKER_EXTRACTOR_MODEL:"ecapa-test"};
+test("speaker embedding adapter sends ephemeral audio with server-side authentication and validates vectors",async()=>{
+  let call;const extractor=createSpeakerExtractor({config:readConfig(environment),fetchImpl:async(url,options)=>{call={url,options};return new Response(JSON.stringify({embedding:Array(192).fill(0).map((_,i)=>i?0:1),model:"ecapa-test",speechSeconds:2.2}),{status:200,headers:{"content-type":"application/json"}});}});
+  const result=await extractor.extract({audioBase64:"YXVkaW8=",mimeType:"audio/webm",durationSeconds:2.2});
+  assert.equal(result.sufficient,true);assert.equal(result.representation.length,192);assert.equal(call.url,"https://worker.example/embed");assert.equal(call.options.headers.Authorization,"Bearer private-token");assert.equal(JSON.parse(call.options.body).audioBase64,"YXVkaW8=");
+});
+test("short speech remains unknown without contacting the biometric worker",async()=>{let calls=0;const extractor=createSpeakerExtractor({config:readConfig(environment),fetchImpl:async()=>{calls++;}});const result=await extractor.extract({audioBase64:"YQ==",mimeType:"audio/webm",durationSeconds:.2});assert.deepEqual(result,{sufficient:false,reason:"insufficient_speech",durationSeconds:.2,extractorVersion:"ecapa-test"});assert.equal(calls,0);});
+test("unconfigured and malformed worker responses fail closed",async()=>{const missing=createSpeakerExtractor({config:readConfig({})});await assert.rejects(()=>missing.extract({audioBase64:"YQ==",mimeType:"audio/webm",durationSeconds:2}),SpeakerExtractorError);const malformed=createSpeakerExtractor({config:readConfig(environment),fetchImpl:async()=>new Response(JSON.stringify({embedding:[1,2]}),{status:200})});await assert.rejects(()=>malformed.extract({audioBase64:"YQ==",mimeType:"audio/webm",durationSeconds:2}),/invalid embedding/i);});
