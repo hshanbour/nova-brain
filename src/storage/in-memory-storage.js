@@ -69,7 +69,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async retrieveMemories(ownerId, query, { projectId, limit = 6 } = {}) {
       return rankRelevantMemories([...memories.values()].filter((item) => item.ownerId === ownerId), query, { projectId, limit }).map(copy);
     },
-    async createSpeakerProfile(input) { const timestamp=now(clock); const profile={...copy(input),createdAt:timestamp,updatedAt:timestamp}; speakerProfiles.set(profile.id,profile); return copy(profile); },
+    async createSpeakerProfile(input) { const existing=[...speakerProfiles.values()].find((item)=>input.enrollmentAttemptId&&item.ownerId===input.ownerId&&item.enrollmentAttemptId===input.enrollmentAttemptId);if(existing)return copy(existing);const timestamp=now(clock); const profile={...copy(input),createdAt:timestamp,updatedAt:timestamp}; speakerProfiles.set(profile.id,profile); return copy(profile); },
+    async getSpeakerProfileByEnrollmentAttempt(ownerId,enrollmentAttemptId){return copy([...speakerProfiles.values()].find((item)=>item.ownerId===ownerId&&item.enrollmentAttemptId===enrollmentAttemptId)||null);},
     async listSpeakerProfiles(ownerId,{includeRepresentation=false}={}) { return [...speakerProfiles.values()].filter((item)=>item.ownerId===ownerId).map((item)=>{const value=copy(item);if(!includeRepresentation)delete value.representation;return value;}); },
     async updateSpeakerProfile(id,ownerId,patch) { const current=speakerProfiles.get(id);if(!current||current.ownerId!==ownerId)return null;const updated={...current,...copy(patch),id,ownerId,createdAt:current.createdAt,updatedAt:now(clock)};speakerProfiles.set(id,updated);return copy(updated); },
     async deleteSpeakerProfile(id,ownerId) { const current=speakerProfiles.get(id);if(!current||current.ownerId!==ownerId)return false;speakerProfiles.delete(id);return true; },

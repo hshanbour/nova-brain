@@ -4,7 +4,7 @@ export const SPEAKER_UNKNOWN = Object.freeze({ state: "unknown", speakerProfileI
 
 function publicProfile(profile) {
   if (!profile) return null;
-  const { representation: _representation, ...safe } = profile;
+  const { representation: _representation, enrollmentAttemptId: _enrollmentAttemptId, ...safe } = profile;
   return safe;
 }
 
@@ -50,14 +50,16 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
   };
   const audit = (action, summary, metadata = {}) => storage.appendActivity({ ownerId, action, status: "completed", summary, metadata });
   return Object.freeze({
-    async enroll({ displayName, relation = "member", scope = "household", consent, consentActor, sampleRepresentations, representationVersion = "synthetic-v1" }) {
+    async enroll({ displayName, relation = "member", scope = "household", consent, consentActor, sampleRepresentations, representationVersion = "synthetic-v1", enrollmentAttemptId }) {
       if (consent !== true || typeof consentActor !== "string" || !consentActor.trim()) throw new Error("Explicit speaker consent is required.");
       if (typeof displayName !== "string" || !displayName.trim()) throw new Error("Speaker display name is required.");
-      const profile = await storage.createSpeakerProfile({ id: randomUUID(), ownerId, displayName: displayName.trim(), relation, scope, enrollmentStatus: "enrolled", status: "active", representation: protect(centroid(sampleRepresentations)), representationVersion, consentAt: clock().toISOString(), consentActor: consentActor.trim() });
+      if(enrollmentAttemptId){const existing=await storage.getSpeakerProfileByEnrollmentAttempt(ownerId,enrollmentAttemptId);if(existing)return publicProfile(existing);}
+      const profile = await storage.createSpeakerProfile({ id: randomUUID(), ownerId, displayName: displayName.trim(), relation, scope, enrollmentStatus: "enrolled", status: "active", representation: protect(centroid(sampleRepresentations)), representationVersion, consentAt: clock().toISOString(), consentActor: consentActor.trim(), enrollmentAttemptId });
       await audit("speaker_enrolled", "A consented speaker profile was enrolled.", { speakerProfileId: profile.id, relation, representationVersion, sampleCount: sampleRepresentations.length });
       return publicProfile(profile);
     },
     async list() { return (await storage.listSpeakerProfiles(ownerId)).map(publicProfile); },
+    async getByEnrollmentAttempt(enrollmentAttemptId){return publicProfile(await storage.getSpeakerProfileByEnrollmentAttempt(ownerId,enrollmentAttemptId));},
     async isActiveProfile(id) { if(!id)return false;return (await storage.listSpeakerProfiles(ownerId)).some((profile)=>profile.id===id&&profile.status==="active"); },
     async privacyStatus() { return storage.speakerPrivacyStatus(ownerId); },
     async purgeInvalidOwnerEnrollment() { return storage.purgeInvalidOwnerSpeakerEnrollment(ownerId); },

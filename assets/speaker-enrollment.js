@@ -15,6 +15,9 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
   let explicitStop = false;
   let attempt = 0;
   let enrollmentController;
+  let enrollmentAttemptId;
+  let submitInFlight = false;
+  const errorText = (value) => typeof value === "string" ? value : typeof value?.message === "string" ? value.message : typeof value?.detail === "string" ? value.detail : "Enrollment failed safely. Please try again.";
 
   const stopTracks = () => {
     stream?.getTracks().forEach((track) => track.stop());
@@ -30,6 +33,8 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
     attempt += 1;
     enrollmentController?.abort();
     enrollmentController = undefined;
+    enrollmentAttemptId = undefined;
+    submitInFlight = false;
     if (recorder?.state === "recording") recorder.stop();
     stopTracks();
     chunks = [];
@@ -151,7 +156,9 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (samples.length !== 3 || !form.elements.consent.checked) return;
+    if (submitInFlight || samples.length !== 3 || !form.elements.consent.checked) return;
+    submitInFlight = true;
+    enrollmentAttemptId ||= crypto.randomUUID();
     enrollmentController = new AbortController();
     submit.disabled = true;
     button.disabled = true;
@@ -160,11 +167,11 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
       const response = await fetchImpl("/api/speakers/enroll", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ displayName: form.elements.displayName.value, relation: form.elements.relation.value, scope: "household", consent: true, consentActor: form.elements.displayName.value, samples }),
+        body: JSON.stringify({ enrollmentAttemptId, displayName: form.elements.displayName.value, relation: form.elements.relation.value, scope: "household", consent: true, consentActor: form.elements.displayName.value, samples }),
         signal: enrollmentController.signal
       });
       const body = await response.json();
-      if (!response.ok) throw new Error(body?.error || "Enrollment failed.");
+      if (!response.ok) throw new Error(errorText(body?.error || body?.detail));
       samples = [];
       chunks = [];
       updateConfirmations();
@@ -172,11 +179,12 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
       setTimeout(() => { dialog.hidden = true; form.reset(); reset(); }, 1200);
     } catch (error) {
       if (error?.name === "AbortError") return;
-      status.textContent = error.message || "Enrollment failed safely.";
+      status.textContent = errorText(error);
       submit.disabled = samples.length !== 3;
       button.disabled = samples.length === 3;
     } finally {
       enrollmentController = undefined;
+      submitInFlight = false;
     }
   });
   return { reset, cancel };

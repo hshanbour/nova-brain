@@ -184,14 +184,18 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           const controller=new AbortController();const abort=()=>controller.abort();
           request.once?.("aborted",abort);response.once?.("close",()=>{if(!response.writableEnded)abort();});
           await ready();const input=await readJsonBody(request,config.voiceV2.maxBodyBytes);
+          const enrollmentAttemptId=typeof input?.enrollmentAttemptId==="string"&&/^[0-9a-f-]{36}$/i.test(input.enrollmentAttemptId)?input.enrollmentAttemptId:null;
+          if(!enrollmentAttemptId)throw new Error("A valid enrollment attempt id is required.");
+          logger.info("Nova speaker enrollment started",{requestId,enrollmentAttemptId,sampleCount:Array.isArray(input.samples)?input.samples.length:0});
           if(input?.consent!==true)throw new Error("Explicit speaker consent is required.");
           if(!Array.isArray(input.samples)||input.samples.length!==3)throw new Error("Exactly three consented voice samples are required.");
-          const extracted=await Promise.all(input.samples.map((sample)=>speakerExtractor.extract(sample,{signal:controller.signal})));
+          const existing=await speakerIdentity.getByEnrollmentAttempt(enrollmentAttemptId);if(existing){logger.info("Nova speaker enrollment idempotent replay",{requestId,enrollmentAttemptId,speakerProfileId:existing.id});sendJson(response,200,{speaker:existing,idempotent:true});return;}
+          let extracted;try{extracted=await Promise.all(input.samples.map((sample)=>speakerExtractor.extract(sample,{signal:controller.signal,requestId,enrollmentAttemptId})));}catch(error){logger.error("Nova speaker enrollment failed",{requestId,enrollmentAttemptId,stage:"speaker_embedding",code:error?.code||"unknown"});throw error;}
           if(controller.signal.aborted)return;
           if(extracted.some((item)=>!item.sufficient||item.quality!=="accepted"))throw new Error("Each enrollment sample must contain at least one second of clear speech and pass the quality check.");
           const versions=new Set(extracted.map((item)=>item.extractorVersion));if(versions.size!==1)throw new Error("Enrollment samples must use one extractor version.");
           if(controller.signal.aborted)return;
-          sendJson(response,201,{speaker:await speakerIdentity.enroll({...input,samples:undefined,sampleRepresentations:extracted.map((item)=>item.representation),representationVersion:extracted[0].extractorVersion})});return;
+          const speaker=await speakerIdentity.enroll({...input,samples:undefined,sampleRepresentations:extracted.map((item)=>item.representation),representationVersion:extracted[0].extractorVersion,enrollmentAttemptId});logger.info("Nova speaker enrollment completed",{requestId,enrollmentAttemptId,speakerProfileId:speaker.id});sendJson(response,201,{speaker,idempotent:false});return;
         }
         const speakerMatch=pathname.match(/^\/api\/speakers\/([^/]+)$/);
         if(speakerMatch&&request.method==="PATCH"){

@@ -1,6 +1,7 @@
 """Ephemeral speaker-embedding worker. Raw audio is decoded in memory and never persisted."""
 import base64
 import io
+import json
 import os
 import tempfile
 
@@ -10,7 +11,7 @@ MODEL_ID = "speechbrain/spkrec-ecapa-voxceleb"
 MODEL_VERSION = "speechbrain/spkrec-ecapa-voxceleb@ecapa-v1"
 app = modal.App("nova-speaker-embedding-preview")
 image = modal.Image.debian_slim(python_version="3.11").apt_install("ffmpeg").pip_install(
-    "fastapi[standard]==0.116.1", "requests==2.32.5", "speechbrain==1.0.3", "torch==2.7.1", "torchaudio==2.7.1"
+    "fastapi[standard]==0.116.1", "requests==2.32.5", "huggingface_hub==0.24.7", "speechbrain==1.0.3", "torch==2.7.1", "torchaudio==2.7.1"
 )
 
 
@@ -46,6 +47,7 @@ class SpeakerEmbedding:
         @api.post("/embed")
         async def embed(request: Request):
             _authorize(request)
+            print(json.dumps({"event": "speaker_embed_received", "requestId": request.headers.get("x-nova-request-id"), "enrollmentAttemptId": request.headers.get("x-nova-enrollment-attempt-id")}))
             payload = await request.json()
             try:
                 raw = base64.b64decode(payload["audioBase64"], validate=True)
@@ -78,6 +80,7 @@ class SpeakerEmbedding:
                     raise HTTPException(status_code=422, detail="Insufficient speech quality")
                 with torch.inference_mode():
                     vector = self.encoder.encode_batch(waveform).squeeze().cpu().tolist()
+                print(json.dumps({"event": "speaker_embed_completed", "requestId": request.headers.get("x-nova-request-id"), "enrollmentAttemptId": request.headers.get("x-nova-enrollment-attempt-id"), "speechSeconds": round(voiced_seconds, 3)}))
                 return {"embedding": vector, "model": MODEL_VERSION, "speechSeconds": round(voiced_seconds, 3), "quality": "accepted"}
             finally:
                 if path:
