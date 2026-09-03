@@ -145,17 +145,18 @@ test("client cancellation aborts ElevenLabs generation and is never retried", as
 });
 
 test("v3 conversational multi-chunk requests omit incompatible continuity fields without changing Arabic-English order", async () => {
-  const requests = [];
+  const requests = []; const events = [];
   const service = createVoiceService({ config: config({ firstSpeechChunkCharacters: 55, nextSpeechChunkCharacters: 70 }), fetchImpl: withCapabilities(async (_url, options) => {
     const body = JSON.parse(options.body); requests.push(body);
     return new Response(Buffer.from(`mp3:${body.text}`), { status: 200, headers: { "content-type": "audio/mpeg" } });
   }) });
   const text = "الحمد لله وضعي تمام. أنا Nova مساعدك الرقمي. نراجع Sharp Cuts API ثم missed-call recovery خطوة بخطوة. ونكمل كل التفاصيل بدون حذف أو تكرار.";
-  const result = await service.synthesise({ text });
+  const result = await service.synthesise({ text }, { onEvent: (event) => events.push(event) });
   assert.ok(requests.length > 1); assert.equal(result.spokenText, text);
-  for (const body of requests) { assert.equal(body.model_id, "eleven_v3_conversational"); assert.equal("previous_text" in body, false); assert.equal("next_text" in body, false); assert.equal(body.voice_settings.stability,0.5); assert.equal(Number.isInteger(body.seed),true); }
+  for (const body of requests) { assert.equal(body.model_id, "eleven_v3_conversational"); assert.equal("previous_text" in body, false); assert.equal("next_text" in body, false); assert.equal(body.voice_settings.stability,0.75); assert.equal(Number.isInteger(body.seed),true); }
   assert.equal(new Set(requests.map(({seed})=>seed)).size,1);
   assert.equal(requests.map(({ text: chunk }) => chunk).join(" "), text);
+  const started=events.filter(({phase})=>phase==="request_started");assert.equal(started.length,requests.length);assert.equal(new Set(started.map(({turnId})=>turnId)).size,1);assert.equal(new Set(started.map(({voiceFingerprint})=>voiceFingerprint)).size,1);assert.deepEqual(new Set(started.map(({model})=>model)),new Set(["eleven_v3_conversational"]));assert.deepEqual(new Set(started.map(({seed})=>seed)),new Set([requests[0].seed]));assert.deepEqual(new Set(started.map(({outputFormat})=>outputFormat)),new Set(["mp3_44100_128"]));assert.deepEqual(new Set(started.map(({voiceSettings})=>voiceSettings.stability)),new Set([.75]));
 });
 
 test("balanced 500 1k 2k 4k and 6k Arabic-mixed text preserves exact order without giant later chunks",()=>{for(const target of [500,1000,2000,4000,6000]){const unit="تمام محمد، نراجع Preview deployment وAPI latency خطوة بخطوة، وبعدها نكمل الفحص بدون حذف أو تكرار. ";const text=unit.repeat(Math.ceil(target/unit.length)).slice(0,target).trim();const chunks=chunkSpeechText(text,{firstChunkCharacters:60,nextChunkCharacters:120,maxChunks:64});assert.equal(chunks.join(" "),text);assert.ok(chunks.length>2);assert.ok(chunks[0].length<=60);for(const chunk of chunks.slice(1))assert.ok(chunk.length<=120,`chunk ${chunk.length} exceeded 120`);}});

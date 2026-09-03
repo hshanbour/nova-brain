@@ -81,7 +81,8 @@ export function createAgent({
       try { for (let step = 1; step <= maxSteps; step += 1) {
         await storage.updateRun(run.id, ownerId, { status: "running", currentStep: step });
         const agentGenerationStartedAt=Date.now();
-        const generated = await modelProvider.generate({
+        const protectedIdentityMessage = speakerRestricted ? identityBoundaryResponse(message) : null;
+        const generated = protectedIdentityMessage ? { type: "final", message: protectedIdentityMessage } : await modelProvider.generate({
           message,
           context:trustedContext,
           systemContext,
@@ -175,4 +176,11 @@ export function createAgent({
     },
     tools: toolRegistry
   });
+}
+
+function identityBoundaryResponse(message) {
+  const value=String(message||"").trim();
+  const identitySensitive=/\b(?:who\s+am\s+i|i(?:'m|\s+am)\s+(?:mohammad|mohammed|the\s+owner)|i\s+own\s+(?:this|the)\s+(?:app|program|system))\b|(?:مين|من)\s+أنا|أنا\s+(?:محمد|محم[و]?د|صاحب\s+(?:البرنامج|النظام|التطبيق))/iu.test(value);
+  if(!identitySensitive)return null;
+  return /[\u0600-\u06ff]/u.test(value)?"ما قدرت أتحقق من هويتك من هالدور الصوتي. الادعاء بالاسم أو بصفة المالك ما بغيّر حالة التحقق.":"I couldn't verify your identity from this voice turn. Claiming a name or owner status does not change the verification result.";
 }

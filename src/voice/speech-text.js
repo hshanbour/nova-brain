@@ -41,7 +41,7 @@ export function chunkSpeechText(text, { firstChunkCharacters = 140, nextChunkCha
     }
     const window = remaining.slice(0, limit + 1);
     const minimum = Math.min(60, Math.floor(limit * 0.4));
-    let splitAt = semanticBoundary(window, minimum, limit);
+    let splitAt = semanticBoundary(window, minimum, limit, chunks.length === 0);
     if (splitAt < 0) splitAt = window.lastIndexOf(" ", limit);
     if (splitAt < minimum) splitAt = limit;
     chunks.push(remaining.slice(0, splitAt).trim());
@@ -50,10 +50,15 @@ export function chunkSpeechText(text, { firstChunkCharacters = 140, nextChunkCha
   return chunks.filter(Boolean);
 }
 
-function semanticBoundary(value, minimum, limit) {
+function semanticBoundary(value, minimum, limit, allowClauseBoundary) {
   let boundary = -1;
-  const pattern = /[.!?؟؛،,:]\s+/gu;
+  const pattern = /[.!?؟؛]\s+/gu;
   for (const match of value.matchAll(pattern)) {
+    const candidate = match.index + match[0].trimEnd().length;
+    if (candidate >= minimum && candidate <= limit) boundary = candidate;
+  }
+  if (boundary >= 0 || !allowClauseBoundary) return boundary;
+  for (const match of value.matchAll(/[،,:]\s+/gu)) {
     const candidate = match.index + match[0].trimEnd().length;
     if (candidate >= minimum && candidate <= limit) boundary = candidate;
   }

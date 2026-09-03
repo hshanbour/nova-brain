@@ -1,5 +1,6 @@
 import { chunkSpeechText, sanitiseSpeechText } from "./speech-text.js";
 import { elevenLabsModelCandidates, elevenLabsRequestBody, selectElevenLabsModel } from "./elevenlabs-models.js";
+import { createHash, randomUUID } from "node:crypto";
 
 const OPENAI_TRANSCRIPTIONS = "https://api.openai.com/v1/audio/transcriptions";
 const ELEVENLABS_BASE = "https://api.elevenlabs.io/v1/text-to-speech";
@@ -49,11 +50,11 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
     });
     let totalAudioBytes = 0; let generatedCharacters = 0; let providerAttempts = 0;
     const streamStartedAt = Date.now();
-    const turnSeed = stableSpeechSeed(text); const controller = new AbortController(); const unlink = linkAbort(signal, controller);
+    const turnSeed = stableSpeechSeed(text); const turnId=`tts-${randomUUID()}`;const voiceFingerprint=createHash("sha256").update(voice.elevenLabsVoiceId).digest("hex").slice(0,12); const controller = new AbortController(); const unlink = linkAbort(signal, controller);
     const pending = new Map(); const lookahead = Math.max(1, Math.min(2, voice.speechLookahead || 2));
     const launch = (index) => {
       if (index >= chunks.length || pending.has(index) || controller.signal.aborted) return;
-      const promise = synthesiseChunk(chunks[index], { voice, model: capability.model, fetchImpl, schedule, cancelSchedule, signal: controller.signal, onEvent, index, chunkCount: chunks.length, previousText: chunks[index - 1], nextText: chunks[index + 1], seed: turnSeed })
+      const promise = synthesiseChunk(chunks[index], { voice, model: capability.model, fetchImpl, schedule, cancelSchedule, signal: controller.signal, onEvent, index, chunkCount: chunks.length, previousText: chunks[index - 1], nextText: chunks[index + 1], seed: turnSeed, turnId, voiceFingerprint })
         .then((value) => ({ ok: true, value }), (error) => ({ ok: false, error }));
       pending.set(index, promise);
     };
@@ -132,13 +133,13 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
   });
 }
 
-async function synthesiseChunk(text, { voice, model, fetchImpl, schedule, cancelSchedule, signal, onEvent, index, chunkCount, previousText, nextText, seed }) {
+async function synthesiseChunk(text, { voice, model, fetchImpl, schedule, cancelSchedule, signal, onEvent, index, chunkCount, previousText, nextText, seed, turnId, voiceFingerprint }) {
   const url = `${ELEVENLABS_BASE}/${encodeURIComponent(voice.elevenLabsVoiceId)}/stream?output_format=${encodeURIComponent(voice.ttsOutputFormat)}`;
   let attempt = 0;
   while (attempt < 2) {
     attempt += 1;
     const startedAt = Date.now();
-    onEvent({ phase: "request_started", chunkIndex: index, chunkCount, textCharacters: text.length, attempt, model: model.id, outputFormat: voice.ttsOutputFormat });
+    onEvent({ phase: "request_started", turnId, chunkIndex: index, chunkCount, textCharacters: text.length, attempt, voiceFingerprint, model: model.id, seed, voiceSettings:{stability:voice.ttsStability}, outputFormat: voice.ttsOutputFormat });
     try {
       const result = await consumeElevenLabsStream(fetchImpl, url, {
         method: "POST",

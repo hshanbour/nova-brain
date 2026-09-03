@@ -24,7 +24,7 @@ export function createSpeakerExtractor({ config, fetchImpl = fetch, clock = Date
       throw new SpeakerExtractorError("Speaker recognition worker could not be reached.");
     }
     let data; try { data = await response.json(); } catch { throw new SpeakerExtractorError("Speaker recognition worker returned an unreadable response.", "invalid_response"); }
-    if (!response.ok) throw new SpeakerExtractorError(typeof data?.error === "string" ? data.error : "Speaker recognition worker rejected the recording.", data?.code || "worker_rejected");
+    if (!response.ok) throw new SpeakerExtractorError(typeof data?.error === "string" ? data.error : "Speaker recognition worker rejected the recording.", data?.code || data?.detail?.code || "worker_rejected");
     return data;
   }
 
@@ -44,14 +44,17 @@ export function createSpeakerExtractor({ config, fetchImpl = fetch, clock = Date
       if (!SUPPORTED_MIME_TYPES.has(mimeType)) throw new SpeakerExtractorError("Unsupported speaker-recognition audio type.", "invalid_audio");
       if (typeof audioBase64 !== "string" || !audioBase64 || Buffer.byteLength(audioBase64, "base64") > speaker.maxAudioBytes) throw new SpeakerExtractorError("Invalid speaker-recognition audio.", "invalid_audio");
       const startedAt = clock(); const result = await request("/embed", { audioBase64, mimeType, durationSeconds: duration }, { signal, requestId, enrollmentAttemptId });
-      if (!Array.isArray(result.embedding) || result.embedding.length < 64 || result.embedding.some((value) => !Number.isFinite(value))) throw new SpeakerExtractorError("Speaker recognition worker returned an invalid embedding.", "invalid_embedding");
       const speechSeconds = Number(result.speechSeconds ?? duration);
       const quality = result.quality || "accepted";
       const latencyMs = clock() - startedAt;
+      const diagnostics = { totalDurationSeconds: finite(result.totalDurationSeconds, duration), speechSeconds: finite(speechSeconds, 0), silenceRatio: finite(result.silenceRatio, null), sampleRate: finite(result.sampleRate, null), channelCount: finite(result.channelCount, null), preprocessingVersion: typeof result.preprocessingVersion === "string" ? result.preprocessingVersion : null };
       if (!Number.isFinite(speechSeconds) || speechSeconds < speaker.minSpeechSeconds || quality !== "accepted") {
-        return { sufficient: false, reason: "insufficient_speech", durationSeconds: Number.isFinite(speechSeconds) ? speechSeconds : 0, extractorVersion: result.model || speaker.modelVersion, quality, latencyMs };
+        return { sufficient: false, reason: typeof result.reason === "string" ? result.reason : "insufficient_speech", durationSeconds: Number.isFinite(speechSeconds) ? speechSeconds : 0, extractorVersion: result.model || speaker.modelVersion, quality, latencyMs, ...diagnostics };
       }
-      return { sufficient: true, representation: result.embedding, extractorVersion: result.model || speaker.modelVersion, speechSeconds, quality, latencyMs };
+      if (!Array.isArray(result.embedding) || result.embedding.length < 64 || result.embedding.some((value) => !Number.isFinite(value))) throw new SpeakerExtractorError("Speaker recognition worker returned an invalid embedding.", "invalid_embedding");
+      return { sufficient: true, representation: result.embedding, extractorVersion: result.model || speaker.modelVersion, quality, latencyMs, ...diagnostics };
     }
   });
 }
+
+function finite(value, fallback) { const number = Number(value); return Number.isFinite(number) ? number : fallback; }
