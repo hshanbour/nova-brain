@@ -4,7 +4,7 @@ export function createMediaVoiceCapture({
   now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 1_500, shortFragmentSilenceMs = 1_900,
   longUtteranceSilenceMs = 1_300, resumedSpeechBonusMs = 100, maxEndpointSilenceMs = 2_200,
   noSpeechMs = 8_000, maxDurationMs = 30_000, calibrationMs = 400,
-  speechThreshold = 0.035, bargeThreshold = 0.025, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 4
+  speechThreshold = 0.035, bargeThreshold = 0.025, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 3
 }) {
   let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false;
   const supported = Boolean(mediaDevices?.getUserMedia && MediaRecorder && AudioContext);
@@ -76,15 +76,15 @@ export function createMediaVoiceCapture({
     timer = schedule(sample, sampleIntervalMs);
   }
 
-  function watchForBargeIn(onBargeIn) {
-    clearTimer(); const current = ++generation; let acousticFrames = 0; let speechFrames = 0; let baseline = 0.008;let speechOnsetAt;let monitorFrames=0;const monitoringStartedAt=now();
+  function watchForBargeIn(onBargeIn,{onDiagnostic}={}) {
+    clearTimer(); const current = ++generation; let acousticFrames = 0; let speechFrames = 0; let baseline = 0.008;let speechOnsetAt;let monitorFrames=0;let peakRms=0;const monitoringStartedAt=now();
     const sample = () => {
       if (current !== generation) return;
-      const level=rms();monitorFrames+=1;if(monitorFrames<=2){baseline=Math.min(.035,baseline*.45+level*.55);timer=schedule(sample,sampleIntervalMs);return;}const threshold=Math.max(bargeThreshold,baseline*1.7);const acoustic=level>=threshold;
-      if(!acoustic)baseline=Math.min(0.08,baseline*0.94+level*0.06);
+      const level=rms();monitorFrames+=1;peakRms=Math.max(peakRms,level);if(monitorFrames<=2){baseline=Math.min(.035,baseline*.45+level*.55);timer=schedule(sample,sampleIntervalMs);return;}const threshold=Math.max(bargeThreshold,baseline*1.7);const acoustic=level>=threshold;
+      if(!acoustic)baseline=Math.min(baseline,baseline*0.94+level*0.06);
       acousticFrames=acoustic?acousticFrames+1:Math.max(0,acousticFrames-2);
-      if(acousticFrames>=bargeAcousticFrames){if(!speechOnsetAt)speechOnsetAt=now()-(acousticFrames-1)*sampleIntervalMs;speechFrames=acoustic?speechFrames+1:Math.max(0,speechFrames-1);}else if(!acoustic){speechFrames=0;speechOnsetAt=undefined;}
-      if (speechFrames >= bargeSpeechFrames) { clearTimer(); onBargeIn?.({ confirmed:true,voicedMs:speechFrames*sampleIntervalMs,baselineRms:Math.round(baseline*100000)/100000,thresholdRms:Math.round(threshold*100000)/100000,speechOnsetAt,detectedAt:now(),monitoringStartedAt,echoCancellation:true }); return; }
+      if(acousticFrames>=bargeAcousticFrames){if(!speechOnsetAt){speechOnsetAt=now()-(acousticFrames-1)*sampleIntervalMs;onDiagnostic?.({phase:"candidate",speechOnsetAt,baselineRms:baseline,thresholdRms:threshold,peakRms,sustainedFrames:acousticFrames,monitorFrames,calibrationComplete:monitorFrames>=2});}speechFrames=acoustic?speechFrames+1:Math.max(0,speechFrames-1);}else if(!acoustic){if(speechOnsetAt)onDiagnostic?.({phase:"candidate-reset",speechOnsetAt,detectedAt:now(),baselineRms:baseline,thresholdRms:threshold,peakRms,sustainedFrames:speechFrames,monitorFrames,calibrationComplete:monitorFrames>=2});speechFrames=0;speechOnsetAt=undefined;peakRms=level;}
+      if (speechFrames >= bargeSpeechFrames) { clearTimer(); onBargeIn?.({ confirmed:true,voicedMs:speechFrames*sampleIntervalMs,baselineRms:Math.round(baseline*100000)/100000,thresholdRms:Math.round(threshold*100000)/100000,peakRms:Math.round(peakRms*100000)/100000,sustainedFrames:speechFrames,monitorFrames,calibrationComplete:monitorFrames>=2,speechOnsetAt,detectedAt:now(),monitoringStartedAt,echoCancellation:true }); return; }
       timer = schedule(sample, sampleIntervalMs);
     };
     timer = schedule(sample, sampleIntervalMs);

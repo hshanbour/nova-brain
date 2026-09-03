@@ -182,7 +182,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         }
         if(request.method==="POST"&&pathname==="/api/voice/telemetry"){
           const input=await readJsonBody(request,config.maxBodyBytes);const measurements={};
-          for(const [name,value] of Object.entries(input?.measurements||{}))if(/^[A-Za-z][A-Za-z0-9]{0,48}$/.test(name)&&Number.isFinite(value)&&value>=0&&value<=300_000)measurements[name]=Math.round(value*10)/10;
+          for(const [name,value] of Object.entries(input?.measurements||{}))if(/^[A-Za-z][A-Za-z0-9]{0,48}$/.test(name)&&Number.isFinite(value)&&value>=0&&value<=300_000)measurements[name]=/rms/i.test(name)?Math.round(value*100_000)/100_000:Math.round(value*10)/10;
           logger.info("Nova browser voice timing",{requestId,turnId:Number.isInteger(input?.turnId)?input.turnId:null,stage:typeof input?.stage==="string"?input.stage.slice(0,40):"unknown",measurements});
           sendJson(response,200,{success:true,requestId});return;
         }
