@@ -88,9 +88,11 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
       const ranked = candidates.map((profile) => ({ profile, confidence: cosine(probe, profile.representation) })).sort((a, b) => b.confidence - a.confidence);
       const best = ranked[0]; const second = ranked[1];
       const confidence=best?Math.round(best.confidence*1000)/1000:0;
-      if (!best || best.confidence < threshold) return { state:"unknown",speakerProfileId:null,confidence,candidateCount:candidates.length };
-      if (second && best.confidence - second.confidence < ambiguityMargin) return { state:"uncertain",speakerProfileId:null,confidence,candidateCount:candidates.length };
-      return { state: "confirmed", speakerProfileId: best.profile.id, displayName: best.profile.displayName, relation: best.profile.relation, scope: best.profile.scope, confidence, candidateCount:candidates.length };
+      const scoreMargin=second?Math.round((best.confidence-second.confidence)*1000)/1000:null;
+      const decision={confidence,candidateCount:candidates.length,threshold,ambiguityMargin,scoreMargin,bestCandidateCategory:best?(best.profile.relation==="owner"?"owner":"non_owner"):null};
+      if (!best || best.confidence < threshold) return { state:"unknown",speakerProfileId:null,...decision };
+      if (second && best.confidence - second.confidence < ambiguityMargin) return { state:"uncertain",speakerProfileId:null,...decision };
+      return { state: "confirmed", speakerProfileId: best.profile.id, displayName: best.profile.displayName, relation: best.profile.relation, scope: best.profile.scope, ...decision };
     },
     async recordUtterance(input) {
       return storage.createVoiceUtterance({ id: randomUUID(), ownerId, conversationId: input.conversationId, speakerProfileId: input.speakerProfileId || null, speakerLabel: input.speakerLabel || "unknown", confidence: Number.isFinite(input.confidence) ? input.confidence : null, text: input.text, startedAtMs: input.startedAtMs ?? null, endedAtMs: input.endedAtMs ?? null });

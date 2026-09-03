@@ -101,7 +101,7 @@ export function readConfig(environment = process.env) {
       modelVersion: environment.NOVA_SPEAKER_EXTRACTOR_MODEL || "speechbrain/spkrec-ecapa-voxceleb@ecapa-v1",
       minSpeechSeconds: 1.0,
       maxAudioBytes: 2 * 1024 * 1024,
-      threshold: 0.86,
+      threshold: 0.35,
       ambiguityMargin: 0.05
     }),
     voiceBenchmark: Object.freeze({

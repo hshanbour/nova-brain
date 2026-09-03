@@ -152,13 +152,14 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           const [transcription, extracted, storageReady] = await Promise.allSettled([voiceService.transcribe(input), speakerExtractor?.extract?.(input,{requestId}) || Promise.reject(new Error("not configured")), ready()]);
           if (transcription.status === "rejected") throw transcription.reason;
           let speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: config.speakerRecognition.modelVersion, match_status: "unknown" };
-          let speakerRecognitionMs;let candidateCount=0;
+          let speakerRecognitionMs;let candidateCount=0;let matchDiagnostics={threshold:config.speakerRecognition.threshold,ambiguityMargin:config.speakerRecognition.ambiguityMargin,scoreMargin:null,bestCandidateCategory:null};
           if(storageReady.status==="rejected")throw storageReady.reason;
           if (extracted.status === "fulfilled") {
             speakerRecognitionMs = extracted.value.latencyMs;
             if (extracted.value.sufficient) {
               const match = await speakerIdentity.recognize(extracted.value.representation);
               candidateCount=match.candidateCount||0;
+              matchDiagnostics={threshold:match.threshold??config.speakerRecognition.threshold,ambiguityMargin:match.ambiguityMargin??config.speakerRecognition.ambiguityMargin,scoreMargin:match.scoreMargin??null,bestCandidateCategory:match.bestCandidateCategory??null};
               speaker = match.state === "confirmed"
                 ? { speaker_profile_id: match.speakerProfileId, speaker_label: match.relation === "owner" ? "owner" : "enrolled_member", confidence: match.confidence, extractor_version: extracted.value.extractorVersion, match_status: "confirmed" }
                 : { ...speaker,confidence:match.confidence||0, extractor_version: extracted.value.extractorVersion, match_status: match.state === "uncertain" ? "uncertain" : "unknown" };
@@ -166,7 +167,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           } else {candidateCount=await speakerIdentity.candidateCount();logger.error?.("Nova speaker recognition failed",{requestId,stage:"speaker_embedding",code:extracted.reason?.code||"unknown"});}
           speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
           if(speaker.match_status==="confirmed"&&!speaker.assertion)speaker={speaker_profile_id:null,speaker_label:"unknown",confidence:0,extractor_version:speaker.extractor_version,match_status:"unknown",assertion:null};
-          logger.info?.("Nova speaker recognition completed",{requestId,extractorDurationMs:Number.isFinite(speakerRecognitionMs)?speakerRecognitionMs:null,candidateCount,matchStatus:speaker.match_status,confidence:speaker.confidence,recognizedProfileId:speaker.speaker_profile_id,speakerCategory:speaker.speaker_label,assertionIssued:Boolean(speaker.assertion)});
+          logger.info?.("Nova speaker recognition completed",{requestId,extractorDurationMs:Number.isFinite(speakerRecognitionMs)?speakerRecognitionMs:null,candidateCount,matchStatus:speaker.match_status,confidence:speaker.confidence,...matchDiagnostics,recognizedProfileId:speaker.speaker_profile_id,speakerCategory:speaker.speaker_label,assertionIssued:Boolean(speaker.assertion)});
           sendJson(response, 200, { ...transcription.value, speaker, timing: { sttAndSpeakerMs: Date.now() - startedAt, ...(Number.isFinite(speakerRecognitionMs) ? { speakerRecognitionMs } : {}) } }); return;
         }
         if (request.method === "POST" && pathname === "/api/voice/speech") {
