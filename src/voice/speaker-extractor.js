@@ -47,12 +47,13 @@ export function createSpeakerExtractor({ config, fetchImpl = fetch, clock = Date
       const speechSeconds = Number(result.speechSeconds ?? duration);
       const quality = result.quality || "accepted";
       const latencyMs = clock() - startedAt;
-      const diagnostics = { totalDurationSeconds: finite(result.totalDurationSeconds, duration), speechSeconds: finite(speechSeconds, 0), silenceRatio: finite(result.silenceRatio, null), sampleRate: finite(result.sampleRate, null), channelCount: finite(result.channelCount, null), preprocessingVersion: typeof result.preprocessingVersion === "string" ? result.preprocessingVersion : null };
+      const diagnostics = { totalDurationSeconds: finite(result.totalDurationSeconds, duration), speechSeconds: finite(speechSeconds, 0), silenceRatio: finite(result.silenceRatio, null), sampleRate: finite(result.sampleRate, null), channelCount: finite(result.channelCount, null), preprocessingVersion: typeof result.preprocessingVersion === "string" ? result.preprocessingVersion : null, voicedSegmentCount:finite(result.voicedSegmentCount,null),longestVoicedSegmentSeconds:finite(result.longestVoicedSegmentSeconds,null),clippingRatio:finite(result.clippingRatio,null),noiseFloorRms:finite(result.noiseFloorRms,null),activeThresholdRms:finite(result.activeThresholdRms,null),speechRms:finite(result.speechRms,null),peakRms:finite(result.peakRms,null),peakToNoiseDb:finite(result.peakToNoiseDb,null) };
       if (!Number.isFinite(speechSeconds) || speechSeconds < speaker.minSpeechSeconds || quality !== "accepted") {
         return { sufficient: false, reason: typeof result.reason === "string" ? result.reason : "insufficient_speech", durationSeconds: Number.isFinite(speechSeconds) ? speechSeconds : 0, extractorVersion: result.model || speaker.modelVersion, quality, latencyMs, ...diagnostics };
       }
       if (!Array.isArray(result.embedding) || result.embedding.length < 64 || result.embedding.some((value) => !Number.isFinite(value))) throw new SpeakerExtractorError("Speaker recognition worker returned an invalid embedding.", "invalid_embedding");
-      return { sufficient: true, representation: result.embedding, extractorVersion: result.model || speaker.modelVersion, quality, latencyMs, ...diagnostics };
+      const compatibility=Array.isArray(result.compatibilityEmbedding)&&result.compatibilityEmbedding.length===result.embedding.length&&result.compatibilityEmbedding.every((value)=>Number.isFinite(value))?result.compatibilityEmbedding:null;
+      return { sufficient: true, representation: result.embedding, representationVariants:[{label:"vad_v3",representation:result.embedding},...(compatibility?[{label:"legacy_full_waveform",representation:compatibility}]:[])], extractorVersion: result.model || speaker.modelVersion, quality, latencyMs, ...diagnostics };
     }
   });
 }

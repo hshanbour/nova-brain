@@ -55,6 +55,16 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
     try { const decipher=createDecipheriv("aes-256-gcm",key,Buffer.from(stored.iv,"base64"));decipher.setAuthTag(Buffer.from(stored.tag,"base64"));return JSON.parse(Buffer.concat([decipher.update(Buffer.from(stored.ciphertext,"base64")),decipher.final()]).toString("utf8")); } catch { return null; }
   };
   const audit = (action, summary, metadata = {}) => storage.appendActivity({ ownerId, action, status: "completed", summary, metadata });
+  const recognizeRepresentations = async (variants) => {
+    const probes=variants.map(({label,representation})=>({label,representation:normalized(representation)}));
+    const candidates=(await storage.listSpeakerProfiles(ownerId,{includeRepresentation:true})).map((profile)=>({...profile,representation:reveal(profile.representation)})).filter((profile)=>profile.status==="active"&&profile.representation);
+    const ranked=candidates.map((profile)=>{const scores=probes.map((probe)=>({label:probe.label,confidence:cosine(probe.representation,profile.representation)})).sort((a,b)=>b.confidence-a.confidence);return{profile,...scores[0]};}).sort((a,b)=>b.confidence-a.confidence);
+    const best=ranked[0];const second=ranked[1];const confidence=best?Math.round(best.confidence*1000)/1000:0;const scoreMargin=second?Math.round((best.confidence-second.confidence)*1000)/1000:null;
+    const decision={confidence,candidateCount:candidates.length,threshold,ambiguityMargin,scoreMargin,bestCandidateCategory:best?(best.profile.relation==="owner"?"owner":"non_owner"):null,matchVariant:best?.label||null};
+    if(!best||best.confidence<threshold)return{state:"unknown",speakerProfileId:null,...decision};
+    if(second&&best.confidence-second.confidence<ambiguityMargin)return{state:"uncertain",speakerProfileId:null,...decision};
+    return{state:"confirmed",speakerProfileId:best.profile.id,displayName:best.profile.displayName,relation:best.profile.relation,scope:best.profile.scope,...decision};
+  };
   return Object.freeze({
     async enroll({ displayName, relation = "member", scope = "household", consent, consentActor, sampleRepresentations, representationVersion = "synthetic-v1", enrollmentAttemptId }) {
       if (consent !== true || typeof consentActor !== "string" || !consentActor.trim()) throw new Error("Explicit speaker consent is required.");
@@ -89,17 +99,9 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
       return deleted;
     },
     async recognize(representation) {
-      const probe = normalized(representation);
-      const candidates = (await storage.listSpeakerProfiles(ownerId, { includeRepresentation: true })).map((profile)=>({...profile,representation:reveal(profile.representation)})).filter((profile) => profile.status === "active" && profile.representation);
-      const ranked = candidates.map((profile) => ({ profile, confidence: cosine(probe, profile.representation) })).sort((a, b) => b.confidence - a.confidence);
-      const best = ranked[0]; const second = ranked[1];
-      const confidence=best?Math.round(best.confidence*1000)/1000:0;
-      const scoreMargin=second?Math.round((best.confidence-second.confidence)*1000)/1000:null;
-      const decision={confidence,candidateCount:candidates.length,threshold,ambiguityMargin,scoreMargin,bestCandidateCategory:best?(best.profile.relation==="owner"?"owner":"non_owner"):null};
-      if (!best || best.confidence < threshold) return { state:"unknown",speakerProfileId:null,...decision };
-      if (second && best.confidence - second.confidence < ambiguityMargin) return { state:"uncertain",speakerProfileId:null,...decision };
-      return { state: "confirmed", speakerProfileId: best.profile.id, displayName: best.profile.displayName, relation: best.profile.relation, scope: best.profile.scope, ...decision };
+      return recognizeRepresentations([{label:"vad_v3",representation}]);
     },
+    async recognizeMany(variants){if(!Array.isArray(variants)||!variants.length)throw new Error("At least one speaker representation is required.");return recognizeRepresentations(variants.map((item,index)=>({label:typeof item?.label==="string"?item.label:`variant_${index}`,representation:item?.representation})));},
     async rememberAnonymous({ representation, representationVersion, consent, consentActor, selfReportedName }) {
       if (consent !== true || typeof consentActor !== "string" || !consentActor.trim()) return { state:"consent_required",anonymousSpeakerId:null,confidence:0,candidateCount:0,threshold:familiarityThreshold,ambiguityMargin:familiarityAmbiguityMargin };
       const probe=normalized(representation);const profiles=(await storage.listAnonymousSpeakerProfiles(ownerId,{includeRepresentation:true})).map((profile)=>({...profile,representation:reveal(profile.representation)})).filter((profile)=>profile.status==="active"&&profile.representation);

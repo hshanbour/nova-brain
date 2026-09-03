@@ -2,6 +2,7 @@
 import base64
 import io
 import json
+import math
 import os
 import tempfile
 
@@ -9,7 +10,7 @@ import modal
 
 MODEL_ID = "speechbrain/spkrec-ecapa-voxceleb"
 MODEL_VERSION = "speechbrain/spkrec-ecapa-voxceleb@ecapa-v1"
-PREPROCESSING_VERSION = "decode-mono-16k-rms-vad-v2"
+PREPROCESSING_VERSION = "decode-mono-16k-rms-vad-v3-compat"
 app = modal.App("nova-speaker-embedding-preview")
 image = modal.Image.debian_slim(python_version="3.11").apt_install("ffmpeg").pip_install(
     "fastapi[standard]==0.116.1", "requests==2.32.5", "huggingface_hub==0.24.7", "speechbrain==1.0.3", "torch==2.7.1", "torchaudio==2.7.1"
@@ -82,7 +83,15 @@ class SpeakerEmbedding:
                 voiced_seconds = float(active.sum()) * 0.01
                 silence_ratio = max(0.0, min(1.0, 1.0 - voiced_seconds / max(total_seconds, 0.001)))
                 clipping_ratio = float((samples.abs() >= 0.995).float().mean())
-                diagnostics.update({"speechSeconds": round(voiced_seconds, 3), "silenceRatio": round(silence_ratio, 3)})
+                active_values = active.cpu().tolist()
+                segments = []
+                segment_start = None
+                for index, enabled in enumerate(active_values + [False]):
+                    if enabled and segment_start is None: segment_start = index
+                    elif not enabled and segment_start is not None:
+                        segments.append((segment_start, index)); segment_start = None
+                longest_segment_seconds = max(((end - start) * 0.01 for start, end in segments), default=0.0)
+                diagnostics.update({"speechSeconds": round(voiced_seconds, 3), "silenceRatio": round(silence_ratio, 3), "voicedSegmentCount": len(segments), "longestVoicedSegmentSeconds": round(longest_segment_seconds, 3), "clippingRatio": round(clipping_ratio, 6), "noiseFloorRms": round(float(noise_floor), 6), "activeThresholdRms": round(active_threshold, 6), "peakRms": round(float(frame_rms.max()), 6)})
                 if voiced_seconds < 1.0:
                     return {"quality": "rejected", "reason": "insufficient_voiced_speech", "model": MODEL_VERSION, **diagnostics}
                 if clipping_ratio > 0.02:
@@ -101,13 +110,16 @@ class SpeakerEmbedding:
                 speech = samples[sample_mask]
                 speech = speech - speech.mean()
                 speech_rms = speech.square().mean().sqrt().clamp_min(1e-6)
+                diagnostics["speechRms"] = round(float(speech_rms), 6)
+                diagnostics["peakToNoiseDb"] = round(20.0 * math.log10(max(float(frame_rms.max()), 1e-6) / max(float(noise_floor), 1e-6)), 3)
                 gain = max(0.5, min(5.0, 0.08 / float(speech_rms)))
                 speech = (speech * gain).clamp(-0.98, 0.98).unsqueeze(0)
                 with torch.inference_mode():
                     vector = self.encoder.encode_batch(speech).squeeze().cpu().tolist()
+                    compatibility_vector = self.encoder.encode_batch(waveform).squeeze().cpu().tolist()
                 completed = {"event": "speaker_embed_completed", "requestId": request.headers.get("x-nova-request-id"), "enrollmentAttemptId": request.headers.get("x-nova-enrollment-attempt-id"), **diagnostics, "quality": "accepted"}
                 print(json.dumps(completed))
-                return {"embedding": vector, "model": MODEL_VERSION, "quality": "accepted", **diagnostics}
+                return {"embedding": vector, "compatibilityEmbedding": compatibility_vector, "model": MODEL_VERSION, "quality": "accepted", **diagnostics}
             finally:
                 if path:
                     try: os.unlink(path)

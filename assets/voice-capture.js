@@ -3,7 +3,7 @@ export function createMediaVoiceCapture({
   schedule = (callback, delay) => setTimeout(callback, delay), cancelSchedule = (timer) => clearTimeout(timer),
   now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 1_800, shortFragmentSilenceMs = 2_250,
   longUtteranceSilenceMs = 1_600, resumedSpeechBonusMs = 150, maxEndpointSilenceMs = 2_500,
-  noSpeechMs = 8_000, maxDurationMs = 30_000,
+  noSpeechMs = 8_000, maxDurationMs = 30_000, calibrationMs = 400,
   speechThreshold = 0.035, bargeThreshold = 0.065, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 8
 }) {
   let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false;
@@ -50,6 +50,7 @@ export function createMediaVoiceCapture({
     const sample = () => {
       if (current !== generation || !listening) return;
       const elapsed = now() - startedAt; const level = rms();
+      if(elapsed<calibrationMs&&level<Math.max(0.065,noiseFloor*4)){noiseFloor=Math.min(0.03,noiseFloor*0.75+level*0.25);timer=schedule(sample,sampleIntervalMs);return;}
       if (!heardSpeech) noiseFloor = Math.min(0.03, noiseFloor * 0.92 + level * 0.08);
       if (level >= Math.max(speechThreshold, noiseFloor * 3)) {
         if (endpointStartedAt) {
