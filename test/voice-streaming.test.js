@@ -44,8 +44,8 @@ test("browser client exposes first playable MP3 before the streamed response com
   let controller; const stream = new ReadableStream({ start(value) { controller = value; } }); let clock = 0;
   const client = createVoiceV2Client({ now: () => ++clock, fetchImpl: async () => new Response(stream, { status: 200, headers: { "content-type": "application/x-ndjson", "x-nova-voice-model": "eleven_v3_conversational" } }) });
   const pending = client.speech("hello");
-  controller.enqueue(new TextEncoder().encode(JSON.stringify({ type: "audio", index: 0, chunkCount: 2, mimeType: "audio/mpeg", audioBase64: Buffer.from("first").toString("base64") }) + "\n"));
-  const speech = await pending; assert.equal(await speech.audio.text(), "first"); assert.equal(speech.timing.firstPlayableAt > speech.timing.requestStartedAt, true);
+  controller.enqueue(new TextEncoder().encode(JSON.stringify({ type: "audio", index: 0, chunkCount: 2, spokenText:"First clause.", mimeType: "audio/mpeg", audioBase64: Buffer.from("first").toString("base64") }) + "\n"));
+  const speech = await pending; assert.equal(await speech.audio.text(), "first");assert.equal(speech.audio.novaChunkIndex,0);assert.equal(speech.audio.novaChunkCount,2);assert.equal(speech.audio.novaSpokenText,"First clause."); assert.equal(speech.timing.firstPlayableAt > speech.timing.requestStartedAt, true);
   const firstConsumed = deferred(); const received = []; const consuming = (async () => { for await (const audio of speech.stream) { received.push(await audio.text()); if (received.length === 1) firstConsumed.resolve(); } })();
   await firstConsumed.promise; assert.deepEqual(received, ["first"]);
   controller.enqueue(new TextEncoder().encode(JSON.stringify({ type: "audio", index: 1, chunkCount: 2, mimeType: "audio/mpeg", audioBase64: Buffer.from("second").toString("base64") }) + "\n" + JSON.stringify({ type: "end" }) + "\n")); controller.close();
@@ -56,7 +56,7 @@ test("HTTP speech route flushes its first audio event before later generation fi
   const later = deferred(); const firstWritten = deferred();
   const handler = createApi({ config: config(), agent: {}, storage: {}, initialize: async () => {}, ownerId: "owner", voiceBenchmark: {}, logger: { info() {}, error() {} }, voiceService: {
     async *streamSpeech() {
-      yield { audio: Buffer.from("first"), mimeType: "audio/mpeg", model: "eleven_v3_conversational", index: 0, chunkCount: 2 };
+      yield { audio: Buffer.from("first"), mimeType: "audio/mpeg", model: "eleven_v3_conversational", index: 0, chunkCount: 2, spokenText:"First clause." };
       await later.promise;
       yield { audio: Buffer.from("second"), mimeType: "audio/mpeg", model: "eleven_v3_conversational", index: 1, chunkCount: 2 };
     }
@@ -64,7 +64,7 @@ test("HTTP speech route flushes its first audio event before later generation fi
   const request = new EventEmitter(); request.method = "POST"; request.url = "/api/voice/speech"; request.headers = { "content-type": "application/json" }; request[Symbol.asyncIterator] = async function* () { yield Buffer.from(JSON.stringify({ text: "A sufficiently long reply" })); };
   const response = new EventEmitter(); response.headers = new Map(); response.chunks = []; response.setHeader = (name, value) => response.headers.set(name.toLowerCase(), value); response.write = (value) => { response.chunks.push(String(value)); firstWritten.resolve(); return true; }; response.end = () => { response.writableEnded = true; };
   const handling = handler.handle(request, response); await firstWritten.promise;
-  assert.equal(response.writableEnded, undefined); assert.match(response.chunks[0], /"index":0/); assert.doesNotMatch(response.chunks.join(""), /"index":1/);
+  assert.equal(response.writableEnded, undefined); assert.match(response.chunks[0], /"index":0/);assert.match(response.chunks[0], /"spokenText":"First clause\."/); assert.doesNotMatch(response.chunks.join(""), /"index":1/);
   later.resolve(); await handling; assert.match(response.chunks.join(""), /"index":1/); assert.equal(response.writableEnded, true);
 });
 
@@ -84,6 +84,8 @@ test("incremental playback preserves chunk order and prefetches while the curren
   players[0].end(); await Promise.resolve(); await Promise.resolve(); assert.equal(await urls.get(players[1].url).text(), "two");
   players[1].end(); await Promise.resolve(); await Promise.resolve(); assert.equal(ended, 1);
 });
+
+test("playback checkpoint exposes exact current chunk metadata without consuming the remaining stream",async()=>{const players=[];class AudioMock{constructor(){this.listeners=new Map();this.currentTime=2.4;players.push(this);}addEventListener(name,callback){this.listeners.set(name,callback);}play(){return Promise.resolve();}pause(){}removeAttribute(){}load(){}end(){this.listeners.get("ended")?.();}}const first=new Blob(["one"]);Object.defineProperties(first,{novaChunkIndex:{value:1},novaChunkCount:{value:4},novaSpokenText:{value:"Current exact clause."}});const second=new Blob(["two"]);Object.defineProperties(second,{novaChunkIndex:{value:2},novaChunkCount:{value:4},novaSpokenText:{value:"Remaining exact clause."}});let requested=0;const playback=createAudioPlayback({Audio:AudioMock,URL:{createObjectURL:()=>"blob:test",revokeObjectURL(){}}});playback.play({async *[Symbol.asyncIterator](){requested++;yield first;requested++;yield second;}},{});await new Promise(resolve=>setImmediate(resolve));playback.pause();assert.deepEqual(playback.checkpoint(),{currentTime:2.4,paused:true,chunkIndex:1,lastFullyPlayedChunk:-1,chunkCount:4,currentChunkText:"Current exact clause."});assert.equal(requested,2);assert.equal(players.length,1);playback.resume();assert.equal(players.length,1);});
 
 test("stopping incremental playback discards prefetched audio and stale chunks never resume", async () => {
   const players = [];

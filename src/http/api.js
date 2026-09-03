@@ -45,7 +45,7 @@ async function writeChunk(response, value) {
 }
 
 function speechEvent(chunk) {
-  return JSON.stringify({ type: "audio", index: chunk.index, chunkCount: chunk.chunkCount, mimeType: chunk.mimeType, audioBase64: chunk.audio.toString("base64") }) + "\n";
+  return JSON.stringify({ type: "audio", index: chunk.index, chunkCount: chunk.chunkCount, spokenText: chunk.spokenText, mimeType: chunk.mimeType, audioBase64: chunk.audio.toString("base64") }) + "\n";
 }
 
 async function sendSpeechStream(response, stream, { logger, requestId }) {

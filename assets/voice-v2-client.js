@@ -78,7 +78,8 @@ function audioBlob(event, status) {
   if (typeof event.audioBase64 !== "string" || !event.audioBase64) throw new VoiceV2ApiError("Nova received empty voice audio.", status);
   const binary = atob(event.audioBase64); const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return new Blob([bytes], { type: event.mimeType || "audio/mpeg" });
+  const blob=new Blob([bytes], { type: event.mimeType || "audio/mpeg" });
+  Object.defineProperties(blob,{novaChunkIndex:{value:Number.isInteger(event.index)?event.index:undefined},novaChunkCount:{value:Number.isInteger(event.chunkCount)?event.chunkCount:undefined},novaSpokenText:{value:typeof event.spokenText==="string"?event.spokenText:undefined}});return blob;
 }
 
 function streamError(event, status) { const category=event.category||"unknown";return new VoiceV2ApiError(voiceCategoryMessage(category), status, category); }

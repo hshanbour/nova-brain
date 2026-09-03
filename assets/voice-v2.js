@@ -28,9 +28,9 @@ export function createVoiceV2({
     });
   }
 
-  function retry(message, delayMs = retryDelayMs) {
+  function retry(message, delayMs = retryDelayMs, { preserveCheckpoint = false } = {}) {
     if (!active) return; clearRetry(); publish("retrying"); onNotice(message);
-    retryTimer = schedule(() => { retryTimer = undefined; if (active) listen(); }, delayMs);
+    retryTimer = schedule(() => { retryTimer = undefined; if (active) listen(preserveCheckpoint ? { interruptionProbe: true } : {}); }, delayMs);
   }
 
   function recover(message, delayMs = retryDelayMs) {
@@ -77,8 +77,8 @@ export function createVoiceV2({
           if (!valid(current)) throw abortError();
           if(assistantResult?.timing){timing.contextRetrievalMs=assistantResult.timing.contextRetrievalMs;timing.preModelMs=assistantResult.timing.preModelMs;timing.agentFirstResponseMs=assistantResult.timing.agentFirstResponseMs;timing.agentCompleteMs=assistantResult.timing.agentCompleteMs;}
           mark("assistantAvailableAt"); publish("speaking", { phase: "preparing-audio" });
-          if(!preservingCheckpoint)interruptedCheckpoint={assistantTurnId:assistantResult?.id||`voice-${turnSequence}`,message,conversationId:assistantResult?.conversationId||null,createdAt:now(),chunkIndex:0,speakerProfileId:confirmedProfileId(speaker)};
-          else interruptedCheckpoint={...interruptedCheckpoint,lastVerifiedInterruptionProfileId:confirmedProfileId(speaker),acknowledgedAt:now()};
+          if(!preservingCheckpoint)interruptedCheckpoint={assistantTurnId:assistantResult?.id||`voice-${turnSequence}`,message,conversationId:assistantResult?.conversationId||null,createdAt:now(),chunkIndex:0,speakerProfileId:confirmedProfileId(speaker),continuationVersion:1,status:"active"};
+          else interruptedCheckpoint={...interruptedCheckpoint,lastVerifiedInterruptionProfileId:confirmedProfileId(speaker)||interruptedCheckpoint.lastVerifiedInterruptionProfileId,acknowledgedAt:now(),status:"interrupted"};
           capture.watchForBargeIn((detail) => interrupt(detail)); mark("ttsStartedAt");
           const speech = await client.speech(message, { signal: abortController.signal });
           if (!valid(current)) throw abortError();
@@ -100,8 +100,8 @@ export function createVoiceV2({
       const targetPlayback=preservingCheckpoint?interruptionPlayback:playback;
       targetPlayback.play(speech.stream || speech.audio, {
         onStarted: () => { if (valid(current)) { mark("audioStartedAt"); reportTiming("audio-started"); } },
-        onChunkStarted:({index}={})=>{if(!preservingCheckpoint&&interruptedCheckpoint&&Number.isInteger(index))interruptedCheckpoint.chunkIndex=index;},
-        onEnded: () => { if (valid(current)) { mark("audioEndedAt"); if(preservingCheckpoint)listen({afterAudio:true,interruptionProbe:true});else{interruptedCheckpoint=undefined;listen({ afterAudio: true });} } },
+        onChunkStarted:({index,chunkCount,currentChunkText}={})=>{if(!preservingCheckpoint&&interruptedCheckpoint&&Number.isInteger(index))interruptedCheckpoint={...interruptedCheckpoint,chunkIndex:index,chunkCount:Number.isInteger(chunkCount)?chunkCount:interruptedCheckpoint.chunkCount,currentChunkText:typeof currentChunkText==="string"?currentChunkText:interruptedCheckpoint.currentChunkText,status:"active"};},
+        onEnded: () => { if (valid(current)) { mark("audioEndedAt"); if(preservingCheckpoint)listen({afterAudio:true,interruptionProbe:true});else{if(interruptedCheckpoint)interruptedCheckpoint={...interruptedCheckpoint,status:"completed",completedAt:now()};interruptedCheckpoint=undefined;listen({ afterAudio: true });} } },
         onError: (error) => { if (valid(current)) recover(voiceFailureMessage(error, true), ttsRecoveryDelayMs); }
       });
       return true;
@@ -116,12 +116,12 @@ export function createVoiceV2({
     if(Number.isFinite(detail?.speechOnsetAt))timing.bargeSpeechOnsetAt=detail.speechOnsetAt;if(Number.isFinite(detail?.detectedAt))timing.bargeDetectedAt=detail.detectedAt;timing.bargeVoicedMs=detail?.voicedMs;timing.bargeBaselineRms=detail?.baselineRms;timing.bargeThresholdRms=detail?.thresholdRms;
     clearRetry();const playbackState=playback.checkpoint?.();
     if(!playbackState){generation+=1;abortPending();playback.stop();mark("bargePlaybackStoppedAt");reportTiming("interrupted");capture.stop();publish("interrupted");listen();return true;}
-    playback.pause?.();mark("bargePlaybackStoppedAt");reportTiming("interrupted");interruptedCheckpoint={...(interruptedCheckpoint||{}),playback:playbackState,interruptedAt:now()};capture.stop();publish("interrupted");listen({interruptionProbe:true});return true;
+    playback.pause?.();mark("bargePlaybackStoppedAt");reportTiming("interrupted");interruptedCheckpoint={...(interruptedCheckpoint||{}),playback:playbackState,chunkIndex:Number.isInteger(playbackState.chunkIndex)?playbackState.chunkIndex:interruptedCheckpoint?.chunkIndex,lastFullyPlayedChunk:Number.isInteger(playbackState.lastFullyPlayedChunk)?playbackState.lastFullyPlayedChunk:interruptedCheckpoint?.lastFullyPlayedChunk,chunkCount:Number.isInteger(playbackState.chunkCount)?playbackState.chunkCount:interruptedCheckpoint?.chunkCount,currentChunkText:playbackState.currentChunkText||interruptedCheckpoint?.currentChunkText,interruptedAt:now(),continuationVersion:(interruptedCheckpoint?.continuationVersion||0)+1,status:interruptedCheckpoint?.resumeCount?"interrupted_again":"interrupted"};capture.stop();publish("interrupted");listen({interruptionProbe:true});return true;
   }
 
   function resumeInterrupted({speaker,text,message}={}){
     if(!active||!interruptedCheckpoint||now()-(interruptedCheckpoint.interruptedAt||interruptedCheckpoint.createdAt)>checkpointTtlMs){interruptedCheckpoint=undefined;retry(message||"Nothing recent is available to continue.");return false;}
-    if(text&&!resumeAuthorized(speaker,interruptedCheckpoint)){retry("Nova could not verify that this continuation belongs to the interrupted speaker.");return false;}
+    if(text&&!resumeAuthorized(speaker,interruptedCheckpoint)){retry("Nova could not verify that this continuation belongs to the interrupted speaker.",retryDelayMs,{preserveCheckpoint:true});return false;}
     interruptionPlayback.stop?.();
     capture.stop();interruptedCheckpoint={...interruptedCheckpoint,resumedAt:now(),resumeCount:(interruptedCheckpoint.resumeCount||0)+1};publish("speaking",{phase:"resuming",assistantTurnId:interruptedCheckpoint.assistantTurnId,chunkIndex:interruptedCheckpoint.chunkIndex});mark("resumeRequestedAt");
     if(!playback.resume?.({onStarted:()=>{mark("resumePlaybackStartedAt");reportTiming("resume-audio-started");}})){interruptedCheckpoint=undefined;retry("The interrupted audio is no longer available.");return false;}
@@ -139,7 +139,7 @@ export function createVoiceV2({
     isActive: () => active,
     getState: () => state,
     getLastTiming: () => timing ? timingSnapshot(timing, "snapshot") : null,
-    getInterruptedCheckpoint:()=>interruptedCheckpoint?{assistantTurnId:interruptedCheckpoint.assistantTurnId,conversationId:interruptedCheckpoint.conversationId,chunkIndex:interruptedCheckpoint.chunkIndex,interruptedAt:interruptedCheckpoint.interruptedAt}:null
+    getInterruptedCheckpoint:()=>interruptedCheckpoint?{assistantTurnId:interruptedCheckpoint.assistantTurnId,conversationId:interruptedCheckpoint.conversationId,originalText:interruptedCheckpoint.message,chunkIndex:interruptedCheckpoint.chunkIndex,lastFullyPlayedChunk:interruptedCheckpoint.lastFullyPlayedChunk,chunkCount:interruptedCheckpoint.chunkCount,remainingChunkCount:Number.isInteger(interruptedCheckpoint.chunkCount)?Math.max(0,interruptedCheckpoint.chunkCount-(Number.isInteger(interruptedCheckpoint.lastFullyPlayedChunk)?interruptedCheckpoint.lastFullyPlayedChunk+1:0)):undefined,currentChunkText:interruptedCheckpoint.currentChunkText,currentTime:interruptedCheckpoint.playback?.currentTime,interruptedAt:interruptedCheckpoint.interruptedAt,continuationVersion:interruptedCheckpoint.continuationVersion,status:interruptedCheckpoint.status,resumeCount:interruptedCheckpoint.resumeCount||0}:null
   });
 }
 
@@ -190,6 +190,6 @@ function rounded(value) { return Math.round(Math.max(0, value) * 10) / 10; }
 function abortError() { const error = new Error("Voice turn was interrupted."); error.name = "AbortError"; return error; }
 function isContinueIntent(text){const value=String(text||"").normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu,"").trim();return /\b(?:continue|go on|carry on|resume)(?:\s+(?:from\s+where\s+you\s+(?:stopped|left\s+off)|the\s+same\s+point))?\b/iu.test(value)||/(?:^|[\s،,.؟?])(?:ارجع|ارجعي|رجع|رجعي|يلا)?\s*(?:كمل(?:ي|لي|يلي|يليلي)?|لنفس\s+النقط[هة]|من\s+(?:وين\s+وقفتي|عند\s+ما\s+تركتي)|شو\s+كنتي\s+تحكي)(?:$|[\s،,.؟?])/iu.test(value);}
 function confirmedProfileId(speaker){return speaker?.match_status==="confirmed"&&typeof speaker?.speaker_profile_id==="string"?speaker.speaker_profile_id:null;}
-function canPreserveCheckpoint(speaker,checkpoint){const profileId=confirmedProfileId(speaker);return Boolean(checkpoint&&profileId&&profileId===checkpoint.speakerProfileId);}
+function canPreserveCheckpoint(speaker,checkpoint){const profileId=confirmedProfileId(speaker);return Boolean(checkpoint&&((profileId&&profileId===checkpoint.speakerProfileId)||(speaker?.match_status==="insufficient_speech"&&checkpoint.speakerProfileId)));}
 function resumeAuthorized(speaker,checkpoint){const profileId=confirmedProfileId(speaker);if(profileId)return profileId===checkpoint.speakerProfileId;return speaker?.match_status==="insufficient_speech"&&checkpoint.lastVerifiedInterruptionProfileId===checkpoint.speakerProfileId;}
 function voiceFailureMessage(error,browserFallback=false){if(error?.category==="quota")return "Nova's written reply is safe, but ElevenLabs credits are exhausted.";if(error?.category==="authentication")return "Nova's written reply is safe, but ElevenLabs authentication needs attention.";if(error?.category==="voice_access")return "Nova's written reply is safe, but the selected ElevenLabs voice is unavailable.";if(error?.category==="rate_limit")return "Nova's written reply is safe, but ElevenLabs is temporarily busy.";if(["provider_timeout_first_byte","provider_stream_stalled"].includes(error?.category))return "Nova's written reply is safe, but ElevenLabs audio timed out.";if(error?.message&&/written reply is safe/i.test(error.message))return error.message;return browserFallback?"Nova's written reply is safe, but audio playback failed.":"Nova's written reply is safe, but ElevenLabs could not speak it.";}

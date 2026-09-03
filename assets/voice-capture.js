@@ -83,7 +83,7 @@ export function createMediaVoiceCapture({
       const level=rms();monitorFrames+=1;if(monitorFrames<=4){baseline=Math.min(.035,baseline*.55+level*.45);timer=schedule(sample,sampleIntervalMs);return;}const threshold=Math.max(bargeThreshold,baseline*1.9);const acoustic=level>=threshold;
       if(!acoustic)baseline=Math.min(0.08,baseline*0.94+level*0.06);
       acousticFrames=acoustic?acousticFrames+1:Math.max(0,acousticFrames-2);
-      if(acousticFrames>=bargeAcousticFrames){if(!speechOnsetAt)speechOnsetAt=now()-(acousticFrames-1)*sampleIntervalMs;speechFrames=acoustic?speechFrames+1:Math.max(0,speechFrames-1);}
+      if(acousticFrames>=bargeAcousticFrames){if(!speechOnsetAt)speechOnsetAt=now()-(acousticFrames-1)*sampleIntervalMs;speechFrames=acoustic?speechFrames+1:Math.max(0,speechFrames-1);}else if(!acoustic){speechFrames=0;speechOnsetAt=undefined;}
       if (speechFrames >= bargeSpeechFrames) { clearTimer(); onBargeIn?.({ confirmed:true,voicedMs:speechFrames*sampleIntervalMs,baselineRms:Math.round(baseline*100000)/100000,thresholdRms:Math.round(threshold*100000)/100000,speechOnsetAt,detectedAt:now(),monitoringStartedAt,echoCancellation:true }); return; }
       timer = schedule(sample, sampleIntervalMs);
     };
@@ -109,9 +109,9 @@ function preferredRecorderOptions(MediaRecorder) {
 }
 
 export function createAudioPlayback({ Audio, URL }) {
-  let player; let objectUrl; let generation = 0; let iterator; let settlePlayback; let paused=false;
+  let player; let objectUrl; let generation = 0; let iterator; let settlePlayback; let paused=false;let currentChunkIndex=-1;let lastFullyPlayedChunk=-1;let currentChunkCount;let currentChunkText;
   const clearPlayer = () => { if (player) { player.pause(); player.removeAttribute?.("src"); player.load?.(); } if (objectUrl) URL.revokeObjectURL(objectUrl); player = objectUrl = undefined; };
-  const stop = () => { generation += 1; paused=false; settlePlayback?.(); settlePlayback = undefined; clearPlayer(); Promise.resolve(iterator?.return?.()).catch(() => {}); iterator = undefined; };
+  const stop = () => { generation += 1; paused=false; settlePlayback?.(); settlePlayback = undefined; clearPlayer(); Promise.resolve(iterator?.return?.()).catch(() => {}); iterator = undefined;currentChunkIndex=-1;lastFullyPlayedChunk=-1;currentChunkCount=undefined;currentChunkText=undefined; };
   return Object.freeze({
     play(source, { onStarted, onEnded, onError, onChunkStarted } = {}) {
       stop(); const current = generation; iterator = toAudioStream(source)[Symbol.asyncIterator](); let chunkIndex=0;
@@ -121,10 +121,12 @@ export function createAudioPlayback({ Audio, URL }) {
         while (!item.done && current === generation) {
           const next = iterator.next().then((value) => ({ value }), (error) => ({ error }));
           await playBlob(item.value, current, () => {
-            onChunkStarted?.({index:chunkIndex++});
+            currentChunkIndex=Number.isInteger(item.value?.novaChunkIndex)?item.value.novaChunkIndex:chunkIndex;currentChunkCount=Number.isInteger(item.value?.novaChunkCount)?item.value.novaChunkCount:currentChunkCount;currentChunkText=typeof item.value?.novaSpokenText==="string"?item.value.novaSpokenText:currentChunkText;
+            onChunkStarted?.({index:chunkIndex++,chunkCount:currentChunkCount,currentChunkText});
             if (!started) { started = true; onStarted?.(); }
           });
           if (current !== generation) return;
+          lastFullyPlayedChunk=currentChunkIndex;
           const prefetched = await next; if (prefetched.error) throw prefetched.error; item = prefetched.value;
         }
         if (current === generation) { clearPlayer(); iterator = undefined; onEnded?.(); }
@@ -133,7 +135,7 @@ export function createAudioPlayback({ Audio, URL }) {
     },
     pause(){if(!player||paused)return false;paused=true;player.pause();return true;},
     resume({onStarted}={}){if(!player||!paused)return false;paused=false;Promise.resolve(player.play()).then(()=>onStarted?.()).catch(()=>{});return true;},
-    checkpoint(){return player?{currentTime:Number(player.currentTime||0),paused}:null;},
+    checkpoint(){return player?{currentTime:Number(player.currentTime||0),paused,chunkIndex:currentChunkIndex,lastFullyPlayedChunk,chunkCount:currentChunkCount,currentChunkText}:null;},
     stop
   });
 
