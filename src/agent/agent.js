@@ -56,12 +56,15 @@ export function createAgent({
   return Object.freeze({
     async run({ message, conversationId = randomUUID(), context = {}, requestId }) {
       const requestStartedAt=Date.now();
-      const conversation = await storage.ensureConversation({ id: conversationId, ownerId, title: message.slice(0, 120) });
+      const conversationPromise=storage.ensureConversation({ id: conversationId, ownerId, title: message.slice(0, 120) });
+      let verifiedSpeaker = context?.voice === true ? verifySpeakerAssertion(context?.speaker?.assertion) : null;
+      const profileValidPromise=verifiedSpeaker?.match_status==="confirmed"?validateSpeakerProfile(verifiedSpeaker.speaker_profile_id):Promise.resolve(true);
+      const anonymousValidPromise=verifiedSpeaker?.anonymous_speaker_id?validateAnonymousSpeaker(verifiedSpeaker.anonymous_speaker_id):Promise.resolve(true);
+      const [conversation,profileValid,anonymousValid]=await Promise.all([conversationPromise,profileValidPromise,anonymousValidPromise]);
       if (!conversation) throw new Error("Conversation is unavailable.");
       const contextRetrievalStartedAt=Date.now();
-      let verifiedSpeaker = context?.voice === true ? verifySpeakerAssertion(context?.speaker?.assertion) : null;
-      if(verifiedSpeaker?.match_status==="confirmed"&&!(await validateSpeakerProfile(verifiedSpeaker.speaker_profile_id)))verifiedSpeaker=null;
-      if(verifiedSpeaker?.anonymous_speaker_id&&!(await validateAnonymousSpeaker(verifiedSpeaker.anonymous_speaker_id)))verifiedSpeaker={...verifiedSpeaker,speaker_familiarity:"none",anonymous_speaker_id:null};
+      if(verifiedSpeaker?.match_status==="confirmed"&&!profileValid)verifiedSpeaker=null;
+      if(verifiedSpeaker?.anonymous_speaker_id&&!anonymousValid)verifiedSpeaker={...verifiedSpeaker,speaker_familiarity:"none",anonymous_speaker_id:null};
       const speakerRestricted = context?.voice === true && verifiedSpeaker?.speaker_label !== "owner";
       const trustedContext=context?.voice===true?{...context,speaker:verifiedSpeaker?.match_status==="confirmed"?{speaker_profile_id:verifiedSpeaker.speaker_profile_id,speaker_label:verifiedSpeaker.speaker_label,match_status:"confirmed",authenticated_identity:verifiedSpeaker.speaker_label==="owner"?"owner":"known_member",speaker_familiarity:"none",anonymous_speaker_id:null}:{speaker_profile_id:null,speaker_label:"unknown",match_status:verifiedSpeaker?.match_status||"unknown",authenticated_identity:"none",speaker_familiarity:verifiedSpeaker?.speaker_familiarity||"none",anonymous_speaker_id:verifiedSpeaker?.anonymous_speaker_id||null}}:context;
       if(context?.voice===true)logger.info("Nova speaker context verified",{requestId,assertionVerified:Boolean(verifiedSpeaker),matchStatus:trustedContext.speaker.match_status,speakerCategory:trustedContext.speaker.speaker_label,recognizedProfileId:trustedContext.speaker.speaker_profile_id,ownerPrivateContext:!speakerRestricted});
@@ -73,7 +76,8 @@ export function createAgent({
       const contextRetrievalCompletedAt=Date.now();
       await Promise.all([
         storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_created", status: "completed", summary: "Execution run created." }),
-        storage.appendMessage({ conversationId, ownerId, role: "user", content: message })
+        storage.appendMessage({ conversationId, ownerId, role: "user", content: message }),
+        storage.updateRun(run.id,ownerId,{status:"running",currentStep:1})
       ]);
       const baseSystemContext = speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker) : buildSystemContext(retrieved);
       const systemContext = context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext;
@@ -82,7 +86,7 @@ export function createAgent({
       let toolResults = [];
 
       try { for (let step = 1; step <= maxSteps; step += 1) {
-        await storage.updateRun(run.id, ownerId, { status: "running", currentStep: step });
+        if(step>1)await storage.updateRun(run.id, ownerId, { status: "running", currentStep: step });
         const agentGenerationStartedAt=Date.now();
         const protectedIdentityMessage = context?.voice===true ? identityBoundaryResponse(message,trustedContext.speaker) : null;
         const generated = protectedIdentityMessage ? { type: "final", message: protectedIdentityMessage } : await modelProvider.generate({
@@ -183,11 +187,12 @@ export function createAgent({
 
 function identityBoundaryResponse(message,speaker) {
   const value=String(message||"").trim();
-  const asksRecognitionMethod=/how (?:did|do) you (?:recognize|know|identify) me|كيف (?:عرفتني|بتعرفني|تعرفت علي)|شلون (?:عرفتني|تعرفني)/iu.test(value);
+  const negatesIdentityIntent=/(?:^|\s)(?:ما|مش|مو)\s+(?:سألت|سالت|قلت|حكيت)|\b(?:not|didn'?t)\s+(?:ask|say|mean)\b/iu.test(value);
+  const asksRecognitionMethod=!negatesIdentityIntent&&/^(?:how (?:did|do) you (?:recognize|know|identify) me|كيف (?:عرفتني|بتعرفني|تعرفت علي)|شلون (?:عرفتني|تعرفني))[.!؟?\s]*$/iu.test(value);
   if(asksRecognitionMethod&&speaker?.authenticated_identity==="owner")return /[\u0600-\u06ff]/u.test(value)?"تحققت من هويتك لأن نظام التحقق الصوتي طابق صوت هالدور مع ملف صوت المالك المسجّل بموافقتك؛ معلومات الحساب والذاكرة ما استخدمتها كإثبات هوية.":"I verified you because the voice-verification system matched this turn to the consented enrolled owner profile; account information and memory were not used as authentication.";
   const asksPriorContact=/have we (?:spoken|talked|met) before|(?:حكينا|حكيت معي|تكلمنا) قبل/iu.test(value);
   if(asksPriorContact&&speaker?.speaker_familiarity==="known_anonymous")return /[\u0600-\u06ff]/u.test(value)?"هالصوت بيشبه بصمة صوت مجهولة تواصلت معي من قبل، بس هاد مش إثبات لهويتك وما بيعطيك صلاحيات خاصة.":"This voice appears to match an anonymous speaker I've interacted with before, but that does not verify your identity or grant private access.";
-  const identitySensitive=/\b(?:who\s+am\s+i|i(?:'m|\s+am)\s+(?:mohammad|mohammed|the\s+owner)|i\s+own\s+(?:this|the)\s+(?:app|program|system))\b|(?:مين|من)\s+أنا|أنا\s+(?:محمد|محم[و]?د|صاحب\s+(?:البرنامج|النظام|التطبيق))/iu.test(value);
+  const identitySensitive=!negatesIdentityIntent&&/^(?:who\s+am\s+i|(?:مين|من)\s+أنا|i(?:'m|\s+am)\s+(?:mohammad|mohammed)(?:,?\s+the\s+owner)?|i(?:'m|\s+am)\s+the\s+owner|i\s+own\s+(?:this|the)\s+(?:app|program|system)|أنا\s+(?:محمد|محم[و]?د)(?:\s+صاحب\s+(?:البرنامج|النظام|التطبيق))?|أنا\s+صاحب\s+(?:البرنامج|النظام|التطبيق))[.!؟?\s]*$/iu.test(value);
   if(!identitySensitive)return null;
   if(speaker?.authenticated_identity==="owner")return /[\u0600-\u06ff]/u.test(value)?"تحققت من هويتك بهالدور: نظام التحقق الصوتي طابق صوتك مع ملف صوت المالك المسجّل بموافقتك.":"I verified this turn as the owner because voice verification matched the consented enrolled owner profile.";
   return /[\u0600-\u06ff]/u.test(value)?"ما قدرت أتحقق من هويتك من هالدور الصوتي. الادعاء بالاسم أو بصفة المالك ما بغيّر حالة التحقق.":"I couldn't verify your identity from this voice turn. Claiming a name or owner status does not change the verification result.";
@@ -201,7 +206,7 @@ function speakerIdentityContract(speaker){
 
 function enforceSpeakerIdentityContract(message,speaker){
   const value=String(message||"");
-  const claimsUnknown=/could(?:n't| not) verify|unable to verify|unverified speaker|unknown speaker|ما قدرت أتحقق|لم أتمكن من التحقق|مش (?:عارف|عارفة)|غير معروف/iu.test(value);
+  const claimsUnknown=/(?:could(?:n't| not)|unable to) verify (?:your identity|the (?:current )?speaker|this voice turn)|unverified speaker|unknown speaker|ما قدرت أتحقق من (?:هويتك|هوية المتحدث)|لم أتمكن من التحقق من (?:هويتك|هوية المتحدث)|متحدث غير معروف/iu.test(value);
   const claimsOwner=/verified (?:you|the current speaker|this turn) as (?:the )?owner|authenticated owner|confirmed owner|طابق صوتك مع ملف صوت المالك|تحققت من هويتك/iu.test(value);
   if(speaker?.authenticated_identity==="owner"&&claimsUnknown)return "تحققت من هويتك بهالدور: نظام التحقق الصوتي طابق صوتك مع ملف صوت المالك المسجّل بموافقتك.";
   if(speaker?.authenticated_identity!=="owner"&&claimsOwner)return "ما قدرت أتحقق من هويتك من هالدور الصوتي. الادعاء بالاسم أو بصفة المالك ما بغيّر حالة التحقق.";

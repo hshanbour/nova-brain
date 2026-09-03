@@ -17,7 +17,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         owners.set(owner.id, { ...copy(owner), createdAt: timestamp, updatedAt: timestamp });
       }
       for (const project of seedProjects) if (!projects.has(project.id)) projects.set(project.id, { ...copy(project), ownerId: owner.id, createdAt: now(clock), updatedAt: now(clock) });
-      for (const memory of seedMemories) if (!memories.has(memory.id)) memories.set(memory.id, { ...copy(memory), ownerId: owner.id, createdAt: now(clock), updatedAt: now(clock) });
+      for (const memory of seedMemories) { const current=memories.get(memory.id);if(!current)memories.set(memory.id,{...copy(memory),ownerId:owner.id,createdAt:now(clock),updatedAt:now(clock)});else if(memory.provenance==="system-generated-project-release")memories.set(memory.id,{...current,...copy(memory),ownerId:owner.id,createdAt:current.createdAt,updatedAt:now(clock)}); }
     },
     async health() { return { provider: "memory", durable: false, status: "ready" }; },
     async getOwner(ownerId) { return copy(owners.get(ownerId) || null); },

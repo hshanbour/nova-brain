@@ -79,6 +79,17 @@ export const INITIAL_MEMORIES = Object.freeze([
     status: "active"
   },
   {
+    id: "memory_nova_voice_recent_milestone",
+    category: "project_context",
+    scope: "project",
+    projectId: "nova-brain",
+    content: "Recent Nova Voice work: ECAPA remains the authoritative speaker engine at threshold 0.35 with signed owner assertions and fail-closed unknown handling. Arabic, English, and mixed owner recognition and real unknown-speaker rejection passed. ElevenLabs Nova Female V1 long-form streaming and consistent seeded chunking are active. The speaker-engine abstraction is installed with Eagle disabled. The current feature Preview adds same-session interruption checkpoint preservation, acknowledgement-safe playback, Arabic and English resume commands, privacy-safe latency telemetry, and faster human barge-in detection; final real acceptance is still pending.",
+    provenance: "system-generated-project-release",
+    privacy: "private",
+    sensitivity: "normal",
+    status: "active"
+  },
+  {
     id: "memory_missed_call_testbed",
     category: "project_context",
     scope: "project",

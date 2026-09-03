@@ -4,7 +4,7 @@ export function createMediaVoiceCapture({
   now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 1_800, shortFragmentSilenceMs = 2_250,
   longUtteranceSilenceMs = 1_600, resumedSpeechBonusMs = 150, maxEndpointSilenceMs = 2_500,
   noSpeechMs = 8_000, maxDurationMs = 30_000, calibrationMs = 400,
-  speechThreshold = 0.035, bargeThreshold = 0.065, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 8
+  speechThreshold = 0.035, bargeThreshold = 0.04, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 6
 }) {
   let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false;
   const supported = Boolean(mediaDevices?.getUserMedia && MediaRecorder && AudioContext);
@@ -77,14 +77,14 @@ export function createMediaVoiceCapture({
   }
 
   function watchForBargeIn(onBargeIn) {
-    clearTimer(); const current = ++generation; let acousticFrames = 0; let speechFrames = 0; let baseline = 0.008;
+    clearTimer(); const current = ++generation; let acousticFrames = 0; let speechFrames = 0; let baseline = 0.008;let speechOnsetAt;let monitorFrames=0;const monitoringStartedAt=now();
     const sample = () => {
       if (current !== generation) return;
-      const level=rms(); baseline=Math.min(0.035,baseline*0.96+level*0.04);
-      const acoustic=level>=Math.max(bargeThreshold,baseline*2.4);
+      const level=rms();monitorFrames+=1;if(monitorFrames<=4){baseline=Math.min(.035,baseline*.55+level*.45);timer=schedule(sample,sampleIntervalMs);return;}const threshold=Math.max(bargeThreshold,baseline*1.9);const acoustic=level>=threshold;
+      if(!acoustic)baseline=Math.min(0.08,baseline*0.94+level*0.06);
       acousticFrames=acoustic?acousticFrames+1:Math.max(0,acousticFrames-2);
-      if(acousticFrames>=bargeAcousticFrames) speechFrames=acoustic?speechFrames+1:Math.max(0,speechFrames-1);
-      if (speechFrames >= bargeSpeechFrames) { clearTimer(); onBargeIn?.({ confirmed:true, voicedMs:speechFrames*sampleIntervalMs }); return; }
+      if(acousticFrames>=bargeAcousticFrames){if(!speechOnsetAt)speechOnsetAt=now()-(acousticFrames-1)*sampleIntervalMs;speechFrames=acoustic?speechFrames+1:Math.max(0,speechFrames-1);}
+      if (speechFrames >= bargeSpeechFrames) { clearTimer(); onBargeIn?.({ confirmed:true,voicedMs:speechFrames*sampleIntervalMs,baselineRms:Math.round(baseline*100000)/100000,thresholdRms:Math.round(threshold*100000)/100000,speechOnsetAt,detectedAt:now(),monitoringStartedAt,echoCancellation:true }); return; }
       timer = schedule(sample, sampleIntervalMs);
     };
     timer = schedule(sample, sampleIntervalMs);

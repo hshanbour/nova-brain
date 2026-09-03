@@ -36,7 +36,7 @@ export function createPostgresStorage({ connectionString }) {
             [owner.id, owner.fullName, owner.preferredName, owner.arabicName, json(owner.facts), json(owner.preferences), JSON.stringify(owner.goals || []), json(owner.context), owner.provenance, owner.privacy]);
           for (const project of projects) await run(`INSERT INTO nova_projects (id, owner_id, name, description) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO NOTHING`, [project.id, owner.id, project.name, project.description]);
           for (const memory of memories) await run(`INSERT INTO nova_memories (id, owner_id, category, content, provenance, privacy, sensitivity, scope, project_id, confidence, status)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING`, [memory.id, owner.id, memory.category, memory.content, memory.provenance, memory.privacy, memory.sensitivity, memory.scope, memory.projectId || null, memory.confidence ?? null, memory.status || "active"]);
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO UPDATE SET content=CASE WHEN EXCLUDED.provenance='system-generated-project-release' THEN EXCLUDED.content ELSE nova_memories.content END,updated_at=CASE WHEN EXCLUDED.provenance='system-generated-project-release' AND nova_memories.content<>EXCLUDED.content THEN now() ELSE nova_memories.updated_at END`, [memory.id, owner.id, memory.category, memory.content, memory.provenance, memory.privacy, memory.sensitivity, memory.scope, memory.projectId || null, memory.confidence ?? null, memory.status || "active"]);
         }
       })().catch((error) => { initialization = undefined; throw error; });
       return initialization;

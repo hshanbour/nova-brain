@@ -79,7 +79,7 @@ export function createVoiceV2({
           mark("assistantAvailableAt"); publish("speaking", { phase: "preparing-audio" });
           if(!preservingCheckpoint)interruptedCheckpoint={assistantTurnId:assistantResult?.id||`voice-${turnSequence}`,message,conversationId:assistantResult?.conversationId||null,createdAt:now(),chunkIndex:0,speakerProfileId:confirmedProfileId(speaker)};
           else interruptedCheckpoint={...interruptedCheckpoint,lastVerifiedInterruptionProfileId:confirmedProfileId(speaker),acknowledgedAt:now()};
-          capture.watchForBargeIn(() => interrupt()); mark("ttsStartedAt");
+          capture.watchForBargeIn((detail) => interrupt(detail)); mark("ttsStartedAt");
           const speech = await client.speech(message, { signal: abortController.signal });
           if (!valid(current)) throw abortError();
           if (speech?.timing) {
@@ -111,11 +111,12 @@ export function createVoiceV2({
     }
   }
 
-  function interrupt() {
+  function interrupt(detail={}) {
     if (!active || state !== "speaking") return false;
-    reportTiming("interrupted");clearRetry();const playbackState=playback.checkpoint?.();
-    if(!playbackState){generation+=1;abortPending();playback.stop();capture.stop();publish("interrupted");listen();return true;}
-    playback.pause?.();interruptedCheckpoint={...(interruptedCheckpoint||{}),playback:playbackState,interruptedAt:now()};capture.stop();publish("interrupted");listen({interruptionProbe:true});return true;
+    if(Number.isFinite(detail?.speechOnsetAt))timing.bargeSpeechOnsetAt=detail.speechOnsetAt;if(Number.isFinite(detail?.detectedAt))timing.bargeDetectedAt=detail.detectedAt;timing.bargeVoicedMs=detail?.voicedMs;timing.bargeBaselineRms=detail?.baselineRms;timing.bargeThresholdRms=detail?.thresholdRms;
+    clearRetry();const playbackState=playback.checkpoint?.();
+    if(!playbackState){generation+=1;abortPending();playback.stop();mark("bargePlaybackStoppedAt");reportTiming("interrupted");capture.stop();publish("interrupted");listen();return true;}
+    playback.pause?.();mark("bargePlaybackStoppedAt");reportTiming("interrupted");interruptedCheckpoint={...(interruptedCheckpoint||{}),playback:playbackState,interruptedAt:now()};capture.stop();publish("interrupted");listen({interruptionProbe:true});return true;
   }
 
   function resumeInterrupted({speaker,text,message}={}){
@@ -124,7 +125,7 @@ export function createVoiceV2({
     interruptionPlayback.stop?.();
     capture.stop();publish("speaking",{phase:"resuming",assistantTurnId:interruptedCheckpoint.assistantTurnId,chunkIndex:interruptedCheckpoint.chunkIndex});mark("resumeRequestedAt");
     if(!playback.resume?.({onStarted:()=>{mark("resumePlaybackStartedAt");reportTiming("resume-audio-started");}})){interruptedCheckpoint=undefined;retry("The interrupted audio is no longer available.");return false;}
-    capture.watchForBargeIn(()=>interrupt());onNotice(message);return true;
+    capture.watchForBargeIn((detail)=>interrupt(detail));onNotice(message);return true;
   }
 
   return Object.freeze({
@@ -174,7 +175,12 @@ function timingSnapshot(timing, stage) {
       speechEndToPlayback: difference("audioStartedAt", "speechEndedAt"),
       totalSpeechEndToAudio: difference("audioStartedAt", "speechEndedAt"),
       audioEndToListening: difference("listeningReadyAt", "audioEndedAt"),
-      resumeRequestToPlayback: difference("resumePlaybackStartedAt","resumeRequestedAt")
+      resumeRequestToPlayback: difference("resumePlaybackStartedAt","resumeRequestedAt"),
+      bargeSpeechToPlaybackStop: difference("bargePlaybackStoppedAt","bargeSpeechOnsetAt"),
+      bargeDetection: difference("bargeDetectedAt","bargeSpeechOnsetAt"),
+      bargeVoiced: Number.isFinite(timing.bargeVoicedMs)?timing.bargeVoicedMs:undefined,
+      bargeBaselineRms: Number.isFinite(timing.bargeBaselineRms)?timing.bargeBaselineRms:undefined,
+      bargeThresholdRms: Number.isFinite(timing.bargeThresholdRms)?timing.bargeThresholdRms:undefined
     })
   });
 }
@@ -182,7 +188,7 @@ function timingSnapshot(timing, stage) {
 function compact(value) { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)); }
 function rounded(value) { return Math.round(Math.max(0, value) * 10) / 10; }
 function abortError() { const error = new Error("Voice turn was interrupted."); error.name = "AbortError"; return error; }
-function isContinueIntent(text){return /^(?:please\s+)?(?:continue|go on|carry on)(?:\s+please)?[.!?\s]*$|^(?:كم[ّ]?ل(?:ي)?|وين\s+كنت[؟?،,\s]*كم[ّ]?ل(?:ي)?)[.!؟?\s]*$/iu.test(String(text||"").trim());}
+function isContinueIntent(text){const value=String(text||"").normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu,"").trim();return /\b(?:continue|go on|carry on)\b/iu.test(value)||/(?:^|[\s،,.؟?])(?:ارجع\s+|رجعي\s+|يلا\s+)?كمل(?:ي|لي|يلي|يليلي)?(?:$|[\s،,.؟?])/iu.test(value);}
 function confirmedProfileId(speaker){return speaker?.match_status==="confirmed"&&typeof speaker?.speaker_profile_id==="string"?speaker.speaker_profile_id:null;}
 function canPreserveCheckpoint(speaker,checkpoint){const profileId=confirmedProfileId(speaker);return Boolean(checkpoint&&profileId&&profileId===checkpoint.speakerProfileId);}
 function resumeAuthorized(speaker,checkpoint){const profileId=confirmedProfileId(speaker);if(profileId)return profileId===checkpoint.speakerProfileId;return speaker?.match_status==="insufficient_speech"&&checkpoint.lastVerifiedInterruptionProfileId===checkpoint.speakerProfileId;}

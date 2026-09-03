@@ -40,11 +40,13 @@ test("MediaRecorder VAD reports bounded no-speech without producing an audio tur
 });
 
 test("playback monitor requires sustained credible speech for barge-in", async () => {
-  const flow = setup(); await flow.capture.connect(); let barges = 0; flow.capture.watchForBargeIn(() => { barges += 1; }); flow.setLevel(0.1); for(let index=0;index<8;index+=1)flow.run();assert.equal(barges,0);flow.run();assert.equal(barges,1);
+  const flow = setup(); await flow.capture.connect(); const barges=[]; flow.capture.watchForBargeIn((value) => { barges.push(value); }); flow.setLevel(0.1); for(let index=0;index<10;index+=1)flow.run();assert.equal(barges.length,0);flow.run();assert.equal(barges.length,1);assert.ok(barges[0].detectedAt-barges[0].speechOnsetAt>=300&&barges[0].detectedAt-barges[0].speechOnsetAt<=700);assert.equal(barges[0].echoCancellation,true);
   await flow.capture.destroy(); assert.equal(flow.tracks[0].stopped, true);
 });
 
 test("short click and 200 ms vocal noise do not trigger permanent barge-in",async()=>{const flow=setup();await flow.capture.connect();let barges=0;flow.capture.watchForBargeIn(()=>{barges+=1;});flow.setLevel(.1);flow.run();flow.setLevel(0);for(let index=0;index<3;index+=1)flow.run();flow.setLevel(.1);for(let index=0;index<4;index+=1)flow.run();flow.setLevel(0);for(let index=0;index<4;index+=1)flow.run();assert.equal(barges,0);});
+
+test("quiet clear and louder speech each barge in once while steady background and playback leakage do not",async()=>{for(const speechLevel of [.05,.12]){const flow=setup();await flow.capture.connect();let barges=0;flow.capture.watchForBargeIn(()=>{barges+=1;});flow.setLevel(.018);flow.runFor(1_000);assert.equal(barges,0);flow.setLevel(speechLevel);for(let index=0;index<7;index+=1)flow.run();assert.equal(barges,1);}for(const level of [.03,.045]){const background=setup();await background.capture.connect();let barges=0;background.capture.watchForBargeIn(()=>{barges+=1;});background.setLevel(level);background.runFor(2_000);assert.equal(barges,0);}});
 
 test("100 ms capture retains the complete WebM stream and initialization header", async () => {
   const flow = setup(); await flow.capture.connect(); const events = []; let recording;
