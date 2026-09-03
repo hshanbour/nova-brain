@@ -1,10 +1,10 @@
 export function createMediaVoiceCapture({
   mediaDevices, MediaRecorder, AudioContext,
   schedule = (callback, delay) => setTimeout(callback, delay), cancelSchedule = (timer) => clearTimeout(timer),
-  now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 1_800, shortFragmentSilenceMs = 2_250,
-  longUtteranceSilenceMs = 1_600, resumedSpeechBonusMs = 150, maxEndpointSilenceMs = 2_500,
+  now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 1_500, shortFragmentSilenceMs = 1_900,
+  longUtteranceSilenceMs = 1_300, resumedSpeechBonusMs = 100, maxEndpointSilenceMs = 2_200,
   noSpeechMs = 8_000, maxDurationMs = 30_000, calibrationMs = 400,
-  speechThreshold = 0.035, bargeThreshold = 0.04, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 6
+  speechThreshold = 0.035, bargeThreshold = 0.025, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 4
 }) {
   let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false;
   const supported = Boolean(mediaDevices?.getUserMedia && MediaRecorder && AudioContext);
@@ -80,7 +80,7 @@ export function createMediaVoiceCapture({
     clearTimer(); const current = ++generation; let acousticFrames = 0; let speechFrames = 0; let baseline = 0.008;let speechOnsetAt;let monitorFrames=0;const monitoringStartedAt=now();
     const sample = () => {
       if (current !== generation) return;
-      const level=rms();monitorFrames+=1;if(monitorFrames<=4){baseline=Math.min(.035,baseline*.55+level*.45);timer=schedule(sample,sampleIntervalMs);return;}const threshold=Math.max(bargeThreshold,baseline*1.9);const acoustic=level>=threshold;
+      const level=rms();monitorFrames+=1;if(monitorFrames<=2){baseline=Math.min(.035,baseline*.45+level*.55);timer=schedule(sample,sampleIntervalMs);return;}const threshold=Math.max(bargeThreshold,baseline*1.7);const acoustic=level>=threshold;
       if(!acoustic)baseline=Math.min(0.08,baseline*0.94+level*0.06);
       acousticFrames=acoustic?acousticFrames+1:Math.max(0,acousticFrames-2);
       if(acousticFrames>=bargeAcousticFrames){if(!speechOnsetAt)speechOnsetAt=now()-(acousticFrames-1)*sampleIntervalMs;speechFrames=acoustic?speechFrames+1:Math.max(0,speechFrames-1);}else if(!acoustic){speechFrames=0;speechOnsetAt=undefined;}

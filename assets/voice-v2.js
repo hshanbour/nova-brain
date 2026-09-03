@@ -79,7 +79,7 @@ export function createVoiceV2({
           mark("assistantAvailableAt"); publish("speaking", { phase: "preparing-audio" });
           if(!preservingCheckpoint)interruptedCheckpoint={assistantTurnId:assistantResult?.id||`voice-${turnSequence}`,message,conversationId:assistantResult?.conversationId||null,createdAt:now(),chunkIndex:0,speakerProfileId:confirmedProfileId(speaker),continuationVersion:1,status:"active"};
           else interruptedCheckpoint={...interruptedCheckpoint,lastVerifiedInterruptionProfileId:confirmedProfileId(speaker)||interruptedCheckpoint.lastVerifiedInterruptionProfileId,acknowledgedAt:now(),status:"interrupted"};
-          capture.watchForBargeIn((detail) => interrupt(detail)); mark("ttsStartedAt");
+          mark("ttsStartedAt");
           const speech = await client.speech(message, { signal: abortController.signal });
           if (!valid(current)) throw abortError();
           if (speech?.timing) {
@@ -99,7 +99,7 @@ export function createVoiceV2({
       if (!speech?.audio) { recover("Nova's written reply is safe, but ElevenLabs returned no playable audio.", ttsRecoveryDelayMs); return false; }
       const targetPlayback=preservingCheckpoint?interruptionPlayback:playback;
       targetPlayback.play(speech.stream || speech.audio, {
-        onStarted: () => { if (valid(current)) { mark("audioStartedAt"); reportTiming("audio-started"); } },
+        onStarted: () => { if (valid(current)) { capture.watchForBargeIn((detail)=>interrupt(detail));mark("audioStartedAt"); reportTiming("audio-started"); } },
         onChunkStarted:({index,chunkCount,currentChunkText}={})=>{if(!preservingCheckpoint&&interruptedCheckpoint&&Number.isInteger(index))interruptedCheckpoint={...interruptedCheckpoint,chunkIndex:index,chunkCount:Number.isInteger(chunkCount)?chunkCount:interruptedCheckpoint.chunkCount,currentChunkText:typeof currentChunkText==="string"?currentChunkText:interruptedCheckpoint.currentChunkText,status:"active"};},
         onEnded: () => { if (valid(current)) { mark("audioEndedAt"); if(preservingCheckpoint)listen({afterAudio:true,interruptionProbe:true});else{if(interruptedCheckpoint)interruptedCheckpoint={...interruptedCheckpoint,status:"completed",completedAt:now()};interruptedCheckpoint=undefined;listen({ afterAudio: true });} } },
         onError: (error) => { if (valid(current)) recover(voiceFailureMessage(error, true), ttsRecoveryDelayMs); }
@@ -179,14 +179,15 @@ function timingSnapshot(timing, stage) {
       bargeSpeechToPlaybackStop: difference("bargePlaybackStoppedAt","bargeSpeechOnsetAt"),
       bargeDetection: difference("bargeDetectedAt","bargeSpeechOnsetAt"),
       bargeVoiced: Number.isFinite(timing.bargeVoicedMs)?timing.bargeVoicedMs:undefined,
-      bargeBaselineRms: Number.isFinite(timing.bargeBaselineRms)?timing.bargeBaselineRms:undefined,
-      bargeThresholdRms: Number.isFinite(timing.bargeThresholdRms)?timing.bargeThresholdRms:undefined
+      bargeBaselineRms: Number.isFinite(timing.bargeBaselineRms)?precise(timing.bargeBaselineRms):undefined,
+      bargeThresholdRms: Number.isFinite(timing.bargeThresholdRms)?precise(timing.bargeThresholdRms):undefined
     })
   });
 }
 
 function compact(value) { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)); }
 function rounded(value) { return Math.round(Math.max(0, value) * 10) / 10; }
+function precise(value){return Math.round(Math.max(0,value)*100000)/100000;}
 function abortError() { const error = new Error("Voice turn was interrupted."); error.name = "AbortError"; return error; }
 function isContinueIntent(text){const value=String(text||"").normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu,"").trim();return /\b(?:continue|go on|carry on|resume)(?:\s+(?:from\s+where\s+you\s+(?:stopped|left\s+off)|the\s+same\s+point))?\b/iu.test(value)||/(?:^|[\s،,.؟?])(?:ارجع|ارجعي|رجع|رجعي|يلا)?\s*(?:كمل(?:ي|لي|يلي|يليلي)?|لنفس\s+النقط[هة]|من\s+(?:وين\s+وقفتي|عند\s+ما\s+تركتي)|شو\s+كنتي\s+تحكي)(?:$|[\s،,.؟?])/iu.test(value);}
 function confirmedProfileId(speaker){return speaker?.match_status==="confirmed"&&typeof speaker?.speaker_profile_id==="string"?speaker.speaker_profile_id:null;}

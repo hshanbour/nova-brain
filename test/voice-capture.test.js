@@ -19,7 +19,7 @@ function setup(options = {}) {
     ...options, now: () => clock, schedule(callback, delay) { const timer = { callback, delay, cancelled: false }; timers.push(timer); return timer; }, cancelSchedule(timer) { timer.cancelled = true; }
   });
   const run = () => { const timer = timers.find((item) => !item.cancelled && !item.ran); if (!timer) throw new Error("No scheduled VAD sample."); timer.ran = true; clock += timer.delay; timer.callback(); };
-  const runFor = (milliseconds) => { for (let elapsed = 0; elapsed < milliseconds; elapsed += 50) run(); };
+  const runFor = (milliseconds) => { for (let elapsed = 0; elapsed < milliseconds; elapsed += 50) { if(!timers.some((item)=>!item.cancelled&&!item.ran))break;run(); } };
   const speakFor = (milliseconds) => { level = 0.1; runFor(milliseconds); };
   const pauseFor = (milliseconds) => { level = 0; runFor(milliseconds); };
   return { capture, setLevel(value) { level = value; }, run, runFor, speakFor, pauseFor, now: () => clock, tracks, recorder: () => activeRecorder, constraints: () => constraints };
@@ -27,9 +27,9 @@ function setup(options = {}) {
 
 test("MediaRecorder VAD finalizes substantial speech after a patient bounded endpoint", async () => {
   const flow = setup(); await flow.capture.connect(); let recording;
-  flow.capture.listen({ onAudio: (value) => { recording = value; } }); flow.speakFor(1_500); flow.pauseFor(1_850);
-  assert.ok(recording.audio instanceof Blob); assert.match(recording.mimeType, /^audio\/webm/); assert.ok(recording.durationSeconds >= 3.25 && recording.durationSeconds <= 3.5);
-  assert.ok(recording.endpointGraceMs >= 1_700 && recording.endpointGraceMs <= 1_900);
+  flow.capture.listen({ onAudio: (value) => { recording = value; } }); flow.speakFor(1_500); flow.pauseFor(1_950);
+  assert.ok(recording.audio instanceof Blob); assert.match(recording.mimeType, /^audio\/webm/); assert.ok(recording.durationSeconds >= 3.0 && recording.durationSeconds <= 3.55);
+  assert.ok(recording.endpointGraceMs >= 1_450 && recording.endpointGraceMs <= 1_550);
   assert.deepEqual(flow.constraints(), { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
 });
 
@@ -39,14 +39,14 @@ test("MediaRecorder VAD reports bounded no-speech without producing an audio tur
   assert.equal(noSpeech, 1); assert.equal(audio, 0);
 });
 
-test("playback monitor requires sustained credible speech for barge-in", async () => {
-  const flow = setup(); await flow.capture.connect(); const barges=[]; flow.capture.watchForBargeIn((value) => { barges.push(value); }); flow.setLevel(0.1); for(let index=0;index<10;index+=1)flow.run();assert.equal(barges.length,0);flow.run();assert.equal(barges.length,1);assert.ok(barges[0].detectedAt-barges[0].speechOnsetAt>=300&&barges[0].detectedAt-barges[0].speechOnsetAt<=700);assert.equal(barges[0].echoCancellation,true);
+test("playback monitor requires modest sustained credible speech for barge-in", async () => {
+  const flow = setup(); await flow.capture.connect(); const barges=[]; flow.capture.watchForBargeIn((value) => { barges.push(value); }); flow.setLevel(0.1); for(let index=0;index<6;index+=1)flow.run();assert.equal(barges.length,0);flow.run();assert.equal(barges.length,1);assert.ok(barges[0].detectedAt-barges[0].speechOnsetAt>=150&&barges[0].detectedAt-barges[0].speechOnsetAt<=400);assert.equal(barges[0].echoCancellation,true);
   await flow.capture.destroy(); assert.equal(flow.tracks[0].stopped, true);
 });
 
 test("short click and 200 ms vocal noise do not trigger permanent barge-in",async()=>{const flow=setup();await flow.capture.connect();let barges=0;flow.capture.watchForBargeIn(()=>{barges+=1;});flow.setLevel(.1);flow.run();flow.setLevel(0);for(let index=0;index<3;index+=1)flow.run();flow.setLevel(.1);for(let index=0;index<4;index+=1)flow.run();flow.setLevel(0);for(let index=0;index<4;index+=1)flow.run();assert.equal(barges,0);});
 
-test("quiet clear and louder speech each barge in once while steady background and playback leakage do not",async()=>{for(const speechLevel of [.05,.12]){const flow=setup();await flow.capture.connect();let barges=0;flow.capture.watchForBargeIn(()=>{barges+=1;});flow.setLevel(.018);flow.runFor(1_000);assert.equal(barges,0);flow.setLevel(speechLevel);for(let index=0;index<7;index+=1)flow.run();assert.equal(barges,1);}for(const level of [.03,.045]){const background=setup();await background.capture.connect();let barges=0;background.capture.watchForBargeIn(()=>{barges+=1;});background.setLevel(level);background.runFor(2_000);assert.equal(barges,0);}});
+test("quiet clear and louder speech each barge in once while steady background and playback leakage do not",async()=>{for(const speechLevel of [.035,.12]){const flow=setup();await flow.capture.connect();let barges=0;flow.capture.watchForBargeIn(()=>{barges+=1;});flow.setLevel(.015);flow.runFor(1_000);assert.equal(barges,0);flow.setLevel(speechLevel);for(let index=0;index<5;index+=1)flow.run();assert.equal(barges,1);}for(const level of [.03,.045]){const background=setup();await background.capture.connect();let barges=0;background.capture.watchForBargeIn(()=>{barges+=1;});background.setLevel(level);background.runFor(2_000);assert.equal(barges,0);}});
 
 test("100 ms capture retains the complete WebM stream and initialization header", async () => {
   const flow = setup(); await flow.capture.connect(); const events = []; let recording;

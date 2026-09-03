@@ -35,7 +35,7 @@ function setup({ connectError, connectGate, transcript = "مرحبا Nova، را
     ready: () => { events.push("listen-ready"); handlers.onReady(); },
     endpoint: (value) => handlers.onEndpoint(value),
     audio: (recording = { audio: new Blob(["audio"], { type: "audio/webm" }), mimeType: "audio/webm", durationSeconds: 1, endedAt: clock }) => { if (Number.isFinite(recording.endedAt)) clock = Math.max(clock, recording.endedAt); return handlers.onAudio(recording); },
-    noSpeech: () => handlers.onNoSpeech(), barge: () => barge(),
+    noSpeech: () => handlers.onNoSpeech(), barge: (detail) => barge(detail),
     started: () => { clock += 5; playbackCallbacks.onStarted(); },
     chunkStarted: (index) => playbackCallbacks.onChunkStarted?.({index}),
     ended: () => { clock += 500; playbackCallbacks.onEnded(); },
@@ -73,9 +73,13 @@ test("endpoint grace remains Listening and resumed speech cancels the pending UI
 
 test("barge-in aborts stale TTS/playback and re-arms without duplicating a turn", async () => {
   const gate = deferred(); const flow = setup({ speechGate: gate }); await flow.mode.start(); const processing = flow.audio(); await Promise.resolve(); await Promise.resolve();
-  assert.equal(flow.mode.getState(), "speaking"); const sends = flow.counts().sends; flow.barge(); assert.ok(flow.states.includes("interrupted")); assert.equal(flow.mode.getState(), "listening");
+  assert.equal(flow.mode.getState(), "speaking"); const sends = flow.counts().sends; flow.mode.interrupt(); assert.ok(flow.states.includes("interrupted")); assert.equal(flow.mode.getState(), "listening");
   gate.resolve(); await processing; assert.equal(flow.counts().sends, sends); assert.equal(flow.events.includes("play"), false); assert.ok(flow.events.slice(-6).includes("playback-stop"));
 });
+
+test("acoustic barge monitoring calibrates only after actual playback starts",async()=>{const flow=setup();await flow.mode.start();await flow.audio();assert.equal(flow.events.includes("watch-barge"),false);flow.started();assert.equal(flow.events.filter((item)=>item==="watch-barge").length,1);flow.barge();assert.equal(flow.mode.getState(),"listening");});
+
+test("barge telemetry preserves precise RMS values and onset-to-stop timing",async()=>{const flow=setup();await flow.mode.start();await flow.audio();flow.started();flow.barge({speechOnsetAt:100,detectedAt:350,voicedMs:200,baselineRms:.01234,thresholdRms:.02789});const interrupted=flow.timings.at(-1);assert.equal(interrupted.stage,"interrupted");assert.equal(interrupted.measurements.bargeDetection,250);assert.equal(interrupted.measurements.bargeSpeechToPlaybackStop,145);assert.equal(interrupted.measurements.bargeBaselineRms,.01234);assert.equal(interrupted.measurements.bargeThresholdRms,.02789);});
 
 test("false barge-in followed by silence resumes the same assistant playback",async()=>{const flow=setup();await flow.mode.start();await flow.audio();flow.started();const sends=flow.counts().sends;flow.barge();assert.equal(flow.mode.getState(),"listening");flow.noSpeech();assert.equal(flow.mode.getState(),"speaking");assert.equal(flow.counts().sends,sends);assert.ok(flow.events.includes("playback-pause"));assert.ok(flow.events.includes("playback-resume"));});
 
