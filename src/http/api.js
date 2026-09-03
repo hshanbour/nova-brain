@@ -132,7 +132,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
             await readJsonBody(request, config.maxBodyBytes)
           );
           const result = await agent.run({ ...input, requestId });
-          logger.info("Nova agent timing",{requestId,conversationId:result.conversationId,runId:result.runId,contextRetrievalMs:result.timing?.contextRetrievalMs,agentFirstResponseMs:result.timing?.agentFirstResponseMs,agentCompleteMs:result.timing?.agentCompleteMs,totalMs:result.timing?.totalMs});
+          logger.info("Nova agent timing",{requestId,conversationId:result.conversationId,runId:result.runId,contextRetrievalMs:result.timing?.contextRetrievalMs,preModelMs:result.timing?.preModelMs,agentFirstResponseMs:result.timing?.agentFirstResponseMs,agentCompleteMs:result.timing?.agentCompleteMs,totalMs:result.timing?.totalMs});
           sendJson(response, 200, result);
           return;
         }
@@ -150,8 +150,8 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           sendJson(response, 200, { ...readiness, speakerRecognition: speaker }); return;
         }
         if (request.method === "POST" && pathname === "/api/voice/transcribe") {
-          const input = await readJsonBody(request, config.voiceV2.maxBodyBytes); const startedAt = Date.now();
-          const transcriptionPromise=voiceService.transcribe(input);const readyPromise=ready();
+          const input = await readJsonBody(request, config.voiceV2.maxBodyBytes); const startedAt = Date.now();let sttMs;
+          const transcriptionPromise=voiceService.transcribe(input).then((value)=>{sttMs=Date.now()-startedAt;return value;});const readyPromise=ready();
           logger.info?.("Nova speaker recognition started",{requestId,durationSeconds:Number(input?.durationSeconds)||0,authoritativeEngine:recognitionEngines?.authoritativeEngineId||"unavailable",extractorConfigured:Boolean(recognitionEngines?.configured)});
           const [transcription, recognition, storageReady] = await Promise.allSettled([transcriptionPromise, recognitionEngines?.recognize?.(input,{requestId,transcriptPromise:transcriptionPromise,readyPromise}) || Promise.reject(new Error("not configured")),readyPromise]);
           if (transcription.status === "rejected") throw transcription.reason;
@@ -165,7 +165,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
           if(speaker.match_status==="confirmed"&&!speaker.assertion)speaker={speaker_profile_id:null,speaker_label:"unknown",confidence:0,extractor_version:speaker.extractor_version,match_status:"unknown",authenticated_identity:"none",speaker_familiarity:"none",anonymous_speaker_id:null,assertion:null};
           logger.info?.("Nova speaker recognition completed",{requestId,authoritativeEngine:authoritative?.engineId||null,extractorDurationMs:authoritative?.latencyMs??null,...authoritative?.diagnostics,qualityGateResult:authoritative?.qualityState||"failure",candidateCount:authoritative?.candidateCount||0,matchStatus:speaker.match_status,confidence:speaker.confidence,threshold:authoritative?.threshold??null,ambiguityMargin:authoritative?.ambiguityMargin??null,scoreMargin:authoritative?.scoreMargin??null,bestCandidateCategory:authoritative?.category||null,matchVariant:authoritative?.representationId||null,recognizedProfileId:speaker.speaker_profile_id,speakerCategory:speaker.speaker_label,assertionIssued:Boolean(speaker.assertion)});
-          sendJson(response, 200, { ...transcription.value, speaker, timing: { sttAndSpeakerMs: Date.now() - startedAt, ...(Number.isFinite(authoritative?.latencyMs) ? { speakerRecognitionMs:authoritative.latencyMs } : {}) } }); return;
+          sendJson(response, 200, { ...transcription.value, speaker, timing: { sttAndSpeakerMs: Date.now() - startedAt, ...(Number.isFinite(sttMs)?{sttMs}:{}), ...(Number.isFinite(authoritative?.latencyMs) ? { speakerRecognitionMs:authoritative.latencyMs } : {}) } }); return;
         }
         if (request.method === "POST" && pathname === "/api/voice/speech") {
           const controller = new AbortController();
@@ -179,6 +179,12 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
 
         if(request.method==="GET"&&pathname==="/api/speakers"){
           await ready();sendJson(response,200,{speakers:await speakerIdentity.list()});return;
+        }
+        if(request.method==="POST"&&pathname==="/api/voice/telemetry"){
+          const input=await readJsonBody(request,config.maxBodyBytes);const measurements={};
+          for(const [name,value] of Object.entries(input?.measurements||{}))if(/^[A-Za-z][A-Za-z0-9]{0,48}$/.test(name)&&Number.isFinite(value)&&value>=0&&value<=300_000)measurements[name]=Math.round(value*10)/10;
+          logger.info("Nova browser voice timing",{requestId,turnId:Number.isInteger(input?.turnId)?input.turnId:null,stage:typeof input?.stage==="string"?input.stage.slice(0,40):"unknown",measurements});
+          sendJson(response,200,{success:true,requestId});return;
         }
         if(request.method==="GET"&&pathname==="/api/speakers/privacy-status"){
           await ready();sendJson(response,200,{status:await speakerIdentity.privacyStatus()});return;

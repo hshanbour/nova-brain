@@ -1,5 +1,5 @@
 export function createVoiceV2({
-  capture, client, playback, sendTurn,
+  capture, client, playback, interruptionPlayback = playback, sendTurn,
   onTranscript = () => {}, onState = () => {}, onError = () => {}, onNotice = () => {}, onTiming = () => {},
   schedule = (callback, delay) => setTimeout(callback, delay), cancelSchedule = (timer) => clearTimeout(timer),
   now = () => globalThis.performance?.now?.() ?? Date.now(), retryDelayMs = 900, ttsRecoveryDelayMs = 250, checkpointTtlMs = 120_000
@@ -13,7 +13,7 @@ export function createVoiceV2({
   const reportTiming = (stage) => { if (timing) onTiming(timingSnapshot(timing, stage)); };
 
   function listen({ afterAudio = false, interruptionProbe = false } = {}) {
-    if (!active) return; clearRetry(); if(!interruptionProbe){abortPending();playback.stop();}
+    if (!active) return; clearRetry(); if(!interruptionProbe){abortPending();playback.stop();interruptionPlayback.stop?.();}
     const current = generation; publish("getting_ready");
     capture.listen({
       onReady: () => {
@@ -61,19 +61,24 @@ export function createVoiceV2({
       if (!valid(current)) return false;
       mark("transcriptAvailableAt");
       if(Number.isFinite(transcribed?.timing?.speakerRecognitionMs))timing.speakerRecognitionMs=transcribed.timing.speakerRecognitionMs;
+      if(Number.isFinite(transcribed?.timing?.sttMs))timing.sttServerMs=transcribed.timing.sttMs;
+      if(Number.isFinite(transcribed?.timing?.sttAndSpeakerMs))timing.sttAndSpeakerServerMs=transcribed.timing.sttAndSpeakerMs;
       const text = String(transcript || "").trim();
-      if(interruptionProbe&&(!text||isContinueIntent(text)))return resumeInterrupted(text?"Continuing Nova's interrupted response.":"No speech was understood. Resuming Nova.");
+      if(interruptionProbe&&(!text||isContinueIntent(text)))return resumeInterrupted({speaker,text,message:text?"Continuing Nova's interrupted response.":"No speech was understood. Resuming Nova."});
       if (!text) { retry("No speech was understood."); return false; }
-      if(interruptionProbe){interruptedCheckpoint=undefined;playback.stop();current=++generation;abortPending();abortController=new AbortController();}
+      const preservingCheckpoint=interruptionProbe&&canPreserveCheckpoint(speaker,interruptedCheckpoint);
+      if(interruptionProbe&&!preservingCheckpoint){interruptedCheckpoint=undefined;playback.stop();current=++generation;}
+      if(interruptionProbe){abortPending();abortController=new AbortController();}
       onTranscript(text); publish("thinking"); mark("agentRequestStartedAt");
       const result = await sendTurn(text, {
         signal: abortController.signal,
         speaker,
         prepareAssistant: async (message,assistantResult) => {
           if (!valid(current)) throw abortError();
-          if(assistantResult?.timing){timing.contextRetrievalMs=assistantResult.timing.contextRetrievalMs;timing.agentFirstResponseMs=assistantResult.timing.agentFirstResponseMs;timing.agentCompleteMs=assistantResult.timing.agentCompleteMs;}
+          if(assistantResult?.timing){timing.contextRetrievalMs=assistantResult.timing.contextRetrievalMs;timing.preModelMs=assistantResult.timing.preModelMs;timing.agentFirstResponseMs=assistantResult.timing.agentFirstResponseMs;timing.agentCompleteMs=assistantResult.timing.agentCompleteMs;}
           mark("assistantAvailableAt"); publish("speaking", { phase: "preparing-audio" });
-          interruptedCheckpoint={assistantTurnId:assistantResult?.id||`voice-${turnSequence}`,message,conversationId:assistantResult?.conversationId||null,createdAt:now(),chunkIndex:0};
+          if(!preservingCheckpoint)interruptedCheckpoint={assistantTurnId:assistantResult?.id||`voice-${turnSequence}`,message,conversationId:assistantResult?.conversationId||null,createdAt:now(),chunkIndex:0,speakerProfileId:confirmedProfileId(speaker)};
+          else interruptedCheckpoint={...interruptedCheckpoint,lastVerifiedInterruptionProfileId:confirmedProfileId(speaker),acknowledgedAt:now()};
           capture.watchForBargeIn(() => interrupt()); mark("ttsStartedAt");
           const speech = await client.speech(message, { signal: abortController.signal });
           if (!valid(current)) throw abortError();
@@ -92,10 +97,11 @@ export function createVoiceV2({
       }
       const speech = result.preparedAssistant;
       if (!speech?.audio) { recover("Nova's written reply is safe, but ElevenLabs returned no playable audio.", ttsRecoveryDelayMs); return false; }
-      playback.play(speech.stream || speech.audio, {
+      const targetPlayback=preservingCheckpoint?interruptionPlayback:playback;
+      targetPlayback.play(speech.stream || speech.audio, {
         onStarted: () => { if (valid(current)) { mark("audioStartedAt"); reportTiming("audio-started"); } },
-        onChunkStarted:({index}={})=>{if(interruptedCheckpoint&&Number.isInteger(index))interruptedCheckpoint.chunkIndex=index;},
-        onEnded: () => { if (valid(current)) { mark("audioEndedAt"); listen({ afterAudio: true }); } },
+        onChunkStarted:({index}={})=>{if(!preservingCheckpoint&&interruptedCheckpoint&&Number.isInteger(index))interruptedCheckpoint.chunkIndex=index;},
+        onEnded: () => { if (valid(current)) { mark("audioEndedAt"); if(preservingCheckpoint)listen({afterAudio:true,interruptionProbe:true});else{interruptedCheckpoint=undefined;listen({ afterAudio: true });} } },
         onError: (error) => { if (valid(current)) recover(voiceFailureMessage(error, true), ttsRecoveryDelayMs); }
       });
       return true;
@@ -112,10 +118,12 @@ export function createVoiceV2({
     playback.pause?.();interruptedCheckpoint={...(interruptedCheckpoint||{}),playback:playbackState,interruptedAt:now()};capture.stop();publish("interrupted");listen({interruptionProbe:true});return true;
   }
 
-  function resumeInterrupted(message){
+  function resumeInterrupted({speaker,text,message}={}){
     if(!active||!interruptedCheckpoint||now()-(interruptedCheckpoint.interruptedAt||interruptedCheckpoint.createdAt)>checkpointTtlMs){interruptedCheckpoint=undefined;retry(message||"Nothing recent is available to continue.");return false;}
-    capture.stop();publish("speaking",{phase:"resuming",assistantTurnId:interruptedCheckpoint.assistantTurnId,chunkIndex:interruptedCheckpoint.chunkIndex});
-    if(!playback.resume?.()){interruptedCheckpoint=undefined;retry("The interrupted audio is no longer available.");return false;}
+    if(text&&!resumeAuthorized(speaker,interruptedCheckpoint)){retry("Nova could not verify that this continuation belongs to the interrupted speaker.");return false;}
+    interruptionPlayback.stop?.();
+    capture.stop();publish("speaking",{phase:"resuming",assistantTurnId:interruptedCheckpoint.assistantTurnId,chunkIndex:interruptedCheckpoint.chunkIndex});mark("resumeRequestedAt");
+    if(!playback.resume?.({onStarted:()=>{mark("resumePlaybackStartedAt");reportTiming("resume-audio-started");}})){interruptedCheckpoint=undefined;retry("The interrupted audio is no longer available.");return false;}
     capture.watchForBargeIn(()=>interrupt());onNotice(message);return true;
   }
 
@@ -125,7 +133,7 @@ export function createVoiceV2({
       try { await capture.connect(); if (!valid(current)) { await capture.destroy(); return false; } listen(); return true; }
       catch (error) { if (!valid(current)) { await capture.destroy(); return false; } fatal(error?.message || "Microphone permission was denied or no microphone is available."); return false; }
     },
-    end() { if (!active && state === "idle") return; active = false; generation += 1; interruptedCheckpoint=undefined;clearRetry(); abortPending(); capture.stop(); playback.stop(); Promise.resolve(capture.destroy()).catch(() => {}); publish("idle"); },
+    end() { if (!active && state === "idle") return; active = false; generation += 1; interruptedCheckpoint=undefined;clearRetry(); abortPending(); capture.stop(); playback.stop(); interruptionPlayback.stop?.(); Promise.resolve(capture.destroy()).catch(() => {}); publish("idle"); },
     interrupt,
     isActive: () => active,
     getState: () => state,
@@ -146,8 +154,12 @@ function timingSnapshot(timing, stage) {
       endpointGrace: difference("recordingFinalizedAt", "endpointGraceStartedAt"),
       recordingFinalizeToSttStart: difference("sttStartedAt", "recordingFinalizedAt"),
       stt: difference("transcriptAvailableAt", "sttStartedAt"),
+      uploadNetworkAndEncoding: Number.isFinite(timing.sttAndSpeakerServerMs)&&Number.isFinite(timing.transcriptAvailableAt)&&Number.isFinite(timing.sttStartedAt)?rounded((timing.transcriptAvailableAt-timing.sttStartedAt)-timing.sttAndSpeakerServerMs):undefined,
+      sttServer: timing.sttServerMs,
+      sttAndSpeakerServer: timing.sttAndSpeakerServerMs,
       speakerRecognition: timing.speakerRecognitionMs,
       contextRetrieval: timing.contextRetrievalMs,
+      preModel: timing.preModelMs,
       transcriptToAgent: difference("agentRequestStartedAt", "transcriptAvailableAt"),
       agent: difference("assistantAvailableAt", "agentRequestStartedAt"),
       agentFirstResponse: timing.agentFirstResponseMs,
@@ -161,7 +173,8 @@ function timingSnapshot(timing, stage) {
       playback: difference("audioEndedAt", "audioStartedAt"),
       speechEndToPlayback: difference("audioStartedAt", "speechEndedAt"),
       totalSpeechEndToAudio: difference("audioStartedAt", "speechEndedAt"),
-      audioEndToListening: difference("listeningReadyAt", "audioEndedAt")
+      audioEndToListening: difference("listeningReadyAt", "audioEndedAt"),
+      resumeRequestToPlayback: difference("resumePlaybackStartedAt","resumeRequestedAt")
     })
   });
 }
@@ -169,5 +182,8 @@ function timingSnapshot(timing, stage) {
 function compact(value) { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)); }
 function rounded(value) { return Math.round(Math.max(0, value) * 10) / 10; }
 function abortError() { const error = new Error("Voice turn was interrupted."); error.name = "AbortError"; return error; }
-function isContinueIntent(text){return /^(?:please\s+)?(?:continue|go on|carry on)(?:\s+please)?[.!?\s]*$|^(?:كم[ّ]?ل|كمل|وين\s+كنت[؟?،,\s]*كم[ّ]?ل)[.!؟?\s]*$/iu.test(String(text||"").trim());}
+function isContinueIntent(text){return /^(?:please\s+)?(?:continue|go on|carry on)(?:\s+please)?[.!?\s]*$|^(?:كم[ّ]?ل(?:ي)?|وين\s+كنت[؟?،,\s]*كم[ّ]?ل(?:ي)?)[.!؟?\s]*$/iu.test(String(text||"").trim());}
+function confirmedProfileId(speaker){return speaker?.match_status==="confirmed"&&typeof speaker?.speaker_profile_id==="string"?speaker.speaker_profile_id:null;}
+function canPreserveCheckpoint(speaker,checkpoint){const profileId=confirmedProfileId(speaker);return Boolean(checkpoint&&profileId&&profileId===checkpoint.speakerProfileId);}
+function resumeAuthorized(speaker,checkpoint){const profileId=confirmedProfileId(speaker);if(profileId)return profileId===checkpoint.speakerProfileId;return speaker?.match_status==="insufficient_speech"&&checkpoint.lastVerifiedInterruptionProfileId===checkpoint.speakerProfileId;}
 function voiceFailureMessage(error,browserFallback=false){if(error?.category==="quota")return "Nova's written reply is safe, but ElevenLabs credits are exhausted.";if(error?.category==="authentication")return "Nova's written reply is safe, but ElevenLabs authentication needs attention.";if(error?.category==="voice_access")return "Nova's written reply is safe, but the selected ElevenLabs voice is unavailable.";if(error?.category==="rate_limit")return "Nova's written reply is safe, but ElevenLabs is temporarily busy.";if(["provider_timeout_first_byte","provider_stream_stalled"].includes(error?.category))return "Nova's written reply is safe, but ElevenLabs audio timed out.";if(error?.message&&/written reply is safe/i.test(error.message))return error.message;return browserFallback?"Nova's written reply is safe, but audio playback failed.":"Nova's written reply is safe, but ElevenLabs could not speak it.";}

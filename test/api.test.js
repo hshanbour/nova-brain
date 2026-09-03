@@ -63,6 +63,8 @@ test("authenticated POST probe is non-mutating and returns a request id", async 
   assert.equal(res.headers.get("cache-control"), "no-store");
 });
 
+test("browser voice timing telemetry logs only bounded numeric measurements",async()=>{const entries=[];const app=createApi({agent:{tools:{list(){return[];}},async run(){throw new Error("unused");}},config:{allowedOrigins:[],maxBodyBytes:64*1024},storage:{provider:"memory",durable:false},initialize:async()=>{},ownerId:"owner",logger:{info(...args){entries.push(args);},error(){}}});const res=response();await app.handle(request({method:"POST",url:"/api/voice/telemetry",headers:{"content-type":"application/json"},body:JSON.stringify({turnId:7,stage:"audio-started",measurements:{speechEndToPlayback:2345.67,secret:"not-a-number",negative:-1,huge:999999}})}),res);assert.equal(res.statusCode,200);assert.deepEqual(entries[0],["Nova browser voice timing",{requestId:res.headers.get("x-request-id"),turnId:7,stage:"audio-started",measurements:{speechEndToPlayback:2345.7}}]);});
+
 test("speaker enrollment route supports a non-mutating authenticated HEAD probe", async () => {
   const app = createApp({ environment: {} });
   const res = response();

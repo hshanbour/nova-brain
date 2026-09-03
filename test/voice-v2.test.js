@@ -4,8 +4,8 @@ import { createVoiceV2 } from "../assets/voice-v2.js";
 
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 
-function setup({ connectError, connectGate, transcript = "مرحبا Nova، راجع Sharp Cuts API رقم 35", transcribeError, sendError, speechError, manualReady = false, transcribeGate, agentGate, speechGate, checkpointTtlMs } = {}) {
-  const events = []; const timers = []; const timings = []; let handlers; let barge; let playbackCallbacks; let sends = 0; let speechCalls = 0; let clock = 0;
+function setup({ connectError, connectGate, transcript = "مرحبا Nova، راجع Sharp Cuts API رقم 35", speaker = { match_status:"confirmed",speaker_profile_id:"owner-profile",speaker_label:"owner" }, transcribeError, sendError, speechError, manualReady = false, transcribeGate, agentGate, speechGate, checkpointTtlMs } = {}) {
+  const events = []; const timers = []; const timings = []; let handlers; let barge; let playbackCallbacks; let interruptionCallbacks; let sends = 0; let speechCalls = 0; let clock = 0; let transcriptIndex=0;
   const capture = {
     async connect() { events.push("connect"); if (connectGate) await connectGate.promise; if (connectError) throw connectError; },
     listen(next) { handlers = next; events.push("listen-arm"); if (!manualReady) { events.push("listen-ready"); next.onReady(); } },
@@ -13,12 +13,13 @@ function setup({ connectError, connectGate, transcript = "مرحبا Nova، را
     stop() { events.push("capture-stop"); }, async destroy() { events.push("destroy"); }
   };
   const client = {
-    async transcribe({ signal }) { events.push("transcribe"); assert.equal(signal instanceof AbortSignal, true); if (transcribeGate) await transcribeGate.promise; if (transcribeError) throw transcribeError; clock += 40; return { transcript }; },
+    async transcribe({ signal }) { events.push("transcribe"); assert.equal(signal instanceof AbortSignal, true); if (transcribeGate) await transcribeGate.promise; if (transcribeError) throw transcribeError; clock += 40; const index=transcriptIndex++;return { transcript:Array.isArray(transcript)?transcript[Math.min(index,transcript.length-1)]:transcript,speaker:Array.isArray(speaker)?speaker[Math.min(index,speaker.length-1)]:speaker }; },
     async speech(text, { signal }) { speechCalls += 1; events.push(`speech:${text}`); assert.equal(signal instanceof AbortSignal, true); if (speechGate) await speechGate.promise; if (speechError) throw speechError; clock += 80; return { audio: new Blob(["mp3"], { type: "audio/mpeg" }) }; }
   };
   let playing=false;let paused=false;const playback = { play(_audio, callbacks) { playbackCallbacks = callbacks;playing=true;paused=false; events.push("play"); }, stop() {playing=false;paused=false;events.push("playback-stop"); },pause(){if(!playing)return false;paused=true;events.push("playback-pause");return true;},resume(){if(!playing||!paused)return false;paused=false;events.push("playback-resume");return true;},checkpoint(){return playing?{currentTime:1,paused}:null;} };
+  const interruptionPlayback={play(_audio,callbacks){interruptionCallbacks=callbacks;events.push("interruption-play");},stop(){events.push("interruption-stop");}};
   const states = []; const errors = []; const transcripts = [];
-  const mode = createVoiceV2({ capture, client, playback,
+  const mode = createVoiceV2({ capture, client, playback, interruptionPlayback,
     async sendTurn(text, { signal, prepareAssistant }) {
       sends += 1; events.push(`send:${text}`); assert.equal(signal instanceof AbortSignal, true); if (agentGate) await agentGate.promise; if (sendError) throw sendError; clock += 120;
       const result = { message: `Nova reply to ${text}`, conversationId: "conversation-1" }; let preparedAssistant; let preparationError;
@@ -36,7 +37,10 @@ function setup({ connectError, connectGate, transcript = "مرحبا Nova، را
     audio: (recording = { audio: new Blob(["audio"], { type: "audio/webm" }), mimeType: "audio/webm", durationSeconds: 1, endedAt: clock }) => { if (Number.isFinite(recording.endedAt)) clock = Math.max(clock, recording.endedAt); return handlers.onAudio(recording); },
     noSpeech: () => handlers.onNoSpeech(), barge: () => barge(),
     started: () => { clock += 5; playbackCallbacks.onStarted(); },
+    chunkStarted: (index) => playbackCallbacks.onChunkStarted?.({index}),
     ended: () => { clock += 500; playbackCallbacks.onEnded(); },
+    interruptionStarted:()=>interruptionCallbacks.onStarted?.(),
+    interruptionEnded:()=>interruptionCallbacks.onEnded?.(),
     playbackError: (error) => playbackCallbacks.onError(error),
     runTimer: (index = timers.length - 1) => { const timer = timers[index]; if (!timer.cancelled) timer.callback(); },
     counts: () => ({ sends, speechCalls }),advance:(milliseconds)=>{clock+=milliseconds;}
@@ -75,7 +79,13 @@ test("barge-in aborts stale TTS/playback and re-arms without duplicating a turn"
 
 test("false barge-in followed by silence resumes the same assistant playback",async()=>{const flow=setup();await flow.mode.start();await flow.audio();flow.started();const sends=flow.counts().sends;flow.barge();assert.equal(flow.mode.getState(),"listening");flow.noSpeech();assert.equal(flow.mode.getState(),"speaking");assert.equal(flow.counts().sends,sends);assert.ok(flow.events.includes("playback-pause"));assert.ok(flow.events.includes("playback-resume"));});
 
-test("explicit Arabic continue intent resumes a fresh interrupted checkpoint without a new agent turn",async()=>{const flow=setup({transcript:"كمّل"});await flow.mode.start();await flow.audio();flow.started();flow.barge();const sends=flow.counts().sends;assert.equal(await flow.audio(),true);assert.equal(flow.counts().sends,sends);assert.equal(flow.mode.getState(),"speaking");assert.ok(flow.events.includes("playback-resume"));});
+test("Arabic and English continue intents resume a fresh interrupted checkpoint without a new agent turn",async()=>{for(const intent of ["كمل","كمّل","كملي","continue"]){const flow=setup({transcript:["original owner question",intent],speaker:[{match_status:"confirmed",speaker_profile_id:"owner-profile",speaker_label:"owner"},{match_status:"confirmed",speaker_profile_id:"owner-profile",speaker_label:"owner"}]});await flow.mode.start();await flow.audio();flow.started();flow.barge();const sends=flow.counts().sends;assert.equal(await flow.audio(),true,intent);assert.equal(flow.counts().sends,sends,intent);assert.equal(flow.mode.getState(),"speaking",intent);assert.ok(flow.events.includes("playback-resume"),intent);}});
+
+test("verified acknowledgement preserves the same-session checkpoint and كملي resumes the paused chunk",async()=>{const owner={match_status:"confirmed",speaker_profile_id:"owner-profile",speaker_label:"owner"};const flow=setup({transcript:["long question","لحظة نوفا، لحظة","كملي"],speaker:[owner,owner,{match_status:"insufficient_speech",speaker_profile_id:null,speaker_label:"unknown"}]});await flow.mode.start();await flow.audio();flow.started();flow.chunkStarted(2);flow.barge();const original=flow.mode.getInterruptedCheckpoint();assert.equal(original.chunkIndex,2);assert.equal(await flow.audio(),true);assert.ok(flow.events.includes("interruption-play"));assert.equal(flow.mode.getInterruptedCheckpoint().assistantTurnId,original.assistantTurnId);flow.interruptionStarted();flow.interruptionEnded();assert.equal(await flow.audio(),true);assert.equal(flow.counts().sends,2);assert.equal(flow.counts().speechCalls,2);assert.ok(flow.events.includes("playback-resume"));assert.equal(flow.mode.getInterruptedCheckpoint().chunkIndex,2);});
+
+test("a different confirmed speaker cannot resume an owner's interrupted answer",async()=>{const flow=setup({transcript:["owner question","continue"],speaker:[{match_status:"confirmed",speaker_profile_id:"owner-profile",speaker_label:"owner"},{match_status:"confirmed",speaker_profile_id:"other-profile",speaker_label:"known"}]});await flow.mode.start();await flow.audio();flow.started();flow.barge();assert.equal(await flow.audio(),false);assert.equal(flow.events.includes("playback-resume"),false);assert.equal(flow.mode.getState(),"retrying");});
+
+test("End Voice intentionally destroys the interruption checkpoint",async()=>{const flow=setup();await flow.mode.start();await flow.audio();flow.started();flow.barge();assert.ok(flow.mode.getInterruptedCheckpoint());flow.mode.end();assert.equal(flow.mode.getInterruptedCheckpoint(),null);assert.ok(flow.events.includes("interruption-stop"));});
 
 test("stale interruption checkpoints expire instead of resuming unrelated audio",async()=>{const flow=setup({checkpointTtlMs:100});await flow.mode.start();await flow.audio();flow.started();flow.barge();flow.advance(101);flow.noSpeech();assert.equal(flow.mode.getState(),"retrying");assert.equal(flow.events.includes("playback-resume"),false);});
 

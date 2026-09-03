@@ -132,7 +132,7 @@ export function createAudioPlayback({ Audio, URL }) {
       run().catch((error) => { if (current === generation && error?.name !== "AbortError") { stop(); onError?.(error); } });
     },
     pause(){if(!player||paused)return false;paused=true;player.pause();return true;},
-    resume(){if(!player||!paused)return false;paused=false;Promise.resolve(player.play()).catch(()=>{});return true;},
+    resume({onStarted}={}){if(!player||!paused)return false;paused=false;Promise.resolve(player.play()).then(()=>onStarted?.()).catch(()=>{});return true;},
     checkpoint(){return player?{currentTime:Number(player.currentTime||0),paused}:null;},
     stop
   });
