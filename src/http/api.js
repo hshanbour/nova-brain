@@ -15,6 +15,8 @@ import {
 } from "./validation.js";
 import { BenchmarkBudgetError, BenchmarkLockedError, BenchmarkUnavailableError, BenchmarkValidationError } from "../benchmark/service.js";
 import { VoiceProviderError, VoiceTimeoutError, VoiceUnavailableError, VoiceValidationError } from "../voice/voice-service.js";
+import { createSpeakerEngineCoordinator, speakerFromAuthoritativeResult } from "../voice/speaker-engine.js";
+import { createEcapaSpeakerEngine, evidenceFor } from "../voice/ecapa-speaker-engine.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -80,7 +82,8 @@ function setCorsHeaders(request, response, allowedOrigins) {
   }
 }
 
-export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerAssertions, familiarityConsent, logger = console }) {
+export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerEngines, speakerAssertions, familiarityConsent, logger = console }) {
+  const recognitionEngines=speakerEngines||(speakerExtractor&&speakerIdentity?createSpeakerEngineCoordinator({authoritativeEngine:createEcapaSpeakerEngine({extractor:speakerExtractor,identity:speakerIdentity}),logger}):null);
   return Object.freeze({
     async handle(request, response) {
       const requestId = randomUUID();
@@ -135,7 +138,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         }
 
         if (request.method === "GET" && pathname === "/api/voice/readiness") {
-          const [readiness, speaker] = await Promise.all([voiceService.readiness(), speakerExtractor?.readiness?.() || Promise.resolve({ status: "Missing", available: false })]);
+          const [readiness, speaker] = await Promise.all([voiceService.readiness(), recognitionEngines?.readiness?.() || speakerExtractor?.readiness?.() || Promise.resolve({ status: "Missing", available: false })]);
           logger.info("Nova voice readiness", {
             available: readiness.available,
             sttStatus: readiness.stt?.status,
@@ -148,33 +151,21 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         }
         if (request.method === "POST" && pathname === "/api/voice/transcribe") {
           const input = await readJsonBody(request, config.voiceV2.maxBodyBytes); const startedAt = Date.now();
-          logger.info?.("Nova speaker recognition started",{requestId,durationSeconds:Number(input?.durationSeconds)||0,extractorConfigured:Boolean(speakerExtractor?.configured)});
-          const [transcription, extracted, storageReady] = await Promise.allSettled([voiceService.transcribe(input), speakerExtractor?.extract?.(input,{requestId}) || Promise.reject(new Error("not configured")), ready()]);
+          const transcriptionPromise=voiceService.transcribe(input);const readyPromise=ready();
+          logger.info?.("Nova speaker recognition started",{requestId,durationSeconds:Number(input?.durationSeconds)||0,authoritativeEngine:recognitionEngines?.authoritativeEngineId||"unavailable",extractorConfigured:Boolean(recognitionEngines?.configured)});
+          const [transcription, recognition, storageReady] = await Promise.allSettled([transcriptionPromise, recognitionEngines?.recognize?.(input,{requestId,transcriptPromise:transcriptionPromise,readyPromise}) || Promise.reject(new Error("not configured")),readyPromise]);
           if (transcription.status === "rejected") throw transcription.reason;
-          let speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: config.speakerRecognition.modelVersion, match_status: "unknown", authenticated_identity:"none",speaker_familiarity:"none",anonymous_speaker_id:null };
-          let speakerRecognitionMs;let candidateCount=0;let extractionDiagnostics={totalAudioDurationSeconds:Number(input?.durationSeconds)||0,voicedDurationSeconds:null,silenceRatio:null,sampleRate:null,channelCount:null,preprocessingVersion:null,qualityGateResult:"unavailable",qualityGateReason:null,voicedSegmentCount:null,longestVoicedSegmentSeconds:null,clippingRatio:null,noiseFloorRms:null,activeThresholdRms:null,speechRms:null,peakRms:null,peakToNoiseDb:null};let matchDiagnostics={threshold:config.speakerRecognition.threshold,ambiguityMargin:config.speakerRecognition.ambiguityMargin,scoreMargin:null,bestCandidateCategory:null,matchVariant:null};
           if(storageReady.status==="rejected")throw storageReady.reason;
-          if (extracted.status === "fulfilled") {
-            speakerRecognitionMs = extracted.value.latencyMs;
-            extractionDiagnostics={totalAudioDurationSeconds:extracted.value.totalDurationSeconds??(Number(input?.durationSeconds)||0),voicedDurationSeconds:extracted.value.speechSeconds??null,silenceRatio:extracted.value.silenceRatio??null,sampleRate:extracted.value.sampleRate??null,channelCount:extracted.value.channelCount??null,preprocessingVersion:extracted.value.preprocessingVersion??null,qualityGateResult:extracted.value.quality||"unknown",qualityGateReason:extracted.value.reason||null,voicedSegmentCount:extracted.value.voicedSegmentCount??null,longestVoicedSegmentSeconds:extracted.value.longestVoicedSegmentSeconds??null,clippingRatio:extracted.value.clippingRatio??null,noiseFloorRms:extracted.value.noiseFloorRms??null,activeThresholdRms:extracted.value.activeThresholdRms??null,speechRms:extracted.value.speechRms??null,peakRms:extracted.value.peakRms??null,peakToNoiseDb:extracted.value.peakToNoiseDb??null};
-            const hasTranscript=Boolean(String(transcription.value?.transcript||"").trim());
-            if (extracted.value.sufficient&&hasTranscript) {
-              const match = typeof speakerIdentity.recognizeMany==="function"?await speakerIdentity.recognizeMany(extracted.value.representationVariants||[{label:"vad_v3",representation:extracted.value.representation}]):await speakerIdentity.recognize(extracted.value.representation);
-              candidateCount=match.candidateCount||0;
-              matchDiagnostics={threshold:match.threshold??config.speakerRecognition.threshold,ambiguityMargin:match.ambiguityMargin??config.speakerRecognition.ambiguityMargin,scoreMargin:match.scoreMargin??null,bestCandidateCategory:match.bestCandidateCategory??null,matchVariant:match.matchVariant??null};
-              speaker = match.state === "confirmed"
-                ? { speaker_profile_id: match.speakerProfileId, speaker_label: match.relation === "owner" ? "owner" : "enrolled_member", confidence: match.confidence, extractor_version: extracted.value.extractorVersion, match_status: "confirmed",authenticated_identity:match.relation === "owner" ? "owner" : "known_member",speaker_familiarity:"none",anonymous_speaker_id:null }
-                : { ...speaker,confidence:match.confidence||0, extractor_version: extracted.value.extractorVersion, match_status: match.state === "uncertain" ? "uncertain" : "unknown" };
-              if(match.state!=="confirmed"){
+          const authoritative=recognition.status==="fulfilled"?recognition.value.authoritative:null;let speaker=speakerFromAuthoritativeResult(authoritative,config.speakerRecognition.modelVersion);const evidence=evidenceFor(authoritative);
+          if(authoritative?.status==="failure")logger.error?.("Nova speaker recognition failed",{requestId,engineId:authoritative.engineId,stage:authoritative.error?.stage,code:authoritative.error?.code});
+          if(authoritative?.status!=="confirmed"&&evidence?.sufficient&&String(transcription.value?.transcript||"").trim()){
                 const grant=familiarityConsent?.verify?.(input?.familiarityConsent);
-                if(grant){const familiarity=await speakerIdentity.rememberAnonymous({representation:extracted.value.representation,representationVersion:extracted.value.extractorVersion,consent:true,consentActor:grant.consent_actor,selfReportedName:grant.self_reported_name});speaker={...speaker,speaker_familiarity:familiarity.state,anonymous_speaker_id:familiarity.anonymousSpeakerId||null};logger.info?.("Nova anonymous speaker familiarity completed",{requestId,state:familiarity.state,anonymousSpeakerId:familiarity.anonymousSpeakerId||null,candidateCount:familiarity.candidateCount,confidence:familiarity.confidence,threshold:familiarity.threshold,scoreMargin:familiarity.scoreMargin});}
-              }
-            } else {speaker.match_status = hasTranscript?"insufficient_speech":"non_speech";if(!hasTranscript)extractionDiagnostics.qualityGateReason="empty_transcript";candidateCount=await speakerIdentity.candidateCount();}
-          } else {candidateCount=await speakerIdentity.candidateCount();logger.error?.("Nova speaker recognition failed",{requestId,stage:"speaker_embedding",code:extracted.reason?.code||"unknown"});}
+                if(grant){const familiarity=await speakerIdentity.rememberAnonymous({representation:evidence.representation,representationVersion:evidence.extractorVersion,consent:true,consentActor:grant.consent_actor,selfReportedName:grant.self_reported_name});speaker={...speaker,speaker_familiarity:familiarity.state,anonymous_speaker_id:familiarity.anonymousSpeakerId||null};logger.info?.("Nova anonymous speaker familiarity completed",{requestId,state:familiarity.state,anonymousSpeakerId:familiarity.anonymousSpeakerId||null,candidateCount:familiarity.candidateCount,confidence:familiarity.confidence,threshold:familiarity.threshold,scoreMargin:familiarity.scoreMargin});}
+          }
           speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
           if(speaker.match_status==="confirmed"&&!speaker.assertion)speaker={speaker_profile_id:null,speaker_label:"unknown",confidence:0,extractor_version:speaker.extractor_version,match_status:"unknown",authenticated_identity:"none",speaker_familiarity:"none",anonymous_speaker_id:null,assertion:null};
-          logger.info?.("Nova speaker recognition completed",{requestId,extractorDurationMs:Number.isFinite(speakerRecognitionMs)?speakerRecognitionMs:null,...extractionDiagnostics,candidateCount,matchStatus:speaker.match_status,confidence:speaker.confidence,...matchDiagnostics,recognizedProfileId:speaker.speaker_profile_id,speakerCategory:speaker.speaker_label,assertionIssued:Boolean(speaker.assertion)});
-          sendJson(response, 200, { ...transcription.value, speaker, timing: { sttAndSpeakerMs: Date.now() - startedAt, ...(Number.isFinite(speakerRecognitionMs) ? { speakerRecognitionMs } : {}) } }); return;
+          logger.info?.("Nova speaker recognition completed",{requestId,authoritativeEngine:authoritative?.engineId||null,extractorDurationMs:authoritative?.latencyMs??null,...authoritative?.diagnostics,qualityGateResult:authoritative?.qualityState||"failure",candidateCount:authoritative?.candidateCount||0,matchStatus:speaker.match_status,confidence:speaker.confidence,threshold:authoritative?.threshold??null,ambiguityMargin:authoritative?.ambiguityMargin??null,scoreMargin:authoritative?.scoreMargin??null,bestCandidateCategory:authoritative?.category||null,matchVariant:authoritative?.representationId||null,recognizedProfileId:speaker.speaker_profile_id,speakerCategory:speaker.speaker_label,assertionIssued:Boolean(speaker.assertion)});
+          sendJson(response, 200, { ...transcription.value, speaker, timing: { sttAndSpeakerMs: Date.now() - startedAt, ...(Number.isFinite(authoritative?.latencyMs) ? { speakerRecognitionMs:authoritative.latencyMs } : {}) } }); return;
         }
         if (request.method === "POST" && pathname === "/api/voice/speech") {
           const controller = new AbortController();

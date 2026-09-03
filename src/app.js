@@ -14,6 +14,8 @@ import { createSpeakerIdentity } from "./voice/speaker-identity.js";
 import { createSpeakerExtractor } from "./voice/speaker-extractor.js";
 import { createSpeakerAssertions } from "./voice/speaker-assertion.js";
 import { createFamiliarityConsent } from "./voice/familiarity-consent.js";
+import { createEcapaSpeakerEngine } from "./voice/ecapa-speaker-engine.js";
+import { createSpeakerEngineCoordinator } from "./voice/speaker-engine.js";
 
 export function createApp({ environment = process.env, storage: storageOverride, logger = console, voiceFetchImpl } = {}) {
   const config = readConfig(environment);
@@ -45,6 +47,7 @@ export function createApp({ environment = process.env, storage: storageOverride,
   const voiceBenchmark = createVoiceBenchmark({ config, storage, ownerId: OWNER_ID, providers: benchmarkProviders });
   const voiceService = createVoiceService({ config, ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}) });
   const speakerExtractor = createSpeakerExtractor({ config, ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}) });
+  const speakerEngines = createSpeakerEngineCoordinator({ authoritativeEngine: createEcapaSpeakerEngine({ extractor: speakerExtractor, identity: speakerIdentity }), shadowEngines: [], logger });
 
-  return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerAssertions, familiarityConsent, logger });
+  return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerEngines, speakerAssertions, familiarityConsent, logger });
 }
