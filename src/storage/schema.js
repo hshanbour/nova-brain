@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -70,6 +70,16 @@ export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE INDEX IF NOT EXISTS nova_speaker_profiles_owner_active_idx ON nova_speaker_profiles (owner_id, status, updated_at DESC)`,
   `ALTER TABLE nova_speaker_profiles ADD COLUMN IF NOT EXISTS enrollment_attempt_id text`,
   `CREATE UNIQUE INDEX IF NOT EXISTS nova_speaker_profiles_owner_attempt_idx ON nova_speaker_profiles (owner_id, enrollment_attempt_id) WHERE enrollment_attempt_id IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS nova_anonymous_speaker_profiles (
+    id text PRIMARY KEY, owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    stable_label text NOT NULL, representation jsonb NOT NULL, representation_version text NOT NULL,
+    status text NOT NULL DEFAULT 'active', consent_at timestamptz NOT NULL, consent_actor text NOT NULL,
+    self_reported_name text, first_seen_at timestamptz NOT NULL, last_seen_at timestamptz NOT NULL,
+    encounter_count integer NOT NULL DEFAULT 1 CHECK (encounter_count > 0),
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz,
+    UNIQUE(owner_id, stable_label)
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_anonymous_speakers_owner_active_idx ON nova_anonymous_speaker_profiles (owner_id, status, last_seen_at DESC)`,
   `CREATE TABLE IF NOT EXISTS nova_voice_utterances (
     id text PRIMARY KEY, owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
     conversation_id text NOT NULL REFERENCES nova_conversations(id) ON DELETE CASCADE,
@@ -119,5 +129,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
   )`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_owner_cost_idx ON nova_voice_benchmark_results (owner_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_session_idx ON nova_voice_benchmark_results (session_id, created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6) ON CONFLICT (version) DO NOTHING`
 ]);

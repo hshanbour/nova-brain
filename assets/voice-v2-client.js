@@ -2,13 +2,14 @@ export class VoiceV2ApiError extends Error {
   constructor(message, status = 0, category) { super(message); this.name = "VoiceV2ApiError"; this.status = status; this.category = category; }
 }
 
-export function createVoiceV2Client({ fetchImpl = globalThis.fetch, now = () => globalThis.performance?.now?.() ?? Date.now() } = {}) {
+export function createVoiceV2Client({ fetchImpl = globalThis.fetch, now = () => globalThis.performance?.now?.() ?? Date.now(), getFamiliarityConsent = () => null } = {}) {
   if (typeof fetchImpl !== "function") throw new TypeError("Voice V2 requires a fetch implementation.");
   return Object.freeze({
     async readiness() { return requestJson(fetchImpl, "/api/voice/readiness"); },
     async transcribe({ audio, mimeType, durationSeconds, signal }) {
       const audioBase64 = bytesToBase64(new Uint8Array(await audio.arrayBuffer()));
-      return requestJson(fetchImpl, "/api/voice/transcribe", { method: "POST", signal, body: JSON.stringify({ audioBase64, mimeType, durationSeconds }) });
+      const familiarityConsent=getFamiliarityConsent();
+      return requestJson(fetchImpl, "/api/voice/transcribe", { method: "POST", signal, body: JSON.stringify({ audioBase64, mimeType, durationSeconds, ...(typeof familiarityConsent==="string"&&familiarityConsent?{familiarityConsent}:{}) }) });
     },
     async speech(text, { signal } = {}) {
       const requestStartedAt = now(); let response;

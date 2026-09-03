@@ -102,7 +102,9 @@ export function readConfig(environment = process.env) {
       minSpeechSeconds: 1.0,
       maxAudioBytes: 2 * 1024 * 1024,
       threshold: 0.35,
-      ambiguityMargin: 0.05
+      ambiguityMargin: 0.05,
+      familiarityThreshold: 0.55,
+      familiarityAmbiguityMargin: 0.08
     }),
     voiceBenchmark: Object.freeze({
       paidCallsApproved: environment.NOVA_VOICE_BENCHMARK_PAID_CALLS_APPROVED === "true",

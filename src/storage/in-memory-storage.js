@@ -5,7 +5,7 @@ function copy(value) { return value === undefined ? undefined : structuredClone(
 function now(clock) { return clock().toISOString(); }
 
 export function createInMemoryStorage({ clock = () => new Date() } = {}) {
-  const owners = new Map(); const projects = new Map(); const conversations = new Map(); const messages = new Map(); const memories = new Map(); const speakerProfiles = new Map(); const voiceUtterances = new Map(); const runs = new Map(); const approvals = new Map(); const activity = []; const benchmarkSessions = new Map(); const benchmarkResults = new Map(); const benchmarkBudgets = new Map();
+  const owners = new Map(); const projects = new Map(); const conversations = new Map(); const messages = new Map(); const memories = new Map(); const speakerProfiles = new Map(); const anonymousSpeakerProfiles = new Map(); const voiceUtterances = new Map(); const runs = new Map(); const approvals = new Map(); const activity = []; const benchmarkSessions = new Map(); const benchmarkResults = new Map(); const benchmarkBudgets = new Map();
   let sequence = 0;
 
   return Object.freeze({
@@ -74,6 +74,10 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async listSpeakerProfiles(ownerId,{includeRepresentation=false}={}) { return [...speakerProfiles.values()].filter((item)=>item.ownerId===ownerId).map((item)=>{const value=copy(item);if(!includeRepresentation)delete value.representation;return value;}); },
     async updateSpeakerProfile(id,ownerId,patch) { const current=speakerProfiles.get(id);if(!current||current.ownerId!==ownerId)return null;const updated={...current,...copy(patch),id,ownerId,createdAt:current.createdAt,updatedAt:now(clock)};speakerProfiles.set(id,updated);return copy(updated); },
     async deleteSpeakerProfile(id,ownerId) { const current=speakerProfiles.get(id);if(!current||current.ownerId!==ownerId)return false;speakerProfiles.delete(id);return true; },
+    async createAnonymousSpeakerProfile(input){const timestamp=now(clock);const profile={...copy(input),createdAt:timestamp,updatedAt:timestamp};anonymousSpeakerProfiles.set(profile.id,profile);return copy(profile);},
+    async listAnonymousSpeakerProfiles(ownerId,{includeRepresentation=false}={}){return[...anonymousSpeakerProfiles.values()].filter((item)=>item.ownerId===ownerId&&item.status!=="deleted").map((item)=>{const value=copy(item);if(!includeRepresentation)delete value.representation;return value;});},
+    async updateAnonymousSpeakerProfile(id,ownerId,patch){const current=anonymousSpeakerProfiles.get(id);if(!current||current.ownerId!==ownerId||current.status==="deleted")return null;const updated={...current,...copy(patch),id,ownerId,createdAt:current.createdAt,updatedAt:now(clock)};anonymousSpeakerProfiles.set(id,updated);return copy(updated);},
+    async deleteAnonymousSpeakerProfile(id,ownerId){const current=anonymousSpeakerProfiles.get(id);if(!current||current.ownerId!==ownerId||current.status==="deleted")return false;anonymousSpeakerProfiles.set(id,{...current,status:"deleted",representation:null,deletedAt:now(clock),updatedAt:now(clock)});return true;},
     async purgeInvalidOwnerSpeakerEnrollment(ownerId) {
       const targets=[...speakerProfiles.values()].filter((item)=>item.ownerId===ownerId&&item.relation==="owner");const targetIds=targets.map((item)=>item.id);
       for(const id of targetIds)speakerProfiles.delete(id);

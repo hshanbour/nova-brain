@@ -8,6 +8,12 @@ function publicProfile(profile) {
   return safe;
 }
 
+function publicAnonymousProfile(profile) {
+  if (!profile) return null;
+  const { representation: _representation, consentActor: _consentActor, ...safe } = profile;
+  return safe;
+}
+
 function normalized(values) {
   if (!Array.isArray(values) || values.length < 2 || values.some((value) => !Number.isFinite(value))) {
     throw new Error("A valid derived speaker representation is required.");
@@ -35,7 +41,7 @@ export function contextPolicyForSpeaker(match) {
   return "public_only";
 }
 
-export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date(), threshold = 0.86, ambiguityMargin = 0.05, embeddingKey, requireEncryption = false } = {}) {
+export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date(), threshold = 0.86, ambiguityMargin = 0.05, familiarityThreshold = 0.55, familiarityAmbiguityMargin = 0.08, embeddingKey, requireEncryption = false } = {}) {
   if (!storage || !ownerId) throw new Error("Speaker identity requires storage and owner scope.");
   const key = typeof embeddingKey === "string" && embeddingKey.length >= 32 ? createHash("sha256").update(embeddingKey).digest() : null;
   const protect = (representation) => {
@@ -94,6 +100,18 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
       if (second && best.confidence - second.confidence < ambiguityMargin) return { state:"uncertain",speakerProfileId:null,...decision };
       return { state: "confirmed", speakerProfileId: best.profile.id, displayName: best.profile.displayName, relation: best.profile.relation, scope: best.profile.scope, ...decision };
     },
+    async rememberAnonymous({ representation, representationVersion, consent, consentActor, selfReportedName }) {
+      if (consent !== true || typeof consentActor !== "string" || !consentActor.trim()) return { state:"consent_required",anonymousSpeakerId:null,confidence:0,candidateCount:0,threshold:familiarityThreshold,ambiguityMargin:familiarityAmbiguityMargin };
+      const probe=normalized(representation);const profiles=(await storage.listAnonymousSpeakerProfiles(ownerId,{includeRepresentation:true})).map((profile)=>({...profile,representation:reveal(profile.representation)})).filter((profile)=>profile.status==="active"&&profile.representation);
+      const ranked=profiles.map((profile)=>({profile,confidence:cosine(probe,profile.representation)})).sort((a,b)=>b.confidence-a.confidence);const best=ranked[0];const second=ranked[1];const confidence=best?Math.round(best.confidence*1000)/1000:0;const scoreMargin=second?Math.round((best.confidence-second.confidence)*1000)/1000:null;const diagnostics={confidence,candidateCount:profiles.length,threshold:familiarityThreshold,ambiguityMargin:familiarityAmbiguityMargin,scoreMargin};
+      if(best&&best.confidence>=familiarityThreshold&&second&&best.confidence-second.confidence<familiarityAmbiguityMargin)return{state:"uncertain",anonymousSpeakerId:null,...diagnostics};
+      const timestamp=clock().toISOString();const alias=typeof selfReportedName==="string"&&selfReportedName.trim()?selfReportedName.trim().slice(0,80):null;
+      if(best&&best.confidence>=familiarityThreshold){const count=Math.max(1,Number(best.profile.encounterCount)||1);const updatedRepresentation=normalized(best.profile.representation.map((value,index)=>(value*count+probe[index])/(count+1)));const updated=await storage.updateAnonymousSpeakerProfile(best.profile.id,ownerId,{representation:protect(updatedRepresentation),lastSeenAt:timestamp,encounterCount:count+1,...(!best.profile.selfReportedName&&alias?{selfReportedName:alias}:{})});await audit("anonymous_speaker_recognized","A consented recurring anonymous voice was recognized.",{anonymousSpeakerId:updated.id,encounterCount:updated.encounterCount});return{state:"known_anonymous",anonymousSpeakerId:updated.id,stableLabel:updated.stableLabel,selfReportedName:updated.selfReportedName,...diagnostics};}
+      const id=randomUUID();const created=await storage.createAnonymousSpeakerProfile({id,ownerId,stableLabel:`anonymous_speaker_${id.slice(0,8)}`,representation:protect(probe),representationVersion,status:"active",consentAt:timestamp,consentActor:consentActor.trim().slice(0,120),selfReportedName:alias,firstSeenAt:timestamp,lastSeenAt:timestamp,encounterCount:1});await audit("anonymous_speaker_created","A consented anonymous recurring voiceprint was created.",{anonymousSpeakerId:created.id,representationVersion});return{state:"first_time_unknown",anonymousSpeakerId:created.id,stableLabel:created.stableLabel,selfReportedName:created.selfReportedName,...diagnostics};
+    },
+    async listAnonymous(){return(await storage.listAnonymousSpeakerProfiles(ownerId)).map(publicAnonymousProfile);},
+    async isActiveAnonymous(id){if(typeof id!=="string"||!id)return false;return(await storage.listAnonymousSpeakerProfiles(ownerId)).some((profile)=>profile.id===id&&profile.status==="active");},
+    async deleteAnonymous(id){const deleted=await storage.deleteAnonymousSpeakerProfile(id,ownerId);if(deleted)await audit("anonymous_speaker_deleted","An anonymous recurring voiceprint and familiarity metadata were deleted.",{anonymousSpeakerId:id});return deleted;},
     async recordUtterance(input) {
       return storage.createVoiceUtterance({ id: randomUUID(), ownerId, conversationId: input.conversationId, speakerProfileId: input.speakerProfileId || null, speakerLabel: input.speakerLabel || "unknown", confidence: Number.isFinite(input.confidence) ? input.confidence : null, text: input.text, startedAtMs: input.startedAtMs ?? null, endedAtMs: input.endedAtMs ?? null });
     }

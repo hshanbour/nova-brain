@@ -80,7 +80,7 @@ function setCorsHeaders(request, response, allowedOrigins) {
   }
 }
 
-export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerAssertions, logger = console }) {
+export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerAssertions, familiarityConsent, logger = console }) {
   return Object.freeze({
     async handle(request, response) {
       const requestId = randomUUID();
@@ -151,7 +151,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           logger.info?.("Nova speaker recognition started",{requestId,durationSeconds:Number(input?.durationSeconds)||0,extractorConfigured:Boolean(speakerExtractor?.configured)});
           const [transcription, extracted, storageReady] = await Promise.allSettled([voiceService.transcribe(input), speakerExtractor?.extract?.(input,{requestId}) || Promise.reject(new Error("not configured")), ready()]);
           if (transcription.status === "rejected") throw transcription.reason;
-          let speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: config.speakerRecognition.modelVersion, match_status: "unknown" };
+          let speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: config.speakerRecognition.modelVersion, match_status: "unknown", authenticated_identity:"none",speaker_familiarity:"none",anonymous_speaker_id:null };
           let speakerRecognitionMs;let candidateCount=0;let extractionDiagnostics={totalAudioDurationSeconds:Number(input?.durationSeconds)||0,voicedDurationSeconds:null,silenceRatio:null,sampleRate:null,channelCount:null,preprocessingVersion:null,qualityGateResult:"unavailable",qualityGateReason:null};let matchDiagnostics={threshold:config.speakerRecognition.threshold,ambiguityMargin:config.speakerRecognition.ambiguityMargin,scoreMargin:null,bestCandidateCategory:null};
           if(storageReady.status==="rejected")throw storageReady.reason;
           if (extracted.status === "fulfilled") {
@@ -162,12 +162,16 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
               candidateCount=match.candidateCount||0;
               matchDiagnostics={threshold:match.threshold??config.speakerRecognition.threshold,ambiguityMargin:match.ambiguityMargin??config.speakerRecognition.ambiguityMargin,scoreMargin:match.scoreMargin??null,bestCandidateCategory:match.bestCandidateCategory??null};
               speaker = match.state === "confirmed"
-                ? { speaker_profile_id: match.speakerProfileId, speaker_label: match.relation === "owner" ? "owner" : "enrolled_member", confidence: match.confidence, extractor_version: extracted.value.extractorVersion, match_status: "confirmed" }
+                ? { speaker_profile_id: match.speakerProfileId, speaker_label: match.relation === "owner" ? "owner" : "enrolled_member", confidence: match.confidence, extractor_version: extracted.value.extractorVersion, match_status: "confirmed",authenticated_identity:match.relation === "owner" ? "owner" : "known_member",speaker_familiarity:"none",anonymous_speaker_id:null }
                 : { ...speaker,confidence:match.confidence||0, extractor_version: extracted.value.extractorVersion, match_status: match.state === "uncertain" ? "uncertain" : "unknown" };
+              if(match.state!=="confirmed"){
+                const grant=familiarityConsent?.verify?.(input?.familiarityConsent);
+                if(grant){const familiarity=await speakerIdentity.rememberAnonymous({representation:extracted.value.representation,representationVersion:extracted.value.extractorVersion,consent:true,consentActor:grant.consent_actor,selfReportedName:grant.self_reported_name});speaker={...speaker,speaker_familiarity:familiarity.state,anonymous_speaker_id:familiarity.anonymousSpeakerId||null};logger.info?.("Nova anonymous speaker familiarity completed",{requestId,state:familiarity.state,anonymousSpeakerId:familiarity.anonymousSpeakerId||null,candidateCount:familiarity.candidateCount,confidence:familiarity.confidence,threshold:familiarity.threshold,scoreMargin:familiarity.scoreMargin});}
+              }
             } else {speaker.match_status = "insufficient_speech";candidateCount=await speakerIdentity.candidateCount();}
           } else {candidateCount=await speakerIdentity.candidateCount();logger.error?.("Nova speaker recognition failed",{requestId,stage:"speaker_embedding",code:extracted.reason?.code||"unknown"});}
           speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
-          if(speaker.match_status==="confirmed"&&!speaker.assertion)speaker={speaker_profile_id:null,speaker_label:"unknown",confidence:0,extractor_version:speaker.extractor_version,match_status:"unknown",assertion:null};
+          if(speaker.match_status==="confirmed"&&!speaker.assertion)speaker={speaker_profile_id:null,speaker_label:"unknown",confidence:0,extractor_version:speaker.extractor_version,match_status:"unknown",authenticated_identity:"none",speaker_familiarity:"none",anonymous_speaker_id:null,assertion:null};
           logger.info?.("Nova speaker recognition completed",{requestId,extractorDurationMs:Number.isFinite(speakerRecognitionMs)?speakerRecognitionMs:null,...extractionDiagnostics,candidateCount,matchStatus:speaker.match_status,confidence:speaker.confidence,...matchDiagnostics,recognizedProfileId:speaker.speaker_profile_id,speakerCategory:speaker.speaker_label,assertionIssued:Boolean(speaker.assertion)});
           sendJson(response, 200, { ...transcription.value, speaker, timing: { sttAndSpeakerMs: Date.now() - startedAt, ...(Number.isFinite(speakerRecognitionMs) ? { speakerRecognitionMs } : {}) } }); return;
         }
@@ -186,6 +190,16 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         }
         if(request.method==="GET"&&pathname==="/api/speakers/privacy-status"){
           await ready();sendJson(response,200,{status:await speakerIdentity.privacyStatus()});return;
+        }
+        if(request.method==="POST"&&pathname==="/api/speakers/familiarity/consent"){
+          const input=await readJsonBody(request,config.maxBodyBytes);const token=familiarityConsent?.issue?.(input);if(!token)throw new Error("Explicit anonymous voice-familiarity consent is required.");logger.info("Nova anonymous speaker familiarity consent issued",{requestId,hasSelfReportedName:Boolean(input?.selfReportedName)});sendJson(response,201,{consentToken:token,expiresInSeconds:14400,rawAudioPolicy:"ephemeral-request-only",authenticationEffect:"none"});return;
+        }
+        if(request.method==="GET"&&pathname==="/api/speakers/familiarity"){
+          await ready();sendJson(response,200,{speakers:await speakerIdentity.listAnonymous()});return;
+        }
+        const anonymousSpeakerMatch=pathname.match(/^\/api\/speakers\/familiarity\/([^/]+)$/);
+        if(anonymousSpeakerMatch&&request.method==="DELETE"){
+          await ready();const deleted=await speakerIdentity.deleteAnonymous(decodeURIComponent(anonymousSpeakerMatch[1]));sendJson(response,deleted?200:404,deleted?{success:true,rawAudioObjects:0}:{error:"Anonymous speaker profile not found"});return;
         }
         if(request.method==="HEAD"&&pathname==="/api/speakers/enroll"){
           logger.info("Nova speaker enrollment route probe",{requestId});response.statusCode=204;response.setHeader("Cache-Control","no-store");response.end();return;

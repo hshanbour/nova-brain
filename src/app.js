@@ -13,6 +13,7 @@ import { createVoiceService } from "./voice/voice-service.js";
 import { createSpeakerIdentity } from "./voice/speaker-identity.js";
 import { createSpeakerExtractor } from "./voice/speaker-extractor.js";
 import { createSpeakerAssertions } from "./voice/speaker-assertion.js";
+import { createFamiliarityConsent } from "./voice/familiarity-consent.js";
 
 export function createApp({ environment = process.env, storage: storageOverride, logger = console, voiceFetchImpl } = {}) {
   const config = readConfig(environment);
@@ -24,7 +25,8 @@ export function createApp({ environment = process.env, storage: storageOverride,
   registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID });
   const modelProvider = createModelProvider(config);
   const speakerAssertions = createSpeakerAssertions({ key: config.speakerRecognition.assertionKey });
-  const speakerIdentity = createSpeakerIdentity({ storage, ownerId: OWNER_ID, threshold: config.speakerRecognition.threshold, ambiguityMargin: config.speakerRecognition.ambiguityMargin, embeddingKey: config.speakerRecognition.embeddingKey, requireEncryption: Boolean(config.speakerRecognition.endpoint) });
+  const familiarityConsent = createFamiliarityConsent({ key: config.speakerRecognition.assertionKey });
+  const speakerIdentity = createSpeakerIdentity({ storage, ownerId: OWNER_ID, threshold: config.speakerRecognition.threshold, ambiguityMargin: config.speakerRecognition.ambiguityMargin, familiarityThreshold: config.speakerRecognition.familiarityThreshold, familiarityAmbiguityMargin: config.speakerRecognition.familiarityAmbiguityMargin, embeddingKey: config.speakerRecognition.embeddingKey, requireEncryption: Boolean(config.speakerRecognition.endpoint) });
   const agent = createAgent({
     storage,
     ownerId: OWNER_ID,
@@ -36,6 +38,7 @@ export function createApp({ environment = process.env, storage: storageOverride,
     memoryLimit: config.memoryRetrievalLimit,
     verifySpeakerAssertion: speakerAssertions.verify,
     validateSpeakerProfile: speakerIdentity.isActiveProfile,
+    validateAnonymousSpeaker: speakerIdentity.isActiveAnonymous,
     logger
   });
   const benchmarkProviders = createBenchmarkProviders({ config: config.voiceBenchmark });
@@ -43,5 +46,5 @@ export function createApp({ environment = process.env, storage: storageOverride,
   const voiceService = createVoiceService({ config, ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}) });
   const speakerExtractor = createSpeakerExtractor({ config, ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}) });
 
-  return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerAssertions, logger });
+  return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerAssertions, familiarityConsent, logger });
 }

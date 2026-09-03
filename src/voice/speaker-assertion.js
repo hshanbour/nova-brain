@@ -7,7 +7,7 @@ export function createSpeakerAssertions({ key, clock = Date.now, ttlMs = 120_000
     configured: Boolean(secret),
     issue(speaker) {
       if (!secret) return null;
-      const payload = Buffer.from(JSON.stringify({ speaker_profile_id: speaker.speaker_profile_id || null, speaker_label: speaker.speaker_label || "unknown", match_status: speaker.match_status || "unknown", exp: clock() + ttlMs })).toString("base64url");
+      const payload = Buffer.from(JSON.stringify({ speaker_profile_id: speaker.speaker_profile_id || null, speaker_label: speaker.speaker_label || "unknown", match_status: speaker.match_status || "unknown", authenticated_identity: speaker.authenticated_identity || "none", speaker_familiarity: speaker.speaker_familiarity || "none", anonymous_speaker_id: speaker.anonymous_speaker_id || null, exp: clock() + ttlMs })).toString("base64url");
       return `${payload}.${sign(payload)}`;
     },
     verify(assertion) {

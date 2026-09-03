@@ -1,0 +1,5 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createFamiliarityConsent, FAMILIARITY_CONSENT_STATEMENT } from "../src/voice/familiarity-consent.js";
+
+test("anonymous familiarity consent is explicit, signed, scoped, and expiring",()=>{let now=1000;const consent=createFamiliarityConsent({key:"a-secure-preview-only-key-at-least-32-bytes",clock:()=>now,ttlMs:100});assert.equal(consent.issue({consent:true,consentActor:"Guest",statement:"I agree"}),null);const token=consent.issue({consent:true,consentActor:"Guest",statement:FAMILIARITY_CONSENT_STATEMENT,selfReportedName:"Ahmad"});const verified=consent.verify(token);assert.equal(verified.type,"anonymous_voice_familiarity_consent");assert.equal(verified.consent_actor,"Guest");assert.equal(verified.self_reported_name,"Ahmad");const [payload,signature]=token.split(".");const forged=Buffer.from(JSON.stringify({...verified,consent_actor:"Owner",exp:999999})).toString("base64url");assert.equal(consent.verify(`${forged}.${signature}`),null);now=1101;assert.equal(consent.verify(token),null);assert.equal(consent.verify(`${payload}.bad`),null);});
