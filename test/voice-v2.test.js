@@ -4,7 +4,7 @@ import { createVoiceV2 } from "../assets/voice-v2.js";
 
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 
-function setup({ connectError, connectGate, transcript = "مرحبا Nova، راجع Sharp Cuts API رقم 35", speaker = { match_status:"confirmed",speaker_profile_id:"owner-profile",speaker_label:"owner" }, transcribeError, sendError, speechError, manualReady = false, transcribeGate, agentGate, speechGate, checkpointTtlMs } = {}) {
+function setup({ connectError, connectGate, transcript = "مرحبا Nova، راجع Sharp Cuts API رقم 35", speaker = { match_status:"confirmed",speaker_profile_id:"owner-profile",speaker_label:"owner",authenticated_identity:"owner" }, relevance, assistantMessage, transcribeError, sendError, speechError, manualReady = false, transcribeGate, agentGate, speechGate, checkpointTtlMs } = {}) {
   const events = []; const timers = []; const timings = []; let handlers; let barge; let playbackCallbacks; let interruptionCallbacks; let sends = 0; let speechCalls = 0; let clock = 0; let transcriptIndex=0;
   const capture = {
     async connect() { events.push("connect"); if (connectGate) await connectGate.promise; if (connectError) throw connectError; },
@@ -13,7 +13,7 @@ function setup({ connectError, connectGate, transcript = "مرحبا Nova، را
     stop() { events.push("capture-stop"); }, async destroy() { events.push("destroy"); }
   };
   const client = {
-    async transcribe({ signal }) { events.push("transcribe"); assert.equal(signal instanceof AbortSignal, true); if (transcribeGate) await transcribeGate.promise; if (transcribeError) throw transcribeError; clock += 40; const index=transcriptIndex++;return { transcript:Array.isArray(transcript)?transcript[Math.min(index,transcript.length-1)]:transcript,speaker:Array.isArray(speaker)?speaker[Math.min(index,speaker.length-1)]:speaker }; },
+    async transcribe({ signal,relevanceContext }) { events.push("transcribe");events.push(`relevance-context:${JSON.stringify(relevanceContext)}`);assert.equal(signal instanceof AbortSignal, true); if (transcribeGate) await transcribeGate.promise; if (transcribeError) throw transcribeError; clock += 40; const index=transcriptIndex++;return { transcript:Array.isArray(transcript)?transcript[Math.min(index,transcript.length-1)]:transcript,speaker:Array.isArray(speaker)?speaker[Math.min(index,speaker.length-1)]:speaker,...(relevance?{relevance:Array.isArray(relevance)?relevance[Math.min(index,relevance.length-1)]:relevance}:{}) }; },
     async speech(text, { signal }) { speechCalls += 1; events.push(`speech:${text}`); assert.equal(signal instanceof AbortSignal, true); if (speechGate) await speechGate.promise; if (speechError) throw speechError; clock += 80; return { audio: new Blob(["mp3"], { type: "audio/mpeg" }) }; }
   };
   let playing=false;let paused=false;const playback = { play(_audio, callbacks) { playbackCallbacks = callbacks;playing=true;paused=false; events.push("play"); }, stop() {playing=false;paused=false;events.push("playback-stop"); },pause(){if(!playing)return false;paused=true;events.push("playback-pause");return true;},resume(){if(!playing||!paused)return false;paused=false;events.push("playback-resume");return true;},checkpoint(){return playing?{currentTime:1,paused}:null;} };
@@ -22,7 +22,7 @@ function setup({ connectError, connectGate, transcript = "مرحبا Nova، را
   const mode = createVoiceV2({ capture, client, playback, interruptionPlayback,
     async sendTurn(text, { signal, prepareAssistant }) {
       sends += 1; events.push(`send:${text}`); assert.equal(signal instanceof AbortSignal, true); if (agentGate) await agentGate.promise; if (sendError) throw sendError; clock += 120;
-      const result = { message: `Nova reply to ${text}`, conversationId: "conversation-1" }; let preparedAssistant; let preparationError;
+      const result = { message: assistantMessage||`Nova reply to ${text}`, conversationId: "conversation-1" }; let preparedAssistant; let preparationError;
       try { preparedAssistant = await prepareAssistant(result.message, result); } catch (error) { preparationError = error; }
       events.push("render-assistant"); events.push("refresh-recents-background");
       return { ...result, preparedAssistant, preparationError };
@@ -76,6 +76,12 @@ test("barge-in aborts stale TTS/playback and re-arms without duplicating a turn"
   assert.equal(flow.mode.getState(), "speaking"); const sends = flow.counts().sends; flow.mode.interrupt(); assert.ok(flow.states.includes("interrupted")); assert.equal(flow.mode.getState(), "listening");
   gate.resolve(); await processing; assert.equal(flow.counts().sends, sends); assert.equal(flow.events.includes("play"), false); assert.ok(flow.events.slice(-6).includes("playback-stop"));
 });
+
+test("background speech is discarded before transcript publication or agent turn creation",async()=>{const flow=setup({transcript:"Pass me the clipper.",relevance:{category:"likely_background_speech",accepted_as_turn:false,reason:"owner_speech_not_addressed_to_nova",confidence:.8}});await flow.mode.start();assert.equal(await flow.audio(),false);assert.equal(flow.counts().sends,0);assert.deepEqual(flow.transcripts,[]);assert.equal(flow.mode.getState(),"listening");});
+
+test("background speech during Nova playback resumes the exact paused audio without an agent turn",async()=>{const flow=setup({transcript:["Nova, give a long answer","Are you waiting?"],relevance:[{category:"addressed_to_nova",accepted_as_turn:true,confidence:.99},{category:"likely_background_speech",accepted_as_turn:false,confidence:.8}]});await flow.mode.start();await flow.audio();flow.started();flow.barge();const sends=flow.counts().sends;assert.equal(await flow.audio(),false);assert.equal(flow.counts().sends,sends);assert.ok(flow.events.includes("playback-resume"));assert.equal(flow.mode.getState(),"speaking");});
+
+test("contextual reply signal opens only after Nova finishes a direct question",async()=>{const flow=setup({transcript:["Nova hello","Ahmed"],assistantMessage:"What is your name?"});await flow.mode.start();await flow.audio();flow.started();assert.match(flow.events.find((item)=>item.startsWith("relevance-context:")),/awaiting_nova_reply\":false/);flow.ended();await flow.audio();assert.match(flow.events.filter((item)=>item.startsWith("relevance-context:")).at(-1),/awaiting_nova_reply\":true/);});
 
 test("acoustic barge monitoring calibrates only after actual playback starts",async()=>{const flow=setup();await flow.mode.start();await flow.audio();assert.equal(flow.events.includes("watch-barge"),false);flow.started();assert.equal(flow.events.filter((item)=>item==="watch-barge").length,1);flow.barge();assert.equal(flow.mode.getState(),"listening");});
 

@@ -17,6 +17,7 @@ import { BenchmarkBudgetError, BenchmarkLockedError, BenchmarkUnavailableError, 
 import { VoiceProviderError, VoiceTimeoutError, VoiceUnavailableError, VoiceValidationError } from "../voice/voice-service.js";
 import { createSpeakerEngineCoordinator, speakerFromAuthoritativeResult } from "../voice/speaker-engine.js";
 import { createEcapaSpeakerEngine, evidenceFor } from "../voice/ecapa-speaker-engine.js";
+import { classifyConversationalRelevance } from "../voice/conversational-relevance.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -164,8 +165,10 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           }
           speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
           if(speaker.match_status==="confirmed"&&!speaker.assertion)speaker={speaker_profile_id:null,speaker_label:"unknown",confidence:0,extractor_version:speaker.extractor_version,match_status:"unknown",authenticated_identity:"none",speaker_familiarity:"none",anonymous_speaker_id:null,assertion:null};
+          const relevance=classifyConversationalRelevance({transcript:transcription.value?.transcript,speaker,context:safeRelevanceContext(input?.relevanceContext)});
+          logger.info?.("Nova voice relevance completed",{requestId,speakerCategory:speaker.speaker_label,relevanceCategory:relevance.category,acceptedAsTurn:relevance.accepted_as_turn,reason:relevance.reason,confidence:relevance.confidence});
           logger.info?.("Nova speaker recognition completed",{requestId,authoritativeEngine:authoritative?.engineId||null,extractorDurationMs:authoritative?.latencyMs??null,...authoritative?.diagnostics,qualityGateResult:authoritative?.qualityState||"failure",candidateCount:authoritative?.candidateCount||0,matchStatus:speaker.match_status,confidence:speaker.confidence,threshold:authoritative?.threshold??null,ambiguityMargin:authoritative?.ambiguityMargin??null,scoreMargin:authoritative?.scoreMargin??null,bestCandidateCategory:authoritative?.category||null,matchVariant:authoritative?.representationId||null,recognizedProfileId:speaker.speaker_profile_id,speakerCategory:speaker.speaker_label,assertionIssued:Boolean(speaker.assertion)});
-          sendJson(response, 200, { ...transcription.value, speaker, timing: { sttAndSpeakerMs: Date.now() - startedAt, ...(Number.isFinite(sttMs)?{sttMs}:{}), ...(Number.isFinite(authoritative?.latencyMs) ? { speakerRecognitionMs:authoritative.latencyMs } : {}) } }); return;
+          sendJson(response, 200, { ...transcription.value, speaker, relevance, timing: { sttAndSpeakerMs: Date.now() - startedAt, ...(Number.isFinite(sttMs)?{sttMs}:{}), ...(Number.isFinite(authoritative?.latencyMs) ? { speakerRecognitionMs:authoritative.latencyMs } : {}) } }); return;
         }
         if (request.method === "POST" && pathname === "/api/voice/speech") {
           const controller = new AbortController();
@@ -387,3 +390,5 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
     }
   });
 }
+
+function safeRelevanceContext(value){return{interruption:value?.interruption===true,awaiting_nova_reply:value?.awaiting_nova_reply===true,voice_session_engaged:value?.voice_session_engaged===true};}

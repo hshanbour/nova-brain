@@ -1,0 +1,20 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { AUDIO_RELEVANCE, classifyConversationalRelevance } from "../src/voice/conversational-relevance.js";
+
+const owner={authenticated_identity:"owner",match_status:"confirmed",speaker_label:"owner"};
+const unknown={authenticated_identity:"none",match_status:"unknown",speaker_label:"unknown"};
+const classify=(transcript,speaker=unknown,context={})=>classifyConversationalRelevance({transcript,speaker,context});
+
+test("owner directly addressing Nova is relevant without making identity the relevance decision",()=>{const result=classify("Nova, open the latest deployment.",owner);assert.equal(result.category,AUDIO_RELEVANCE.ADDRESSED);assert.equal(result.accepted_as_turn,true);});
+test("owner speech to another human is ignored despite verified identity",()=>{const result=classify("Pass me the clipper.",owner,{voice_session_engaged:true});assert.equal(result.category,AUDIO_RELEVANCE.BACKGROUND);assert.equal(result.accepted_as_turn,false);});
+test("unknown human explicitly addressing Nova gets a restricted relevant turn",()=>{const result=classify("Nova, can you help me?");assert.equal(result.category,AUDIO_RELEVANCE.ADDRESSED);assert.equal(result.accepted_as_turn,true);});
+test("unknown answer to Nova's direct question is a contextual reply without requiring the wake word",()=>{const result=classify("Ahmed.",unknown,{awaiting_nova_reply:true,voice_session_engaged:true});assert.equal(result.category,AUDIO_RELEVANCE.CONTEXTUAL_REPLY);assert.equal(result.accepted_as_turn,true);});
+test("nearby human conversation and TV dialogue are background",()=>{for(const text of ["Are you waiting?","Tonight the government announced a new policy."]){const result=classify(text);assert.equal(result.accepted_as_turn,false);assert.ok([AUDIO_RELEVANCE.BACKGROUND,AUDIO_RELEVANCE.UNCERTAIN].includes(result.category));}});
+test("clippers and non-speech noise do not become a turn",()=>{const result=classify("");assert.equal(result.category,AUDIO_RELEVANCE.NON_SPEECH);assert.equal(result.accepted_as_turn,false);});
+test("owner pause phrase during Nova playback is a relevant interruption",()=>{const result=classify("استني",owner,{interruption:true,voice_session_engaged:true});assert.equal(result.category,AUDIO_RELEVANCE.INTERRUPTION);assert.equal(result.accepted_as_turn,true);});
+test("unknown person explicitly interrupting Nova with a question is relevant but remains unknown",()=>{const result=classify("Nova, what are you doing?",unknown,{interruption:true,voice_session_engaged:true});assert.equal(result.category,AUDIO_RELEVANCE.INTERRUPTION);assert.equal(result.accepted_as_turn,true);assert.equal(unknown.authenticated_identity,"none");});
+test("nearby person talking to somebody else while Nova speaks is ignored",()=>{const result=classify("Can you pass me that chair?",unknown,{interruption:true,voice_session_engaged:true});assert.equal(result.category,AUDIO_RELEVANCE.BACKGROUND);assert.equal(result.accepted_as_turn,false);});
+test("owner unrelated speech during active Voice is not automatically a Nova command",()=>{const result=classify("خد الماكينة وحطها هناك",owner,{voice_session_engaged:true});assert.equal(result.category,AUDIO_RELEVANCE.BACKGROUND);assert.equal(result.accepted_as_turn,false);});
+test("Arabic owner questions and Nova-style imperatives work without ASCII word boundaries",()=>{for(const text of ["كيف الوضع اليوم", "افتحي آخر مشروع"]){const result=classify(text,owner,{voice_session_engaged:true});assert.equal(result.category,AUDIO_RELEVANCE.ADDRESSED);assert.equal(result.accepted_as_turn,true,text);}});
+test("Arabic English and mixed explicit addressing are relevant",()=>{for(const text of ["نوفا، شو أنجزنا؟","Nova, what did we finish?","نوفا، open آخر deployment"]){assert.equal(classify(text,owner).accepted_as_turn,true,text);}});
