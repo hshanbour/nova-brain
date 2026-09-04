@@ -19,7 +19,8 @@ export function classifyConversationalRelevance({ transcript, speaker, context =
   const novaDirectedLanguage = /\b(?:you|your|can you|could you|would you|help me|tell me|show me|open|explain)\b|(?:انت|إنت|عندك|بتقدري|بتقدريش|ساعديني|احكيلي|خبريني|فرجيني|افتحي|اشرحي)/iu.test(normalized);
   const ownerNovaImperative = /^(?:open|show|tell|explain|check|run)(?:$|\s)|^(?:افتحي|فرجيني|احكيلي|خبريني|اشرحي|شغلي|افحصي)(?:$|[\s،,.!?؟])/iu.test(normalized);
   const addressRemainder = normalized.replace(/(?:^|[\s،,.!?؟])(?:nova(?:\s+brain)?|نوفا)(?=$|[\s،,.!?؟])/giu, " ").replace(/[\s،,.!?؟]+/gu, " ").trim();
-  const strongDirectAddress = explicitlyAddressed && Boolean(addressRemainder) && (directQuestion || novaDirectedLanguage || interruptionIntent || ownerNovaImperative);
+  const substantiveDirectAddress = addressRemainder.split(/\s+/u).filter(Boolean).length >= 3;
+  const strongDirectAddress = explicitlyAddressed && Boolean(addressRemainder) && (directQuestion || novaDirectedLanguage || interruptionIntent || ownerNovaImperative || (context.interruption !== true && substantiveDirectAddress));
 
   if (context.interruption === true && interruptionIntent) return decision(AUDIO_RELEVANCE.INTERRUPTION, true, "pause_resume_or_stop_during_playback", .99);
   if (strongDirectAddress) return decision(context.interruption === true ? AUDIO_RELEVANCE.INTERRUPTION : AUDIO_RELEVANCE.ADDRESSED, true, "structured_direct_nova_address", .94);
