@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { createMediaVoiceCapture } from "../assets/voice-capture.js";
 
 function setup(options = {}) {
-  const timers = []; let clock = 0; let level = 0; let constraints; let activeRecorder; const tracks = [{ stopped: false, stop() { this.stopped = true; } }];
+  const timers = []; let clock = 0; let level = 0; let constraints; let activeRecorder; const recorders=[]; const tracks = [{ stopped: false, stop() { this.stopped = true; } }];
   const stream = { getTracks: () => tracks };
   class Recorder {
     static isTypeSupported(type) { return type.startsWith("audio/webm"); }
-    constructor(_stream, options) { this.mimeType = options.mimeType; this.state = "inactive"; this.listeners = new Map(); activeRecorder = this; }
+    constructor(_stream, options) { this.mimeType = options.mimeType; this.state = "inactive"; this.listeners = new Map(); activeRecorder = this; recorders.push(this); }
     addEventListener(name, callback) { this.listeners.set(name, callback); }
     start(timeslice) { this.timeslice = timeslice; this.state = "recording"; }
     emit(value) { this.listeners.get("dataavailable")?.({ data: new Blob([value], { type: this.mimeType }) }); }
@@ -22,7 +22,7 @@ function setup(options = {}) {
   const runFor = (milliseconds) => { for (let elapsed = 0; elapsed < milliseconds; elapsed += 50) { if(!timers.some((item)=>!item.cancelled&&!item.ran))break;run(); } };
   const speakFor = (milliseconds) => { level = 0.1; runFor(milliseconds); };
   const pauseFor = (milliseconds) => { level = 0; runFor(milliseconds); };
-  return { capture, setLevel(value) { level = value; }, run, runFor, speakFor, pauseFor, now: () => clock, tracks, recorder: () => activeRecorder, constraints: () => constraints };
+  return { capture, setLevel(value) { level = value; }, run, runFor, speakFor, pauseFor, now: () => clock, tracks, recorder: () => activeRecorder, recorders, constraints: () => constraints };
 }
 
 test("MediaRecorder VAD finalizes substantial speech after a patient bounded endpoint", async () => {
@@ -62,6 +62,10 @@ test("playback monitor requires modest sustained credible speech for barge-in", 
 });
 
 test("a one-frame click resets while a sustained short utterance reaches semantic barge confirmation",async()=>{const flow=setup();await flow.capture.connect();let barges=0;flow.capture.watchForBargeIn(()=>{barges+=1;});flow.setLevel(.01);flow.run();flow.run();flow.setLevel(.1);flow.run();flow.setLevel(0);for(let index=0;index<3;index+=1)flow.run();assert.equal(barges,0);flow.setLevel(.1);for(let index=0;index<4;index+=1){if(barges)break;flow.run();}assert.equal(barges,1);});
+
+test("barge capture preserves the first credible frame in one continuous WebM recorder",async()=>{const flow=setup();await flow.capture.connect();let candidate;let recording;flow.capture.watchForBargeIn(value=>{candidate=value;});flow.setLevel(.01);flow.run();flow.run();flow.setLevel(.1);flow.run();const onsetRecorder=flow.recorder();onsetRecorder.emit("onset");for(let index=0;index<3&&!candidate;index+=1)flow.run();assert.equal(candidate.capturePrimed,true);flow.capture.listen({interruptionProbe:true,reuseCandidateCapture:true,onAudio:value=>{recording=value;}});assert.equal(flow.recorder(),onsetRecorder);assert.equal(flow.recorders.length,1);flow.setLevel(0);flow.pauseFor(900);assert.match(await recording.audio.text(),/onsetrecorded/);});
+
+test("a rejected one-frame candidate discards its provisional recorder",async()=>{const flow=setup();await flow.capture.connect();flow.capture.watchForBargeIn(()=>{});flow.setLevel(.01);flow.run();flow.run();flow.setLevel(.1);flow.run();const provisional=flow.recorder();assert.equal(provisional.state,"recording");flow.setLevel(0);flow.run();assert.equal(provisional.state,"inactive");});
 
 test("quiet clear and louder speech each barge in once while steady background and playback leakage do not",async()=>{for(const speechLevel of [.035,.12]){const flow=setup();await flow.capture.connect();let barges=0;flow.capture.watchForBargeIn(()=>{barges+=1;});flow.setLevel(.015);flow.runFor(1_000);assert.equal(barges,0);flow.setLevel(speechLevel);for(let index=0;index<5&&barges===0;index+=1)flow.run();assert.equal(barges,1);}for(const level of [.03,.045]){const background=setup();await background.capture.connect();let barges=0;background.capture.watchForBargeIn(()=>{barges+=1;});background.setLevel(level);background.runFor(2_000);assert.equal(barges,0);}});
 

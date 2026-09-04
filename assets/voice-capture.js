@@ -6,10 +6,10 @@ export function createMediaVoiceCapture({
   noSpeechMs = 8_000, maxDurationMs = 30_000, calibrationMs = 400,
   speechThreshold = 0.035, bargeThreshold = 0.025, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 3
 }) {
-  let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false;
+  let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false; let primedCapture;
   const supported = Boolean(mediaDevices?.getUserMedia && MediaRecorder && AudioContext);
   const clearTimer = () => { if (timer !== undefined) cancelSchedule(timer); timer = undefined; };
-  const stopRecorder = () => { if (recorder?.state === "recording") recorder.stop(); recorder = undefined; listening = false; };
+  const stopRecorder = () => { if (recorder?.state === "recording") recorder.stop(); recorder = undefined; primedCapture = undefined; listening = false; };
   const rms = () => { const data = new Uint8Array(analyser.fftSize); analyser.getByteTimeDomainData(data); let sum = 0; for (const value of data) { const centered = (value - 128) / 128; sum += centered * centered; } return Math.sqrt(sum / data.length); };
 
   async function connect() {
@@ -19,8 +19,8 @@ export function createMediaVoiceCapture({
     source = context.createMediaStreamSource(stream); source.connect(analyser); if (context.state === "suspended") await context.resume();
   }
 
-  function listen({ onReady, onAudio, onNoSpeech, onError, onEndpoint, interruptionProbe = false }) {
-    clearTimer(); stopRecorder(); const current = ++generation;
+  function listen({ onReady, onAudio, onNoSpeech, onError, onEndpoint, interruptionProbe = false, reuseCandidateCapture = false }) {
+    clearTimer(); const primed = interruptionProbe && reuseCandidateCapture ? primedCapture : undefined; if (!primed) stopRecorder(); primedCapture = undefined; const current = ++generation;
     const activeCalibrationMs = interruptionProbe ? 0 : calibrationMs;
     const activeEndpointSilenceMs = interruptionProbe ? Math.min(endpointSilenceMs, 700) : endpointSilenceMs;
     const activeShortFragmentSilenceMs = interruptionProbe ? Math.min(shortFragmentSilenceMs, 850) : shortFragmentSilenceMs;
@@ -28,16 +28,13 @@ export function createMediaVoiceCapture({
     const activeMaxEndpointSilenceMs = interruptionProbe ? Math.min(maxEndpointSilenceMs, 1_000) : maxEndpointSilenceMs;
     const activeNoSpeechMs = interruptionProbe ? Math.min(noSpeechMs, 2_500) : noSpeechMs;
     const activeMaxDurationMs = interruptionProbe ? Math.min(maxDurationMs, 4_000) : maxDurationMs;
-    const chunks = [];
-    let speechFrames = 0; let heardSpeech = false; let speechStartedAt = 0; let lastSpeechAt = 0; let voicedMs = 0;
-    let endpointStartedAt = 0; let endpointGraceMs = 0; let resumedEndpoints = 0; let noiseFloor = 0.008; const startedAt = now();
-    try { recorder = new MediaRecorder(stream, preferredRecorderOptions(MediaRecorder)); }
+    const chunks = primed?.chunks || [];
+    let speechFrames = primed ? 2 : 0; let heardSpeech = Boolean(primed); let speechStartedAt = primed?.startedAt || 0; let lastSpeechAt = primed?.lastSpeechAt || 0; let voicedMs = primed?.voicedMs || 0;
+    let endpointStartedAt = 0; let endpointGraceMs = 0; let resumedEndpoints = 0; let noiseFloor = 0.008; const startedAt = primed?.startedAt || now();
+    try { recorder = primed?.recorder || new MediaRecorder(stream, preferredRecorderOptions(MediaRecorder)); }
     catch (error) { listening = false; onError?.(error); return; }
     const activeRecorder = recorder;
-    activeRecorder.addEventListener("dataavailable", (event) => {
-      if (current !== generation || !event.data?.size) return;
-      chunks.push(event.data);
-    });
+    if (!primed) activeRecorder.addEventListener("dataavailable", (event) => { if (current !== generation || !event.data?.size) return; chunks.push(event.data); });
     activeRecorder.addEventListener("error", (event) => { if (current === generation) onError?.(event.error || new Error("Microphone recording failed.")); });
     activeRecorder.addEventListener("stop", () => {
       if (current !== generation) return;
@@ -50,7 +47,7 @@ export function createMediaVoiceCapture({
         endpointGraceMs: endpointStartedAt ? endpointGraceMs : 0, resumedEndpoints
       });
     });
-    try { activeRecorder.start(recorderTimesliceMs); listening = activeRecorder.state === "recording"; }
+    try { if (!primed) activeRecorder.start(recorderTimesliceMs); listening = activeRecorder.state === "recording"; }
     catch (error) { listening = false; onError?.(error); return; }
     if (!listening) { onError?.(new Error("Microphone recorder did not become ready.")); return; }
     onReady?.({ startedAt });
@@ -85,13 +82,15 @@ export function createMediaVoiceCapture({
 
   function watchForBargeIn(onBargeIn,{onDiagnostic}={}) {
     clearTimer(); const current = ++generation; let acousticFrames = 0; let speechFrames = 0; let baseline = 0.008;let speechOnsetAt;let monitorFrames=0;let peakRms=0;const monitoringStartedAt=now();
+    const discardCandidateCapture=()=>{if(primedCapture?.recorder?.state==="recording")primedCapture.recorder.stop();if(recorder===primedCapture?.recorder)recorder=undefined;primedCapture=undefined;};
+    const primeCandidateCapture=()=>{if(primedCapture)return;try{const candidateRecorder=new MediaRecorder(stream,preferredRecorderOptions(MediaRecorder));const chunks=[];candidateRecorder.addEventListener("dataavailable",event=>{if(event.data?.size)chunks.push(event.data);});candidateRecorder.start(recorderTimesliceMs);recorder=candidateRecorder;primedCapture={recorder:candidateRecorder,chunks,startedAt:now(),lastSpeechAt:now(),voicedMs:sampleIntervalMs};}catch{discardCandidateCapture();}};
     const sample = () => {
       if (current !== generation) return;
       const level=rms();monitorFrames+=1;peakRms=Math.max(peakRms,level);if(monitorFrames<=2){baseline=Math.min(.035,baseline*.45+level*.55);timer=schedule(sample,sampleIntervalMs);return;}const threshold=Math.max(bargeThreshold,baseline*1.7);const acoustic=level>=threshold;
       if(!acoustic)baseline=Math.min(baseline,baseline*0.94+level*0.06);
-      acousticFrames=acoustic?acousticFrames+1:Math.max(0,acousticFrames-2);
-      if(acousticFrames>=bargeAcousticFrames){if(!speechOnsetAt){speechOnsetAt=now()-(acousticFrames-1)*sampleIntervalMs;onDiagnostic?.({phase:"candidate",speechOnsetAt,baselineRms:baseline,thresholdRms:threshold,peakRms,sustainedFrames:acousticFrames,monitorFrames,calibrationComplete:monitorFrames>=2});}speechFrames=acoustic?speechFrames+1:Math.max(0,speechFrames-1);}else if(!acoustic){if(speechOnsetAt)onDiagnostic?.({phase:"candidate-reset",speechOnsetAt,detectedAt:now(),baselineRms:baseline,thresholdRms:threshold,peakRms,sustainedFrames:speechFrames,monitorFrames,calibrationComplete:monitorFrames>=2});speechFrames=0;speechOnsetAt=undefined;peakRms=level;}
-      if (speechFrames >= bargeSpeechFrames) { clearTimer(); onBargeIn?.({ confirmed:true,voicedMs:speechFrames*sampleIntervalMs,baselineRms:Math.round(baseline*100000)/100000,thresholdRms:Math.round(threshold*100000)/100000,peakRms:Math.round(peakRms*100000)/100000,sustainedFrames:speechFrames,monitorFrames,calibrationComplete:monitorFrames>=2,speechOnsetAt,detectedAt:now(),monitoringStartedAt,echoCancellation:true }); return; }
+      acousticFrames=acoustic?acousticFrames+1:Math.max(0,acousticFrames-2);if(acousticFrames===1)primeCandidateCapture();else if(acoustic&&primedCapture){primedCapture.voicedMs+=sampleIntervalMs;primedCapture.lastSpeechAt=now();}
+      if(acousticFrames>=bargeAcousticFrames){if(!speechOnsetAt){speechOnsetAt=now()-(acousticFrames-1)*sampleIntervalMs;onDiagnostic?.({phase:"candidate",speechOnsetAt,baselineRms:baseline,thresholdRms:threshold,peakRms,sustainedFrames:acousticFrames,monitorFrames,calibrationComplete:monitorFrames>=2});}speechFrames=acoustic?speechFrames+1:Math.max(0,speechFrames-1);}else if(!acoustic){if(speechOnsetAt)onDiagnostic?.({phase:"candidate-reset",speechOnsetAt,detectedAt:now(),baselineRms:baseline,thresholdRms:threshold,peakRms,sustainedFrames:speechFrames,monitorFrames,calibrationComplete:monitorFrames>=2});discardCandidateCapture();speechFrames=0;speechOnsetAt=undefined;peakRms=level;}
+      if (speechFrames >= bargeSpeechFrames) { clearTimer(); onBargeIn?.({ confirmed:true,capturePrimed:Boolean(primedCapture),voicedMs:speechFrames*sampleIntervalMs,baselineRms:Math.round(baseline*100000)/100000,thresholdRms:Math.round(threshold*100000)/100000,peakRms:Math.round(peakRms*100000)/100000,sustainedFrames:speechFrames,monitorFrames,calibrationComplete:monitorFrames>=2,speechOnsetAt,detectedAt:now(),monitoringStartedAt,echoCancellation:true }); return; }
       timer = schedule(sample, sampleIntervalMs);
     };
     timer = schedule(sample, sampleIntervalMs);

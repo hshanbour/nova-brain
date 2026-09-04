@@ -16,11 +16,12 @@ export function createVoiceV2({
   const reportBargeDiagnostic = (detail = {}) => onTiming({turnId:timing?.turnId,stage:`barge-${detail.phase||"candidate"}`,measurements:compact({speechOnset:Number.isFinite(detail.speechOnsetAt)?rounded(detail.speechOnsetAt):undefined,baselineRms:Number.isFinite(detail.baselineRms)?precise(detail.baselineRms):undefined,thresholdRms:Number.isFinite(detail.thresholdRms)?precise(detail.thresholdRms):undefined,peakUserRms:Number.isFinite(detail.peakRms)?precise(detail.peakRms):undefined,sustainedFrames:Number.isFinite(detail.sustainedFrames)?detail.sustainedFrames:undefined,monitorFrames:Number.isFinite(detail.monitorFrames)?detail.monitorFrames:undefined,calibrationComplete:detail.calibrationComplete?1:0,ttsChunkIndex:Number.isInteger(interruptedCheckpoint?.chunkIndex)?interruptedCheckpoint.chunkIndex:undefined})});
   const armBargeMonitor = () => capture.watchForBargeIn((detail)=>interrupt(detail),{onDiagnostic:reportBargeDiagnostic});
 
-  function listen({ afterAudio = false, interruptionProbe = false } = {}) {
+  function listen({ afterAudio = false, interruptionProbe = false, reuseCandidateCapture = false } = {}) {
     if (!active) return; clearRetry(); if(!interruptionProbe){abortPending();playback.stop();interruptionPlayback.stop?.();}
     const current = generation; publish(interruptionProbe?"barge_candidate":"getting_ready");
     capture.listen({
       interruptionProbe,
+      reuseCandidateCapture,
       onReady: () => {
         if (!valid(current)) return;
         mark("listeningReadyAt"); publish(pausedWaiting()?"paused_waiting_for_user":interruptionProbe?"barge_verifying":"listening");
@@ -78,7 +79,7 @@ export function createVoiceV2({
       if (!text) { if(pausedWaiting()){listen({interruptionProbe:true});return false;} retry("No speech was understood."); return false; }
       let preservingCheckpoint=interruptionProbe&&canPreserveCheckpoint(speaker,interruptedCheckpoint);
       const pauseIntent=preservingCheckpoint&&isPauseIntent(text);
-      if(pauseIntent)interruptedCheckpoint={...interruptedCheckpoint,status:"paused_waiting_for_user",pausedAt:now()};
+      if(pauseIntent){interruptedCheckpoint={...interruptedCheckpoint,lastVerifiedInterruptionProfileId:confirmedProfileId(speaker)||interruptedCheckpoint.lastVerifiedInterruptionProfileId,status:"paused_waiting_for_user",pausedAt:now()};onTranscript(text);publish("paused_waiting_for_user");onNotice("Nova paused. Say continue when you are ready.");listen({interruptionProbe:true});return true;}
       else if(pausedWaiting()){interruptedCheckpoint=undefined;playback.stop();current=++generation;preservingCheckpoint=false;}
       if(interruptionProbe&&!preservingCheckpoint){interruptedCheckpoint=undefined;playback.stop();current=++generation;}
       if(interruptionProbe){abortPending();abortController=new AbortController();}
@@ -129,7 +130,7 @@ export function createVoiceV2({
     if(Number.isFinite(detail?.speechOnsetAt))timing.bargeSpeechOnsetAt=detail.speechOnsetAt;if(Number.isFinite(detail?.detectedAt))timing.bargeDetectedAt=detail.detectedAt;timing.bargeVoicedMs=detail?.voicedMs;timing.bargeBaselineRms=detail?.baselineRms;timing.bargeThresholdRms=detail?.thresholdRms;timing.bargePeakRms=detail?.peakRms;timing.bargeSustainedFrames=detail?.sustainedFrames;timing.bargeMonitorFrames=detail?.monitorFrames;timing.bargeCalibrationComplete=detail?.calibrationComplete?1:0;timing.bargeTtsChunkIndex=interruptedCheckpoint?.chunkIndex;
     clearRetry();const playbackState=playback.checkpoint?.();
     if(!playbackState){generation+=1;abortPending();playback.stop();mark("bargePlaybackStoppedAt");reportTiming("interrupted");capture.stop();publish("interrupted");listen();return true;}
-    if(!playback.duck?.(.18))playback.pause?.();mark("bargePlaybackStoppedAt");reportTiming("interrupted");interruptedCheckpoint={...(interruptedCheckpoint||{}),playback:playbackState,chunkIndex:Number.isInteger(playbackState.chunkIndex)?playbackState.chunkIndex:interruptedCheckpoint?.chunkIndex,lastFullyPlayedChunk:Number.isInteger(playbackState.lastFullyPlayedChunk)?playbackState.lastFullyPlayedChunk:interruptedCheckpoint?.lastFullyPlayedChunk,chunkCount:Number.isInteger(playbackState.chunkCount)?playbackState.chunkCount:interruptedCheckpoint?.chunkCount,currentChunkText:playbackState.currentChunkText||interruptedCheckpoint?.currentChunkText,interruptedAt:now(),continuationVersion:(interruptedCheckpoint?.continuationVersion||0)+1,status:"barge_candidate_pending_relevance"};capture.stop();publish("barge_candidate");listen({interruptionProbe:true});return true;
+    if(!playback.duck?.(.18))playback.pause?.();mark("bargePlaybackStoppedAt");reportTiming("interrupted");interruptedCheckpoint={...(interruptedCheckpoint||{}),playback:playbackState,chunkIndex:Number.isInteger(playbackState.chunkIndex)?playbackState.chunkIndex:interruptedCheckpoint?.chunkIndex,lastFullyPlayedChunk:Number.isInteger(playbackState.lastFullyPlayedChunk)?playbackState.lastFullyPlayedChunk:interruptedCheckpoint?.lastFullyPlayedChunk,chunkCount:Number.isInteger(playbackState.chunkCount)?playbackState.chunkCount:interruptedCheckpoint?.chunkCount,currentChunkText:playbackState.currentChunkText||interruptedCheckpoint?.currentChunkText,interruptedAt:now(),continuationVersion:(interruptedCheckpoint?.continuationVersion||0)+1,status:"barge_candidate_pending_relevance"};if(!detail.capturePrimed)capture.stop();publish("barge_candidate");listen({interruptionProbe:true,reuseCandidateCapture:Boolean(detail.capturePrimed)});return true;
   }
 
   function resumeInterrupted({speaker,text,message,explicit=false}={}){
