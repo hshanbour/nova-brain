@@ -109,9 +109,9 @@ function preferredRecorderOptions(MediaRecorder) {
 }
 
 export function createAudioPlayback({ Audio, URL }) {
-  let player; let objectUrl; let generation = 0; let iterator; let settlePlayback; let paused=false;let resumeWaiter;let pendingResumeStarted;let currentChunkIndex=-1;let lastFullyPlayedChunk=-1;let currentChunkCount;let currentChunkText;
+  let player; let objectUrl; let generation = 0; let iterator; let settlePlayback; let paused=false;let volumeScale=1;let resumeWaiter;let pendingResumeStarted;let currentChunkIndex=-1;let lastFullyPlayedChunk=-1;let currentChunkCount;let currentChunkText;
   const clearPlayer = () => { if (player) { player.pause(); player.removeAttribute?.("src"); player.load?.(); } if (objectUrl) URL.revokeObjectURL(objectUrl); player = objectUrl = undefined; };
-  const stop = () => { generation += 1; paused=false; resumeWaiter?.();resumeWaiter=undefined;pendingResumeStarted=undefined;settlePlayback?.(); settlePlayback = undefined; clearPlayer(); Promise.resolve(iterator?.return?.()).catch(() => {}); iterator = undefined;currentChunkIndex=-1;lastFullyPlayedChunk=-1;currentChunkCount=undefined;currentChunkText=undefined; };
+  const stop = () => { generation += 1; paused=false;volumeScale=1;resumeWaiter?.();resumeWaiter=undefined;pendingResumeStarted=undefined;settlePlayback?.(); settlePlayback = undefined; clearPlayer(); Promise.resolve(iterator?.return?.()).catch(() => {}); iterator = undefined;currentChunkIndex=-1;lastFullyPlayedChunk=-1;currentChunkCount=undefined;currentChunkText=undefined; };
   return Object.freeze({
     play(source, { onStarted, onEnded, onError, onChunkStarted } = {}) {
       stop(); const current = generation; iterator = toAudioStream(source)[Symbol.asyncIterator](); let chunkIndex=0;
@@ -138,13 +138,15 @@ export function createAudioPlayback({ Audio, URL }) {
     },
     pause(){if(paused||(!player&&!iterator))return false;paused=true;player?.pause();return true;},
     resume({onStarted}={}){if(!paused)return false;paused=false;if(player)Promise.resolve(player.play()).then(()=>onStarted?.()).catch(()=>{});else pendingResumeStarted=onStarted;resumeWaiter?.();resumeWaiter=undefined;return true;},
+    duck(level=.18){if(!player&&!iterator)return false;volumeScale=Math.max(0,Math.min(1,Number(level)||.18));if(player)player.volume=volumeScale;return true;},
+    unduck(){if(volumeScale===1)return false;volumeScale=1;if(player)player.volume=1;return true;},
     checkpoint(){return player||iterator?{currentTime:Number(player?.currentTime||0),paused,chunkIndex:currentChunkIndex,lastFullyPlayedChunk,chunkCount:currentChunkCount,currentChunkText}:null;},
     stop
   });
 
   function playBlob(blob, current, onStarted) {
     return new Promise((resolve, reject) => {
-      clearPlayer(); objectUrl = URL.createObjectURL(blob); player = new Audio(objectUrl); player.preload = "auto";
+      clearPlayer(); objectUrl = URL.createObjectURL(blob); player = new Audio(objectUrl); player.preload = "auto";player.volume=volumeScale;
       const activePlayer = player;
       const release = () => { if (player === activePlayer) clearPlayer(); };
       const settle = (callback) => { if (settlePlayback === cancel) settlePlayback = undefined; callback(); };
