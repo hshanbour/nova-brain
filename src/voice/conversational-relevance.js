@@ -13,14 +13,18 @@ export function classifyConversationalRelevance({ transcript, speaker, context =
   if (!text) return decision(AUDIO_RELEVANCE.NON_SPEECH, false, "no_transcribed_speech", 1);
   const normalized = text.normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu, "").trim();
   const owner = speaker?.authenticated_identity === "owner" && speaker?.match_status === "confirmed";
-  const explicitlyAddressed = /(?:^|[\s،,.!?؟])(?:nova|نوفا)(?:$|[\s،,.!?؟])/iu.test(normalized);
+  const explicitlyAddressed = /(?:^|[\s،,.!?؟])(?:nova(?:\s+brain)?|نوفا)(?:$|[\s،,.!?؟])/iu.test(normalized);
   const interruptionIntent = isInterruptionIntent(normalized);
   const directQuestion = isQuestion(normalized);
-  const novaDirectedLanguage = /\b(?:you|your|can you|could you|would you|tell me|show me|open|explain)\b|(?:انت|إنت|عندك|بتقدري|بتقدريش|احكيلي|خبريني|فرجيني|افتحي|اشرحي)/iu.test(normalized);
+  const novaDirectedLanguage = /\b(?:you|your|can you|could you|would you|help me|tell me|show me|open|explain)\b|(?:انت|إنت|عندك|بتقدري|بتقدريش|ساعديني|احكيلي|خبريني|فرجيني|افتحي|اشرحي)/iu.test(normalized);
   const ownerNovaImperative = /^(?:open|show|tell|explain|check|run)(?:$|\s)|^(?:افتحي|فرجيني|احكيلي|خبريني|اشرحي|شغلي|افحصي)(?:$|[\s،,.!?؟])/iu.test(normalized);
+  const addressRemainder = normalized.replace(/(?:^|[\s،,.!?؟])(?:nova(?:\s+brain)?|نوفا)(?=$|[\s،,.!?؟])/giu, " ").replace(/[\s،,.!?؟]+/gu, " ").trim();
+  const strongDirectAddress = explicitlyAddressed && Boolean(addressRemainder) && (directQuestion || novaDirectedLanguage || interruptionIntent || ownerNovaImperative);
 
   if (context.interruption === true && interruptionIntent) return decision(AUDIO_RELEVANCE.INTERRUPTION, true, "pause_resume_or_stop_during_playback", .99);
-  if (explicitlyAddressed) return decision(context.interruption === true ? AUDIO_RELEVANCE.INTERRUPTION : AUDIO_RELEVANCE.ADDRESSED, true, "explicit_nova_address", .99);
+  if (strongDirectAddress) return decision(context.interruption === true ? AUDIO_RELEVANCE.INTERRUPTION : AUDIO_RELEVANCE.ADDRESSED, true, "structured_direct_nova_address", .94);
+  if (explicitlyAddressed && context.interruption === true) return decision(AUDIO_RELEVANCE.BACKGROUND, false, "weak_name_only_during_playback", .88);
+  if (explicitlyAddressed) return decision(AUDIO_RELEVANCE.UNCERTAIN, false, "weak_name_only_without_turn_intent", .7);
   if (context.awaiting_nova_reply === true) return decision(AUDIO_RELEVANCE.CONTEXTUAL_REPLY, true, "reply_during_expected_answer_window", .9);
   if (context.interruption === true && owner && (directQuestion || novaDirectedLanguage)) return decision(AUDIO_RELEVANCE.INTERRUPTION, true, "verified_owner_direct_interruption", .86);
   if (context.interruption === true) return decision(AUDIO_RELEVANCE.BACKGROUND, false, "speech_not_directed_to_nova_during_playback", .78);

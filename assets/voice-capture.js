@@ -109,9 +109,9 @@ function preferredRecorderOptions(MediaRecorder) {
 }
 
 export function createAudioPlayback({ Audio, URL }) {
-  let player; let objectUrl; let generation = 0; let iterator; let settlePlayback; let paused=false;let currentChunkIndex=-1;let lastFullyPlayedChunk=-1;let currentChunkCount;let currentChunkText;
+  let player; let objectUrl; let generation = 0; let iterator; let settlePlayback; let paused=false;let resumeWaiter;let pendingResumeStarted;let currentChunkIndex=-1;let lastFullyPlayedChunk=-1;let currentChunkCount;let currentChunkText;
   const clearPlayer = () => { if (player) { player.pause(); player.removeAttribute?.("src"); player.load?.(); } if (objectUrl) URL.revokeObjectURL(objectUrl); player = objectUrl = undefined; };
-  const stop = () => { generation += 1; paused=false; settlePlayback?.(); settlePlayback = undefined; clearPlayer(); Promise.resolve(iterator?.return?.()).catch(() => {}); iterator = undefined;currentChunkIndex=-1;lastFullyPlayedChunk=-1;currentChunkCount=undefined;currentChunkText=undefined; };
+  const stop = () => { generation += 1; paused=false; resumeWaiter?.();resumeWaiter=undefined;pendingResumeStarted=undefined;settlePlayback?.(); settlePlayback = undefined; clearPlayer(); Promise.resolve(iterator?.return?.()).catch(() => {}); iterator = undefined;currentChunkIndex=-1;lastFullyPlayedChunk=-1;currentChunkCount=undefined;currentChunkText=undefined; };
   return Object.freeze({
     play(source, { onStarted, onEnded, onError, onChunkStarted } = {}) {
       stop(); const current = generation; iterator = toAudioStream(source)[Symbol.asyncIterator](); let chunkIndex=0;
@@ -119,11 +119,14 @@ export function createAudioPlayback({ Audio, URL }) {
       const run = async () => {
         let item = await iterator.next();
         while (!item.done && current === generation) {
+          if(paused)await new Promise(resolve=>{resumeWaiter=resolve;});
+          if(current!==generation)return;
           const next = iterator.next().then((value) => ({ value }), (error) => ({ error }));
           await playBlob(item.value, current, () => {
             currentChunkIndex=Number.isInteger(item.value?.novaChunkIndex)?item.value.novaChunkIndex:chunkIndex;currentChunkCount=Number.isInteger(item.value?.novaChunkCount)?item.value.novaChunkCount:currentChunkCount;currentChunkText=typeof item.value?.novaSpokenText==="string"?item.value.novaSpokenText:currentChunkText;
             onChunkStarted?.({index:chunkIndex++,chunkCount:currentChunkCount,currentChunkText});
             if (!started) { started = true; onStarted?.(); }
+            pendingResumeStarted?.();pendingResumeStarted=undefined;
           });
           if (current !== generation) return;
           lastFullyPlayedChunk=currentChunkIndex;
@@ -133,9 +136,9 @@ export function createAudioPlayback({ Audio, URL }) {
       };
       run().catch((error) => { if (current === generation && error?.name !== "AbortError") { stop(); onError?.(error); } });
     },
-    pause(){if(!player||paused)return false;paused=true;player.pause();return true;},
-    resume({onStarted}={}){if(!player||!paused)return false;paused=false;Promise.resolve(player.play()).then(()=>onStarted?.()).catch(()=>{});return true;},
-    checkpoint(){return player?{currentTime:Number(player.currentTime||0),paused,chunkIndex:currentChunkIndex,lastFullyPlayedChunk,chunkCount:currentChunkCount,currentChunkText}:null;},
+    pause(){if(paused||(!player&&!iterator))return false;paused=true;player?.pause();return true;},
+    resume({onStarted}={}){if(!paused)return false;paused=false;if(player)Promise.resolve(player.play()).then(()=>onStarted?.()).catch(()=>{});else pendingResumeStarted=onStarted;resumeWaiter?.();resumeWaiter=undefined;return true;},
+    checkpoint(){return player||iterator?{currentTime:Number(player?.currentTime||0),paused,chunkIndex:currentChunkIndex,lastFullyPlayedChunk,chunkCount:currentChunkCount,currentChunkText}:null;},
     stop
   });
 
