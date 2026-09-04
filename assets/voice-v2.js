@@ -72,14 +72,15 @@ export function createVoiceV2({
       const text = String(transcript || "").trim();
       const relevance=transcribed?.relevance||{category:"addressed_to_nova",accepted_as_turn:true,reason:"legacy_client_compatibility"};
       const verifiedOwnerPause=interruptionProbe&&isPauseIntent(text)&&isConfirmedOwner(speaker)&&confirmedProfileId(speaker)===interruptedCheckpoint?.speakerProfileId;
-      if(!relevance.accepted_as_turn&&!verifiedOwnerPause){reportRelevance(relevance,speaker);if(interruptionProbe){if(pausedWaiting())listen({interruptionProbe:true});else resumeInterrupted({message:"Background audio ignored. Resuming Nova."});}else listen();return false;}
-      acceptedVoiceTurns+=1;contextualReplyUntil=0;reportRelevance(relevance,speaker);
+      const continuityPlaybackPause=interruptionProbe&&isPauseIntent(text)&&speaker?.match_status==="insufficient_speech"&&Boolean(interruptedCheckpoint?.speakerProfileId);
+      if(!relevance.accepted_as_turn&&!verifiedOwnerPause&&!continuityPlaybackPause){reportRelevance(relevance,speaker);if(interruptionProbe){if(pausedWaiting())listen({interruptionProbe:true});else resumeInterrupted({message:"Background audio ignored. Resuming Nova."});}else listen();return false;}
+      if(!continuityPlaybackPause){acceptedVoiceTurns+=1;contextualReplyUntil=0;}reportRelevance(relevance,speaker);
       if(interruptionProbe){const playbackCompleted=interruptedCheckpoint?.playbackCompletedDuringVerification===true;playback.unduck?.();playback.pause?.();if(playbackCompleted)interruptedCheckpoint=undefined;}
       if(interruptedCheckpoint&&isContinueIntent(text))return resumeInterrupted({speaker,text,message:"Continuing Nova's interrupted response.",explicit:true});
       if (!text) { if(pausedWaiting()){listen({interruptionProbe:true});return false;} retry("No speech was understood."); return false; }
       let preservingCheckpoint=interruptionProbe&&canPreserveCheckpoint(speaker,interruptedCheckpoint);
-      const pauseIntent=preservingCheckpoint&&isPauseIntent(text);
-      if(pauseIntent){interruptedCheckpoint={...interruptedCheckpoint,lastVerifiedInterruptionProfileId:confirmedProfileId(speaker)||interruptedCheckpoint.lastVerifiedInterruptionProfileId,status:"paused_waiting_for_user",pausedAt:now()};onTranscript(text);publish("paused_waiting_for_user");onNotice("Nova paused. Say continue when you are ready.");listen({interruptionProbe:true});return true;}
+      const pauseIntent=(preservingCheckpoint||continuityPlaybackPause)&&isPauseIntent(text);
+      if(pauseIntent){interruptedCheckpoint={...interruptedCheckpoint,lastVerifiedInterruptionProfileId:confirmedProfileId(speaker)||interruptedCheckpoint.lastVerifiedInterruptionProfileId,status:"paused_waiting_for_user",pausedAt:now(),pauseAuthorization:continuityPlaybackPause?"session_continuity_playback_only":"verified_speaker"};if(continuityPlaybackPause)onTiming({turnId:timing?.turnId,stage:"barge-playback-control-pause",measurements:{playbackOnly:1,identityUpgraded:0,privateContextEnabled:0}});onTranscript(text);publish("paused_waiting_for_user");onNotice("Nova paused. Say continue when you are ready.");listen({interruptionProbe:true});return true;}
       else if(pausedWaiting()){interruptedCheckpoint=undefined;playback.stop();current=++generation;preservingCheckpoint=false;}
       if(interruptionProbe&&!preservingCheckpoint){interruptedCheckpoint=undefined;playback.stop();current=++generation;}
       if(interruptionProbe){abortPending();abortController=new AbortController();}
