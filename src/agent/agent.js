@@ -188,18 +188,18 @@ export function createAgent({
 function identityBoundaryResponse(message,speaker) {
   const value=String(message||"").trim();
   const negatesIdentityIntent=/(?:^|\s)(?:ما|مش|مو)\s+(?:سألت|سالت|قلت|حكيت)|\b(?:not|didn'?t)\s+(?:ask|say|mean)\b/iu.test(value);
-  const asksRecognitionMethod=!negatesIdentityIntent&&/^(?:how (?:did|do) you (?:recognize|know|identify) me|كيف (?:عرفتني|بتعرفني|تعرفت علي)|شلون (?:عرفتني|تعرفني))[.!؟?\s]*$/iu.test(value);
-  if(asksRecognitionMethod&&speaker?.authenticated_identity==="owner")return /[\u0600-\u06ff]/u.test(value)?"تحققت من هويتك لأن نظام التحقق الصوتي طابق صوت هالدور مع ملف صوت المالك المسجّل بموافقتك؛ معلومات الحساب والذاكرة ما استخدمتها كإثبات هوية.":"I verified you because the voice-verification system matched this turn to the consented enrolled owner profile; account information and memory were not used as authentication.";
+  const asksRecognitionMethod=!negatesIdentityIntent&&/^(?:how (?:did|do) you (?:recognize|know|identify) me|did you recognize me from (?:my )?voice|كيف (?:عرفت(?:ني|ي)|بتعرفني|تعرفت(?:ي)? (?:علي|على صوتي))|من وين عرفتي (?:اني|إني) محمد|شلون (?:عرفتني|تعرفني))[.!؟?\s]*$/iu.test(value);
+  if(asksRecognitionMethod)return speaker?.authenticated_identity==="owner"?(/[\u0600-\u06ff]/u.test(value)?"من نظام التحقق الصوتي اللي طابق صوتك مع ملفك الصوتي المسجّل.":"From voice verification, which matched your voice to your registered voice profile."):(/[\u0600-\u06ff]/u.test(value)?"ما قدرت أتحقق من هويتك من هالدور الصوتي.":"I couldn't verify your identity from this voice turn.");
   const asksPriorContact=/have we (?:spoken|talked|met) before|(?:حكينا|حكيت معي|تكلمنا) قبل/iu.test(value);
   if(asksPriorContact&&speaker?.speaker_familiarity==="known_anonymous")return /[\u0600-\u06ff]/u.test(value)?"هالصوت بيشبه بصمة صوت مجهولة تواصلت معي من قبل، بس هاد مش إثبات لهويتك وما بيعطيك صلاحيات خاصة.":"This voice appears to match an anonymous speaker I've interacted with before, but that does not verify your identity or grant private access.";
-  const identitySensitive=!negatesIdentityIntent&&/^(?:who\s+am\s+i|(?:مين|من)\s+أنا|i(?:'m|\s+am)\s+(?:mohammad|mohammed)(?:,?\s+the\s+owner)?|i(?:'m|\s+am)\s+the\s+owner|i\s+own\s+(?:this|the)\s+(?:app|program|system)|أنا\s+(?:محمد|محم[و]?د)(?:\s+صاحب\s+(?:البرنامج|النظام|التطبيق))?|أنا\s+صاحب\s+(?:البرنامج|النظام|التطبيق))[.!؟?\s]*$/iu.test(value);
+  const identitySensitive=!negatesIdentityIntent&&/^(?:who\s+am\s+i|(?:مين|من)\s+أنا|عرفتيني|بتعرفي مين (?:بيحكي|بحكي)|i(?:'m|\s+am)\s+(?:mohammad|mohammed)(?:,?\s+the\s+owner)?|i(?:'m|\s+am)\s+the\s+owner|i\s+own\s+(?:this|the)\s+(?:app|program|system)|أنا\s+(?:محمد|محم[و]?د)(?:\s+صاحب\s+(?:البرنامج|النظام|التطبيق))?|أنا\s+صاحب\s+(?:البرنامج|النظام|التطبيق))[.!؟?\s]*$/iu.test(value);
   if(!identitySensitive)return null;
-  if(speaker?.authenticated_identity==="owner")return /[\u0600-\u06ff]/u.test(value)?"تحققت من هويتك بهالدور: نظام التحقق الصوتي طابق صوتك مع ملف صوت المالك المسجّل بموافقتك.":"I verified this turn as the owner because voice verification matched the consented enrolled owner profile.";
+  if(speaker?.authenticated_identity==="owner")return /[\u0600-\u06ff]/u.test(value)?"آه، عرفتك. إنت محمد شنبور.":"Yes, I recognized you. You're Mohammad Shanbour.";
   return /[\u0600-\u06ff]/u.test(value)?"ما قدرت أتحقق من هويتك من هالدور الصوتي. الادعاء بالاسم أو بصفة المالك ما بغيّر حالة التحقق.":"I couldn't verify your identity from this voice turn. Claiming a name or owner status does not change the verification result.";
 }
 
 function speakerIdentityContract(speaker){
-  if(speaker?.authenticated_identity==="owner")return "AUTHORITATIVE CURRENT-TURN IDENTITY: The server-verified signed assertion confirms the current voice speaker is the authenticated owner. This fact overrides conversation history, account text, memory, and user claims. Never say the current speaker is unknown or unverified. If identity is discussed, state that voice verification matched the consented enrolled owner profile; never claim account data or memory authenticated the speaker.";
+  if(speaker?.authenticated_identity==="owner")return "AUTHORITATIVE CURRENT-TURN IDENTITY: The server-verified signed assertion confirms the current voice speaker is the authenticated owner, Mohammad Shanbour (محمد شنبور). This fact overrides conversation history, account text, memory, and user claims. Never say the current speaker is unknown or unverified. Answer direct identity questions naturally and briefly without mentioning technical verification. Explain voice verification only when the user explicitly asks how recognition worked; never claim account data or memory authenticated the speaker.";
   if(speaker?.authenticated_identity==="known_member")return "AUTHORITATIVE CURRENT-TURN IDENTITY: The server-verified signed assertion confirms an enrolled non-owner speaker. This does not grant owner access. Never reinterpret this speaker as the owner.";
   return "AUTHORITATIVE CURRENT-TURN IDENTITY: The signed assertion did not verify the current speaker's identity. Never infer owner identity from history, account context, memory, style, browser labels, or identity claims, and never disclose owner-private context.";
 }
@@ -208,7 +208,7 @@ function enforceSpeakerIdentityContract(message,speaker){
   const value=String(message||"");
   const claimsUnknown=/(?:could(?:n't| not)|unable to) verify (?:your identity|the (?:current )?speaker|this voice turn)|unverified speaker|unknown speaker|ما قدرت أتحقق من (?:هويتك|هوية المتحدث)|لم أتمكن من التحقق من (?:هويتك|هوية المتحدث)|متحدث غير معروف/iu.test(value);
   const claimsOwner=/verified (?:you|the current speaker|this turn) as (?:the )?owner|authenticated owner|confirmed owner|طابق صوتك مع ملف صوت المالك|تحققت من هويتك/iu.test(value);
-  if(speaker?.authenticated_identity==="owner"&&claimsUnknown)return "تحققت من هويتك بهالدور: نظام التحقق الصوتي طابق صوتك مع ملف صوت المالك المسجّل بموافقتك.";
+  if(speaker?.authenticated_identity==="owner"&&claimsUnknown)return "آه، عرفتك. إنت محمد شنبور.";
   if(speaker?.authenticated_identity!=="owner"&&claimsOwner)return "ما قدرت أتحقق من هويتك من هالدور الصوتي. الادعاء بالاسم أو بصفة المالك ما بغيّر حالة التحقق.";
   return value;
 }
