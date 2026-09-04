@@ -6,7 +6,7 @@ export function createMediaVoiceCapture({
   noSpeechMs = 8_000, maxDurationMs = 30_000, calibrationMs = 400,
   speechThreshold = 0.035, bargeThreshold = 0.025, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 3
 }) {
-  let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false; let primedCapture;
+  let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false; let primedCapture;let audioSettings={};
   const supported = Boolean(mediaDevices?.getUserMedia && MediaRecorder && AudioContext);
   const clearTimer = () => { if (timer !== undefined) cancelSchedule(timer); timer = undefined; };
   const stopRecorder = () => { if (recorder?.state === "recording") recorder.stop(); recorder = undefined; primedCapture = undefined; listening = false; };
@@ -15,8 +15,10 @@ export function createMediaVoiceCapture({
   async function connect() {
     if (!supported) throw new Error("Voice V2 requires microphone recording and audio analysis support.");
     stream = await mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    const audioTrack=stream.getAudioTracks?.()[0]||stream.getTracks?.().find?.((track)=>track.kind==="audio")||stream.getTracks?.()[0];const reported=audioTrack?.getSettings?.()||{};audioSettings={...(typeof reported.echoCancellation==="boolean"?{echoCancellation:reported.echoCancellation}:{}),...(typeof reported.noiseSuppression==="boolean"?{noiseSuppression:reported.noiseSuppression}:{}),...(typeof reported.autoGainControl==="boolean"?{autoGainControl:reported.autoGainControl}:{}),...(Number.isFinite(reported.sampleRate)?{sampleRate:reported.sampleRate}:{}),...(Number.isFinite(reported.channelCount)?{channelCount:reported.channelCount}:{})};
     context = new AudioContext(); analyser = context.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.2;
     source = context.createMediaStreamSource(stream); source.connect(analyser); if (context.state === "suspended") await context.resume();
+    return Object.freeze({...audioSettings});
   }
 
   function listen({ onReady, onAudio, onNoSpeech, onError, onEndpoint, interruptionProbe = false, reuseCandidateCapture = false }) {
@@ -90,14 +92,14 @@ export function createMediaVoiceCapture({
       if(!acoustic)baseline=Math.min(baseline,baseline*0.94+level*0.06);
       acousticFrames=acoustic?acousticFrames+1:Math.max(0,acousticFrames-2);if(acousticFrames===1)primeCandidateCapture();else if(acoustic&&primedCapture){primedCapture.voicedMs+=sampleIntervalMs;primedCapture.lastSpeechAt=now();}
       if(acousticFrames>=bargeAcousticFrames){if(!speechOnsetAt){speechOnsetAt=now()-(acousticFrames-1)*sampleIntervalMs;onDiagnostic?.({phase:"candidate",speechOnsetAt,baselineRms:baseline,thresholdRms:threshold,peakRms,sustainedFrames:acousticFrames,monitorFrames,calibrationComplete:monitorFrames>=2});}speechFrames=acoustic?speechFrames+1:Math.max(0,speechFrames-1);}else if(!acoustic){if(speechOnsetAt)onDiagnostic?.({phase:"candidate-reset",speechOnsetAt,detectedAt:now(),baselineRms:baseline,thresholdRms:threshold,peakRms,sustainedFrames:speechFrames,monitorFrames,calibrationComplete:monitorFrames>=2});discardCandidateCapture();speechFrames=0;speechOnsetAt=undefined;peakRms=level;}
-      if (speechFrames >= bargeSpeechFrames) { clearTimer(); onBargeIn?.({ confirmed:true,capturePrimed:Boolean(primedCapture),voicedMs:speechFrames*sampleIntervalMs,baselineRms:Math.round(baseline*100000)/100000,thresholdRms:Math.round(threshold*100000)/100000,peakRms:Math.round(peakRms*100000)/100000,sustainedFrames:speechFrames,monitorFrames,calibrationComplete:monitorFrames>=2,speechOnsetAt,detectedAt:now(),monitoringStartedAt,echoCancellation:true }); return; }
+      if (speechFrames >= bargeSpeechFrames) { clearTimer(); onBargeIn?.({ confirmed:true,capturePrimed:Boolean(primedCapture),voicedMs:speechFrames*sampleIntervalMs,baselineRms:Math.round(baseline*100000)/100000,thresholdRms:Math.round(threshold*100000)/100000,peakRms:Math.round(peakRms*100000)/100000,sustainedFrames:speechFrames,monitorFrames,calibrationComplete:monitorFrames>=2,speechOnsetAt,detectedAt:now(),monitoringStartedAt,echoCancellation:audioSettings.echoCancellation===true }); return; }
       timer = schedule(sample, sampleIntervalMs);
     };
     timer = schedule(sample, sampleIntervalMs);
   }
 
   function stop() { generation += 1; clearTimer(); stopRecorder(); }
-  async function destroy() { stop(); source?.disconnect?.(); for (const track of stream?.getTracks?.() || []) track.stop(); if (context && context.state !== "closed") await context.close(); stream = context = analyser = source = undefined; }
+  async function destroy() { stop(); source?.disconnect?.(); for (const track of stream?.getTracks?.() || []) track.stop(); if (context && context.state !== "closed") await context.close(); stream = context = analyser = source = undefined;audioSettings={}; }
   return Object.freeze({ supported, connect, listen, watchForBargeIn, stop, destroy });
 }
 

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { createMediaVoiceCapture } from "../assets/voice-capture.js";
 
 function setup(options = {}) {
-  const timers = []; let clock = 0; let level = 0; let constraints; let activeRecorder; const recorders=[]; const tracks = [{ stopped: false, stop() { this.stopped = true; } }];
-  const stream = { getTracks: () => tracks };
+  const timers = []; let clock = 0; let level = 0; let constraints; let activeRecorder; const recorders=[]; const tracks = [{ kind:"audio",stopped: false,getSettings(){return {echoCancellation:true,noiseSuppression:true,autoGainControl:true,sampleRate:48000,channelCount:1};}, stop() { this.stopped = true; } }];
+  const stream = { getTracks: () => tracks,getAudioTracks:()=>tracks };
   class Recorder {
     static isTypeSupported(type) { return type.startsWith("audio/webm"); }
     constructor(_stream, options) { this.mimeType = options.mimeType; this.state = "inactive"; this.listeners = new Map(); activeRecorder = this; recorders.push(this); }
@@ -26,11 +26,12 @@ function setup(options = {}) {
 }
 
 test("MediaRecorder VAD finalizes substantial speech after a patient bounded endpoint", async () => {
-  const flow = setup(); await flow.capture.connect(); let recording;
+  const flow = setup(); const settings=await flow.capture.connect(); let recording;
   flow.capture.listen({ onAudio: (value) => { recording = value; } }); flow.speakFor(1_500); flow.pauseFor(1_950);
   assert.ok(recording.audio instanceof Blob); assert.match(recording.mimeType, /^audio\/webm/); assert.ok(recording.durationSeconds >= 3.0 && recording.durationSeconds <= 3.55);
   assert.ok(recording.endpointGraceMs >= 1_450 && recording.endpointGraceMs <= 1_550);
   assert.deepEqual(flow.constraints(), { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+  assert.deepEqual(settings,{echoCancellation:true,noiseSuppression:true,autoGainControl:true,sampleRate:48000,channelCount:1});
 });
 
 test("MediaRecorder VAD reports bounded no-speech without producing an audio turn", async () => {
