@@ -114,7 +114,7 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
       if (audio.length > voice.maxAudioBytes) throw new VoiceValidationError("Voice recording is too large.");
       const form = new FormData();
       form.append("model", voice.sttModel);
-      form.append("prompt", "Nova Brain conversation. Preserve Arabic and English code-switching, names and terms including Mohammad, Luton, Sharp Cuts, Nova Brain, GitHub, API, booking, and missed-call recovery. Preserve numbers exactly.");
+      form.append("prompt", "Nova Brain conversation. Preserve Arabic and English code-switching, names and terms including Mohammad, Luton, Sharp Cuts, Nova Brain, GitHub, API, booking, and missed-call recovery. Preserve short playback controls exactly, especially استني, استنى, وقفي, لحظة, دقيقة, شوي, كملي, كمّل, wait, stop, pause, hold on, continue, and resume. Preserve numbers exactly.");
       const fileName = `voice.${extension(mimeType)}`;
       form.append("file", new Blob([audio], { type: mimeType }), fileName);
       let data;
