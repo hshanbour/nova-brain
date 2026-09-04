@@ -19,8 +19,15 @@ export function createMediaVoiceCapture({
     source = context.createMediaStreamSource(stream); source.connect(analyser); if (context.state === "suspended") await context.resume();
   }
 
-  function listen({ onReady, onAudio, onNoSpeech, onError, onEndpoint }) {
+  function listen({ onReady, onAudio, onNoSpeech, onError, onEndpoint, interruptionProbe = false }) {
     clearTimer(); stopRecorder(); const current = ++generation;
+    const activeCalibrationMs = interruptionProbe ? 0 : calibrationMs;
+    const activeEndpointSilenceMs = interruptionProbe ? Math.min(endpointSilenceMs, 700) : endpointSilenceMs;
+    const activeShortFragmentSilenceMs = interruptionProbe ? Math.min(shortFragmentSilenceMs, 850) : shortFragmentSilenceMs;
+    const activeLongUtteranceSilenceMs = interruptionProbe ? Math.min(longUtteranceSilenceMs, 650) : longUtteranceSilenceMs;
+    const activeMaxEndpointSilenceMs = interruptionProbe ? Math.min(maxEndpointSilenceMs, 1_000) : maxEndpointSilenceMs;
+    const activeNoSpeechMs = interruptionProbe ? Math.min(noSpeechMs, 2_500) : noSpeechMs;
+    const activeMaxDurationMs = interruptionProbe ? Math.min(maxDurationMs, 4_000) : maxDurationMs;
     const chunks = [];
     let speechFrames = 0; let heardSpeech = false; let speechStartedAt = 0; let lastSpeechAt = 0; let voicedMs = 0;
     let endpointStartedAt = 0; let endpointGraceMs = 0; let resumedEndpoints = 0; let noiseFloor = 0.008; const startedAt = now();
@@ -50,7 +57,7 @@ export function createMediaVoiceCapture({
     const sample = () => {
       if (current !== generation || !listening) return;
       const elapsed = now() - startedAt; const level = rms();
-      if(elapsed<calibrationMs&&level<Math.max(0.065,noiseFloor*4)){noiseFloor=Math.min(0.03,noiseFloor*0.75+level*0.25);timer=schedule(sample,sampleIntervalMs);return;}
+      if(elapsed<activeCalibrationMs&&level<Math.max(0.065,noiseFloor*4)){noiseFloor=Math.min(0.03,noiseFloor*0.75+level*0.25);timer=schedule(sample,sampleIntervalMs);return;}
       if (!heardSpeech) noiseFloor = Math.min(0.03, noiseFloor * 0.92 + level * 0.08);
       if (level >= Math.max(speechThreshold, noiseFloor * 3)) {
         if (endpointStartedAt) {
@@ -64,13 +71,13 @@ export function createMediaVoiceCapture({
         speechFrames = 0;
         if (heardSpeech && !endpointStartedAt) {
           endpointStartedAt = now();
-          endpointGraceMs = adaptiveEndpointSilence({ voicedMs, speechSpanMs: endpointStartedAt - speechStartedAt, resumedEndpoints, endpointSilenceMs, shortFragmentSilenceMs, longUtteranceSilenceMs, resumedSpeechBonusMs, maxEndpointSilenceMs });
+          endpointGraceMs = adaptiveEndpointSilence({ voicedMs, speechSpanMs: endpointStartedAt - speechStartedAt, resumedEndpoints, endpointSilenceMs:activeEndpointSilenceMs, shortFragmentSilenceMs:activeShortFragmentSilenceMs, longUtteranceSilenceMs:activeLongUtteranceSilenceMs, resumedSpeechBonusMs, maxEndpointSilenceMs:activeMaxEndpointSilenceMs });
           onEndpoint?.({ phase: "possible-end", at: endpointStartedAt, graceMs: endpointGraceMs, resumedEndpoints });
         }
       }
       if (heardSpeech && endpointStartedAt && now() - endpointStartedAt >= endpointGraceMs) { stopRecorder(); return; }
-      if (!heardSpeech && elapsed >= noSpeechMs) { stopRecorder(); return; }
-      if (elapsed >= maxDurationMs) { stopRecorder(); return; }
+      if (!heardSpeech && elapsed >= activeNoSpeechMs) { stopRecorder(); return; }
+      if (elapsed >= activeMaxDurationMs) { stopRecorder(); return; }
       timer = schedule(sample, sampleIntervalMs);
     };
     timer = schedule(sample, sampleIntervalMs);

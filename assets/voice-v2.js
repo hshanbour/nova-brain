@@ -20,6 +20,7 @@ export function createVoiceV2({
     if (!active) return; clearRetry(); if(!interruptionProbe){abortPending();playback.stop();interruptionPlayback.stop?.();}
     const current = generation; publish(interruptionProbe?"barge_candidate":"getting_ready");
     capture.listen({
+      interruptionProbe,
       onReady: () => {
         if (!valid(current)) return;
         mark("listeningReadyAt"); publish(pausedWaiting()?"paused_waiting_for_user":interruptionProbe?"barge_verifying":"listening");
@@ -69,7 +70,8 @@ export function createVoiceV2({
       if(Number.isFinite(transcribed?.timing?.sttAndSpeakerMs))timing.sttAndSpeakerServerMs=transcribed.timing.sttAndSpeakerMs;
       const text = String(transcript || "").trim();
       const relevance=transcribed?.relevance||{category:"addressed_to_nova",accepted_as_turn:true,reason:"legacy_client_compatibility"};
-      if(!relevance.accepted_as_turn){reportRelevance(relevance,speaker);if(interruptionProbe){if(pausedWaiting())listen({interruptionProbe:true});else resumeInterrupted({message:"Background audio ignored. Resuming Nova."});}else listen();return false;}
+      const verifiedOwnerPause=interruptionProbe&&isPauseIntent(text)&&isConfirmedOwner(speaker)&&confirmedProfileId(speaker)===interruptedCheckpoint?.speakerProfileId;
+      if(!relevance.accepted_as_turn&&!verifiedOwnerPause){reportRelevance(relevance,speaker);if(interruptionProbe){if(pausedWaiting())listen({interruptionProbe:true});else resumeInterrupted({message:"Background audio ignored. Resuming Nova."});}else listen();return false;}
       acceptedVoiceTurns+=1;contextualReplyUntil=0;reportRelevance(relevance,speaker);
       if(interruptionProbe){const playbackCompleted=interruptedCheckpoint?.playbackCompletedDuringVerification===true;playback.unduck?.();playback.pause?.();if(playbackCompleted)interruptedCheckpoint=undefined;}
       if(interruptedCheckpoint&&isContinueIntent(text))return resumeInterrupted({speaker,text,message:"Continuing Nova's interrupted response.",explicit:true});
@@ -209,9 +211,10 @@ function rounded(value) { return Math.round(Math.max(0, value) * 10) / 10; }
 function precise(value){return Math.round(Math.max(0,value)*100000)/100000;}
 function abortError() { const error = new Error("Voice turn was interrupted."); error.name = "AbortError"; return error; }
 function isContinueIntent(text){const value=String(text||"").normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu,"").trim();return /\b(?:continue|go on|carry on|resume)(?:\s+(?:from\s+where\s+you\s+(?:stopped|left\s+off)|the\s+same\s+point))?\b/iu.test(value)||/(?:^|[\s،,.؟?])(?:ارجع|ارجعي|رجع|رجعي|يلا)?\s*(?:كمل(?:ي|لي|يلي|يليلي)?|لنفس\s+النقط[هة]|من\s+(?:وين\s+وقفتي|عند\s+ما\s+تركتي)|شو\s+كنتي\s+تحكي)(?:$|[\s،,.؟?])/iu.test(value);}
-function isPauseIntent(text){const value=String(text||"").normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu,"").trim();return /(?:^|[\s،,.؟?])(?:استن(?:ي|ى)|لحظ[هة]|دقيق[هة]|وقف(?:ي)?|وقف[هة]|خلاص|wait|hold on|stop|one second|pause)(?:$|[\s،,.؟?])/iu.test(value);}
+function isPauseIntent(text){const value=String(text||"").normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu,"").trim();return /(?:^|[\s،,.؟?])(?:استن(?:ي|ى)|اسكت(?:ي)?|لحظ[هة]|دقيق[هة]|شوي|وقف(?:ي)?|وقف[هة]|خلاص|wait|hold on|just a second|one second|stop|pause)(?:$|[\s،,.؟?])/iu.test(value);}
 function looksLikeQuestion(text){const value=String(text||"").trim();return /[?؟]\s*$/.test(value)||/(?:^|[\s،])(?:شو|ماذا|مين|من|وين|اين|أين|متى|ليش|كيف|هل|what|who|where|when|why|how|which|do you|are you|can you)(?:$|[\s،,.؟?])/iu.test(value);}
 function confirmedProfileId(speaker){return speaker?.match_status==="confirmed"&&typeof speaker?.speaker_profile_id==="string"?speaker.speaker_profile_id:null;}
+function isConfirmedOwner(speaker){return Boolean(confirmedProfileId(speaker)&&(speaker?.authenticated_identity==="owner"||speaker?.speaker_label==="owner"));}
 function canPreserveCheckpoint(speaker,checkpoint){const profileId=confirmedProfileId(speaker);return Boolean(checkpoint&&((profileId&&profileId===checkpoint.speakerProfileId)||(speaker?.match_status==="insufficient_speech"&&checkpoint.speakerProfileId)));}
 function resumeAuthorized(speaker,checkpoint){const profileId=confirmedProfileId(speaker);if(profileId)return profileId===checkpoint.speakerProfileId;return speaker?.match_status==="insufficient_speech"&&checkpoint.lastVerifiedInterruptionProfileId===checkpoint.speakerProfileId;}
 function voiceFailureMessage(error,browserFallback=false){if(error?.category==="quota")return "Nova's written reply is safe, but ElevenLabs credits are exhausted.";if(error?.category==="authentication")return "Nova's written reply is safe, but ElevenLabs authentication needs attention.";if(error?.category==="voice_access")return "Nova's written reply is safe, but the selected ElevenLabs voice is unavailable.";if(error?.category==="rate_limit")return "Nova's written reply is safe, but ElevenLabs is temporarily busy.";if(["provider_timeout_first_byte","provider_stream_stalled"].includes(error?.category))return "Nova's written reply is safe, but ElevenLabs audio timed out.";if(error?.message&&/written reply is safe/i.test(error.message))return error.message;return browserFallback?"Nova's written reply is safe, but audio playback failed.":"Nova's written reply is safe, but ElevenLabs could not speak it.";}

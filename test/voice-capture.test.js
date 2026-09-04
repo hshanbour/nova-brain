@@ -39,6 +39,23 @@ test("MediaRecorder VAD reports bounded no-speech without producing an audio tur
   assert.equal(noSpeech, 1); assert.equal(audio, 0);
 });
 
+test("interruption capture skips redundant calibration and bounds short owner commands", async () => {
+  const flow = setup(); await flow.capture.connect(); let recording;
+  flow.capture.listen({ interruptionProbe:true, onAudio:(value)=>{recording=value;} });
+  flow.setLevel(.04); flow.run(); flow.run(); flow.setLevel(0); flow.pauseFor(900);
+  assert.ok(recording?.audio instanceof Blob);
+  assert.ok(recording.durationSeconds >= .8 && recording.durationSeconds <= 1.05);
+  assert.ok(recording.endpointGraceMs >= 800 && recording.endpointGraceMs <= 850);
+});
+
+test("interruption capture cannot absorb playback contamination for an unbounded window", async () => {
+  const flow = setup(); await flow.capture.connect(); let recording;
+  flow.capture.listen({ interruptionProbe:true, onAudio:(value)=>{recording=value;} });
+  flow.speakFor(5_000);
+  assert.ok(recording?.audio instanceof Blob);
+  assert.ok(recording.durationSeconds >= 3.95 && recording.durationSeconds <= 4.05);
+});
+
 test("playback monitor requires modest sustained credible speech for barge-in", async () => {
   const flow = setup(); await flow.capture.connect(); const barges=[]; flow.capture.watchForBargeIn((value) => { barges.push(value); }); flow.setLevel(0.1); for(let index=0;index<5;index+=1)flow.run();assert.equal(barges.length,0);flow.run();assert.equal(barges.length,1);assert.ok(barges[0].detectedAt-barges[0].speechOnsetAt>=100&&barges[0].detectedAt-barges[0].speechOnsetAt<=300);assert.equal(barges[0].echoCancellation,true);
   await flow.capture.destroy(); assert.equal(flow.tracks[0].stopped, true);
