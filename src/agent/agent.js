@@ -89,16 +89,17 @@ export function createAgent({
         if(step>1)await storage.updateRun(run.id, ownerId, { status: "running", currentStep: step });
         const agentGenerationStartedAt=Date.now();
         const protectedIdentityMessage = context?.voice===true ? identityBoundaryResponse(message,trustedContext.speaker) : null;
-        const generated = protectedIdentityMessage ? { type: "final", message: protectedIdentityMessage } : await modelProvider.generate({
+        let generated = protectedIdentityMessage ? { type: "final", message: protectedIdentityMessage } : await modelProvider.generate({
           message,
           context:trustedContext,
           systemContext,
           conversationHistory,
-          tools: toolRegistry.list({ executableOnly: true }),
+          tools: speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }),
           toolResults,
           continuationToken
         });
         validateModelOutput(generated);
+        if(speakerRestricted&&generated.type==="tool_calls")generated={type:"final",message:"I can help with general conversation, but this voice turn is not authorized to use tools or access private owner information."};
         const agentGenerationCompletedAt=Date.now();
 
         if (generated.type === "final") {
