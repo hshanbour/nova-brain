@@ -11,14 +11,14 @@ export function classifyConversationalRelevance({ transcript, speaker, context =
   const text = String(transcript || "").trim();
   const decision = (category, accepted, reason, confidence) => Object.freeze({ category, accepted_as_turn: accepted, reason, confidence });
   if (!text) return decision(AUDIO_RELEVANCE.NON_SPEECH, false, "no_transcribed_speech", 1);
-  const normalized = text.normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu, "").trim();
+  const normalized = text.normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu, "").replace(/[أإآٱ]/gu, "ا").replace(/\s+/gu, " ").trim();
   const owner = speaker?.authenticated_identity === "owner" && speaker?.match_status === "confirmed";
   const explicitlyAddressed = /(?:^|[\s،,.!?؟])(?:nova(?:\s+brain)?|نوفا)(?:$|[\s،,.!?؟])/iu.test(normalized);
   const interruptionIntent = isInterruptionIntent(normalized);
   const directQuestion = isQuestion(normalized);
   const novaDirectedLanguage = /\b(?:you|your|can you|could you|would you|help me|tell me|show me|open|explain)\b|(?:انت|إنت|عندك|بتقدري|بتقدريش|ساعديني|احكيلي|خبريني|فرجيني|افتحي|اشرحي)/iu.test(normalized);
-  const conversationalGreeting = /(?:^|[\s،,.!?؟])(?:مرحبا|أهلا|اهلا|hello|hi)(?:$|[\s،,.!?؟])|(?:كيفك|how are you)/iu.test(normalized);
-  const initialGreeting = /^(?:مرحبا|أهلا|اهلا|hello|hi)[\s،,.!?؟]*$/iu.test(normalized);
+  const conversationalGreeting = /(?:^|[\s،,.!?؟])(?:مرحبا|اهلا|hello|hi)(?:$|[\s،,.!?؟])|(?:كيفك|how are you)/iu.test(normalized);
+  const initialGreeting = /^(?:مرحبا|اهلا|hello|hi)[\s،,.!?؟]*$/iu.test(normalized);
   const selfIdentityClaim = /^(?:i(?:'m|\s+am)|my name is)\s+[\p{L}][\p{L}\s'-]*[.!؟?\s]*$|^انا\s+[\p{L}][\p{L}\s'-]*[.!؟?\s]*$/iu.test(normalized);
   const identityQuestion = /^(?:who am i|do you know who i am|did you recognize me|(?:مين|من)\s+انا|بتعرفي\s+مين\s+انا|عرفتيني)[.!؟?\s]*$/iu.test(normalized);
   const ownerNovaImperative = /^(?:open|show|tell|explain|check|run)(?:$|\s)|^(?:افتحي|فرجيني|احكيلي|خبريني|اشرحي|شغلي|افحصي)(?:$|[\s،,.!?؟])/iu.test(normalized);

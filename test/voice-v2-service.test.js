@@ -35,6 +35,18 @@ test("GPT-Transcribe request preserves mixed language by using hints without for
   assert.equal(call.options.body.get("model"), "gpt-transcribe"); assert.equal(call.options.body.has("language"), false); assert.match(call.options.body.get("prompt"), /Sharp Cuts.*API.*numbers/s);
 });
 
+test("a first-turn empty STT result gets one bounded transcription-only recovery attempt", async () => {
+  const calls=[];const fetchImpl=async(_url,options)=>{calls.push(options.body.get("prompt"));return new Response(JSON.stringify({text:calls.length===1?"":"مَرْحَبًا."}),{status:200,headers:{"content-type":"application/json"}});};
+  const service=createVoiceService({config:readConfig(environment),fetchImpl});const result=await service.transcribe({audioBase64:"YXVkaW8=",mimeType:"audio/webm",durationSeconds:4.667,relevanceContext:{voice_session_engaged:false,interruption:false}});
+  assert.equal(result.transcript,"مَرْحَبًا.");assert.equal(result.transcriptionAttempts,2);assert.equal(result.emptyTranscriptRecovered,true);assert.equal(calls.length,2);assert.match(calls[1],/first conversational turn/);assert.match(calls[1],/return empty text/);
+});
+
+test("empty STT recovery stays bounded and is not used during an engaged session", async () => {
+  let calls=0;const service=createVoiceService({config:readConfig(environment),fetchImpl:async()=>{calls+=1;return new Response(JSON.stringify({text:""}),{status:200,headers:{"content-type":"application/json"}});}});
+  const initial=await service.transcribe({audioBase64:"YXVkaW8=",mimeType:"audio/webm",durationSeconds:2,relevanceContext:{voice_session_engaged:false}});assert.equal(initial.transcript,"");assert.equal(initial.transcriptionAttempts,2);assert.equal(initial.emptyTranscriptRecovered,false);
+  const engaged=await service.transcribe({audioBase64:"YXVkaW8=",mimeType:"audio/webm",durationSeconds:2,relevanceContext:{voice_session_engaged:true}});assert.equal(engaged.transcriptionAttempts,1);assert.equal(calls,3);
+});
+
 test("multi-chunk WebM survives client base64 and server multipart decoding intact", async () => {
   const source = new Blob([
     new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]),
@@ -161,7 +173,7 @@ test("transcription failures retain only bounded safe diagnostic metadata", asyn
   const service = createVoiceService({ config: readConfig(environment), fetchImpl: async () => new Response(JSON.stringify({ error: { code: "invalid_value", type: "invalid_request_error", message: "Invalid file format for audio/webm secret-provider-body" } }), { status: 400, headers: { "content-type": "application/json" } }) });
   await assert.rejects(service.transcribe({ audioBase64: "YXVkaW8=", mimeType: "audio/webm;codecs=opus", durationSeconds: 1.25 }), (error) => {
     assert.ok(error instanceof VoiceProviderError); assert.equal(error.upstreamStatus, 400); assert.equal(error.category, "invalid_audio"); assert.equal(error.providerCode, "invalid_value");
-    assert.deepEqual(error.safeDetail, { operation: "transcribe", mimeType: "audio/webm;codecs=opus", fileName: "voice.webm", audioBytes: 5, durationSeconds: 1.25 });
+    assert.deepEqual(error.safeDetail, { operation: "transcribe", mimeType: "audio/webm;codecs=opus", fileName: "voice.webm", audioBytes: 5, durationSeconds: 1.25, transcriptionAttempt: 1 });
     assert.doesNotMatch(JSON.stringify(error), /secret-provider-body|openai-super-secret/); return true;
   });
 });

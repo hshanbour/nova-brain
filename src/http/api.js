@@ -157,6 +157,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           const [transcription, recognition, storageReady] = await Promise.allSettled([transcriptionPromise, recognitionEngines?.recognize?.(input,{requestId,transcriptPromise:transcriptionPromise,readyPromise}) || Promise.reject(new Error("not configured")),readyPromise]);
           if (transcription.status === "rejected") throw transcription.reason;
           if(storageReady.status==="rejected")throw storageReady.reason;
+          logger.info?.("Nova voice transcription completed",{requestId,model:transcription.value?.model||null,transcriptPresent:Boolean(String(transcription.value?.transcript||"").trim()),transcriptionAttempts:transcription.value?.transcriptionAttempts||1,emptyTranscriptRecovered:Boolean(transcription.value?.emptyTranscriptRecovered),durationMs:sttMs??null});
           const authoritative=recognition.status==="fulfilled"?recognition.value.authoritative:null;let speaker=speakerFromAuthoritativeResult(authoritative,config.speakerRecognition.modelVersion);const evidence=evidenceFor(authoritative);
           if(authoritative?.status==="failure")logger.error?.("Nova speaker recognition failed",{requestId,engineId:authoritative.engineId,stage:authoritative.error?.stage,code:authoritative.error?.code});
           if(authoritative?.status!=="confirmed"&&evidence?.sufficient&&String(transcription.value?.transcript||"").trim()){

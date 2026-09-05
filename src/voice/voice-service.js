@@ -8,6 +8,8 @@ const ELEVENLABS_MODELS = "https://api.elevenlabs.io/v1/models";
 const ELEVENLABS_VOICES = "https://api.elevenlabs.io/v1/voices";
 const ELEVENLABS_SUBSCRIPTION = "https://api.elevenlabs.io/v1/user/subscription";
 const MIME_TYPES = new Set(["audio/webm", "audio/webm;codecs=opus", "audio/ogg", "audio/ogg;codecs=opus", "audio/mp4", "audio/mpeg", "audio/wav", "audio/x-wav"]);
+const STT_PROMPT = "Nova Brain conversation. Preserve Arabic and English code-switching, names and terms including Mohammad, Luton, Sharp Cuts, Nova Brain, GitHub, API, booking, and missed-call recovery. Preserve short playback controls exactly, especially استني, استنى, وقفي, لحظة, دقيقة, شوي, كملي, كمّل, wait, stop, pause, hold on, continue, and resume. Preserve numbers exactly.";
+const FIRST_TURN_STT_RECOVERY_PROMPT = `${STT_PROMPT} This is the first conversational turn and may contain only one brief natural Arabic or English greeting, such as مرحبا, أهلا, hello, or hi. Transcribe only intelligible speech that is actually audible; return empty text when there is none.`;
 
 export class VoiceValidationError extends Error { constructor(message) { super(message); this.name = "VoiceValidationError"; } }
 export class VoiceUnavailableError extends Error { constructor(message) { super(message); this.name = "VoiceUnavailableError"; } }
@@ -112,16 +114,23 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
       const mimeType = validateMime(input?.mimeType);
       const durationSeconds = boundedNumber(input?.durationSeconds, voice.minDurationSeconds, voice.maxDurationSeconds, "durationSeconds");
       if (audio.length > voice.maxAudioBytes) throw new VoiceValidationError("Voice recording is too large.");
-      const form = new FormData();
-      form.append("model", voice.sttModel);
-      form.append("prompt", "Nova Brain conversation. Preserve Arabic and English code-switching, names and terms including Mohammad, Luton, Sharp Cuts, Nova Brain, GitHub, API, booking, and missed-call recovery. Preserve short playback controls exactly, especially استني, استنى, وقفي, لحظة, دقيقة, شوي, كملي, كمّل, wait, stop, pause, hold on, continue, and resume. Preserve numbers exactly.");
       const fileName = `voice.${extension(mimeType)}`;
-      form.append("file", new Blob([audio], { type: mimeType }), fileName);
-      let data;
-      try { data = await timedRequest(fetchImpl, OPENAI_TRANSCRIPTIONS, { method: "POST", headers: { Authorization: `Bearer ${voice.openAIApiKey}` }, body: form }, voice.requestTimeoutMs, "OpenAI transcription", schedule, cancelSchedule, (response) => safeJson(response, "OpenAI transcription")); }
-      catch (error) { if (error instanceof VoiceProviderError) error.safeDetail = { operation: "transcribe", mimeType, fileName, audioBytes: audio.length, durationSeconds }; throw error; }
-      const transcript = String(data?.text || "").trim();
-      return { transcript, model: voice.sttModel, durationSeconds };
+      const firstConversationalTurn = input?.relevanceContext?.voice_session_engaged !== true && input?.relevanceContext?.interruption !== true;
+      const prompts = firstConversationalTurn ? [STT_PROMPT, FIRST_TURN_STT_RECOVERY_PROMPT] : [STT_PROMPT];
+      let transcript = ""; let transcriptionAttempts = 0;
+      for (const prompt of prompts) {
+        transcriptionAttempts += 1;
+        const form = new FormData();
+        form.append("model", voice.sttModel);
+        form.append("prompt", prompt);
+        form.append("file", new Blob([audio], { type: mimeType }), fileName);
+        let data;
+        try { data = await timedRequest(fetchImpl, OPENAI_TRANSCRIPTIONS, { method: "POST", headers: { Authorization: `Bearer ${voice.openAIApiKey}` }, body: form }, voice.requestTimeoutMs, "OpenAI transcription", schedule, cancelSchedule, (response) => safeJson(response, "OpenAI transcription")); }
+        catch (error) { if (error instanceof VoiceProviderError) error.safeDetail = { operation: "transcribe", mimeType, fileName, audioBytes: audio.length, durationSeconds, transcriptionAttempt: transcriptionAttempts }; throw error; }
+        transcript = String(data?.text || "").trim();
+        if (transcript) break;
+      }
+      return { transcript, model: voice.sttModel, durationSeconds, transcriptionAttempts, emptyTranscriptRecovered: transcriptionAttempts > 1 && Boolean(transcript) };
     },
     streamSpeech,
     async synthesise(input, options) {
