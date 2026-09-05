@@ -31,8 +31,10 @@ test("MediaRecorder VAD finalizes substantial speech after a patient bounded end
   assert.ok(recording.audio instanceof Blob); assert.match(recording.mimeType, /^audio\/webm/); assert.ok(recording.durationSeconds >= 3.0 && recording.durationSeconds <= 3.55);
   assert.ok(recording.endpointGraceMs >= 1_450 && recording.endpointGraceMs <= 1_550);
   assert.deepEqual(flow.constraints(), { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
-  assert.deepEqual(settings,{echoCancellation:true,noiseSuppression:true,autoGainControl:true,sampleRate:48000,channelCount:1});
+  assert.deepEqual(settings,{echoCancellation:true,noiseSuppression:true,autoGainControl:true,sampleRate:48000,channelCount:1,trackLive:true,trackEnabled:true});
 });
+
+test("capture readiness is emitted only after the recorder and acoustic sampler are armed",async()=>{const flow=setup();await flow.capture.connect();let ready;let recording;flow.capture.listen({onReady:value=>{ready=value;assert.equal(flow.recorder().state,"recording");},onAudio:value=>{recording=value;}});assert.deepEqual({recorderReady:ready.recorderReady,acousticDetectorReady:ready.acousticDetectorReady},{recorderReady:true,acousticDetectorReady:true});flow.speakFor(500);flow.pauseFor(2_000);assert.ok(recording?.audio instanceof Blob);});
 
 test("MediaRecorder VAD reports bounded no-speech without producing an audio turn", async () => {
   const flow = setup(); await flow.capture.connect(); let noSpeech = 0; let audio = 0;

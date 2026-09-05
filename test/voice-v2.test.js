@@ -58,8 +58,12 @@ test("Start Voice runs the authoritative Nova turn, starts TTS before rendering,
 
 test("Listening is not published until MediaRecorder reports capture ready", async () => {
   const flow = setup({ manualReady: true }); await flow.mode.start(); assert.equal(flow.mode.getState(), "getting_ready"); assert.equal(flow.states.includes("listening"), false);
-  flow.ready(); assert.equal(flow.mode.getState(), "listening");
+  flow.ready(); assert.equal(flow.mode.getState(), "listening");assert.ok(flow.timings.some(item=>item.stage==="capture-listener-ready"&&item.measurements.listenerArmed===1));
 });
+
+test("fresh Voice ready captures the first مرحبا utterance exactly once",async()=>{const flow=setup({transcript:"مرحبا",speaker:{match_status:"unknown",speaker_profile_id:null,speaker_label:"unknown",authenticated_identity:"none"},relevance:{category:"addressed_to_nova",accepted_as_turn:true,reason:"initial_conversational_greeting",confidence:.86}});await flow.mode.start();assert.equal(flow.mode.getState(),"listening");assert.equal(await flow.audio(),true);assert.equal(flow.events.filter(item=>item==="transcribe").length,1);assert.equal(flow.events.filter(item=>item==="send:مرحبا").length,1);assert.deepEqual(flow.transcripts,["مرحبا"]);});
+
+test("End Voice then Start Voice captures the next first utterance without stale state",async()=>{const flow=setup({transcript:["مرحبا","hello"]});await flow.mode.start();assert.equal(await flow.audio(),true);flow.mode.end();assert.equal(await flow.mode.start(),true);assert.equal(flow.mode.getState(),"listening");assert.equal(await flow.audio(),true);assert.equal(flow.events.filter(item=>item==="transcribe").length,2);assert.equal(flow.events.filter(item=>item.startsWith("send:")).length,2);});
 
 test("timing diagnostics measure zero-overhead TTS dispatch and immediate handoff", async () => {
   const flow = setup(); await flow.mode.start(); await flow.audio({ audio: new Blob(["audio"], { type: "audio/webm" }), mimeType: "audio/webm", durationSeconds: 2, speechEndedAt: 0, endpointStartedAt: 50, endedAt: 1_350 }); flow.started(); flow.ended();

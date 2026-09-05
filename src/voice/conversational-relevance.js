@@ -18,6 +18,7 @@ export function classifyConversationalRelevance({ transcript, speaker, context =
   const directQuestion = isQuestion(normalized);
   const novaDirectedLanguage = /\b(?:you|your|can you|could you|would you|help me|tell me|show me|open|explain)\b|(?:انت|إنت|عندك|بتقدري|بتقدريش|ساعديني|احكيلي|خبريني|فرجيني|افتحي|اشرحي)/iu.test(normalized);
   const conversationalGreeting = /(?:^|[\s،,.!?؟])(?:مرحبا|أهلا|اهلا|hello|hi)(?:$|[\s،,.!?؟])|(?:كيفك|how are you)/iu.test(normalized);
+  const initialGreeting = /^(?:مرحبا|أهلا|اهلا|hello|hi)[\s،,.!?؟]*$/iu.test(normalized);
   const selfIdentityClaim = /^(?:i(?:'m|\s+am)|my name is)\s+[\p{L}][\p{L}\s'-]*[.!؟?\s]*$|^انا\s+[\p{L}][\p{L}\s'-]*[.!؟?\s]*$/iu.test(normalized);
   const identityQuestion = /^(?:who am i|do you know who i am|did you recognize me|(?:مين|من)\s+انا|بتعرفي\s+مين\s+انا|عرفتيني)[.!؟?\s]*$/iu.test(normalized);
   const ownerNovaImperative = /^(?:open|show|tell|explain|check|run)(?:$|\s)|^(?:افتحي|فرجيني|احكيلي|خبريني|اشرحي|شغلي|افحصي)(?:$|[\s،,.!?؟])/iu.test(normalized);
@@ -27,6 +28,7 @@ export function classifyConversationalRelevance({ transcript, speaker, context =
 
   if (context.interruption === true && interruptionIntent) return decision(AUDIO_RELEVANCE.INTERRUPTION, true, "pause_resume_or_stop_during_playback", .99);
   if (strongDirectAddress) return decision(context.interruption === true ? AUDIO_RELEVANCE.INTERRUPTION : AUDIO_RELEVANCE.ADDRESSED, true, "structured_direct_nova_address", .94);
+  if (context.interruption !== true && context.voice_session_engaged !== true && initialGreeting) return decision(AUDIO_RELEVANCE.ADDRESSED, true, "initial_conversational_greeting", .86);
   if (explicitlyAddressed && context.interruption === true) return decision(AUDIO_RELEVANCE.BACKGROUND, false, "weak_name_only_during_playback", .88);
   if (explicitlyAddressed) return decision(AUDIO_RELEVANCE.UNCERTAIN, false, "weak_name_only_without_turn_intent", .7);
   if (context.awaiting_nova_reply === true) return decision(AUDIO_RELEVANCE.CONTEXTUAL_REPLY, true, "reply_during_expected_answer_window", .9);

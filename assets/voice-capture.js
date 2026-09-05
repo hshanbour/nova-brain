@@ -16,6 +16,8 @@ export function createMediaVoiceCapture({
     if (!supported) throw new Error("Voice V2 requires microphone recording and audio analysis support.");
     stream = await mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
     const audioTrack=stream.getAudioTracks?.()[0]||stream.getTracks?.().find?.((track)=>track.kind==="audio")||stream.getTracks?.()[0];const reported=audioTrack?.getSettings?.()||{};audioSettings={...(typeof reported.echoCancellation==="boolean"?{echoCancellation:reported.echoCancellation}:{}),...(typeof reported.noiseSuppression==="boolean"?{noiseSuppression:reported.noiseSuppression}:{}),...(typeof reported.autoGainControl==="boolean"?{autoGainControl:reported.autoGainControl}:{}),...(Number.isFinite(reported.sampleRate)?{sampleRate:reported.sampleRate}:{}),...(Number.isFinite(reported.channelCount)?{channelCount:reported.channelCount}:{})};
+    if(!audioTrack||audioTrack.readyState==="ended"||audioTrack.enabled===false||stream.active===false)throw new Error("Microphone stream is not live and enabled.");
+    audioSettings={...audioSettings,trackLive:audioTrack.readyState!=="ended",trackEnabled:audioTrack.enabled!==false};
     context = new AudioContext(); analyser = context.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.2;
     source = context.createMediaStreamSource(stream); source.connect(analyser); if (context.state === "suspended") await context.resume();
     return Object.freeze({...audioSettings});
@@ -52,7 +54,6 @@ export function createMediaVoiceCapture({
     try { if (!primed) activeRecorder.start(recorderTimesliceMs); listening = activeRecorder.state === "recording"; }
     catch (error) { listening = false; onError?.(error); return; }
     if (!listening) { onError?.(new Error("Microphone recorder did not become ready.")); return; }
-    onReady?.({ startedAt });
     const sample = () => {
       if (current !== generation || !listening) return;
       const elapsed = now() - startedAt; const level = rms();
@@ -80,6 +81,7 @@ export function createMediaVoiceCapture({
       timer = schedule(sample, sampleIntervalMs);
     };
     timer = schedule(sample, sampleIntervalMs);
+    onReady?.({ startedAt,recorderReady:listening,acousticDetectorReady:timer!==undefined });
   }
 
   function watchForBargeIn(onBargeIn,{onDiagnostic}={}) {

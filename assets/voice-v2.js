@@ -25,7 +25,7 @@ export function createVoiceV2({
       reuseCandidateCapture,
       onReady: () => {
         if (!valid(current)) return;
-        mark("listeningReadyAt"); publish(pausedWaiting()?"paused_waiting_for_user":interruptionProbe?"barge_verifying":"listening");
+        mark("listeningReadyAt"); publish(pausedWaiting()?"paused_waiting_for_user":interruptionProbe?"barge_verifying":"listening");onTiming({turnId:timing?.turnId||null,stage:"capture-listener-ready",measurements:{listenerArmed:1,interruptionProbe:interruptionProbe?1:0}});
         if(interruptionProbe)onTiming({turnId:timing?.turnId,stage:"control-listener-ready",measurements:{paused:pausedWaiting()?1:0,reusedCandidate:reuseCandidateCapture?1:0}});
         if (afterAudio) reportTiming("listening-ready");
       },
@@ -155,7 +155,7 @@ export function createVoiceV2({
   return Object.freeze({
     async start() {
       if (active) return false; active = true; const current = ++generation; publish("connecting");
-      try { const audioSettings=await capture.connect();if(audioSettings&&typeof audioSettings==="object")onTiming({turnId:null,stage:"capture-settings",measurements:{settingsReported:1,echoCancellation:audioSettings.echoCancellation===true?1:0,noiseSuppression:audioSettings.noiseSuppression===true?1:0,autoGainControl:audioSettings.autoGainControl===true?1:0,...(Number.isFinite(audioSettings.sampleRate)?{sampleRate:audioSettings.sampleRate}:{}),...(Number.isFinite(audioSettings.channelCount)?{channelCount:audioSettings.channelCount}:{})}}); if (!valid(current)) { await capture.destroy(); return false; } listen(); return true; }
+      try { const audioSettings=await capture.connect();if(audioSettings&&typeof audioSettings==="object")onTiming({turnId:null,stage:"capture-settings",measurements:{settingsReported:1,trackLive:audioSettings.trackLive===true?1:0,trackEnabled:audioSettings.trackEnabled===true?1:0,echoCancellation:audioSettings.echoCancellation===true?1:0,noiseSuppression:audioSettings.noiseSuppression===true?1:0,autoGainControl:audioSettings.autoGainControl===true?1:0,...(Number.isFinite(audioSettings.sampleRate)?{sampleRate:audioSettings.sampleRate}:{}),...(Number.isFinite(audioSettings.channelCount)?{channelCount:audioSettings.channelCount}:{})}}); if (!valid(current)) { await capture.destroy(); return false; } listen(); return true; }
       catch (error) { if (!valid(current)) { await capture.destroy(); return false; } fatal(error?.message || "Microphone permission was denied or no microphone is available."); return false; }
     },
     end() { if (!active && state === "idle") return; active = false; generation += 1; interruptedCheckpoint=undefined;acceptedVoiceTurns=0;assistantAskedQuestion=false;contextualReplyUntil=0;clearRetry();clearProvisionalDuck(); abortPending(); capture.stop(); playback.stop(); interruptionPlayback.stop?.(); Promise.resolve(capture.destroy()).catch(() => {}); publish("idle"); },
