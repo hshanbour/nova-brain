@@ -51,9 +51,10 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
       nextChunkCharacters: voice.nextSpeechChunkCharacters,
       maxChunks: voice.maxSpeechChunks
     });
+    const startChunkIndex=Number.isInteger(input?.startChunkIndex)?Math.max(0,Math.min(chunks.length-1,input.startChunkIndex)):0;
     let totalAudioBytes = 0; let generatedCharacters = 0; let providerAttempts = 0;
     const streamStartedAt = Date.now();
-    const turnSeed = stableSpeechSeed(text); const turnId=`tts-${randomUUID()}`;const voiceFingerprint=createHash("sha256").update(voice.elevenLabsVoiceId).digest("hex").slice(0,12); const controller = new AbortController(); const unlink = linkAbort(signal, controller);
+    const turnSeed = Number.isInteger(input?.seed)?Math.max(0,Math.min(4_294_967_295,input.seed)):stableSpeechSeed(text); const turnId=`tts-${randomUUID()}`;const voiceFingerprint=createHash("sha256").update(voice.elevenLabsVoiceId).digest("hex").slice(0,12); const controller = new AbortController(); const unlink = linkAbort(signal, controller);
     const pending = new Map(); const lookahead = Math.max(1, Math.min(2, voice.speechLookahead || 2));
     const launch = (index) => {
       if (index >= chunks.length || pending.has(index) || controller.signal.aborted) return;
@@ -61,9 +62,9 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
         .then((value) => ({ ok: true, value }), (error) => ({ ok: false, error }));
       pending.set(index, promise);
     };
-    for (let index = 0; index < Math.min(lookahead, chunks.length); index += 1) launch(index);
+    for (let index = startChunkIndex; index < Math.min(startChunkIndex+lookahead, chunks.length); index += 1) launch(index);
     try {
-      for (let index = 0; index < chunks.length; index += 1) {
+      for (let index = startChunkIndex; index < chunks.length; index += 1) {
         if (controller.signal.aborted) throw cancelledProviderError();
         const settled = await pending.get(index); pending.delete(index);
         if (!settled.ok) { controller.abort(); throw settled.error; }
@@ -71,7 +72,7 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
         totalAudioBytes += result.audio.length;
         if (totalAudioBytes > voice.maxSpeechAudioBytes) { controller.abort(); throw new VoiceProviderError("elevenlabs", "ElevenLabs audio exceeded Nova's response limit.", undefined, "invalid_request"); }
         launch(index + lookahead);
-        yield { ...result, index, chunkCount: chunks.length, spokenText: chunks[index] };
+        yield { ...result, index, chunkCount: chunks.length, spokenText: chunks[index], seed:turnSeed };
       }
       onEvent({ phase: "stream_complete", chunkCount: chunks.length, textCharacters: text.length, generatedCharacters, providerAttempts, audioBytes: totalAudioBytes, estimatedAudioDurationSeconds: estimatedMp3Seconds(totalAudioBytes), durationMs: Date.now() - streamStartedAt, model: capability.model.id, outputFormat: voice.ttsOutputFormat });
     } catch (error) {

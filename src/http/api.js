@@ -47,7 +47,7 @@ async function writeChunk(response, value) {
 }
 
 function speechEvent(chunk) {
-  return JSON.stringify({ type: "audio", index: chunk.index, chunkCount: chunk.chunkCount, spokenText: chunk.spokenText, mimeType: chunk.mimeType, audioBase64: chunk.audio.toString("base64") }) + "\n";
+  return JSON.stringify({ type: "audio", index: chunk.index, chunkCount: chunk.chunkCount, spokenText: chunk.spokenText, seed:chunk.seed, mimeType: chunk.mimeType, audioBase64: chunk.audio.toString("base64") }) + "\n";
 }
 
 async function sendSpeechStream(response, stream, { logger, requestId }) {
@@ -187,7 +187,7 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         }
         if(request.method==="POST"&&pathname==="/api/voice/control"){
           const input=await readJsonBody(request,config.voiceV2.maxBodyBytes);const startedAt=Date.now();
-          const lifecycleState=input?.lifecycleState==="paused_waiting_for_user"?"paused_waiting_for_user":"speaking";
+          const lifecycleState=["paused_waiting_for_user","resumable"].includes(input?.lifecycleState)?input.lifecycleState:"speaking";
           const transcription=await voiceService.transcribe({...input,relevanceContext:{interruption:true,playback_control_expected:true,playback_paused:lifecycleState==="paused_waiting_for_user",voice_session_engaged:true}});
           const control=classifyVoiceControlIntent({transcript:transcription.transcript,state:lifecycleState});
           logger.info?.("Nova voice control classified",{requestId,lifecycleState,intent:control.intent,confidence:control.confidence,method:control.method,transcriptPresent:Boolean(transcription.transcript),durationMs:Date.now()-startedAt});

@@ -40,6 +40,8 @@ test("first complete audio chunk is available before later ElevenLabs generation
   second.resolve(); const next = await later; assert.equal(next.value.index, 1);
 });
 
+test("restart resume regenerates only the remaining semantic chunks with the original per-turn seed",async()=>{const requests=[];const service=createVoiceService({config:config({firstSpeechChunkCharacters:35,nextSpeechChunkCharacters:45}),fetchImpl:withCapabilities(async(_url,options)=>{const body=JSON.parse(options.body);requests.push(body);return new Response(Buffer.from(body.text),{status:200,headers:{"content-type":"audio/mpeg"}});})});const text="This first sentence begins now. This second sentence waits for generation. A third sentence follows.";const chunks=chunkSpeechText(text,{firstChunkCharacters:35,nextChunkCharacters:45,maxChunks:config().voiceV2.maxSpeechChunks});const output=[];for await(const item of service.streamSpeech({text,startChunkIndex:1,seed:4242}))output.push(item);assert.deepEqual(output.map(item=>item.index),chunks.slice(1).map((_,index)=>index+1));assert.equal(requests.map(item=>item.text).join(" "),chunks.slice(1).join(" "));assert.deepEqual(new Set(requests.map(item=>item.seed)),new Set([4242]));assert.deepEqual(new Set(output.map(item=>item.seed)),new Set([4242]));});
+
 test("browser client exposes first playable MP3 before the streamed response completes", async () => {
   let controller; const stream = new ReadableStream({ start(value) { controller = value; } }); let clock = 0;
   const client = createVoiceV2Client({ now: () => ++clock, fetchImpl: async () => new Response(stream, { status: 200, headers: { "content-type": "application/x-ndjson", "x-nova-voice-model": "eleven_v3_conversational" } }) });

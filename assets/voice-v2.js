@@ -1,15 +1,16 @@
 import {createVoiceControl} from "./voice-control.js";
 
 export function createVoiceV2({
-  capture, client, playback, interruptionPlayback = playback, sendTurn,
+  capture, client, playback, interruptionPlayback = playback, sendTurn, getConversationId,
   onTranscript = () => {}, onState = () => {}, onError = () => {}, onNotice = () => {}, onTiming = () => {},
   schedule = (callback, delay) => setTimeout(callback, delay), cancelSchedule = (timer) => clearTimeout(timer),
   now = () => globalThis.performance?.now?.() ?? Date.now(), retryDelayMs = 900, ttsRecoveryDelayMs = 250, checkpointTtlMs = 120_000, provisionalDuckMs = 350
 }) {
-  let active = false; let state = "idle"; let generation = 0; let retryTimer;let provisionalDuckTimer; let abortController; let turnSequence = 0; let timing;let acceptedVoiceTurns=0;let assistantAskedQuestion=false;let contextualReplyUntil=0;const voiceControl=createVoiceControl({now,ttlMs:checkpointTtlMs});
+  let active = false; let state = "idle"; let generation = 0; let retryTimer;let provisionalDuckTimer;let candidateCooldownTimer;let candidateInFlight=false;let candidateCooldownUntil=0; let abortController; let turnSequence = 0; let timing;let acceptedVoiceTurns=0;let assistantAskedQuestion=false;let contextualReplyUntil=0;const voiceControl=createVoiceControl({now,ttlMs:checkpointTtlMs});
   const publish = (next, detail = {}) => { state = next; onState({ active, state, ...detail }); };
   const clearRetry = () => { if (retryTimer !== undefined) cancelSchedule(retryTimer); retryTimer = undefined; };
   const clearProvisionalDuck = () => { if(provisionalDuckTimer!==undefined)cancelSchedule(provisionalDuckTimer);provisionalDuckTimer=undefined; };
+  const clearCandidateCooldown=()=>{if(candidateCooldownTimer!==undefined)cancelSchedule(candidateCooldownTimer);candidateCooldownTimer=undefined;};
   const abortPending = () => { abortController?.abort(); abortController = undefined; };
   const valid = (current) => active && current === generation;
   const mark = (name, value = now()) => { if (timing) timing[name] = value; };
@@ -17,7 +18,7 @@ export function createVoiceV2({
   const reportRelevance = (relevance,speaker) => onTiming({turnId:timing?.turnId,stage:`relevance-${relevance?.category||"unknown"}`,measurements:{acceptedAsTurn:relevance?.accepted_as_turn?1:0,relevanceConfidence:Number.isFinite(relevance?.confidence)?relevance.confidence:0,ownerSpeaker:speaker?.authenticated_identity==="owner"?1:0}});
   const pausedWaiting = () => voiceControl.isPaused();
   const reportBargeDiagnostic = (detail = {}) => onTiming({turnId:timing?.turnId,stage:`barge-${detail.phase||"candidate"}`,measurements:compact({speechOnset:Number.isFinite(detail.speechOnsetAt)?rounded(detail.speechOnsetAt):undefined,baselineRms:Number.isFinite(detail.baselineRms)?precise(detail.baselineRms):undefined,thresholdRms:Number.isFinite(detail.thresholdRms)?precise(detail.thresholdRms):undefined,peakUserRms:Number.isFinite(detail.peakRms)?precise(detail.peakRms):undefined,sustainedFrames:Number.isFinite(detail.sustainedFrames)?detail.sustainedFrames:undefined,monitorFrames:Number.isFinite(detail.monitorFrames)?detail.monitorFrames:undefined,calibrationComplete:detail.calibrationComplete?1:0,ttsChunkIndex:Number.isInteger(voiceControl.current()?.chunkIndex)?voiceControl.current().chunkIndex:undefined})});
-  const armBargeMonitor = () => capture.watchForBargeIn((detail)=>interrupt(detail),{onDiagnostic:reportBargeDiagnostic});
+  const armBargeMonitor = () => {clearCandidateCooldown();const wait=Math.max(0,candidateCooldownUntil-now());if(wait>0){candidateCooldownTimer=schedule(()=>{candidateCooldownTimer=undefined;if(active&&state==="speaking"&&!candidateInFlight)armBargeMonitor();},wait);return;}capture.watchForBargeIn((detail)=>interrupt(detail),{onDiagnostic:reportBargeDiagnostic});};
 
   function listen({ afterAudio = false, interruptionProbe = false, reuseCandidateCapture = false } = {}) {
     if (!active) return; clearRetry(); if(!interruptionProbe){abortPending();playback.stop();interruptionPlayback.stop?.();}
@@ -32,7 +33,7 @@ export function createVoiceV2({
         if (afterAudio) reportTiming("listening-ready");
       },
       onAudio: (recording) => processRecording(recording,{interruptionProbe}),
-      onNoSpeech: () => interruptionProbe?(pausedWaiting()?listen({interruptionProbe:true}):resumeInterrupted({message:"No valid speech detected. Resuming Nova.",quiet:true})):retry("No speech detected."),
+      onNoSpeech: () => interruptionProbe?(pausedWaiting()?listen({interruptionProbe:true}):rejectCandidate("no_speech")):retry("No speech detected."),
       onError: (error) => fatal(error?.message || "Microphone recording failed."),
       onEndpoint: ({ phase, graceMs }) => { if (valid(current)) publish(pausedWaiting()?"paused_waiting_for_user":interruptionProbe?"barge_verifying":"listening", { phase: phase === "possible-end" ? "endpoint-grace" : "speech-resumed", graceMs }); }
     });
@@ -53,6 +54,7 @@ export function createVoiceV2({
 
   async function processRecording(recording,{interruptionProbe=false}={}) {
     if (!active || !["listening","barge_verifying","paused_waiting_for_user"].includes(state)) return false;
+    const restartResumeProbe=!interruptionProbe&&state==="listening"&&voiceControl.isResumable();const controlProbe=interruptionProbe||restartResumeProbe;
     const priorController=abortController; let current = interruptionProbe?generation:++generation; capture.stop();
     if(!interruptionProbe)priorController?.abort();
     const transcriptController=new AbortController(); abortController=transcriptController;
@@ -66,13 +68,14 @@ export function createVoiceV2({
     reportTiming("recording-finalized");
     mark("sttStartedAt"); publish(interruptionProbe?"barge_verifying":"transcribing");
     try {let routeAsConversation=false;
-      if(interruptionProbe&&voiceControl.current()){
-        let controlResult;try{controlResult=await client.control({...recording,signal:abortController.signal,lifecycleState:pausedWaiting()?"paused_waiting_for_user":"speaking"});}catch(error){if(!valid(current))return false;if(pausedWaiting()){onTiming({turnId:timing?.turnId,stage:"control-stt-failed",measurements:{checkpointPreserved:1}});listen({interruptionProbe:true});return false;}resumeInterrupted({message:"Control audio was unclear. Resuming Nova.",quiet:true,controlAuthorized:true});return false;}
+      if(controlProbe&&voiceControl.current()){
+        const controlLifecycle=restartResumeProbe?"resumable":pausedWaiting()?"paused_waiting_for_user":"speaking";
+        let controlResult;try{controlResult=await client.control({...recording,signal:abortController.signal,lifecycleState:controlLifecycle});}catch(error){if(!valid(current))return false;if(voiceControl.isResumable()){onTiming({turnId:timing?.turnId,stage:"control-stt-failed",measurements:{checkpointPreserved:1}});listen(pausedWaiting()?{interruptionProbe:true}:{});return false;}rejectCandidate("control_stt_failed");return false;}
         if(!valid(current))return false;const controlIntent=controlResult?.control?.intent||"uncertain";const controlText=String(controlResult?.transcript||"").trim();onTiming({turnId:timing?.turnId,stage:`control-intent-${controlIntent}`,measurements:{checkpointPresent:1,paused:pausedWaiting()?1:0,confidence:Number(controlResult?.control?.confidence)||0}});
-        if(controlIntent==="pause"&&!pausedWaiting()){clearProvisionalDuck();playback.unduck?.();playback.pause?.();voiceControl.update({status:"paused_waiting_for_user",pausedAt:now(),pauseAuthorization:"playback_control",playbackCompletedDuringVerification:false});onTranscript(controlText);onTiming({turnId:timing?.turnId,stage:"barge-playback-control-pause",measurements:{playbackOnly:1,identityUpgraded:0,privateContextEnabled:0}});onTiming({turnId:timing?.turnId,stage:"control-pause-committed",measurements:{playbackOnly:1,identityUpgraded:0,privateContextEnabled:0}});listen({interruptionProbe:true});return true;}
-        if(controlIntent==="resume"&&pausedWaiting())return resumeInterrupted({text:controlText,explicit:true,quiet:true,controlAuthorized:true});
-        if(["unrelated","uncertain"].includes(controlIntent)){if(pausedWaiting()){listen({interruptionProbe:true});return false;}resumeInterrupted({message:"Background audio ignored. Resuming Nova.",quiet:true,controlAuthorized:true});return false;}
-        if(controlIntent==="new_conversation"){voiceControl.clear();playback.stop();routeAsConversation=true;}
+        if(controlIntent==="pause"&&!voiceControl.isResumable()){clearProvisionalDuck();candidateInFlight=false;playback.unduck?.();playback.pause?.();voiceControl.update({status:"paused_waiting_for_user",pausedAt:now(),pauseAuthorization:"playback_control",playbackCompletedDuringVerification:false});onTranscript(controlText);onTiming({turnId:timing?.turnId,stage:"barge-playback-control-pause",measurements:{playbackOnly:1,identityUpgraded:0,privateContextEnabled:0}});onTiming({turnId:timing?.turnId,stage:"control-pause-committed",measurements:{playbackOnly:1,identityUpgraded:0,privateContextEnabled:0}});listen({interruptionProbe:true});return true;}
+        if(controlIntent==="resume"&&voiceControl.isResumable())return restartResumeProbe?resumeAfterRestart(controlText):resumeInterrupted({text:controlText,explicit:true,quiet:true,controlAuthorized:true});
+        if(["unrelated","uncertain"].includes(controlIntent)){if(voiceControl.isResumable()){listen(pausedWaiting()?{interruptionProbe:true}:{});return false;}rejectCandidate(controlIntent);return false;}
+        if(controlIntent==="new_conversation"){candidateInFlight=false;voiceControl.clear();playback.stop();routeAsConversation=true;}
       }
       const transcribed = await client.transcribe({ ...recording, signal: abortController.signal,relevanceContext:{interruption:interruptionProbe&&!routeAsConversation,playback_control_expected:false,playback_paused:false,awaiting_nova_reply:!interruptionProbe&&contextualReplyUntil>0&&now()<=contextualReplyUntil,voice_session_engaged:acceptedVoiceTurns>0} });
       const { transcript, speaker } = transcribed;
@@ -104,6 +107,7 @@ export function createVoiceV2({
           mark("ttsStartedAt");
           const speech = await client.speech(message, { signal: abortController.signal });
           if (!valid(current)) throw abortError();
+          voiceControl.update({seed:speech?.seed});
           if (speech?.timing) {
             mark("ttsResponseHeadersAt", speech.timing.responseHeadersAt);
             mark("ttsFirstAudioByteAt", speech.timing.firstAudioByteAt);
@@ -133,16 +137,33 @@ export function createVoiceV2({
     }
   }
 
+  function rejectCandidate(reason="background"){
+    clearProvisionalDuck();candidateInFlight=false;candidateCooldownUntil=now()+750;
+    if(!voiceControl.isFresh()){voiceControl.clear();playback.stop();retry("The interrupted response expired.");return false;}
+    const playbackState=playback.checkpoint?.();
+    if(!playbackState){voiceControl.clear();capture.stop();listen({afterAudio:true});return false;}
+    playback.unduck?.();if(playbackState.paused)playback.resume?.();
+    voiceControl.update({status:"active",candidateRejectedAt:now(),candidateRejectReason:reason,playbackCompletedDuringVerification:false});
+    publish("speaking",{phase:"playing"});armBargeMonitor();
+    onTiming({turnId:timing?.turnId,stage:"control-candidate-rejected",measurements:{checkpointPreserved:1,cooldownMs:750,playbackActive:1}});return true;
+  }
+
+  async function resumeAfterRestart(text){
+    const checkpoint=voiceControl.current();if(!active||!checkpoint||!voiceControl.isFresh())return false;
+    capture.stop();publish("speaking",{phase:"preparing-resume",assistantTurnId:checkpoint.assistantTurnId,chunkIndex:checkpoint.chunkIndex});mark("resumeRequestedAt");
+    try{const speech=await client.speech(checkpoint.message,{signal:abortController.signal,startChunkIndex:Math.max(0,checkpoint.chunkIndex||0),seed:checkpoint.seed});if(!active)return false;voiceControl.update({status:"active",seed:speech.seed??checkpoint.seed,resumedAt:now(),resumeCount:(checkpoint.resumeCount||0)+1});playback.play(speech.stream||speech.audio,{onStarted:()=>{if(!active)return;mark("resumePlaybackStartedAt");reportTiming("resume-audio-started");armBargeMonitor();},onChunkStarted:({index,chunkCount,currentChunkText}={})=>voiceControl.update({chunkIndex:index,chunkCount,currentChunkText,status:"active"}),onEnded:()=>{if(!active)return;voiceControl.clear();listen({afterAudio:true});},onError:(error)=>{if(active)recover(voiceFailureMessage(error,true),ttsRecoveryDelayMs);}});onTranscript(text);onTiming({turnId:timing?.turnId,stage:"control-resume-restarted",measurements:{playbackOnly:1,agentCalls:0,identityUpgraded:0,privateContextEnabled:0,chunkIndex:Math.max(0,checkpoint.chunkIndex||0)}});return true;}catch(error){if(error?.name==="AbortError"||!active)return false;voiceControl.update({status:"resumable"});retry("Nova could not restore the paused audio yet.",retryDelayMs);return false;}
+  }
+
   function interrupt(detail={}) {
-    if (!active || state !== "speaking") return false;
+    if (!active || state !== "speaking"||candidateInFlight) return false;if(now()<candidateCooldownUntil){armBargeMonitor();return false;}candidateInFlight=true;
     if(Number.isFinite(detail?.speechOnsetAt))timing.bargeSpeechOnsetAt=detail.speechOnsetAt;if(Number.isFinite(detail?.detectedAt))timing.bargeDetectedAt=detail.detectedAt;timing.bargeVoicedMs=detail?.voicedMs;timing.bargeBaselineRms=detail?.baselineRms;timing.bargeThresholdRms=detail?.thresholdRms;timing.bargePeakRms=detail?.peakRms;timing.bargeSustainedFrames=detail?.sustainedFrames;timing.bargeMonitorFrames=detail?.monitorFrames;timing.bargeCalibrationComplete=detail?.calibrationComplete?1:0;timing.bargeTtsChunkIndex=voiceControl.current()?.chunkIndex;
     clearRetry();const playbackState=playback.checkpoint?.();
-    if(!playbackState){generation+=1;abortPending();playback.stop();mark("bargePlaybackStoppedAt");reportTiming("interrupted");capture.stop();publish("interrupted");listen();return true;}
-    const previous=voiceControl.current()||{};const ducked=playback.duck?.(.18);if(!ducked)playback.pause?.();mark("bargePlaybackStoppedAt");reportTiming("interrupted");voiceControl.replace({...previous,playback:playbackState,chunkIndex:Number.isInteger(playbackState.chunkIndex)?playbackState.chunkIndex:previous.chunkIndex,lastFullyPlayedChunk:Number.isInteger(playbackState.lastFullyPlayedChunk)?playbackState.lastFullyPlayedChunk:previous.lastFullyPlayedChunk,chunkCount:Number.isInteger(playbackState.chunkCount)?playbackState.chunkCount:previous.chunkCount,currentChunkText:playbackState.currentChunkText||previous.currentChunkText,interruptedAt:now(),continuationVersion:(previous.continuationVersion||0)+1,status:"control_candidate"});if(ducked){clearProvisionalDuck();const duckStartedAt=now();provisionalDuckTimer=schedule(()=>{provisionalDuckTimer=undefined;if(active&&voiceControl.current()?.status==="control_candidate"&&["barge_candidate","barge_verifying"].includes(state)){playback.unduck?.();onTiming({turnId:timing?.turnId,stage:"barge-provisional-unduck",measurements:{duckMs:rounded(now()-duckStartedAt),candidatePending:1}});}},provisionalDuckMs);}if(!detail.capturePrimed)capture.stop();publish("barge_candidate");listen({interruptionProbe:true,reuseCandidateCapture:Boolean(detail.capturePrimed)});return true;
+    if(!playbackState){candidateInFlight=false;generation+=1;abortPending();playback.stop();mark("bargePlaybackStoppedAt");reportTiming("interrupted");capture.stop();publish("interrupted");listen();return true;}
+    const previous=voiceControl.current()||{};const ducked=playback.duck?.(.18);if(!ducked)playback.pause?.();mark("bargePlaybackStoppedAt");reportTiming("interrupted");voiceControl.replace({...previous,playback:playbackState,chunkIndex:Number.isInteger(playbackState.chunkIndex)?playbackState.chunkIndex:previous.chunkIndex,lastFullyPlayedChunk:Number.isInteger(playbackState.lastFullyPlayedChunk)?playbackState.lastFullyPlayedChunk:previous.lastFullyPlayedChunk,chunkCount:Number.isInteger(playbackState.chunkCount)?playbackState.chunkCount:previous.chunkCount,currentChunkText:playbackState.currentChunkText||previous.currentChunkText,interruptedAt:now(),continuationVersion:(previous.continuationVersion||0)+1,status:"control_candidate"});if(ducked){clearProvisionalDuck();const duckStartedAt=now();provisionalDuckTimer=schedule(()=>{provisionalDuckTimer=undefined;if(active&&candidateInFlight&&voiceControl.current()?.status==="control_candidate"){playback.unduck?.();onTiming({turnId:timing?.turnId,stage:"barge-provisional-unduck",measurements:{duckMs:rounded(now()-duckStartedAt),candidatePending:1}});}},provisionalDuckMs);}if(!detail.capturePrimed)capture.stop();publish("barge_candidate");listen({interruptionProbe:true,reuseCandidateCapture:Boolean(detail.capturePrimed)});return true;
   }
 
   function resumeInterrupted({speaker,text,message,explicit=false,allowPlaybackContinuity=false,controlAuthorized=false,quiet=false}={}){
-    clearProvisionalDuck();const checkpoint=voiceControl.current();
+    clearProvisionalDuck();candidateInFlight=false;const checkpoint=voiceControl.current();
     if(!active||!checkpoint||!voiceControl.isFresh()){voiceControl.clear();retry(message||"Nothing recent is available to continue.");return false;}
     if(checkpoint.playbackCompletedDuringVerification){voiceControl.clear();capture.stop();listen({afterAudio:true});return false;}
     if(pausedWaiting()&&!explicit)return false;
@@ -155,16 +176,16 @@ export function createVoiceV2({
 
   return Object.freeze({
     async start() {
-      if (active) return false; active = true; const current = ++generation; publish("connecting");
+      if (active) return false;const checkpoint=voiceControl.current();if(typeof getConversationId==="function"){const conversationId=getConversationId();if(checkpoint?.conversationId&&checkpoint.conversationId!==conversationId)voiceControl.clear();} active = true; const current = ++generation; publish("connecting");
       try { const audioSettings=await capture.connect();if(audioSettings&&typeof audioSettings==="object")onTiming({turnId:null,stage:"capture-settings",measurements:{settingsReported:1,trackLive:audioSettings.trackLive===true?1:0,trackEnabled:audioSettings.trackEnabled===true?1:0,echoCancellation:audioSettings.echoCancellation===true?1:0,noiseSuppression:audioSettings.noiseSuppression===true?1:0,autoGainControl:audioSettings.autoGainControl===true?1:0,...(Number.isFinite(audioSettings.sampleRate)?{sampleRate:audioSettings.sampleRate}:{}),...(Number.isFinite(audioSettings.channelCount)?{channelCount:audioSettings.channelCount}:{})}}); if (!valid(current)) { await capture.destroy(); return false; } listen(); return true; }
       catch (error) { if (!valid(current)) { await capture.destroy(); return false; } fatal(error?.message || "Microphone permission was denied or no microphone is available."); return false; }
     },
-    end() { if (!active && state === "idle") return; active = false; generation += 1; voiceControl.clear();acceptedVoiceTurns=0;assistantAskedQuestion=false;contextualReplyUntil=0;clearRetry();clearProvisionalDuck(); abortPending(); capture.stop(); playback.stop(); interruptionPlayback.stop?.(); Promise.resolve(capture.destroy()).catch(() => {}); publish("idle"); },
+    end() { if (!active && state === "idle") return;const playbackState=playback.checkpoint?.();if(voiceControl.current())voiceControl.preserveForRestart(playbackState||{}); active = false; generation += 1;candidateInFlight=false;candidateCooldownUntil=0;acceptedVoiceTurns=0;assistantAskedQuestion=false;contextualReplyUntil=0;clearRetry();clearProvisionalDuck();clearCandidateCooldown(); abortPending(); capture.stop(); playback.stop(); interruptionPlayback.stop?.(); Promise.resolve(capture.destroy()).catch(() => {}); publish("idle"); },
     interrupt,
     isActive: () => active,
     getState: () => state,
     getLastTiming: () => timing ? timingSnapshot(timing, "snapshot") : null,
-    getInterruptedCheckpoint:()=>{const checkpoint=voiceControl.current();return checkpoint?{assistantTurnId:checkpoint.assistantTurnId,conversationId:checkpoint.conversationId,originalText:checkpoint.message,chunkIndex:checkpoint.chunkIndex,lastFullyPlayedChunk:checkpoint.lastFullyPlayedChunk,chunkCount:checkpoint.chunkCount,remainingChunkCount:Number.isInteger(checkpoint.chunkCount)?Math.max(0,checkpoint.chunkCount-(Number.isInteger(checkpoint.lastFullyPlayedChunk)?checkpoint.lastFullyPlayedChunk+1:0)):undefined,currentChunkText:checkpoint.currentChunkText,currentTime:checkpoint.playback?.currentTime,interruptedAt:checkpoint.interruptedAt,continuationVersion:checkpoint.continuationVersion,status:checkpoint.status,resumeCount:checkpoint.resumeCount||0}:null;}
+    getInterruptedCheckpoint:()=>{const checkpoint=voiceControl.current();return checkpoint?{assistantTurnId:checkpoint.assistantTurnId,conversationId:checkpoint.conversationId,originalText:checkpoint.message,chunkIndex:checkpoint.chunkIndex,lastFullyPlayedChunk:checkpoint.lastFullyPlayedChunk,chunkCount:checkpoint.chunkCount,remainingChunkCount:Number.isInteger(checkpoint.chunkCount)?Math.max(0,checkpoint.chunkCount-(Number.isInteger(checkpoint.lastFullyPlayedChunk)?checkpoint.lastFullyPlayedChunk+1:0)):undefined,currentChunkText:checkpoint.currentChunkText,currentTime:checkpoint.playback?.currentTime,interruptedAt:checkpoint.interruptedAt,resumableUntil:checkpoint.resumableUntil,continuationVersion:checkpoint.continuationVersion,status:checkpoint.status,resumeCount:checkpoint.resumeCount||0,seed:checkpoint.seed,ownerBoundOrigin:Boolean(checkpoint.ownerBoundOrigin)}:null;}
   });
 }
 

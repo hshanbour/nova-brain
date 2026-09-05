@@ -13,9 +13,9 @@ export function createVoiceV2Client({ fetchImpl = globalThis.fetch, now = () => 
       const familiarityConsent=getFamiliarityConsent();
       return requestJson(fetchImpl, "/api/voice/transcribe", { method: "POST", signal, body: JSON.stringify({ audioBase64, mimeType, durationSeconds, relevanceContext, ...(typeof familiarityConsent==="string"&&familiarityConsent?{familiarityConsent}:{}) }) });
     },
-    async speech(text, { signal } = {}) {
+    async speech(text, { signal, startChunkIndex, seed } = {}) {
       const requestStartedAt = now(); let response;
-      try { response = await fetchImpl("/api/voice/speech", { method: "POST", headers: { "Content-Type": "application/json" }, signal, body: JSON.stringify({ text }) }); }
+      try { response = await fetchImpl("/api/voice/speech", { method: "POST", headers: { "Content-Type": "application/json" }, signal, body: JSON.stringify({ text, ...(Number.isInteger(startChunkIndex)?{startChunkIndex}:{}), ...(Number.isInteger(seed)?{seed}:{}) }) }); }
       catch (error) { if (error?.name === "AbortError") throw error; throw new VoiceV2ApiError("Nova voice could not reach ElevenLabs."); }
       if (!response.ok) throw await responseError(response, "Nova could not generate voice audio.");
       const responseHeadersAt = now();
@@ -40,6 +40,7 @@ export function createVoiceV2Client({ fetchImpl = globalThis.fetch, now = () => 
         audio,
         stream,
         model: response.headers.get("x-nova-voice-model") || "unknown",
+        seed:Number.isInteger(first.seed)?first.seed:undefined,
         timing: { requestStartedAt, responseHeadersAt, firstAudioByteAt, firstPlayableAt }
       };
     }
@@ -80,7 +81,7 @@ function audioBlob(event, status) {
   const binary = atob(event.audioBase64); const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   const blob=new Blob([bytes], { type: event.mimeType || "audio/mpeg" });
-  Object.defineProperties(blob,{novaChunkIndex:{value:Number.isInteger(event.index)?event.index:undefined},novaChunkCount:{value:Number.isInteger(event.chunkCount)?event.chunkCount:undefined},novaSpokenText:{value:typeof event.spokenText==="string"?event.spokenText:undefined}});return blob;
+  Object.defineProperties(blob,{novaChunkIndex:{value:Number.isInteger(event.index)?event.index:undefined},novaChunkCount:{value:Number.isInteger(event.chunkCount)?event.chunkCount:undefined},novaSpokenText:{value:typeof event.spokenText==="string"?event.spokenText:undefined},novaSeed:{value:Number.isInteger(event.seed)?event.seed:undefined}});return blob;
 }
 
 function streamError(event, status) { const category=event.category||"unknown";return new VoiceV2ApiError(voiceCategoryMessage(category), status, category); }
