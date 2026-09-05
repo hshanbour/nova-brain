@@ -1,26 +1,581 @@
-import {createHash,randomUUID} from "node:crypto";
-import {ApprovalRequiredError} from "../policy/action-policy.js";
+import { createHash, randomUUID } from "node:crypto";
+import { ApprovalRequiredError } from "../policy/action-policy.js";
 
-export const AUTONOMY_STATUSES=Object.freeze(["queued","planning","running","waiting","waiting_for_worker","waiting_for_approval","retrying","blocked","completed","failed","cancelled","expired"]);
-export const STEP_CAPABILITIES=Object.freeze({inspect_repo:"repo_read_remote",search_code:"repo_read_remote",read_files:"repo_read_remote",inspect_logs:"vercel_preview",diagnose:"reasoning",plan_patch:"reasoning",apply_patch:"repo_mutate_local",run_focused_tests:"test_local",run_full_tests:"test_local",inspect_diff:"repo_read_remote",commit:"repo_mutate_local",request_push_approval:"github_write",push:"github_write",deploy_preview:"vercel_preview",verify_preview:"vercel_preview",inspect_failure:"reasoning",retry_repair:"reasoning",summarize:"reasoning",wait:"scheduler"});
-const TERMINAL=new Set(["completed","failed","cancelled","expired","blocked"]);const MUTATING=new Set(["apply_patch","commit","push"]);const REASONING=new Set(["diagnose","plan_patch","inspect_failure"]);const RETRYABLE=new Set(["network_error","provider_timeout","deployment_pending","rate_limit","preview_unavailable","worker_crash"]);
-const redact=(value)=>{if(Array.isArray(value))return value.map(redact);if(value&&typeof value==="object")return Object.fromEntries(Object.entries(value).map(([k,v])=>[/token|secret|password|authorization|api.?key/i.test(k)?k:k,/token|secret|password|authorization|api.?key/i.test(k)?"[REDACTED]":redact(v)]));return value;};
-const fingerprint=(task,step)=>createHash("sha256").update(JSON.stringify([task.id,task.currentStep,step.type,redact(step.input||{}),task.currentCommit])).digest("hex");
-const iso=(clock,ms=0)=>new Date(clock().getTime()+ms).toISOString();
-export class WorkerError extends Error{constructor(code,message,{retryable=RETRYABLE.has(code),details}={}){super(message);this.name="WorkerError";this.code=code;this.retryable=retryable;this.details=details;}}
-
-export function createWorkerRuntime({storage,ownerId,toolRegistry,planner,clock=()=>new Date(),workerId=`worker-${randomUUID()}`,capabilities=["repo_read_remote","reasoning","scheduler","vercel_preview"],leaseMs=30000,approvedBranch="feat/nova-brain-mvp-foundation"}={}){
- if(!storage||!ownerId||!toolRegistry)throw new Error("Worker runtime requires storage, ownerId, and Hands tools.");
- const activity=(task,action,status,summary,metadata={})=>storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action,status,summary,metadata:redact({taskId:task.id,...metadata})});
- async function create(input){if(typeof input?.title!=="string"||!input.title.trim()||typeof input?.objective!=="string"||!input.objective.trim())throw new WorkerError("invalid_task_configuration","Task title and objective are required.",{retryable:false});if(input.branch&&input.branch!==approvedBranch)throw new WorkerError("branch_not_allowed","Only the approved feature branch may host developer tasks.",{retryable:false});const task=await storage.createAutonomyTask({...input,branch:input.branch||approvedBranch,ownerId,maxSteps:Math.max(1,Math.min(100,input.maxSteps||30)),maxRetries:Math.max(0,Math.min(10,input.maxRetries??3)),maxRuntimeMinutes:Math.max(1,Math.min(240,input.maxRuntimeMinutes||30))});await storage.createRun({id:task.id,ownerId,projectId:task.projectId,goal:task.objective,status:"queued"});await activity(task,"autonomy_task_created","queued","Autonomous task queued.");return task;}
- async function control(id,action){const task=await storage.getAutonomyTask(id,ownerId);if(!task)throw new WorkerError("task_not_found","Task not found.",{retryable:false});if(action==="cancel"){await storage.releaseAutonomyLocks(id);return storage.updateAutonomyTask(id,ownerId,{status:"cancelled",completedAt:iso(clock),blockedReason:"Cancelled by owner."});}if(action==="pause"&&!TERMINAL.has(task.status))return storage.updateAutonomyTask(id,ownerId,{status:"waiting",nextRunAt:null,blockedReason:"Paused by owner."});if(action==="resume"&&["waiting","blocked","waiting_for_worker"].includes(task.status))return storage.updateAutonomyTask(id,ownerId,{status:"queued",nextRunAt:iso(clock),blockedReason:null,errorCode:null});throw new WorkerError("invalid_task_transition","Task control action is invalid for its state.",{retryable:false});}
- async function next(task){const planned=task.metadata?.steps?.[task.currentStep]||await planner?.({task,checkpoint:task.checkpoint});if(!planned)return{next_step:"summarize",reason:"Plan exhausted.",required_inputs:{},approval_required:false};return planned.next_step?planned:{next_step:planned.type,reason:planned.reason||"Planned deterministic step.",required_inputs:planned.input||{},approval_required:Boolean(planned.approvalRequired)};}
- async function tick({idempotencyKey=randomUUID()}={}){const task=await storage.claimAutonomyTask({ownerId,workerId,capabilities,leaseMs,idempotencyKey});if(!task)return{claimed:false};try{return await advance(task);}finally{await storage.releaseAutonomyLease(task.id,ownerId,task.leaseToken);}}
-async function advance(task){if(task.currentStep>=task.maxSteps)return stop(task,"failed","max_steps_reached");if(new Date(task.startedAt||task.createdAt).getTime()+task.maxRuntimeMinutes*60000<=clock().getTime())return stop(task,"expired","max_runtime_reached");const plan=await next(task),type=plan.next_step,capability=STEP_CAPABILITIES[type]||plan.required_capability;if(!capability)return stop(task,"failed","invalid_step_type");if(!capabilities.includes(capability)){await storage.updateAutonomyTask(task.id,ownerId,{status:"waiting_for_worker",blockedReason:`Worker capability required: ${capability}`,metadata:{...task.metadata,requiredCapability:capability}});await activity(task,"autonomy_waiting_for_worker","waiting",`Waiting for ${capability}.`,{capability});return{claimed:true,status:"waiting_for_worker",capability};}const stepId=`${task.currentStep+1}:${type}`,operationFingerprint=fingerprint(task,{type,input:plan.required_inputs});const existing=(await storage.listAutonomySteps(task.id)).find(x=>x.operationFingerprint===operationFingerprint&&x.status==="completed");if(existing){await storage.updateAutonomyTask(task.id,ownerId,{status:"queued",currentStep:task.currentStep+1,currentPhase:type,nextRunAt:iso(clock)});return{claimed:true,idempotent:true,step:existing};}let locked=false;if(MUTATING.has(type)){locked=await storage.acquireAutonomyLock({lockKey:`${task.projectId||"repo"}:${task.branch}`,taskId:task.id,leaseToken:task.leaseToken,expiresAt:task.leaseExpiresAt});if(!locked){await storage.updateAutonomyTask(task.id,ownerId,{status:"waiting",nextRunAt:iso(clock,1000),blockedReason:"Repository branch is locked."});return{claimed:true,status:"waiting",code:"branch_locked"};}}const step=await storage.recordAutonomyStep({taskId:task.id,stepId,stepType:type,capability,operationFingerprint,input:redact(plan.required_inputs),status:"running"});await activity(task,"autonomy_step_started","running",`${type} started.`,{stepId,capability});try{if(type==="wait"){const delay=Math.max(1000,Math.min(300000,Number(plan.required_inputs.delayMs)||30000));await complete(task,step,{waiting:true},"waiting",iso(clock,delay));return{claimed:true,status:"waiting",nextRunAt:iso(clock,delay)};}if(type==="summarize"){await storage.updateAutonomyStep(task.id,step.stepId,{status:"completed",result:redact(plan.required_inputs),completedAt:iso(clock)});return stop(task,"completed",null,plan.required_inputs.summary||"Task completed.");}if(type==="retry_repair"){const limit=Math.max(1,Math.min(3,Number(task.metadata?.maxRepairIterations)||3));if(task.repairIteration>=limit)return stop(task,"failed","repair_limit_reached");await storage.updateAutonomyTask(task.id,ownerId,{repairIteration:task.repairIteration+1});const result={ok:true,repairIteration:task.repairIteration+1,maxRepairIterations:limit};await complete(task,step,result,"queued",iso(clock));return{claimed:true,status:"queued",stepType:type,result};}if(REASONING.has(type)&&!plan.required_inputs.tool){const result={ok:true,reason:plan.reason,decision:redact(plan.required_inputs)};await complete(task,step,result,"queued",iso(clock));return{claimed:true,status:"queued",stepType:type,result};}const tool=plan.required_inputs.tool||toolFor(type);const args=plan.required_inputs.arguments||plan.required_inputs;const result=await toolRegistry.execute(tool,args,{runId:task.id,projectId:task.projectId,approvalId:task.approvalState?.approvalId});await complete(task,step,result,"queued",iso(clock));return{claimed:true,status:"queued",stepType:type,result:redact(result)};}catch(error){if(error instanceof ApprovalRequiredError){await storage.updateAutonomyStep(task.id,step.stepId,{status:"waiting",errorCode:"approval_required"});await storage.updateAutonomyTask(task.id,ownerId,{status:"waiting_for_approval",approvalState:{approvalId:error.approval.id,tool:error.approval.tool,arguments:error.approval.arguments,branch:task.branch,commitSha:task.currentCommit,stepId:step.stepId},blockedReason:"Owner approval required."});await activity(task,"autonomy_approval_requested","waiting","Task paused for owner approval.",{approvalId:error.approval.id,stepId:step.stepId});return{claimed:true,status:"waiting_for_approval",approval:error.approval};}const code=error.code||"unexpected_error",retryable=error.retryable??RETRYABLE.has(code);await storage.updateAutonomyStep(task.id,step.stepId,{status:"failed",errorCode:code,result:{message:String(error.message).slice(0,300)},completedAt:iso(clock)});if(retryable&&task.retryCount<task.maxRetries){const retry=task.retryCount+1,delay=Math.min(300000,1000*2**(retry-1));await storage.updateAutonomyTask(task.id,ownerId,{status:"retrying",retryCount:retry,errorCode:code,nextRunAt:iso(clock,delay),checkpoint:{...task.checkpoint,pendingStep:plan}});await activity(task,"autonomy_step_retry","retrying",`${type} scheduled for retry.`,{stepId,errorCode:code,retry,delay});return{claimed:true,status:"retrying",errorCode:code,nextRunAt:iso(clock,delay)};}return stop(task,"failed",code); }finally{if(locked)await storage.releaseAutonomyLocks(task.id,task.leaseToken);}}
- async function complete(task,step,result,status,nextRunAt){const completed=[...(task.checkpoint?.completedSteps||[]),step.stepId];await storage.updateAutonomyStep(task.id,step.stepId,{status:"completed",result:redact(result),completedAt:iso(clock)});await storage.updateAutonomyTask(task.id,ownerId,{status,currentStep:task.currentStep+1,currentPhase:step.stepType,currentCommit:result?.commitSha||task.currentCommit,nextRunAt,checkpoint:{...task.checkpoint,completedSteps:completed,pendingStep:null,latestResult:redact(result)},metadata:{...task.metadata,requiredCapability:null},blockedReason:null,errorCode:null});await activity(task,"autonomy_step_completed","completed",`${step.stepType} completed.`,{stepId:step.stepId,commitSha:result?.commitSha,deploymentId:result?.deploymentId});}
- async function stop(task,status,errorCode,resultSummary){await storage.releaseAutonomyLocks(task.id);const updated=await storage.updateAutonomyTask(task.id,ownerId,{status,errorCode:errorCode||null,resultSummary:resultSummary||task.resultSummary,completedAt:iso(clock),leaseOwner:null,leaseToken:null,leaseExpiresAt:null});await activity(task,`autonomy_task_${status}`,status,`Autonomous task ${status}.`,{errorCode});return{claimed:true,status,task:updated};}
- async function resumeApproval(taskId,approval){const task=await storage.getAutonomyTask(taskId,ownerId);if(!task||task.status!=="waiting_for_approval")throw new WorkerError("approval_state_invalid","Task is not waiting for approval.",{retryable:false});const pending=task.approvalState;if(approval.status!=="approved")return stop(task,"cancelled","approval_rejected");if(pending.commitSha!==task.currentCommit||pending.branch!==task.branch)throw new WorkerError("approval_invalidated","Task state changed after approval.",{retryable:false});return storage.updateAutonomyTask(task.id,ownerId,{status:"queued",nextRunAt:iso(clock),blockedReason:null,approvalState:{...pending,approved:true}});}
- return Object.freeze({workerId,capabilities:[...capabilities],create,get:(id)=>storage.getAutonomyTask(id,ownerId),list:(options)=>storage.listAutonomyTasks(ownerId,options),steps:(id)=>storage.listAutonomySteps(id),control,tick,resumeApproval});
+export const AUTONOMY_STATUSES = Object.freeze([
+  "queued",
+  "planning",
+  "running",
+  "waiting",
+  "waiting_for_worker",
+  "waiting_for_approval",
+  "retrying",
+  "blocked",
+  "completed",
+  "failed",
+  "cancelled",
+  "expired",
+]);
+export const STEP_CAPABILITIES = Object.freeze({
+  inspect_repo: "repo_read_remote",
+  search_code: "repo_read_remote",
+  read_files: "repo_read_remote",
+  inspect_logs: "vercel_preview",
+  diagnose: "reasoning",
+  plan_patch: "reasoning",
+  apply_patch: "repo_mutate_local",
+  run_focused_tests: "test_local",
+  run_full_tests: "test_local",
+  inspect_diff: "repo_read_remote",
+  commit: "repo_mutate_local",
+  request_push_approval: "github_write",
+  push: "github_write",
+  deploy_preview: "vercel_preview",
+  verify_preview: "vercel_preview",
+  inspect_failure: "reasoning",
+  retry_repair: "reasoning",
+  summarize: "reasoning",
+  wait: "scheduler",
+});
+const TERMINAL = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+  "expired",
+  "blocked",
+]);
+const MUTATING = new Set(["apply_patch", "commit", "push"]);
+const REASONING = new Set(["diagnose", "plan_patch", "inspect_failure"]);
+const RETRYABLE = new Set([
+  "network_error",
+  "provider_timeout",
+  "deployment_pending",
+  "rate_limit",
+  "preview_unavailable",
+  "worker_crash",
+]);
+const redact = (value) => {
+  if (Array.isArray(value)) return value.map(redact);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [
+        /token|secret|password|authorization|api.?key/i.test(k) ? k : k,
+        /token|secret|password|authorization|api.?key/i.test(k)
+          ? "[REDACTED]"
+          : redact(v),
+      ]),
+    );
+  return value;
+};
+const fingerprint = (task, step) =>
+  createHash("sha256")
+    .update(
+      JSON.stringify([
+        task.id,
+        task.currentStep,
+        step.type,
+        redact(step.input || {}),
+        task.currentCommit,
+      ]),
+    )
+    .digest("hex");
+const iso = (clock, ms = 0) => new Date(clock().getTime() + ms).toISOString();
+export class WorkerError extends Error {
+  constructor(
+    code,
+    message,
+    { retryable = RETRYABLE.has(code), details } = {},
+  ) {
+    super(message);
+    this.name = "WorkerError";
+    this.code = code;
+    this.retryable = retryable;
+    this.details = details;
+  }
 }
 
-function toolFor(type){return({inspect_repo:"repo_list",search_code:"repo_search",read_files:"repo_read",inspect_logs:"deployment_logs",apply_patch:"repo_apply_patch",run_focused_tests:"test_run",run_full_tests:"test_run_full",inspect_diff:"repo_diff",commit:"git_commit",push:"git_push",deploy_preview:"preview_deploy",verify_preview:"preview_verify"})[type]||type;}
+export function createWorkerRuntime({
+  storage,
+  ownerId,
+  toolRegistry,
+  planner,
+  clock = () => new Date(),
+  workerId = `worker-${randomUUID()}`,
+  capabilities = [
+    "repo_read_remote",
+    "reasoning",
+    "scheduler",
+    "vercel_preview",
+  ],
+  leaseMs = 30000,
+  approvedBranch = "feat/nova-brain-mvp-foundation",
+} = {}) {
+  if (!storage || !ownerId || !toolRegistry)
+    throw new Error(
+      "Worker runtime requires storage, ownerId, and Hands tools.",
+    );
+  const activity = (task, action, status, summary, metadata = {}) =>
+    storage.appendActivity({
+      ownerId,
+      projectId: task.projectId,
+      runId: task.id,
+      action,
+      status,
+      summary,
+      metadata: redact({ taskId: task.id, ...metadata }),
+    });
+  async function create(input) {
+    if (
+      typeof input?.title !== "string" ||
+      !input.title.trim() ||
+      typeof input?.objective !== "string" ||
+      !input.objective.trim()
+    )
+      throw new WorkerError(
+        "invalid_task_configuration",
+        "Task title and objective are required.",
+        { retryable: false },
+      );
+    if (input.branch && input.branch !== approvedBranch)
+      throw new WorkerError(
+        "branch_not_allowed",
+        "Only the approved feature branch may host developer tasks.",
+        { retryable: false },
+      );
+    const task = await storage.createAutonomyTask({
+      ...input,
+      branch: input.branch || approvedBranch,
+      ownerId,
+      maxSteps: Math.max(1, Math.min(100, input.maxSteps || 30)),
+      maxRetries: Math.max(0, Math.min(10, input.maxRetries ?? 3)),
+      maxRuntimeMinutes: Math.max(
+        1,
+        Math.min(240, input.maxRuntimeMinutes || 30),
+      ),
+    });
+    await storage.createRun({
+      id: task.id,
+      ownerId,
+      projectId: task.projectId,
+      goal: task.objective,
+      status: "queued",
+    });
+    await activity(
+      task,
+      "autonomy_task_created",
+      "queued",
+      "Autonomous task queued.",
+    );
+    return task;
+  }
+  async function control(id, action) {
+    const task = await storage.getAutonomyTask(id, ownerId);
+    if (!task)
+      throw new WorkerError("task_not_found", "Task not found.", {
+        retryable: false,
+      });
+    if (action === "cancel") {
+      await storage.releaseAutonomyLocks(id);
+      return storage.updateAutonomyTask(id, ownerId, {
+        status: "cancelled",
+        completedAt: iso(clock),
+        blockedReason: "Cancelled by owner.",
+      });
+    }
+    if (action === "pause" && !TERMINAL.has(task.status))
+      return storage.updateAutonomyTask(id, ownerId, {
+        status: "waiting",
+        nextRunAt: null,
+        blockedReason: "Paused by owner.",
+      });
+    if (
+      action === "resume" &&
+      ["waiting", "blocked", "waiting_for_worker"].includes(task.status)
+    )
+      return storage.updateAutonomyTask(id, ownerId, {
+        status: "queued",
+        nextRunAt: iso(clock),
+        blockedReason: null,
+        errorCode: null,
+      });
+    throw new WorkerError(
+      "invalid_task_transition",
+      "Task control action is invalid for its state.",
+      { retryable: false },
+    );
+  }
+  async function next(task) {
+    const planned =
+      task.metadata?.steps?.[task.currentStep] ||
+      (await planner?.({ task, checkpoint: task.checkpoint }));
+    if (!planned)
+      return {
+        next_step: "summarize",
+        reason: "Plan exhausted.",
+        required_inputs: {},
+        approval_required: false,
+      };
+    return planned.next_step
+      ? planned
+      : {
+          next_step: planned.type,
+          reason: planned.reason || "Planned deterministic step.",
+          required_inputs: planned.input || {},
+          approval_required: Boolean(planned.approvalRequired),
+        };
+  }
+  async function tick({ idempotencyKey = randomUUID() } = {}) {
+    const task = await storage.claimAutonomyTask({
+      ownerId,
+      workerId,
+      capabilities,
+      leaseMs,
+      idempotencyKey,
+    });
+    if (!task) return { claimed: false };
+    try {
+      return await advance(task);
+    } finally {
+      await storage.releaseAutonomyLease(task.id, ownerId, task.leaseToken);
+    }
+  }
+  async function advance(task) {
+    if (task.currentStep >= task.maxSteps)
+      return stop(task, "failed", "max_steps_reached");
+    if (
+      new Date(task.startedAt || task.createdAt).getTime() +
+        task.maxRuntimeMinutes * 60000 <=
+      clock().getTime()
+    )
+      return stop(task, "expired", "max_runtime_reached");
+    const plan = await next(task),
+      type = plan.next_step,
+      capability = STEP_CAPABILITIES[type] || plan.required_capability;
+    if (!capability) return stop(task, "failed", "invalid_step_type");
+    if (!capabilities.includes(capability)) {
+      await storage.updateAutonomyTask(task.id, ownerId, {
+        status: "waiting_for_worker",
+        blockedReason: `Worker capability required: ${capability}`,
+        metadata: { ...task.metadata, requiredCapability: capability },
+      });
+      await activity(
+        task,
+        "autonomy_waiting_for_worker",
+        "waiting",
+        `Waiting for ${capability}.`,
+        { capability },
+      );
+      return { claimed: true, status: "waiting_for_worker", capability };
+    }
+    const stepId = `${task.currentStep + 1}:${type}`,
+      operationFingerprint = fingerprint(task, {
+        type,
+        input: plan.required_inputs,
+      });
+    const existing = (await storage.listAutonomySteps(task.id)).find(
+      (x) =>
+        x.operationFingerprint === operationFingerprint &&
+        x.status === "completed",
+    );
+    if (existing) {
+      await storage.updateAutonomyTask(task.id, ownerId, {
+        status: "queued",
+        currentStep: task.currentStep + 1,
+        currentPhase: type,
+        nextRunAt: iso(clock),
+      });
+      return { claimed: true, idempotent: true, step: existing };
+    }
+    let locked = false;
+    if (MUTATING.has(type)) {
+      locked = await storage.acquireAutonomyLock({
+        lockKey: `${task.projectId || "repo"}:${task.branch}`,
+        taskId: task.id,
+        leaseToken: task.leaseToken,
+        expiresAt: task.leaseExpiresAt,
+      });
+      if (!locked) {
+        await storage.updateAutonomyTask(task.id, ownerId, {
+          status: "waiting",
+          nextRunAt: iso(clock, 1000),
+          blockedReason: "Repository branch is locked.",
+        });
+        return { claimed: true, status: "waiting", code: "branch_locked" };
+      }
+    }
+    const step = await storage.recordAutonomyStep({
+      taskId: task.id,
+      stepId,
+      stepType: type,
+      capability,
+      operationFingerprint,
+      input: redact(plan.required_inputs),
+      status: "running",
+    });
+    await activity(
+      task,
+      "autonomy_step_started",
+      "running",
+      `${type} started.`,
+      { stepId, capability },
+    );
+    try {
+      if (type === "wait") {
+        const delay = Math.max(
+          1000,
+          Math.min(300000, Number(plan.required_inputs.delayMs) || 30000),
+        );
+        await complete(
+          task,
+          step,
+          { waiting: true },
+          "waiting",
+          iso(clock, delay),
+        );
+        return {
+          claimed: true,
+          status: "waiting",
+          nextRunAt: iso(clock, delay),
+        };
+      }
+      if (type === "summarize") {
+        await storage.updateAutonomyStep(task.id, step.stepId, {
+          status: "completed",
+          result: redact(plan.required_inputs),
+          completedAt: iso(clock),
+        });
+        return stop(
+          task,
+          "completed",
+          null,
+          plan.required_inputs.summary || "Task completed.",
+        );
+      }
+      if (type === "retry_repair") {
+        const limit = Math.max(
+          1,
+          Math.min(3, Number(task.metadata?.maxRepairIterations) || 3),
+        );
+        if (task.repairIteration >= limit)
+          return stop(task, "failed", "repair_limit_reached");
+        await storage.updateAutonomyTask(task.id, ownerId, {
+          repairIteration: task.repairIteration + 1,
+        });
+        const result = {
+          ok: true,
+          repairIteration: task.repairIteration + 1,
+          maxRepairIterations: limit,
+        };
+        await complete(task, step, result, "queued", iso(clock));
+        return { claimed: true, status: "queued", stepType: type, result };
+      }
+      if (REASONING.has(type) && !plan.required_inputs.tool) {
+        const result = {
+          ok: true,
+          reason: plan.reason,
+          decision: redact(plan.required_inputs),
+        };
+        await complete(task, step, result, "queued", iso(clock));
+        return { claimed: true, status: "queued", stepType: type, result };
+      }
+      const tool = plan.required_inputs.tool || toolFor(type);
+      const rawArgs = plan.required_inputs.arguments || plan.required_inputs;
+      const args = resolveTaskReferences(rawArgs, task);
+      const result = await toolRegistry.execute(tool, args, {
+        runId: task.id,
+        projectId: task.projectId,
+        approvalId: task.approvalState?.approvalId,
+      });
+      await complete(task, step, result, "queued", iso(clock));
+      return {
+        claimed: true,
+        status: "queued",
+        stepType: type,
+        result: redact(result),
+      };
+    } catch (error) {
+      if (error instanceof ApprovalRequiredError) {
+        await storage.updateAutonomyStep(task.id, step.stepId, {
+          status: "waiting",
+          errorCode: "approval_required",
+        });
+        await storage.updateAutonomyTask(task.id, ownerId, {
+          status: "waiting_for_approval",
+          approvalState: {
+            approvalId: error.approval.id,
+            tool: error.approval.tool,
+            arguments: error.approval.arguments,
+            branch: task.branch,
+            commitSha: task.currentCommit,
+            stepId: step.stepId,
+          },
+          blockedReason: "Owner approval required.",
+        });
+        await activity(
+          task,
+          "autonomy_approval_requested",
+          "waiting",
+          "Task paused for owner approval.",
+          { approvalId: error.approval.id, stepId: step.stepId },
+        );
+        return {
+          claimed: true,
+          status: "waiting_for_approval",
+          approval: error.approval,
+        };
+      }
+      const code = error.code || "unexpected_error",
+        retryable = error.retryable ?? RETRYABLE.has(code);
+      await storage.updateAutonomyStep(task.id, step.stepId, {
+        status: "failed",
+        errorCode: code,
+        result: { message: String(error.message).slice(0, 300) },
+        completedAt: iso(clock),
+      });
+      if (retryable && task.retryCount < task.maxRetries) {
+        const retry = task.retryCount + 1,
+          delay = Math.min(300000, 1000 * 2 ** (retry - 1));
+        await storage.updateAutonomyTask(task.id, ownerId, {
+          status: "retrying",
+          retryCount: retry,
+          errorCode: code,
+          nextRunAt: iso(clock, delay),
+          checkpoint: { ...task.checkpoint, pendingStep: plan },
+        });
+        await activity(
+          task,
+          "autonomy_step_retry",
+          "retrying",
+          `${type} scheduled for retry.`,
+          { stepId, errorCode: code, retry, delay },
+        );
+        return {
+          claimed: true,
+          status: "retrying",
+          errorCode: code,
+          nextRunAt: iso(clock, delay),
+        };
+      }
+      return stop(task, "failed", code);
+    } finally {
+      if (locked) await storage.releaseAutonomyLocks(task.id, task.leaseToken);
+    }
+  }
+  async function complete(task, step, result, status, nextRunAt) {
+    const completed = [...(task.checkpoint?.completedSteps || []), step.stepId];
+    await storage.updateAutonomyStep(task.id, step.stepId, {
+      status: "completed",
+      result: redact(result),
+      completedAt: iso(clock),
+    });
+    await storage.updateAutonomyTask(task.id, ownerId, {
+      status,
+      currentStep: task.currentStep + 1,
+      currentPhase: step.stepType,
+      currentCommit: result?.commitSha || task.currentCommit,
+      nextRunAt,
+      checkpoint: {
+        ...task.checkpoint,
+        completedSteps: completed,
+        pendingStep: null,
+        latestResult: redact(result),
+      },
+      metadata: { ...task.metadata, requiredCapability: null },
+      blockedReason: null,
+      errorCode: null,
+    });
+    await activity(
+      task,
+      "autonomy_step_completed",
+      "completed",
+      `${step.stepType} completed.`,
+      {
+        stepId: step.stepId,
+        commitSha: result?.commitSha,
+        deploymentId: result?.deploymentId,
+      },
+    );
+  }
+  async function stop(task, status, errorCode, resultSummary) {
+    await storage.releaseAutonomyLocks(task.id);
+    const updated = await storage.updateAutonomyTask(task.id, ownerId, {
+      status,
+      errorCode: errorCode || null,
+      resultSummary: resultSummary || task.resultSummary,
+      completedAt: iso(clock),
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+    });
+    await activity(
+      task,
+      `autonomy_task_${status}`,
+      status,
+      `Autonomous task ${status}.`,
+      { errorCode },
+    );
+    return { claimed: true, status, task: updated };
+  }
+  async function resumeApproval(taskId, approval) {
+    const task = await storage.getAutonomyTask(taskId, ownerId);
+    if (!task || task.status !== "waiting_for_approval")
+      throw new WorkerError(
+        "approval_state_invalid",
+        "Task is not waiting for approval.",
+        { retryable: false },
+      );
+    const pending = task.approvalState;
+    if (approval.status !== "approved")
+      return stop(task, "cancelled", "approval_rejected");
+    if (
+      pending.commitSha !== task.currentCommit ||
+      pending.branch !== task.branch
+    )
+      throw new WorkerError(
+        "approval_invalidated",
+        "Task state changed after approval.",
+        { retryable: false },
+      );
+    return storage.updateAutonomyTask(task.id, ownerId, {
+      status: "queued",
+      nextRunAt: iso(clock),
+      blockedReason: null,
+      approvalState: { ...pending, approved: true },
+    });
+  }
+  return Object.freeze({
+    workerId,
+    capabilities: [...capabilities],
+    create,
+    get: (id) => storage.getAutonomyTask(id, ownerId),
+    list: (options) => storage.listAutonomyTasks(ownerId, options),
+    steps: (id) => storage.listAutonomySteps(id),
+    control,
+    tick,
+    resumeApproval,
+  });
+}
+
+function toolFor(type) {
+  return (
+    {
+      inspect_repo: "repo_list",
+      search_code: "repo_search",
+      read_files: "repo_read",
+      inspect_logs: "deployment_logs",
+      apply_patch: "repo_apply_patch",
+      run_focused_tests: "test_run",
+      run_full_tests: "test_run_full",
+      inspect_diff: "repo_diff",
+      commit: "git_commit",
+      push: "git_push",
+      deploy_preview: "preview_deploy",
+      verify_preview: "preview_verify",
+    }[type] || type
+  );
+}
+
+function resolveTaskReferences(value, task) {
+  if (Array.isArray(value)) return value.map((item) => resolveTaskReferences(item, task));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveTaskReferences(item, task)]));
+  return value === "$CURRENT_COMMIT" ? task.currentCommit : value;
+}
