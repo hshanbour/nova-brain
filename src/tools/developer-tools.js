@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { RISK_LEVELS } from "../policy/action-policy.js";
 import { createSpeakerIdentity } from "../voice/speaker-identity.js";
+import {registerHandsTools} from "./hands-runtime.js";
 
 const runFile = promisify(execFile);
 const secretName = /(^|[\\/])(\.env|\.git|node_modules)([\\/]|$)|secret|credential|token|key/i;
@@ -12,7 +13,9 @@ function stringArg(input, name, max = 500) { if (typeof input[name] !== "string"
 async function files(root, directory = root, output = []) { for (const entry of await readdir(directory,{withFileTypes:true})) { if ([".git","node_modules",".vercel"].includes(entry.name)) continue; const path=resolve(directory,entry.name); if(entry.isDirectory()) await files(root,path,output); else output.push(relative(root,path).replaceAll("\\","/")); if(output.length>=500)break; } return output; }
 const definition = (tool) => ({ category:"developer", capability:"read", configurationStatus:"ready", available:true, riskLevel:RISK_LEVELS.READ_ONLY, ...tool });
 
-export function registerDeveloperTools(registry, { root = process.cwd(), environment = process.env } = {}) {
+export function registerDeveloperTools(registry, options = {}) { return registerHandsTools(registry, options); }
+
+function registerLegacyDeveloperTools(registry, { root = process.cwd(), environment = process.env } = {}) {
   const remote=Boolean(environment.VERCEL);const repository=environment.NOVA_BRAIN_GITHUB_REPOSITORY||"hshanbour/nova-brain";const branch=environment.NOVA_BRAIN_DEVELOPMENT_BRANCH||"feat/nova-brain-mvp-foundation";
   const githubGet=async(path)=>{const response=await fetch(`https://api.github.com/repos/${repository}/${path}`,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28",...(environment.NOVA_BRAIN_GITHUB_TOKEN?{Authorization:`Bearer ${environment.NOVA_BRAIN_GITHUB_TOKEN}`}:{})}});if(!response.ok)throw new Error(`Repository read failed with status ${response.status}.`);return response.json();};
   registry.register(definition({ name:"repo_list", description:"List files in the approved Nova Brain repository.", inputSchema:{type:"object",properties:{path:{type:"string"}},additionalProperties:false}, async execute({path="."}) { if(remote){const payload=await githubGet(`git/trees/${encodeURIComponent(branch)}?recursive=1`);const prefix=path==="."?"":`${path.replace(/\/$/,"")}/`;return {files:(payload.tree||[]).filter((item)=>item.type==="blob"&&item.path.startsWith(prefix)&&!secretName.test(item.path)).slice(0,500).map((item)=>item.path)};}const base=safePath(root,path);return {files:await files(root,base)}; } }));

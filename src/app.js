@@ -23,7 +23,7 @@ export function createApp({ environment = process.env, storage: storageOverride,
   const initialize = () => storage.initialize({ owner: INITIAL_OWNER_PROFILE, projects: INITIAL_PROJECTS, memories: INITIAL_MEMORIES });
   const policy = createActionPolicy({ storage, ownerId: OWNER_ID, approvedBranch: config.developmentBranch });
   const toolRegistry = createToolRegistry({ policy });
-  registerDeveloperTools(toolRegistry, { environment });
+  registerDeveloperTools(toolRegistry, { environment, storage, ownerId: OWNER_ID, logger });
   registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID });
   const modelProvider = createModelProvider(config);
   const speakerAssertions = createSpeakerAssertions({ key: config.speakerRecognition.assertionKey });

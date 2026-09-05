@@ -23,6 +23,12 @@ export function createToolRegistry({ policy } = {}) {
       if (definition.type === "boolean" && typeof input[field] !== "boolean") {
         throw new Error(`Invalid tool argument type: ${name}.${field}`);
       }
+      if (definition.type === "array" && !Array.isArray(input[field])) {
+        throw new Error(`Invalid tool argument type: ${name}.${field}`);
+      }
+      if (definition.type === "object" && (!input[field] || typeof input[field] !== "object" || Array.isArray(input[field]))) {
+        throw new Error(`Invalid tool argument type: ${name}.${field}`);
+      }
     }
   }
 

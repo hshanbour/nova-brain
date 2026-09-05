@@ -15,6 +15,7 @@ export function createActionPolicy({ storage, ownerId, approvedBranch }) {
   return Object.freeze({
     async authorize(tool, input, context = {}) {
       if (tool.riskLevel === RISK_LEVELS.READ_ONLY) return { authorized: true };
+      if (tool.branchBound && input.branch !== approvedBranch) { const error=new Error("Branch is not approved for development writes.");error.code="branch_not_allowed";throw error; }
       if (tool.riskLevel === RISK_LEVELS.LOW_RISK_WRITE && tool.autonomous && (!tool.branchBound || input.branch === approvedBranch)) return { authorized: true };
       if (context.approvalId) {
         const approval = await storage.getApproval(context.approvalId, ownerId);
