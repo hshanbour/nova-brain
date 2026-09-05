@@ -7,6 +7,7 @@ export function createVoiceV2Client({ fetchImpl = globalThis.fetch, now = () => 
   return Object.freeze({
     async readiness() { return requestJson(fetchImpl, "/api/voice/readiness"); },
     async telemetry(payload) { return requestJson(fetchImpl, "/api/voice/telemetry", { method: "POST", body: JSON.stringify(payload) }); },
+    async control({audio,mimeType,durationSeconds,signal,lifecycleState}){const audioBase64=bytesToBase64(new Uint8Array(await audio.arrayBuffer()));return requestJson(fetchImpl,"/api/voice/control",{method:"POST",signal,body:JSON.stringify({audioBase64,mimeType,durationSeconds,lifecycleState})});},
     async transcribe({ audio, mimeType, durationSeconds, signal, relevanceContext }) {
       const audioBase64 = bytesToBase64(new Uint8Array(await audio.arrayBuffer()));
       const familiarityConsent=getFamiliarityConsent();

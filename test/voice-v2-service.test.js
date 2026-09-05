@@ -53,6 +53,14 @@ test("a paused checkpoint uses the focused playback-control transcription contra
   assert.equal(result.transcript,"كملي حكي");assert.equal(result.transcriptionAttempts,1);assert.match(prompt,/active or paused at a preserved checkpoint/);assert.match(prompt,/do not infer a command/);
 });
 
+test("dedicated Voice control API classifies playback commands without speaker extraction",async()=>{
+  let extractorCalls=0;const logs=[];const handler=createApi({config:readConfig({}),agent:{},storage:{},initialize:async()=>{},ownerId:"owner",voiceBenchmark:{},voiceService:{async transcribe(input){assert.equal(input.relevanceContext.playback_control_expected,true);return{transcript:"كملي"};}},speakerExtractor:{async extract(){extractorCalls++;}},logger:{info(...args){logs.push(args);},error(){}}});
+  const result=await api(handler,{method:"POST",url:"/api/voice/control",headers:{"content-type":"application/json"},body:JSON.stringify({audioBase64:"YXVkaW8=",mimeType:"audio/webm",durationSeconds:1,lifecycleState:"paused_waiting_for_user"})});
+  assert.equal(result.status,200);assert.equal(result.body.control.intent,"resume");assert.equal(extractorCalls,0);assert.equal(logs.find(([message])=>message==="Nova voice control classified")[1].lifecycleState,"paused_waiting_for_user");
+});
+
+test("Voice V2 client sends control audio only to the same-origin control endpoint",async()=>{let call;const client=createVoiceV2Client({fetchImpl:async(url,options)=>{call={url,options};return new Response(JSON.stringify({transcript:"wait",control:{intent:"pause"}}),{status:200,headers:{"content-type":"application/json"}});}});const result=await client.control({audio:new Blob(["audio"],{type:"audio/webm"}),mimeType:"audio/webm",durationSeconds:.8,lifecycleState:"speaking"});assert.equal(call.url,"/api/voice/control");assert.equal(call.options.method,"POST");assert.equal(JSON.parse(call.options.body).lifecycleState,"speaking");assert.equal(result.control.intent,"pause");});
+
 test("multi-chunk WebM survives client base64 and server multipart decoding intact", async () => {
   const source = new Blob([
     new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]),

@@ -18,6 +18,7 @@ import { VoiceProviderError, VoiceTimeoutError, VoiceUnavailableError, VoiceVali
 import { createSpeakerEngineCoordinator, speakerFromAuthoritativeResult } from "../voice/speaker-engine.js";
 import { createEcapaSpeakerEngine, evidenceFor } from "../voice/ecapa-speaker-engine.js";
 import { classifyConversationalRelevance } from "../voice/conversational-relevance.js";
+import { classifyVoiceControlIntent } from "../voice/voice-control-intent.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -183,6 +184,14 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
 
         if(request.method==="GET"&&pathname==="/api/speakers"){
           await ready();sendJson(response,200,{speakers:await speakerIdentity.list()});return;
+        }
+        if(request.method==="POST"&&pathname==="/api/voice/control"){
+          const input=await readJsonBody(request,config.voiceV2.maxBodyBytes);const startedAt=Date.now();
+          const lifecycleState=input?.lifecycleState==="paused_waiting_for_user"?"paused_waiting_for_user":"speaking";
+          const transcription=await voiceService.transcribe({...input,relevanceContext:{interruption:true,playback_control_expected:true,playback_paused:lifecycleState==="paused_waiting_for_user",voice_session_engaged:true}});
+          const control=classifyVoiceControlIntent({transcript:transcription.transcript,state:lifecycleState});
+          logger.info?.("Nova voice control classified",{requestId,lifecycleState,intent:control.intent,confidence:control.confidence,method:control.method,transcriptPresent:Boolean(transcription.transcript),durationMs:Date.now()-startedAt});
+          sendJson(response,200,{transcript:transcription.transcript,control,timing:{controlMs:Date.now()-startedAt}});return;
         }
         if(request.method==="POST"&&pathname==="/api/voice/telemetry"){
           const input=await readJsonBody(request,config.maxBodyBytes);const measurements={};
