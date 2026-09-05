@@ -64,7 +64,7 @@ export function createVoiceV2({
     reportTiming("recording-finalized");
     mark("sttStartedAt"); publish(interruptionProbe?"barge_verifying":"transcribing");
     try {
-      const transcribed = await client.transcribe({ ...recording, signal: abortController.signal,relevanceContext:{interruption:interruptionProbe,awaiting_nova_reply:!interruptionProbe&&contextualReplyUntil>0&&now()<=contextualReplyUntil,voice_session_engaged:acceptedVoiceTurns>0} });
+      const transcribed = await client.transcribe({ ...recording, signal: abortController.signal,relevanceContext:{interruption:interruptionProbe,playback_control_expected:interruptionProbe&&Boolean(interruptedCheckpoint),playback_paused:pausedWaiting(),awaiting_nova_reply:!interruptionProbe&&contextualReplyUntil>0&&now()<=contextualReplyUntil,voice_session_engaged:acceptedVoiceTurns>0} });
       const { transcript, speaker } = transcribed;
       if (!valid(current)) return false;
       mark("transcriptAvailableAt");
@@ -218,7 +218,7 @@ function compact(value) { return Object.fromEntries(Object.entries(value).filter
 function rounded(value) { return Math.round(Math.max(0, value) * 10) / 10; }
 function precise(value){return Math.round(Math.max(0,value)*100000)/100000;}
 function abortError() { const error = new Error("Voice turn was interrupted."); error.name = "AbortError"; return error; }
-function isContinueIntent(text){const value=String(text||"").normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu,"").trim();return /\b(?:continue|go on|carry on|resume)(?:\s+(?:from\s+where\s+you\s+(?:stopped|left\s+off)|the\s+same\s+point))?\b/iu.test(value)||/(?:^|[\s،,.؟?])(?:ارجع|ارجعي|رجع|رجعي|يلا)?\s*(?:كمل(?:ي|لي|يلي|يليلي)?|لنفس\s+النقط[هة]|من\s+(?:وين\s+وقفتي|عند\s+ما\s+تركتي)|شو\s+كنتي\s+تحكي)(?:$|[\s،,.؟?])/iu.test(value);}
+function isContinueIntent(text){const value=String(text||"").normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu,"").replace(/[أإآٱ]/gu,"ا").replace(/ـ/gu,"").trim();return /\b(?:continue|go on|carry on|resume)(?:\s+(?:from\s+where\s+you\s+(?:stopped|left\s+off)|the\s+same\s+point))?\b/iu.test(value)||/(?:^|[\s،,.؟?])(?:(?:ارجع|ارجعي|رجع|رجعي|يلا)\s+)?(?:كمل(?:ي|لي|يلي|يليلي)?(?:\s+حكي)?|تابع(?:ي)?|لنفس\s+النقط[هة]|من\s+(?:وين\s+وقفتي|عند\s+ما\s+تركتي)|شو\s+كنتي\s+تحكي)(?:$|[\s،,.؟?])/iu.test(value);}
 function isPauseIntent(text){const value=String(text||"").normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu,"").trim();return /(?:^|[\s،,.؟?])(?:استن(?:ي|ى)|اسكت(?:ي)?|لحظ[هة]|دقيق[هة]|شوي|وقف(?:ي)?|وقف[هة]|خلاص|wait|hold on|just a second|one second|stop|pause)(?:$|[\s،,.؟?])/iu.test(value);}
 function looksLikeQuestion(text){const value=String(text||"").trim();return /[?؟]\s*$/.test(value)||/(?:^|[\s،])(?:شو|ماذا|مين|من|وين|اين|أين|متى|ليش|كيف|هل|what|who|where|when|why|how|which|do you|are you|can you)(?:$|[\s،,.؟?])/iu.test(value);}
 function confirmedProfileId(speaker){return speaker?.match_status==="confirmed"&&typeof speaker?.speaker_profile_id==="string"?speaker.speaker_profile_id:null;}

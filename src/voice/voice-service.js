@@ -10,6 +10,7 @@ const ELEVENLABS_SUBSCRIPTION = "https://api.elevenlabs.io/v1/user/subscription"
 const MIME_TYPES = new Set(["audio/webm", "audio/webm;codecs=opus", "audio/ogg", "audio/ogg;codecs=opus", "audio/mp4", "audio/mpeg", "audio/wav", "audio/x-wav"]);
 const STT_PROMPT = "Nova Brain conversation. Preserve Arabic and English code-switching, names and terms including Mohammad, Luton, Sharp Cuts, Nova Brain, GitHub, API, booking, and missed-call recovery. Preserve short playback controls exactly, especially استني, استنى, وقفي, لحظة, دقيقة, شوي, كملي, كمّل, wait, stop, pause, hold on, continue, and resume. Preserve numbers exactly.";
 const FIRST_TURN_STT_RECOVERY_PROMPT = `${STT_PROMPT} This is the first conversational turn and may contain only one brief natural Arabic or English greeting, such as مرحبا, أهلا, hello, or hi. Transcribe only intelligible speech that is actually audible; return empty text when there is none.`;
+const PLAYBACK_CONTROL_STT_PROMPT = `${STT_PROMPT} Nova playback is active or paused at a preserved checkpoint. The speaker may use a brief Arabic or English playback command such as استني, وقفي, wait, stop, كملي, كمّل, كمل, كملي حكي, يلا كملي, تابعي, continue, carry on, go on, or resume. Preserve the exact audible words; do not infer a command when none is intelligible.`;
 
 export class VoiceValidationError extends Error { constructor(message) { super(message); this.name = "VoiceValidationError"; } }
 export class VoiceUnavailableError extends Error { constructor(message) { super(message); this.name = "VoiceUnavailableError"; } }
@@ -115,8 +116,9 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
       const durationSeconds = boundedNumber(input?.durationSeconds, voice.minDurationSeconds, voice.maxDurationSeconds, "durationSeconds");
       if (audio.length > voice.maxAudioBytes) throw new VoiceValidationError("Voice recording is too large.");
       const fileName = `voice.${extension(mimeType)}`;
+      const playbackControlExpected = input?.relevanceContext?.playback_control_expected === true;
       const firstConversationalTurn = input?.relevanceContext?.voice_session_engaged !== true && input?.relevanceContext?.interruption !== true;
-      const prompts = firstConversationalTurn ? [STT_PROMPT, FIRST_TURN_STT_RECOVERY_PROMPT] : [STT_PROMPT];
+      const prompts = playbackControlExpected ? [PLAYBACK_CONTROL_STT_PROMPT] : firstConversationalTurn ? [STT_PROMPT, FIRST_TURN_STT_RECOVERY_PROMPT] : [STT_PROMPT];
       let transcript = ""; let transcriptionAttempts = 0;
       for (const prompt of prompts) {
         transcriptionAttempts += 1;

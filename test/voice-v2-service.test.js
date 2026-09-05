@@ -47,6 +47,12 @@ test("empty STT recovery stays bounded and is not used during an engaged session
   const engaged=await service.transcribe({audioBase64:"YXVkaW8=",mimeType:"audio/webm",durationSeconds:2,relevanceContext:{voice_session_engaged:true}});assert.equal(engaged.transcriptionAttempts,1);assert.equal(calls,3);
 });
 
+test("a paused checkpoint uses the focused playback-control transcription contract", async () => {
+  let prompt;const service=createVoiceService({config:readConfig(environment),fetchImpl:async(_url,options)=>{prompt=options.body.get("prompt");return new Response(JSON.stringify({text:"كملي حكي"}),{status:200,headers:{"content-type":"application/json"}});}});
+  const result=await service.transcribe({audioBase64:"YXVkaW8=",mimeType:"audio/webm",durationSeconds:1.2,relevanceContext:{interruption:true,playback_control_expected:true,voice_session_engaged:true}});
+  assert.equal(result.transcript,"كملي حكي");assert.equal(result.transcriptionAttempts,1);assert.match(prompt,/active or paused at a preserved checkpoint/);assert.match(prompt,/do not infer a command/);
+});
+
 test("multi-chunk WebM survives client base64 and server multipart decoding intact", async () => {
   const source = new Blob([
     new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]),
