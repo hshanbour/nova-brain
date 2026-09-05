@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -95,6 +95,30 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     result jsonb, error text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz
   )`,
   `CREATE INDEX IF NOT EXISTS nova_runs_owner_recent_idx ON nova_execution_runs (owner_id, updated_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS nova_autonomy_tasks (
+    id text PRIMARY KEY, owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    project_id text REFERENCES nova_projects(id) ON DELETE SET NULL, title text NOT NULL, objective text NOT NULL,
+    task_type text NOT NULL, status text NOT NULL, priority integer NOT NULL DEFAULT 0,
+    current_phase text NOT NULL DEFAULT 'queued', current_step integer NOT NULL DEFAULT 0,
+    max_steps integer NOT NULL, max_retries integer NOT NULL, max_runtime_minutes integer NOT NULL,
+    branch text, starting_commit text, current_commit text, checkpoint jsonb NOT NULL DEFAULT '{}'::jsonb,
+    approval_state jsonb, blocked_reason text, result_summary text, error_code text, next_run_at timestamptz,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb, lease_owner text, lease_token text, lease_expires_at timestamptz,
+    retry_count integer NOT NULL DEFAULT 0, repair_iteration integer NOT NULL DEFAULT 0,
+    created_at timestamptz NOT NULL DEFAULT now(), started_at timestamptz, updated_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_autonomy_queue_idx ON nova_autonomy_tasks (status, next_run_at, priority DESC, created_at)`,
+  `CREATE TABLE IF NOT EXISTS nova_autonomy_steps (
+    task_id text NOT NULL REFERENCES nova_autonomy_tasks(id) ON DELETE CASCADE, step_id text NOT NULL,
+    step_type text NOT NULL, capability text NOT NULL, operation_fingerprint text NOT NULL,
+    status text NOT NULL, attempt integer NOT NULL DEFAULT 0, input jsonb NOT NULL DEFAULT '{}'::jsonb,
+    result jsonb, error_code text, started_at timestamptz, completed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY(task_id,step_id), UNIQUE(task_id,operation_fingerprint)
+  )`,
+  `CREATE TABLE IF NOT EXISTS nova_autonomy_locks (
+    lock_key text PRIMARY KEY, task_id text NOT NULL REFERENCES nova_autonomy_tasks(id) ON DELETE CASCADE,
+    lease_token text NOT NULL, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+  )`,
   `CREATE TABLE IF NOT EXISTS nova_approvals (
     id text PRIMARY KEY, owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
     project_id text REFERENCES nova_projects(id) ON DELETE SET NULL, run_id text REFERENCES nova_execution_runs(id) ON DELETE SET NULL,
@@ -129,5 +153,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
   )`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_owner_cost_idx ON nova_voice_benchmark_results (owner_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_session_idx ON nova_voice_benchmark_results (session_id, created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7) ON CONFLICT (version) DO NOTHING`
 ]);

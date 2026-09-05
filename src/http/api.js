@@ -84,7 +84,7 @@ function setCorsHeaders(request, response, allowedOrigins) {
   }
 }
 
-export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerEngines, speakerAssertions, familiarityConsent, logger = console }) {
+export function createApi({ agent, config, storage, initialize, ownerId, toolRegistry = agent?.tools, workerRuntime, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerEngines, speakerAssertions, familiarityConsent, logger = console }) {
   const recognitionEngines=speakerEngines||(speakerExtractor&&speakerIdentity?createSpeakerEngineCoordinator({authoritativeEngine:createEcapaSpeakerEngine({extractor:speakerExtractor,identity:speakerIdentity}),logger}):null);
   return Object.freeze({
     async handle(request, response) {
@@ -307,6 +307,12 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
         }
 
         if (request.method === "GET" && pathname === "/api/tools") { await ready(); sendJson(response,200,{tools:toolRegistry.list()}); return; }
+        if(workerRuntime&&request.method==="GET"&&pathname==="/api/autonomy/tasks"){await ready();sendJson(response,200,{tasks:await workerRuntime.list({status:url.searchParams.get("status")||undefined,limit:validateListLimit(url.searchParams.get("limit"),50,100)})});return;}
+        if(workerRuntime&&request.method==="POST"&&pathname==="/api/autonomy/tasks"){await ready();const input=await readJsonBody(request,config.maxBodyBytes);sendJson(response,201,{task:await workerRuntime.create(input)});return;}
+        const autonomyMatch=pathname.match(/^\/api\/autonomy\/tasks\/([^/]+)(?:\/(pause|resume|cancel))?$/);
+        if(workerRuntime&&autonomyMatch&&request.method==="GET"&&!autonomyMatch[2]){await ready();const task=await workerRuntime.get(decodeURIComponent(autonomyMatch[1]));if(!task){sendJson(response,404,{error:"Task not found"});return;}sendJson(response,200,{task,steps:await workerRuntime.steps(task.id)});return;}
+        if(workerRuntime&&autonomyMatch&&request.method==="POST"&&autonomyMatch[2]){await ready();sendJson(response,200,{task:await workerRuntime.control(decodeURIComponent(autonomyMatch[1]),autonomyMatch[2])});return;}
+        if(workerRuntime&&request.method==="POST"&&pathname==="/api/autonomy/worker/tick"){await ready();const input=await readJsonBody(request,config.maxBodyBytes);sendJson(response,200,await workerRuntime.tick(input));return;}
         if (request.method === "GET" && pathname === "/api/projects") {
           await ready(); const projects=await storage.listProjects(ownerId);
           sendJson(response,200,{projects:await Promise.all(projects.map(async(project)=>({...project,memories:await storage.listMemories(ownerId,{projectId:project.id,limit:20}),runs:await storage.listRuns(ownerId,{projectId:project.id,limit:10}),activity:await storage.listActivity(ownerId,{projectId:project.id,limit:10})})))}); return;
@@ -320,7 +326,9 @@ export function createApi({ agent, config, storage, initialize, ownerId, toolReg
           if(!approval){sendJson(response,404,{error:"Pending approval not found"});return;}
           await storage.appendActivity({ownerId,projectId:approval.projectId,runId:approval.runId,action:`approval_${decision}`,tool:approval.tool,status:decision,summary:`Owner ${decision} ${approval.tool}.`});
           let execution;
-          if(decision==="approved"){
+          const autonomyTask=workerRuntime&&approval.runId?await workerRuntime.get(approval.runId):null;
+          if(autonomyTask){execution=decision==="approved"?await workerRuntime.resumeApproval(autonomyTask.id,approval):await workerRuntime.control(autonomyTask.id,"cancel");}
+          else if(decision==="approved"){
             try{execution=await toolRegistry.execute(approval.tool,approval.arguments,{approvalId:approval.id,runId:approval.runId,projectId:approval.projectId});await storage.appendActivity({ownerId,projectId:approval.projectId,runId:approval.runId,action:"approved_action_completed",tool:approval.tool,status:"completed",summary:`Approved ${approval.tool} action completed.`});if(approval.runId)await storage.updateRun(approval.runId,ownerId,{status:"completed",result:execution,completedAt:new Date().toISOString()});}
             catch(error){await storage.appendActivity({ownerId,projectId:approval.projectId,runId:approval.runId,action:"approved_action_failed",tool:approval.tool,status:"failed",summary:`Approved ${approval.tool} action failed safely.`});if(approval.runId)await storage.updateRun(approval.runId,ownerId,{status:"failed",error:"Approved action failed.",completedAt:new Date().toISOString()});throw error;}
           }else if(approval.runId)await storage.updateRun(approval.runId,ownerId,{status:"cancelled",error:"Owner rejected the requested action.",completedAt:new Date().toISOString()});

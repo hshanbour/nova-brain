@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "node --watch src/local-server.js",
     "start": "node src/local-server.js",
+    "worker": "node scripts/worker.js",
     "test": "node --test",
     "db:migrate": "node scripts/migrate.js"
   },

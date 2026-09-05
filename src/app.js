@@ -16,6 +16,8 @@ import { createSpeakerAssertions } from "./voice/speaker-assertion.js";
 import { createFamiliarityConsent } from "./voice/familiarity-consent.js";
 import { createEcapaSpeakerEngine } from "./voice/ecapa-speaker-engine.js";
 import { createSpeakerEngineCoordinator } from "./voice/speaker-engine.js";
+import {createWorkerRuntime} from "./autonomy/worker-runtime.js";
+import {registerWorkerTools} from "./autonomy/worker-tools.js";
 
 export function createApp({ environment = process.env, storage: storageOverride, logger = console, voiceFetchImpl } = {}) {
   const config = readConfig(environment);
@@ -25,6 +27,8 @@ export function createApp({ environment = process.env, storage: storageOverride,
   const toolRegistry = createToolRegistry({ policy });
   registerDeveloperTools(toolRegistry, { environment, storage, ownerId: OWNER_ID, logger });
   registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID });
+  const workerRuntime=createWorkerRuntime({storage,ownerId:OWNER_ID,toolRegistry,approvedBranch:config.developmentBranch,capabilities:environment.VERCEL?["repo_read_remote","reasoning","scheduler","vercel_preview"]:["repo_read_remote","repo_mutate_local","test_local","github_write","vercel_preview","reasoning","scheduler"]});
+  registerWorkerTools(toolRegistry,{runtime:workerRuntime});
   const modelProvider = createModelProvider(config);
   const speakerAssertions = createSpeakerAssertions({ key: config.speakerRecognition.assertionKey });
   const familiarityConsent = createFamiliarityConsent({ key: config.speakerRecognition.assertionKey });
@@ -49,5 +53,6 @@ export function createApp({ environment = process.env, storage: storageOverride,
   const speakerExtractor = createSpeakerExtractor({ config, ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}) });
   const speakerEngines = createSpeakerEngineCoordinator({ authoritativeEngine: createEcapaSpeakerEngine({ extractor: speakerExtractor, identity: speakerIdentity }), shadowEngines: [], logger });
 
-  return createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerEngines, speakerAssertions, familiarityConsent, logger });
+  const api=createApi({ agent, config, storage, initialize, ownerId: OWNER_ID, toolRegistry, workerRuntime, voiceBenchmark, voiceService, speakerIdentity, speakerExtractor, speakerEngines, speakerAssertions, familiarityConsent, logger });
+  return Object.freeze({...api,initialize,workerRuntime});
 }
