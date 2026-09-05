@@ -157,6 +157,7 @@ const autonomyTaskRow = (row) =>
     leaseExpiresAt: date(row.lease_expires_at),
     retryCount: Number(row.retry_count),
     repairIteration: Number(row.repair_iteration),
+    stateVersion: Number(row.state_version),
     createdAt: date(row.created_at),
     startedAt: date(row.started_at),
     updatedAt: date(row.updated_at),
@@ -832,7 +833,7 @@ export function createPostgresStorage({ connectionString }) {
       return autonomyTaskRow(
         (
           await run(
-            `UPDATE nova_autonomy_tasks SET ${sets.join(",")},updated_at=now() WHERE id=$1 AND owner_id=$2 RETURNING *`,
+            `UPDATE nova_autonomy_tasks SET ${sets.join(",")},state_version=state_version+1,updated_at=now() WHERE id=$1 AND owner_id=$2 RETURNING *`,
             params,
           )
         )[0],
@@ -854,16 +855,18 @@ export function createPostgresStorage({ connectionString }) {
           oldPlanVersion: input.oldPlanVersion,
           newPlanVersion: input.planVersion,
           actorType: input.actorType,
+          expectedVersion: input.expectedVersion,
+          newVersion: input.expectedVersion + 1,
           result: "completed",
         });
       const rows = await run(
-        `WITH updated AS (UPDATE nova_autonomy_tasks SET status='queued',starting_commit=$6,current_commit=$6,max_steps=GREATEST(max_steps,$7),max_runtime_minutes=$8,started_at=now(),completed_at=NULL,next_run_at=now(),blocked_reason=NULL,error_code=NULL,lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,metadata=metadata||$9::jsonb,updated_at=now() WHERE id=$1 AND owner_id=$2 AND branch=$3 AND current_commit=$4 AND updated_at=$5::timestamptz AND (lease_token IS NULL OR lease_expires_at<=now()) RETURNING *), audited AS (INSERT INTO nova_activity_events (id,owner_id,project_id,run_id,action,status,summary,metadata) SELECT gen_random_uuid(),owner_id,project_id,id,'autonomy_task_migrated','completed','Repaired an allowlisted Worker task continuation.',$10::jsonb FROM updated RETURNING id) SELECT * FROM updated`,
+        `WITH updated AS (UPDATE nova_autonomy_tasks SET status='queued',starting_commit=$6,current_commit=$6,max_steps=GREATEST(max_steps,$7),max_runtime_minutes=$8,started_at=now(),completed_at=NULL,next_run_at=now(),blocked_reason=NULL,error_code=NULL,lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,metadata=metadata||$9::jsonb,state_version=state_version+1,updated_at=now() WHERE id=$1 AND owner_id=$2 AND branch=$3 AND current_commit=$4 AND state_version=$5::bigint AND (lease_token IS NULL OR lease_expires_at<=now()) RETURNING *), audited AS (INSERT INTO nova_activity_events (id,owner_id,project_id,run_id,action,status,summary,metadata) SELECT gen_random_uuid(),owner_id,project_id,id,'autonomy_task_migrated','completed','Repaired an allowlisted Worker task continuation.',$10::jsonb FROM updated RETURNING id) SELECT * FROM updated`,
         [
           input.taskId,
           input.ownerId,
           input.expectedBranch,
           input.expectedCommit,
-          input.expectedUpdatedAt,
+          input.expectedVersion,
           input.targetCommit,
           input.plan.length + 2,
           input.runtimeMinutes,
@@ -882,7 +885,7 @@ export function createPostgresStorage({ connectionString }) {
     }) {
       const row = (
         await run(
-          `WITH expired AS (UPDATE nova_autonomy_tasks SET status='queued',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL WHERE owner_id=$1 AND lease_expires_at<=now() AND status IN ('running','planning','retrying')), candidate AS (SELECT id FROM nova_autonomy_tasks WHERE owner_id=$1 AND ((status IN ('queued','retrying') AND COALESCE(next_run_at,now())<=now()) OR (status='waiting' AND next_run_at IS NOT NULL AND next_run_at<=now())) AND (metadata->>'requiredCapability' IS NULL OR metadata->>'requiredCapability'=ANY($2::text[])) ORDER BY priority DESC,created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE nova_autonomy_tasks t SET status=CASE WHEN started_at IS NULL THEN 'planning' ELSE 'running' END,started_at=COALESCE(started_at,now()),lease_owner=$3,lease_token=$4,lease_expires_at=now()+($5::int*interval '1 millisecond'),metadata=metadata||jsonb_build_object('claimKey',$6::text),updated_at=now() FROM candidate WHERE t.id=candidate.id RETURNING t.*`,
+          `WITH expired AS (UPDATE nova_autonomy_tasks SET status='queued',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,state_version=state_version+1,updated_at=now() WHERE owner_id=$1 AND lease_expires_at<=now() AND status IN ('running','planning','retrying')), candidate AS (SELECT id FROM nova_autonomy_tasks WHERE owner_id=$1 AND ((status IN ('queued','retrying') AND COALESCE(next_run_at,now())<=now()) OR (status='waiting' AND next_run_at IS NOT NULL AND next_run_at<=now())) AND (metadata->>'requiredCapability' IS NULL OR metadata->>'requiredCapability'=ANY($2::text[])) ORDER BY priority DESC,created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE nova_autonomy_tasks t SET status=CASE WHEN started_at IS NULL THEN 'planning' ELSE 'running' END,started_at=COALESCE(started_at,now()),lease_owner=$3,lease_token=$4,lease_expires_at=now()+($5::int*interval '1 millisecond'),metadata=metadata||jsonb_build_object('claimKey',$6::text),state_version=t.state_version+1,updated_at=now() FROM candidate WHERE t.id=candidate.id RETURNING t.*`,
           [
             ownerId,
             capabilities,
@@ -899,7 +902,7 @@ export function createPostgresStorage({ connectionString }) {
       return (
         (
           await run(
-            "UPDATE nova_autonomy_tasks SET lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND owner_id=$2 AND lease_token=$3 RETURNING id",
+            "UPDATE nova_autonomy_tasks SET lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,state_version=state_version+1,updated_at=now() WHERE id=$1 AND owner_id=$2 AND lease_token=$3 RETURNING id",
             [id, ownerId, leaseToken],
           )
         ).length > 0

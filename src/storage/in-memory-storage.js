@@ -504,6 +504,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         leaseExpiresAt: null,
         retryCount: 0,
         repairIteration: 0,
+        stateVersion: 1,
         createdAt: timestamp,
         startedAt: null,
         updatedAt: timestamp,
@@ -537,6 +538,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         id,
         ownerId,
         createdAt: current.createdAt,
+        stateVersion: current.stateVersion + 1,
         updatedAt: now(clock),
       };
       autonomyTasks.set(id, updated);
@@ -547,7 +549,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       if (
         !current ||
         current.ownerId !== input.ownerId ||
-        current.updatedAt !== input.expectedUpdatedAt ||
+        current.stateVersion !== input.expectedVersion ||
         current.branch !== input.expectedBranch ||
         current.currentCommit !== input.expectedCommit ||
         (current.leaseToken && new Date(current.leaseExpiresAt) > clock())
@@ -577,6 +579,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
           leaseToken: null,
           leaseExpiresAt: null,
           metadata,
+          stateVersion: current.stateVersion + 1,
           updatedAt: now(clock),
         };
         autonomyTasks.set(input.taskId, updated);
@@ -597,6 +600,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
             oldPlanVersion: input.oldPlanVersion,
             newPlanVersion: input.planVersion,
             actorType: input.actorType,
+            expectedVersion: input.expectedVersion,
+            newVersion: input.expectedVersion + 1,
             result: "completed",
           },
         });
@@ -625,6 +630,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
           task.leaseOwner = null;
           task.leaseToken = null;
           task.leaseExpiresAt = null;
+          task.stateVersion += 1;
+          task.updatedAt = timestamp.toISOString();
         }
       const eligible = [...autonomyTasks.values()]
         .filter(
@@ -651,6 +658,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         timestamp.getTime() + leaseMs,
       ).toISOString();
       eligible.metadata = { ...eligible.metadata, claimKey: idempotencyKey };
+      eligible.stateVersion += 1;
       eligible.updatedAt = timestamp.toISOString();
       return copy(eligible);
     },
@@ -661,6 +669,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       task.leaseOwner = null;
       task.leaseToken = null;
       task.leaseExpiresAt = null;
+      task.stateVersion += 1;
       task.updatedAt = now(clock);
       return true;
     },

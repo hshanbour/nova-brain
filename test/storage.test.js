@@ -95,7 +95,9 @@ test("Postgres autonomy creation explicitly initializes required queue state",as
 
 test("Postgres atomic Worker claim types its JSON idempotency key explicitly",async()=>{const source=await import("node:fs/promises").then(({readFile})=>readFile(new URL("../src/storage/postgres-storage.js",import.meta.url),"utf8"));assert.match(source,/jsonb_build_object\('claimKey',\$6::text\)/);assert.match(source,/FOR UPDATE SKIP LOCKED LIMIT 1/);});
 
-test("Postgres Worker migration atomically updates one versioned task and writes its audit",async()=>{const source=await import("node:fs/promises").then(({readFile})=>readFile(new URL("../src/storage/postgres-storage.js",import.meta.url),"utf8"));assert.match(source,/WITH updated AS/);assert.match(source,/updated_at=\$5::timestamptz/);assert.match(source,/lease_token IS NULL OR lease_expires_at<=now\(\)/);assert.match(source,/autonomy_task_migrated/);assert.match(source,/SELECT \* FROM updated/);});
+test("Postgres Worker migration atomically uses a monotonic version and writes its audit",async()=>{const source=await import("node:fs/promises").then(({readFile})=>readFile(new URL("../src/storage/postgres-storage.js",import.meta.url),"utf8"));assert.match(source,/WITH updated AS/);assert.match(source,/state_version=\$5::bigint/);assert.match(source,/state_version=state_version\+1/);assert.doesNotMatch(source,/AND updated_at=\$5::timestamptz/);assert.match(source,/lease_token IS NULL OR lease_expires_at<=now\(\)/);assert.match(source,/autonomy_task_migrated/);assert.match(source,/SELECT \* FROM updated/);});
+
+test("Worker task schema safely adds a default version to existing Postgres tasks",async()=>{const source=await import("node:fs/promises").then(({readFile})=>readFile(new URL("../src/storage/schema.js",import.meta.url),"utf8"));assert.match(source,/state_version bigint NOT NULL DEFAULT 1/);assert.match(source,/ALTER TABLE nova_autonomy_tasks ADD COLUMN IF NOT EXISTS state_version/);});
 
 test("temporary conversation messages remain separate from long-term memory", async () => {
   const storage = await seededStorage(); const before = await storage.listMemories(OWNER_ID);

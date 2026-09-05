@@ -85,7 +85,7 @@ export function createTaskMigrationService({
     const migrated = await storage.migrateAutonomyTask({
       taskId: input.taskId,
       ownerId,
-      expectedUpdatedAt: task.updatedAt,
+      expectedVersion: task.stateVersion,
       expectedBranch: input.expectedBranch,
       expectedCommit: input.expectedCommit,
       targetCommit: input.targetCommit,
@@ -96,11 +96,18 @@ export function createTaskMigrationService({
       oldRuntimeMinutes: task.maxRuntimeMinutes,
       oldPlanVersion: task.metadata?.migrationPlanVersion || null,
     });
-    if (!migrated)
+    if (!migrated) {
+      const latest = await storage.getAutonomyTask(input.taskId, ownerId);
+      if (latest?.stateVersion !== task.stateVersion)
+        throw new TaskMigrationError(
+          "version_conflict",
+          "Task version changed while migration was being applied.",
+        );
       throw new TaskMigrationError(
         "task_state_mismatch",
         "Task changed while migration was being applied.",
       );
+    }
     return { task: sanitise(migrated), idempotent: false };
   }
   return Object.freeze({ inspect, migrate, planVersion: PLAN_VERSION });

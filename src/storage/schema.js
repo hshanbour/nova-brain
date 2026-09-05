@@ -104,9 +104,10 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     branch text, starting_commit text, current_commit text, checkpoint jsonb NOT NULL DEFAULT '{}'::jsonb,
     approval_state jsonb, blocked_reason text, result_summary text, error_code text, next_run_at timestamptz,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb, lease_owner text, lease_token text, lease_expires_at timestamptz,
-    retry_count integer NOT NULL DEFAULT 0, repair_iteration integer NOT NULL DEFAULT 0,
+    retry_count integer NOT NULL DEFAULT 0, repair_iteration integer NOT NULL DEFAULT 0, state_version bigint NOT NULL DEFAULT 1,
     created_at timestamptz NOT NULL DEFAULT now(), started_at timestamptz, updated_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz
   )`,
+  `ALTER TABLE nova_autonomy_tasks ADD COLUMN IF NOT EXISTS state_version bigint NOT NULL DEFAULT 1`,
   `CREATE INDEX IF NOT EXISTS nova_autonomy_queue_idx ON nova_autonomy_tasks (status, next_run_at, priority DESC, created_at)`,
   `CREATE TABLE IF NOT EXISTS nova_autonomy_steps (
     task_id text NOT NULL REFERENCES nova_autonomy_tasks(id) ON DELETE CASCADE, step_id text NOT NULL,
