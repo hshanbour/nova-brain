@@ -91,6 +91,8 @@ test("Postgres candidate selection keeps all active owner memories eligible for 
   assert.doesNotMatch(source, /project_id IS NULL OR project_id=/);
 });
 
+test("Postgres autonomy creation explicitly initializes required queue state",async()=>{const source=await import("node:fs/promises").then(({readFile})=>readFile(new URL("../src/storage/postgres-storage.js",import.meta.url),"utf8"));assert.match(source,/task_type,status,priority,current_phase,current_step,max_steps,max_retries,max_runtime_minutes/);assert.match(source,/\$6,'queued',\$7,'queued',0,\$8/);assert.match(source,/completedSteps:\[\],pendingStep:null,findings:\[\]/);});
+
 test("temporary conversation messages remain separate from long-term memory", async () => {
   const storage = await seededStorage(); const before = await storage.listMemories(OWNER_ID);
   await storage.ensureConversation({ id: "temporary", ownerId: OWNER_ID }); await storage.appendMessage({ conversationId: "temporary", ownerId: OWNER_ID, role: "user", content: "Do not automatically remember this chat" });
