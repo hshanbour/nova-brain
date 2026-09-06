@@ -909,6 +909,8 @@ export function createApi({
         if(selfDevelopment&&selfDevelopmentMatch&&request.method==="POST"&&selfDevelopmentMatch[2]){await ready();sendJson(response,200,await selfDevelopment.repair(decodeURIComponent(selfDevelopmentMatch[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         const selfDevelopmentReviewRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-review$/);
         if(selfDevelopment&&selfDevelopmentReviewRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverReview(decodeURIComponent(selfDevelopmentReviewRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
+        const selfDevelopmentCommitSupersession=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/supersede-commit$/);
+        if(selfDevelopment&&selfDevelopmentCommitSupersession&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.supersedeCommit(decodeURIComponent(selfDevelopmentCommitSupersession[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if (
           workerRuntime &&
           request.method === "GET" &&
