@@ -44,6 +44,7 @@ import {
 } from "../autonomy/task-migration.js";
 import {authorizeLocalWorker,HandoffError} from "../autonomy/local-worker-handoff.js";
 import {WorkerError} from "../autonomy/worker-runtime.js";
+import {SelfDevelopmentError} from "../autonomy/self-development.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -154,6 +155,7 @@ export function createApi({
   localWorkerHandoff,
   githubWriteAttestation,
   postAttestationRecovery,
+  selfDevelopment,
   voiceBenchmark,
   voiceService,
   speakerIdentity,
@@ -899,6 +901,12 @@ export function createApi({
           sendJson(response, 200, { tools: toolRegistry.list() });
           return;
         }
+        if(selfDevelopment&&request.method==="POST"&&pathname==="/api/self-development/tasks"){
+          await ready();sendJson(response,201,await selfDevelopment.create(await readJsonBody(request,config.maxBodyBytes)));return;
+        }
+        const selfDevelopmentMatch=pathname.match(/^\/api\/self-development\/tasks\/([^/]+)(?:\/(repair))?$/);
+        if(selfDevelopment&&selfDevelopmentMatch&&request.method==="GET"&&!selfDevelopmentMatch[2]){await ready();sendJson(response,200,await selfDevelopment.get(decodeURIComponent(selfDevelopmentMatch[1])));return;}
+        if(selfDevelopment&&selfDevelopmentMatch&&request.method==="POST"&&selfDevelopmentMatch[2]){await ready();sendJson(response,200,await selfDevelopment.repair(decodeURIComponent(selfDevelopmentMatch[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if (
           workerRuntime &&
           request.method === "GET" &&
@@ -1328,6 +1336,7 @@ export function createApi({
         }
         if(error instanceof HandoffError){sendJson(response,error.statusCode,{error:error.message,code:error.code});return;}
         if(error instanceof WorkerError){sendJson(response,error.statusCode,{error:error.message,code:error.code});return;}
+        if(error instanceof SelfDevelopmentError){sendJson(response,error.statusCode,{error:error.message,code:error.code});return;}
         if (
           error instanceof AgentStepLimitError ||
           error instanceof AgentToolCallLimitError

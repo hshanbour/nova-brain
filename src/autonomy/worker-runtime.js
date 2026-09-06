@@ -28,6 +28,7 @@ export const STEP_CAPABILITIES = Object.freeze({
   inspect_diff: "repo_read_remote",
   commit: "repo_mutate_local",
   request_push_approval: "github_write",
+  authorize_protected_change: "reasoning",
   push: "github_write",
   deploy_preview: "vercel_preview",
   verify_preview: "vercel_preview",
@@ -529,7 +530,7 @@ export function createWorkerRuntime({
         pendingStep: null,
         latestResult: redact(result),
       },
-      metadata: { ...task.metadata, requiredCapability: null },
+      metadata: { ...task.metadata, requiredCapability: null, ...(result?.deploymentId?{lastDeploymentId:result.deploymentId}:{}) },
       blockedReason: null,
       errorCode: null,
     });
@@ -628,5 +629,7 @@ function toolFor(type) {
 function resolveTaskReferences(value, task) {
   if (Array.isArray(value)) return value.map((item) => resolveTaskReferences(item, task));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveTaskReferences(item, task)]));
-  return value === "$CURRENT_COMMIT" ? task.currentCommit : value;
+  if(value === "$CURRENT_COMMIT")return task.currentCommit;
+  if(value === "$DEPLOYMENT_ID")return task.metadata?.lastDeploymentId;
+  return value;
 }
