@@ -151,6 +151,7 @@ export function createApi({
   workerRuntime,
   taskMigration,
   localWorkerHandoff,
+  githubWriteAttestation,
   voiceBenchmark,
   voiceService,
   speakerIdentity,
@@ -1009,6 +1010,10 @@ export function createApi({
         if(localWorkerHandoff&&request.method==="GET"&&handoffMatch&&!handoffMatch[2]){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);
           sendJson(response,200,await localWorkerHandoff.inspect(decodeURIComponent(handoffMatch[1]),url.searchParams.get("taskId")));return;
+        }
+        if(githubWriteAttestation&&request.method==="POST"&&pathname==="/api/admin/worker/github-write-attestation"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          sendJson(response,200,await githubWriteAttestation.attest(await readJsonBody(request,config.maxBodyBytes)));return;
         }
         if (request.method === "GET" && pathname === "/api/projects") {
           await ready();

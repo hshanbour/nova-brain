@@ -28,6 +28,7 @@ import { createWorkerRuntime } from "./autonomy/worker-runtime.js";
 import { registerWorkerTools } from "./autonomy/worker-tools.js";
 import { createTaskMigrationService } from "./autonomy/task-migration.js";
 import { createLocalWorkerHandoff } from "./autonomy/local-worker-handoff.js";
+import { createGithubWriteAttestation } from "./autonomy/github-write-attestation.js";
 
 export function createApp({
   environment = process.env,
@@ -83,6 +84,20 @@ export function createApp({
     ownerId: OWNER_ID,
     approvedBranch: config.developmentBranch,
     deploymentEnvironment: environment.VERCEL_ENV || "local",
+  });
+  const githubWriteAttestation = createGithubWriteAttestation({
+    storage,
+    ownerId: OWNER_ID,
+    verifyRemote: async ({repository,branch}) => {
+      const response=await fetch(`https://api.github.com/repos/${repository}/commits/${encodeURIComponent(branch)}`,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"}});
+      if(!response.ok)throw new Error("Remote branch verification failed.");
+      return{sha:(await response.json()).sha};
+    },
+    verifyDeployment: async ({deploymentId}) => {
+      const response=await fetch(`https://api.vercel.com/v13/deployments/${encodeURIComponent(deploymentId)}`,{headers:{Authorization:`Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN||""}`}});
+      if(!response.ok)throw new Error("Preview verification failed.");
+      const value=await response.json();return{id:value.id||value.uid,url:value.url,status:value.readyState||value.state,target:value.target,sha:value.gitSource?.sha||value.meta?.githubCommitSha,branch:value.gitSource?.ref||value.meta?.githubCommitRef};
+    },
   });
   registerWorkerTools(toolRegistry, { runtime: workerRuntime, taskMigration });
   const modelProvider = createModelProvider(config);
@@ -153,6 +168,7 @@ export function createApp({
     workerRuntime,
     taskMigration,
     localWorkerHandoff,
+    githubWriteAttestation,
     voiceBenchmark,
     voiceService,
     speakerIdentity,
