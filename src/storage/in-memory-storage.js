@@ -654,7 +654,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
             (!expectedBranch || t.branch === expectedBranch) &&
             (!expectedCommit || t.currentCommit === expectedCommit) &&
             (expectedVersion === undefined || t.stateVersion === expectedVersion) &&
-            (["queued", "retrying"].includes(t.status) ||
+            (["queued", "retrying", "waiting_for_worker"].includes(t.status) ||
               (t.status === "waiting" && t.nextRunAt)) &&
             (!t.nextRunAt || new Date(t.nextRunAt) <= timestamp) &&
             (!t.metadata?.requiredCapability ||
