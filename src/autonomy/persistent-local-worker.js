@@ -13,6 +13,6 @@ export function createPersistentLocalWorker({client,root=process.cwd(),branch="f
 
 export async function runPersistentWorkerLoop({worker,intervalMs=5000,delay=ms=>new Promise(resolve=>setTimeout(resolve,ms)),shouldStop=()=>false,onState=()=>{},maxIterations=Infinity}={}){
   if(!worker?.runOnce)throw new Error("Persistent Worker instance is required.");const interval=Math.max(1000,Math.min(60000,Number(intervalMs)||5000));let iterations=0;
-  while(!shouldStop()&&iterations<maxIterations){iterations+=1;try{const result=await worker.runOnce();onState({state:result.worked?"worked":"idle",taskId:result.taskId||null,status:result.status||null,iterations});}catch(error){onState({state:"retrying",code:error.code||"unexpected_error",iterations});}if(!shouldStop()&&iterations<maxIterations)await delay(interval);}
+  while(!shouldStop()&&iterations<maxIterations){iterations+=1;await onState({state:"polling",iterations});try{const result=await worker.runOnce();await onState({state:result.worked?"executing":"idle",taskId:result.taskId||null,status:result.status||null,lastSuccessfulPoll:new Date().toISOString(),iterations});}catch(error){await onState({state:"retrying",code:error.code||error.name||"unexpected_error",iterations});}if(!shouldStop()&&iterations<maxIterations)await delay(interval);}
   return{stopped:true,iterations};
 }

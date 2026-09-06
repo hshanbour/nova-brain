@@ -1,4 +1,4 @@
-export function createLocalWorkerClient({baseUrl,novaToken,vercelBypassToken,fetchImpl=fetch}={}){
+export function createLocalWorkerClient({baseUrl,novaToken,vercelBypassToken,fetchImpl=fetch,requestTimeoutMs=15000}={}){
   const origin=String(baseUrl||"").replace(/\/$/,"");
   if(!/^https:\/\//.test(origin))throw new Error("A protected HTTPS Preview URL is required.");
   if(!novaToken||!vercelBypassToken)throw new Error("Both protected Preview credentials are required.");
@@ -7,6 +7,7 @@ export function createLocalWorkerClient({baseUrl,novaToken,vercelBypassToken,fet
     async request(path,body){
       const response=await fetchImpl(`${origin}${path}`,{
         method:"POST",
+        signal:AbortSignal.timeout(Math.max(1000,Math.min(30000,requestTimeoutMs))),
         headers:{
           Authorization:`Bearer ${novaToken}`,
           "Content-Type":"application/json",
@@ -15,7 +16,7 @@ export function createLocalWorkerClient({baseUrl,novaToken,vercelBypassToken,fet
         body:JSON.stringify(body),
       });
       const value=await response.json().catch(()=>({}));
-      if(!response.ok)throw Object.assign(new Error(value.error||`Handoff failed with status ${response.status}.`),{code:value.code||"handoff_failed"});
+      if(!response.ok)throw Object.assign(new Error(value.error||`Handoff failed with status ${response.status}.`),{code:value.code||"handoff_failed",statusCode:response.status});
       return value;
     },
   });

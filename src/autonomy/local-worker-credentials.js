@@ -12,7 +12,7 @@ const TARGET=name=>`NovaBrain/LocalWorker/${name}`;
 export function createWindowsCredentialStore({platform=process.platform,run=execFile}={}){
   if(platform!=="win32")throw new Error("secure_os_store_unavailable");
   const invoke=(action,name,secret)=>new Promise((resolve,reject)=>{
-    const child=run("powershell.exe",["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",SCRIPT,action,TARGET(name)],{windowsHide:true,maxBuffer:8192},(error,stdout)=>error?reject(Object.assign(new Error("secure_os_store_failed"),{code:"secure_os_store_failed"})):resolve(String(stdout).trim()));
+    const child=run("powershell.exe",["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",SCRIPT,action,TARGET(name)],{windowsHide:true,maxBuffer:8192,timeout:10000,killSignal:"SIGKILL"},(error,stdout)=>error?reject(Object.assign(new Error(error.killed?"credential_load_timeout":"secure_os_store_failed"),{code:error.killed?"credential_load_timeout":"secure_os_store_failed"})):resolve(String(stdout).trim()));
     if(secret!==undefined){child.stdin.end(secret);}else child.stdin.end();
   });
   return Object.freeze({
