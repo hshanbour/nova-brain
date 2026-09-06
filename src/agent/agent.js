@@ -32,7 +32,21 @@ function validateModelOutput(output) {
 
 function safeToolError(error, name) {
   if (error?.message === `Unknown tool: ${name}`) return error.message;
+  const allowed = new Set([
+    "invalid_input", "schema_mismatch", "repository_not_resolved",
+    "repository_not_allowed", "branch_not_allowed", "project_not_found",
+    "production_target_forbidden", "invalid_scope", "scope_too_large",
+    "invalid_runtime_budget", "invalid_repair_limit",
+    "durable_task_create_failed", "storage_error"
+  ]);
+  if (allowed.has(error?.code)) {
+    return { code: error.code, message: String(error.message || "Tool request failed safely.").slice(0, 300) };
+  }
   return `Tool execution failed: ${name}`;
+}
+
+function toolErrorSummary(error, name) {
+  return typeof error === "string" ? error : `${name} failed: ${error.code}.`;
 }
 
 export function createAgent({
@@ -167,7 +181,7 @@ export function createAgent({
               id: call.id,
               output: { ok: false, error: execution.error }
             });
-            await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "tool_failed", tool: call.name, status: "failed", summary: execution.error });
+            await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "tool_failed", tool: call.name, status: "failed", summary: toolErrorSummary(execution.error, call.name) });
           }
 
           toolExecutions.push(execution);

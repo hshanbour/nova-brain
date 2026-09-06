@@ -1,33 +1,42 @@
 export function createToolRegistry({ policy } = {}) {
   const tools = new Map();
 
+  class ToolInputError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "ToolInputError";
+      this.code = "schema_mismatch";
+      this.statusCode = 400;
+    }
+  }
+
   function validateSchemaInput(schema, input, name) {
     if (!schema) return;
     const properties = schema.properties || {};
     for (const field of schema.required || []) {
-      if (!(field in input)) throw new Error(`Missing required tool argument: ${name}.${field}`);
+      if (!(field in input)) throw new ToolInputError(`Missing required tool argument: ${name}.${field}`);
     }
     if (schema.additionalProperties === false) {
       for (const field of Object.keys(input)) {
-        if (!(field in properties)) throw new Error(`Unknown tool argument: ${name}.${field}`);
+        if (!(field in properties)) throw new ToolInputError(`Unknown tool argument: ${name}.${field}`);
       }
     }
     for (const [field, definition] of Object.entries(properties)) {
       if (!(field in input)) continue;
       if (definition.type === "string" && typeof input[field] !== "string") {
-        throw new Error(`Invalid tool argument type: ${name}.${field}`);
+        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`);
       }
       if (definition.type === "number" && typeof input[field] !== "number") {
-        throw new Error(`Invalid tool argument type: ${name}.${field}`);
+        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`);
       }
       if (definition.type === "boolean" && typeof input[field] !== "boolean") {
-        throw new Error(`Invalid tool argument type: ${name}.${field}`);
+        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`);
       }
       if (definition.type === "array" && !Array.isArray(input[field])) {
-        throw new Error(`Invalid tool argument type: ${name}.${field}`);
+        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`);
       }
       if (definition.type === "object" && (!input[field] || typeof input[field] !== "object" || Array.isArray(input[field]))) {
-        throw new Error(`Invalid tool argument type: ${name}.${field}`);
+        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`);
       }
     }
   }

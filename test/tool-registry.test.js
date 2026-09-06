@@ -41,6 +41,7 @@ test("tool registry enforces required, type, and additional-property schemas ser
     async execute(input) { return input; }
   });
   await assert.rejects(() => registry.execute("read", {}), /Missing required/);
+  await assert.rejects(() => registry.execute("read", {}), error => error.code === "schema_mismatch");
   await assert.rejects(() => registry.execute("read", { path: 7 }), /Invalid tool argument type/);
   await assert.rejects(() => registry.execute("read", { path: "README.md", secret: true }), /Unknown tool argument/);
   assert.deepEqual(await registry.execute("read", { path: "README.md" }), { path: "README.md" });
