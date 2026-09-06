@@ -7,6 +7,7 @@ const STATUSES = new Set([
   "waiting",
   "waiting_for_worker",
   "blocked",
+  "failed",
 ]);
 export class TaskMigrationError extends Error {
   constructor(code, message, statusCode = 409) {
@@ -59,7 +60,8 @@ export function createTaskMigrationService({
       );
     if (
       task.metadata?.migrationPlanVersion === PLAN_VERSION &&
-      task.currentCommit === input.targetCommit
+      task.currentCommit === input.targetCommit &&
+      task.status !== "failed"
     )
       return { task: sanitise(task), idempotent: true };
     if (task.currentCommit !== input.expectedCommit)
@@ -72,6 +74,8 @@ export function createTaskMigrationService({
         "task_state_mismatch",
         "Task state cannot be migrated.",
       );
+    if(task.status==="failed"&&task.errorCode!=="invalid_handoff_result")
+      throw new TaskMigrationError("task_state_mismatch","Only the bounded handoff protocol failure may be resumed by this migration.");
     if (task.leaseToken && new Date(task.leaseExpiresAt || 0) > clock())
       throw new TaskMigrationError(
         "active_lease_conflict",
@@ -82,6 +86,7 @@ export function createTaskMigrationService({
         "invalid_migration_plan",
         "Completed repository inspection is required.",
       );
+    const plan=continuationPlan(input.targetCommit),next=plan[task.currentStep],requiredCapability=next?.type==="run_focused_tests"||next?.type==="run_full_tests"?"test_local":next?.type==="inspect_diff"?"repo_read_remote":"repo_mutate_local";
     const migrated = await storage.migrateAutonomyTask({
       taskId: input.taskId,
       ownerId,
@@ -90,7 +95,8 @@ export function createTaskMigrationService({
       expectedCommit: input.expectedCommit,
       targetCommit: input.targetCommit,
       runtimeMinutes: input.runtimeMinutes,
-      plan: continuationPlan(input.targetCommit),
+      plan,
+      requiredCapability,
       planVersion: PLAN_VERSION,
       actorType: actor.actorType,
       oldRuntimeMinutes: task.maxRuntimeMinutes,

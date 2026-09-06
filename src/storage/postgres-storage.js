@@ -845,7 +845,7 @@ export function createPostgresStorage({ connectionString }) {
       const metadata = JSON.stringify({
           steps: input.plan,
           migrationPlanVersion: input.planVersion,
-          requiredCapability: "repo_mutate_local",
+          requiredCapability: input.requiredCapability,
         }),
         audit = JSON.stringify({
           taskId: input.taskId,

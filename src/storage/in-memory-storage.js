@@ -561,7 +561,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
           ...current.metadata,
           steps: copy(input.plan),
           migrationPlanVersion: input.planVersion,
-          requiredCapability: "repo_mutate_local",
+          requiredCapability: input.requiredCapability,
         };
         const updated = {
           ...current,

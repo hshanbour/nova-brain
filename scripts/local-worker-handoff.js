@@ -20,7 +20,9 @@ for(let count=0;count<12;count+=1){
   const handoff=claimed.handoff;if(!handoff||handoff.taskId!==taskId||handoff.branch!==branch||handoff.expectedCommit!==expectedCommit||!allowed.has(handoff.tool))throw new Error("Server returned an invalid bounded handoff.");
   try{
     const started=Date.now(),result=await registry.execute(handoff.tool,handoff.arguments,{runId:taskId,projectId:"nova-brain"});
-    const completed=await request(`/api/admin/worker/handoff/${encodeURIComponent(handoff.handoffId)}/complete`,{taskId,workerId,idempotencyKey,result:{...result,durationMs:result.durationMs??Date.now()-started}});
+    if(result?.ok===false)throw Object.assign(new Error(result.error?.message||"Bounded local step failed."),{code:result.error?.code||"worker_failed"});
+    const normalized=result?.ok===undefined?{...result,ok:true}:result;
+    const completed=await request(`/api/admin/worker/handoff/${encodeURIComponent(handoff.handoffId)}/complete`,{taskId,workerId,idempotencyKey,result:{...normalized,durationMs:normalized.durationMs??Date.now()-started}});
     if(result.commitSha)expectedCommit=result.commitSha;
     if(completed.status==="waiting_for_approval"){console.log(JSON.stringify({status:completed.status,taskId,commitSha:completed.task.currentCommit}));break;}
   }catch(error){await request(`/api/admin/worker/handoff/${encodeURIComponent(handoff.handoffId)}/fail`,{taskId,workerId,idempotencyKey,error:{code:error.code||"worker_failed",message:String(error.message).slice(0,300)}});throw error;}
