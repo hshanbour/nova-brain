@@ -46,7 +46,9 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     const handoff={id:randomUUID(),workerId,idempotencyKey,stepId:`${before.currentStep+1}:${planned.type}`,stepType:planned.type,tool:definition.tool,arguments:redact(args),branch:before.branch,expectedCommit:before.currentCommit,expiresAt:new Date(clock().getTime()+Math.max(30000,Math.min(300000,leaseMs))).toISOString(),fingerprint:hash([before.id,before.currentStep,planned.type,redact(planned.input),before.currentCommit])};
     const task=await storage.claimAutonomyTask({ownerId,workerId:`local:${workerId}`,capabilities,leaseMs, idempotencyKey,taskId,expectedBranch:input.expectedBranch,expectedCommit:input.expectedCommit});if(!task)return{claimed:false};
     if(definition.lock&&!await storage.acquireAutonomyLock({lockKey:`${task.projectId||"repo"}:${task.branch}`,taskId:task.id,leaseToken:task.leaseToken,expiresAt:task.leaseExpiresAt})){await storage.releaseAutonomyLease(task.id,ownerId,task.leaseToken);return{claimed:false,code:"branch_locked"};}
-    await storage.recordAutonomyStep({taskId:task.id,stepId:handoff.stepId,stepType:handoff.stepType,capability:definition.capability,operationFingerprint:handoff.fingerprint,input:redact(planned.input),status:"running"});
+    const priorStep=(await storage.listAutonomySteps(task.id)).find(step=>step.stepId===handoff.stepId);
+    if(priorStep?.status==="failed")await storage.updateAutonomyStep(task.id,handoff.stepId,{status:"running",attempt:(priorStep.attempt||1)+1,result:null,errorCode:null,startedAt:nowIso(clock),completedAt:null});
+    else await storage.recordAutonomyStep({taskId:task.id,stepId:handoff.stepId,stepType:handoff.stepType,capability:definition.capability,operationFingerprint:handoff.fingerprint,input:redact(planned.input),status:"running"});
     handoff.expectedVersion=task.stateVersion+1;
     const updated=await storage.updateAutonomyTask(task.id,ownerId,{status:"running",metadata:{...task.metadata,localHandoff:handoff}},task.stateVersion);
     if(!updated)throw new HandoffError("version_conflict","Task changed while creating the handoff.");
