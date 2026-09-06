@@ -11,6 +11,7 @@
     "start": "node src/local-server.js",
     "worker": "node scripts/worker.js",
     "worker:handoff": "node scripts/local-worker-handoff.js",
+    "worker:credentials:status": "node scripts/local-worker-credential-status.js",
     "test": "node --test",
     "db:migrate": "node scripts/migrate.js"
   },
