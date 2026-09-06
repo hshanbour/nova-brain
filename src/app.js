@@ -29,6 +29,7 @@ import { registerWorkerTools } from "./autonomy/worker-tools.js";
 import { createTaskMigrationService } from "./autonomy/task-migration.js";
 import { createLocalWorkerHandoff } from "./autonomy/local-worker-handoff.js";
 import { createGithubWriteAttestation } from "./autonomy/github-write-attestation.js";
+import { createPostAttestationRecovery } from "./autonomy/post-attestation-recovery.js";
 
 export function createApp({
   environment = process.env,
@@ -85,6 +86,11 @@ export function createApp({
     approvedBranch: config.developmentBranch,
     deploymentEnvironment: environment.VERCEL_ENV || "local",
   });
+  const verifyDeployment = async ({deploymentId}) => {
+    const response=await fetch(`https://api.vercel.com/v13/deployments/${encodeURIComponent(deploymentId)}`,{headers:{Authorization:`Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN||""}`}});
+    if(!response.ok)throw new Error("Preview verification failed.");
+    const value=await response.json();return{id:value.id||value.uid,url:value.url,status:value.readyState||value.state,target:value.target,sha:value.gitSource?.sha||value.meta?.githubCommitSha,branch:value.gitSource?.ref||value.meta?.githubCommitRef};
+  };
   const githubWriteAttestation = createGithubWriteAttestation({
     storage,
     ownerId: OWNER_ID,
@@ -96,12 +102,11 @@ export function createApp({
       for(const required of requiredAncestors){const compared=await fetch(`https://api.github.com/repos/${repository}/compare/${required}...${currentTip}`,{headers});if(!compared.ok)throw new Error("Remote ancestry verification failed.");const value=await compared.json();ancestors[required]=["ahead","identical"].includes(value.status)&&value.merge_base_commit?.sha===required;}
       return{currentTip,ancestors};
     },
-    verifyDeployment: async ({deploymentId}) => {
-      const response=await fetch(`https://api.vercel.com/v13/deployments/${encodeURIComponent(deploymentId)}`,{headers:{Authorization:`Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN||""}`}});
-      if(!response.ok)throw new Error("Preview verification failed.");
-      const value=await response.json();return{id:value.id||value.uid,url:value.url,status:value.readyState||value.state,target:value.target,sha:value.gitSource?.sha||value.meta?.githubCommitSha,branch:value.gitSource?.ref||value.meta?.githubCommitRef};
-    },
+    verifyDeployment,
   });
+  const postAttestationRecovery=createPostAttestationRecovery({storage,ownerId:OWNER_ID,verifyDeployment});
+  toolRegistry.register({name:"deployment_status_existing",description:"Verify READY status and source for the exact existing acceptance Preview.",category:"deployment",capability:"read",riskLevel:"READ_ONLY",available:Boolean(environment.NOVA_BRAIN_VERCEL_TOKEN),configurationStatus:environment.NOVA_BRAIN_VERCEL_TOKEN?"ready":"configuration_required",async execute(input){const deployment=await verifyDeployment(input);if(deployment.target==="production"||deployment.branch!==config.developmentBranch||deployment.sha!==input.commitSha)throw Object.assign(new Error("Preview source mismatch."),{code:"source_mismatch"});if(deployment.status!=="READY")throw Object.assign(new Error("Preview deployment is not READY."),{code:"deployment_not_ready"});return{ok:true,deploymentId:input.deploymentId,status:deployment.status,url:`https://${deployment.url}`,commitSha:input.commitSha};}});
+  toolRegistry.register({name:"preview_verify_existing",description:"Verify the exact existing acceptance Preview route.",category:"deployment",capability:"read",riskLevel:"READ_ONLY",available:Boolean(environment.NOVA_BRAIN_VERCEL_TOKEN),configurationStatus:environment.NOVA_BRAIN_VERCEL_TOKEN?"ready":"configuration_required",async execute(input){const deployment=await verifyDeployment(input);if(deployment.target==="production"||deployment.branch!==config.developmentBranch||deployment.sha!==input.commitSha)throw Object.assign(new Error("Preview source mismatch."),{code:"source_mismatch"});const response=await fetch(`https://${deployment.url}${input.path}`,{headers:{...(environment.VERCEL_AUTOMATION_BYPASS_SECRET?{"x-vercel-protection-bypass":environment.VERCEL_AUTOMATION_BYPASS_SECRET}:{})}});if(response.status!==input.expectedStatus)throw Object.assign(new Error("Preview route returned an unexpected status."),{code:"preview_unreachable"});return{ok:true,deploymentId:input.deploymentId,url:`https://${deployment.url}${input.path}`,status:response.status,commitSha:input.commitSha};}});
   registerWorkerTools(toolRegistry, { runtime: workerRuntime, taskMigration });
   const modelProvider = createModelProvider(config);
   const speakerAssertions = createSpeakerAssertions({
@@ -172,6 +177,7 @@ export function createApp({
     taskMigration,
     localWorkerHandoff,
     githubWriteAttestation,
+    postAttestationRecovery,
     voiceBenchmark,
     voiceService,
     speakerIdentity,

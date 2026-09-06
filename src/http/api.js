@@ -152,6 +152,7 @@ export function createApi({
   taskMigration,
   localWorkerHandoff,
   githubWriteAttestation,
+  postAttestationRecovery,
   voiceBenchmark,
   voiceService,
   speakerIdentity,
@@ -1014,6 +1015,10 @@ export function createApi({
         if(githubWriteAttestation&&request.method==="POST"&&pathname==="/api/admin/worker/github-write-attestation"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);
           sendJson(response,200,await githubWriteAttestation.attest(await readJsonBody(request,config.maxBodyBytes)));return;
+        }
+        if(postAttestationRecovery&&request.method==="POST"&&pathname==="/api/admin/worker/post-attestation-expiry-recovery"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          sendJson(response,200,await postAttestationRecovery.recover(await readJsonBody(request,config.maxBodyBytes)));return;
         }
         if (request.method === "GET" && pathname === "/api/projects") {
           await ready();

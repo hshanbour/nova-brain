@@ -611,6 +611,14 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         throw error;
       }
     },
+    async recoverExpiredAutonomyTask(input) {
+      const current=autonomyTasks.get(input.taskId);
+      if(!current||current.ownerId!==input.ownerId||current.stateVersion!==input.expectedVersion||current.status!=="expired"||current.errorCode!=="max_runtime_reached"||current.branch!==input.expectedBranch||current.currentCommit!==input.expectedCommit||current.leaseToken||current.leaseOwner||current.leaseExpiresAt)return null;
+      const before=copy(current);try{
+        const recovered={...current,status:"queued",currentStep:9,currentPhase:"post_attestation_recovery",maxSteps:Math.max(current.maxSteps,input.plan.length+1),maxRuntimeMinutes:input.runtimeMinutes,startedAt:now(clock),completedAt:null,nextRunAt:now(clock),blockedReason:null,errorCode:null,metadata:{...current.metadata,steps:copy(input.plan),requiredCapability:"vercel_preview",postAttestationRecovery:{previousStatus:"expired",previousErrorCode:"max_runtime_reached",previousStartedAt:input.previousStartedAt,previousCompletedAt:input.previousCompletedAt,recoveredAt:now(clock)}},stateVersion:current.stateVersion+1,updatedAt:now(clock)};
+        autonomyTasks.set(input.taskId,recovered);await this.appendActivity({ownerId:input.ownerId,projectId:current.projectId,runId:current.id,action:"autonomy_post_attestation_expiry_recovered",status:"completed",summary:"Recovered the exact expired post-attestation verification continuation.",metadata:{taskId:current.id,previousStatus:"expired",previousErrorCode:"max_runtime_reached",newRuntimeMinutes:input.runtimeMinutes,actorType:input.actorType,expectedVersion:input.expectedVersion,newVersion:input.expectedVersion+1,result:"completed"}});return copy(recovered);
+      }catch(error){autonomyTasks.set(input.taskId,before);throw error;}
+    },
     async claimAutonomyTask({
       ownerId,
       workerId,
