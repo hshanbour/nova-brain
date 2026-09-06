@@ -911,6 +911,8 @@ export function createApi({
         if(selfDevelopment&&selfDevelopmentReviewRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverReview(decodeURIComponent(selfDevelopmentReviewRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         const selfDevelopmentCommitSupersession=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/supersede-commit$/);
         if(selfDevelopment&&selfDevelopmentCommitSupersession&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.supersedeCommit(decodeURIComponent(selfDevelopmentCommitSupersession[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
+        const selfDevelopmentDeliveryAttestation=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/attest-delivery$/);
+        if(selfDevelopment&&selfDevelopmentDeliveryAttestation&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.attestDelivery(decodeURIComponent(selfDevelopmentDeliveryAttestation[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if (
           workerRuntime &&
           request.method === "GET" &&
