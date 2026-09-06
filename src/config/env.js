@@ -94,6 +94,7 @@ export function readConfig(environment = process.env) {
       environment.NOVA_BRAIN_DEVELOPMENT_BRANCH ||
       "feat/nova-brain-mvp-foundation",
     workerAdminToken: environment.NOVA_WORKER_ADMIN_TOKEN || null,
+    localWorkerToken: environment.NOVA_LOCAL_WORKER_TOKEN || null,
     openAI: Object.freeze({
       apiKey: environment.OPENAI_API_KEY || null,
       model: environment.OPENAI_MODEL || null,

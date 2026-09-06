@@ -42,6 +42,7 @@ import {
   authorizeWorkerAdmin,
   TaskMigrationError,
 } from "../autonomy/task-migration.js";
+import {authorizeLocalWorker,HandoffError} from "../autonomy/local-worker-handoff.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -149,6 +150,7 @@ export function createApi({
   toolRegistry = agent?.tools,
   workerRuntime,
   taskMigration,
+  localWorkerHandoff,
   voiceBenchmark,
   voiceService,
   speakerIdentity,
@@ -994,6 +996,20 @@ export function createApi({
           sendJson(response, 200, await taskMigration.migrate(input, actor));
           return;
         }
+        const handoffClaim = pathname === "/api/admin/worker/handoff/claim";
+        const handoffMatch = pathname.match(/^\/api\/admin\/worker\/handoff\/([^/]+)(?:\/(complete|fail))?$/);
+        if(localWorkerHandoff&&request.method==="POST"&&(handoffClaim||handoffMatch)){
+          await ready();
+          authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes);
+          const result=handoffClaim?await localWorkerHandoff.claim(input):handoffMatch[2]==="complete"?await localWorkerHandoff.complete(decodeURIComponent(handoffMatch[1]),input):handoffMatch[2]==="fail"?await localWorkerHandoff.fail(decodeURIComponent(handoffMatch[1]),input):null;
+          if(!result){sendJson(response,404,{error:"Handoff route not found."});return;}
+          sendJson(response,200,result);return;
+        }
+        if(localWorkerHandoff&&request.method==="GET"&&handoffMatch&&!handoffMatch[2]){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          sendJson(response,200,await localWorkerHandoff.inspect(decodeURIComponent(handoffMatch[1]),url.searchParams.get("taskId")));return;
+        }
         if (request.method === "GET" && pathname === "/api/projects") {
           await ready();
           const projects = await storage.listProjects(ownerId);
@@ -1291,6 +1307,7 @@ export function createApi({
           });
           return;
         }
+        if(error instanceof HandoffError){sendJson(response,error.statusCode,{error:error.message,code:error.code});return;}
         if (
           error instanceof AgentStepLimitError ||
           error instanceof AgentToolCallLimitError

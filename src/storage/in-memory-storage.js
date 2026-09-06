@@ -529,9 +529,9 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         .slice(0, limit)
         .map(copy);
     },
-    async updateAutonomyTask(id, ownerId, patch) {
+    async updateAutonomyTask(id, ownerId, patch, expectedVersion) {
       const current = autonomyTasks.get(id);
-      if (!current || current.ownerId !== ownerId) return null;
+      if (!current || current.ownerId !== ownerId || (expectedVersion!==undefined&&current.stateVersion!==expectedVersion)) return null;
       const updated = {
         ...current,
         ...copy(patch),
@@ -617,6 +617,9 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       capabilities,
       leaseMs = 30000,
       idempotencyKey,
+      taskId,
+      expectedBranch,
+      expectedCommit,
     }) {
       const timestamp = clock();
       for (const task of autonomyTasks.values())
@@ -637,6 +640,9 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         .filter(
           (t) =>
             t.ownerId === ownerId &&
+            (!taskId || t.id === taskId) &&
+            (!expectedBranch || t.branch === expectedBranch) &&
+            (!expectedCommit || t.currentCommit === expectedCommit) &&
             (["queued", "retrying"].includes(t.status) ||
               (t.status === "waiting" && t.nextRunAt)) &&
             (!t.nextRunAt || new Date(t.nextRunAt) <= timestamp) &&

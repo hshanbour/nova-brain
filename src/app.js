@@ -27,6 +27,7 @@ import { createSpeakerEngineCoordinator } from "./voice/speaker-engine.js";
 import { createWorkerRuntime } from "./autonomy/worker-runtime.js";
 import { registerWorkerTools } from "./autonomy/worker-tools.js";
 import { createTaskMigrationService } from "./autonomy/task-migration.js";
+import { createLocalWorkerHandoff } from "./autonomy/local-worker-handoff.js";
 
 export function createApp({
   environment = process.env,
@@ -76,6 +77,12 @@ export function createApp({
     storage,
     ownerId: OWNER_ID,
     approvedBranch: config.developmentBranch,
+  });
+  const localWorkerHandoff = createLocalWorkerHandoff({
+    storage,
+    ownerId: OWNER_ID,
+    approvedBranch: config.developmentBranch,
+    deploymentEnvironment: environment.VERCEL_ENV || "local",
   });
   registerWorkerTools(toolRegistry, { runtime: workerRuntime, taskMigration });
   const modelProvider = createModelProvider(config);
@@ -145,6 +152,7 @@ export function createApp({
     toolRegistry,
     workerRuntime,
     taskMigration,
+    localWorkerHandoff,
     voiceBenchmark,
     voiceService,
     speakerIdentity,
