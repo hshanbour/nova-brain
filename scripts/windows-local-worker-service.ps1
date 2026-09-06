@@ -6,6 +6,6 @@ if($PreviewUrl -notmatch '^https://[a-z0-9.-]+\.vercel\.app/?$'){throw 'A protec
 $node=(Get-Command node.exe).Source; $script=(Resolve-Path (Join-Path $PSScriptRoot 'persistent-local-worker.js')).Path; $root=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $arguments='"'+$script+'" --preview-url "'+$PreviewUrl.TrimEnd('/')+'"'; $taskAction=New-ScheduledTaskAction -Execute $node -Argument $arguments -WorkingDirectory $root
 $trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+$settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $name -Action $taskAction -Trigger $trigger -Settings $settings -Description 'Bounded Nova Self-Development worker; credentials load from Windows Credential Manager.' -Force | Out-Null
 [Console]::Out.Write('installed')
