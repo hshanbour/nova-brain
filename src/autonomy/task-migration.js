@@ -124,14 +124,21 @@ export function createTaskMigrationService({
 function isRecoverableHandoffFailure(task) {
   if (task.errorCode === "invalid_handoff_result") return true;
   const completed = task.checkpoint?.completedSteps || [];
-  return (
+  const fullSuiteRetry =
     task.errorCode === "test_failed" &&
     task.currentStep === 3 &&
     task.metadata?.steps?.[task.currentStep]?.type === "run_full_tests" &&
     ["1:inspect_repo", "2:apply_patch", "3:run_focused_tests"].every((step) =>
       completed.includes(step),
-    )
-  );
+    );
+  const diffRetry =
+    task.errorCode === "worker_failed" &&
+    task.currentStep === 4 &&
+    task.metadata?.steps?.[task.currentStep]?.type === "inspect_diff" &&
+    ["1:inspect_repo", "2:apply_patch", "3:run_focused_tests", "4:run_full_tests"].every(
+      (step) => completed.includes(step),
+    );
+  return fullSuiteRetry || diffRetry;
 }
 function validate(input, branch) {
   if (!input || typeof input !== "object" || Array.isArray(input))
