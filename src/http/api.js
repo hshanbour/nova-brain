@@ -153,6 +153,7 @@ export function createApi({
   workerRuntime,
   taskMigration,
   localWorkerHandoff,
+  autoDispatch,
   githubWriteAttestation,
   postAttestationRecovery,
   selfDevelopment,
@@ -1025,6 +1026,9 @@ export function createApi({
           return;
         }
         const handoffClaim = pathname === "/api/admin/worker/handoff/claim";
+        if(autoDispatch&&request.method==="POST"&&pathname==="/api/admin/worker/auto-dispatch/next"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await autoDispatch.next(await readJsonBody(request,config.maxBodyBytes)));return;
+        }
         const handoffMatch = pathname.match(/^\/api\/admin\/worker\/handoff\/([^/]+)(?:\/(complete|fail))?$/);
         if(localWorkerHandoff&&request.method==="POST"&&(handoffClaim||handoffMatch)){
           await ready();

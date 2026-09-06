@@ -33,6 +33,7 @@ import { createPostAttestationRecovery } from "./autonomy/post-attestation-recov
 import { createSelfDevelopmentService } from "./autonomy/self-development.js";
 import { createSelfDevelopmentExpiryRecovery } from "./autonomy/self-development-expiry-recovery.js";
 import { registerSelfDevelopmentTools } from "./autonomy/self-development-tools.js";
+import { createAutoDispatchService } from "./autonomy/auto-dispatch.js";
 
 export function createApp({
   environment = process.env,
@@ -89,6 +90,7 @@ export function createApp({
     approvedBranch: config.developmentBranch,
     deploymentEnvironment: environment.VERCEL_ENV || "local",
   });
+  const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch});
   const verifyDeployment = async ({deploymentId}) => {
     const response=await fetch(`https://api.vercel.com/v13/deployments/${encodeURIComponent(deploymentId)}`,{headers:{Authorization:`Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN||""}`}});
     if(!response.ok)throw new Error("Preview verification failed.");
@@ -184,6 +186,7 @@ export function createApp({
     workerRuntime,
     taskMigration,
     localWorkerHandoff,
+    autoDispatch,
     githubWriteAttestation,
     postAttestationRecovery,
     selfDevelopment,

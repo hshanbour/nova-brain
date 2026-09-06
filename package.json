@@ -11,6 +11,10 @@
     "start": "node src/local-server.js",
     "worker": "node scripts/worker.js",
     "worker:handoff": "node scripts/local-worker-handoff.js",
+    "worker:auto": "node scripts/persistent-local-worker.js",
+    "worker:auto:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-local-worker-service.ps1 install",
+    "worker:auto:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-local-worker-service.ps1 status",
+    "worker:auto:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-local-worker-service.ps1 uninstall",
     "worker:credentials:status": "node scripts/local-worker-credential-status.js",
     "test": "node --test",
     "db:migrate": "node scripts/migrate.js"
