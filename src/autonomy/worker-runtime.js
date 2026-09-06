@@ -26,6 +26,7 @@ export const STEP_CAPABILITIES = Object.freeze({
   run_focused_tests: "test_local",
   run_full_tests: "test_local",
   inspect_diff: "repo_read_remote",
+  review_commit: "repo_read_remote",
   commit: "repo_mutate_local",
   request_push_approval: "github_write",
   authorize_protected_change: "reasoning",

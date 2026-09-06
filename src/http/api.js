@@ -907,6 +907,8 @@ export function createApi({
         const selfDevelopmentMatch=pathname.match(/^\/api\/self-development\/tasks\/([^/]+)(?:\/(repair))?$/);
         if(selfDevelopment&&selfDevelopmentMatch&&request.method==="GET"&&!selfDevelopmentMatch[2]){await ready();sendJson(response,200,await selfDevelopment.get(decodeURIComponent(selfDevelopmentMatch[1])));return;}
         if(selfDevelopment&&selfDevelopmentMatch&&request.method==="POST"&&selfDevelopmentMatch[2]){await ready();sendJson(response,200,await selfDevelopment.repair(decodeURIComponent(selfDevelopmentMatch[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
+        const selfDevelopmentReviewRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-review$/);
+        if(selfDevelopment&&selfDevelopmentReviewRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverReview(decodeURIComponent(selfDevelopmentReviewRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if (
           workerRuntime &&
           request.method === "GET" &&

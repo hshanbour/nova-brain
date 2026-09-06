@@ -5,6 +5,7 @@ const LOCAL_STEPS=Object.freeze({
   run_focused_tests:{capability:"test_local",tool:"test_run"},
   run_full_tests:{capability:"test_local",tool:"test_run_full"},
   inspect_diff:{capability:"repo_read_remote",tool:"repo_diff"},
+  review_commit:{capability:"repo_read_remote",tool:"repo_review_commit"},
   commit:{capability:"repo_mutate_local",tool:"git_commit",lock:true},
 });
 const SAFE_STATUSES=new Set(["queued","retrying","waiting_for_worker"]);
@@ -41,8 +42,9 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     if(new Date(before.startedAt||before.createdAt).getTime()+before.maxRuntimeMinutes*60000<=clock().getTime())throw new HandoffError("max_runtime_reached","Task runtime budget expired.");
     const planned=before.metadata?.steps?.[before.currentStep],definition=LOCAL_STEPS[planned?.type];
     if(!definition||!capabilities.includes(definition.capability))return{claimed:false};
-    const args=planned.input?.arguments||{};
+    let args=planned.input?.arguments||{};
     if(planned.input?.tool!==definition.tool)throw new HandoffError("invalid_step_payload","Server plan contains an invalid local tool.");
+    if(before.taskType==="self_development"&&planned.type==="commit"){const reviewed=(await storage.listAutonomySteps(before.id)).filter(step=>step.stepType==="inspect_diff"&&step.status==="completed").at(-1)?.result?.reviewedChangeSet;if(!reviewed?.reviewHash)throw new HandoffError("review_required","Self-development commits require a durable reviewed change-set.");args={...args,reviewedChangeSet:reviewed};}
     const handoff={id:randomUUID(),workerId,idempotencyKey,stepId:`${before.currentStep+1}:${planned.type}`,stepType:planned.type,tool:definition.tool,arguments:redact(args),branch:before.branch,expectedCommit:before.currentCommit,expiresAt:new Date(clock().getTime()+Math.max(30000,Math.min(300000,leaseMs))).toISOString(),fingerprint:hash([before.id,before.currentStep,planned.type,redact(planned.input),before.currentCommit])};
     const task=await storage.claimAutonomyTask({ownerId,workerId:`local:${workerId}`,capabilities,leaseMs, idempotencyKey,taskId,expectedBranch:input.expectedBranch,expectedCommit:input.expectedCommit});if(!task)return{claimed:false};
     if(definition.lock&&!await storage.acquireAutonomyLock({lockKey:`${task.projectId||"repo"}:${task.branch}`,taskId:task.id,leaseToken:task.leaseToken,expiresAt:task.leaseExpiresAt})){await storage.releaseAutonomyLease(task.id,ownerId,task.leaseToken);return{claimed:false,code:"branch_locked"};}
@@ -66,12 +68,13 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     const result=redact(failed?input.error:input.result);if(!result||typeof result!=="object"||Array.isArray(result)||JSON.stringify(result).length>200000)throw new HandoffError("invalid_handoff_result","Structured bounded result is required.",400);
     if(!failed&&result.ok!==true)throw new HandoffError("invalid_handoff_result","Successful result must report ok=true.",400);
     if(!failed&&handoff.stepType==="commit"&&!/^[a-f0-9]{40}$/.test(result.commitSha||""))throw new HandoffError("invalid_handoff_result","Commit result requires an exact SHA.",400);
-    if(!failed&&["run_focused_tests","run_full_tests","inspect_diff"].includes(handoff.stepType)&&result.exitCode!==0)throw new HandoffError("invalid_handoff_result","Successful local command result requires exitCode 0.",400);
+    if(!failed&&["run_focused_tests","run_full_tests","inspect_diff","review_commit"].includes(handoff.stepType)&&result.exitCode!==0)throw new HandoffError("invalid_handoff_result","Successful local command result requires exitCode 0.",400);
+    if(!failed&&handoff.stepType==="review_commit"&&(!result.reviewedChangeSet?.reviewHash||result.commitSha!==task.currentCommit))throw new HandoffError("invalid_handoff_result","Reviewed commit result must bind the exact task commit.",400);
     if(!failed&&handoff.stepType==="apply_patch"){const allowed=new Set((handoff.arguments.files||[]).map(item=>item.path));if(!Array.isArray(result.files)||result.files.some(path=>!allowed.has(path)))throw new HandoffError("invalid_handoff_result","Patch result files do not match the server plan.",400);}
     const completed=[...(task.checkpoint?.completedSteps||[]),handoff.stepId],completedHandoffs=[...(task.metadata?.completedHandoffs||[]),handoff.id].slice(-20),metadata={...task.metadata,localHandoff:null,completedHandoffs,requiredCapability:null};
     if(failed){const retryable=RETRYABLE.has(input.error?.code),retry=task.retryCount+1,status=retryable&&retry<=task.maxRetries?"retrying":"failed";const updated=await storage.updateAutonomyTask(task.id,ownerId,{status,retryCount:retry,errorCode:input.error?.code||"worker_failed",nextRunAt:retryable?new Date(clock().getTime()+1000).toISOString():null,metadata,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},task.stateVersion);if(!updated)throw new HandoffError("version_conflict","Task changed before failure could be persisted.");await storage.updateAutonomyStep(task.id,handoff.stepId,{status:"failed",result,errorCode:input.error?.code||"worker_failed",completedAt:nowIso(clock)});await storage.releaseAutonomyLocks(task.id,task.leaseToken);await activity(updated,"local_worker_handoff_failed",status,"Controlled local step failed.",{handoffId,stepId:handoff.stepId,errorCode:input.error?.code});return{idempotent:false,status};}
     const commitSha=result.commitSha||task.currentCommit;let status="queued",approvalState=null;
-    if(handoff.stepType==="commit"){
+    if(["commit","review_commit"].includes(handoff.stepType)){
       const args={branch:task.branch,commitSha};const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:"git_push",reason:"Owner approval is required to push the exact local Worker commit.",riskLevel:"SENSITIVE",arguments:args});status="waiting_for_approval";approvalState={approvalId:approval.id,tool:"git_push",arguments:args,branch:task.branch,commitSha,stepId:`${task.currentStep+2}:push`};
       await activity(task,"autonomy_approval_requested","waiting","Task paused for exact public-push approval.",{approvalId:approval.id,commitSha,branch:task.branch});
     }
