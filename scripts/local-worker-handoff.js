@@ -1,16 +1,18 @@
 import {randomUUID} from "node:crypto";
 import {createToolRegistry} from "../src/tools/tool-registry.js";
 import {registerHandsTools} from "../src/tools/hands-runtime.js";
+import {createLocalWorkerClient} from "../src/autonomy/local-worker-client.js";
 
 const base=(process.env.NOVA_LOCAL_WORKER_URL||"").replace(/\/$/,"");
 const token=process.env.NOVA_LOCAL_WORKER_TOKEN;
+const vercelBypassToken=process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
 const taskId=process.env.NOVA_LOCAL_WORKER_TASK_ID;
 const branch=process.env.NOVA_BRAIN_DEVELOPMENT_BRANCH||"feat/nova-brain-mvp-foundation";
 let expectedCommit=process.env.NOVA_LOCAL_WORKER_EXPECTED_COMMIT;
-if(!/^https:\/\//.test(base)||!token||!taskId||!/^[a-f0-9]{40}$/.test(expectedCommit||""))throw new Error("Bounded local Worker handoff configuration is required.");
+if(!taskId||!/^[a-f0-9]{40}$/.test(expectedCommit||""))throw new Error("Bounded local Worker handoff configuration is required.");
 const workerId=`local-${randomUUID()}`,allowed=new Set(["repo_apply_patch","test_run","test_run_full","repo_diff","git_commit"]);
 const registry=createToolRegistry();registerHandsTools(registry,{root:process.cwd(),environment:{...process.env,VERCEL:"",NOVA_BRAIN_DEVELOPMENT_BRANCH:branch}});
-async function request(path,body){const response=await fetch(`${base}${path}`,{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},body:JSON.stringify(body)});const value=await response.json().catch(()=>({}));if(!response.ok)throw Object.assign(new Error(value.error||`Handoff failed with status ${response.status}.`),{code:value.code||"handoff_failed"});return value;}
+const {request}=createLocalWorkerClient({baseUrl:base,novaToken:token,vercelBypassToken});
 for(let count=0;count<12;count+=1){
   const idempotencyKey=`${taskId}:${workerId}:${count}`;
   const claimed=await request("/api/admin/worker/handoff/claim",{workerId,capabilities:["repo_mutate_local","test_local","repo_read_remote"],expectedBranch:branch,expectedCommit,taskId,idempotencyKey});
