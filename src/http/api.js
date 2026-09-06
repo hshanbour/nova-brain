@@ -43,6 +43,7 @@ import {
   TaskMigrationError,
 } from "../autonomy/task-migration.js";
 import {authorizeLocalWorker,HandoffError} from "../autonomy/local-worker-handoff.js";
+import {WorkerError} from "../autonomy/worker-runtime.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -970,6 +971,14 @@ export function createApi({
           sendJson(response, 200, await workerRuntime.tick(input));
           return;
         }
+        const taskTickMatch = pathname.match(/^\/api\/autonomy\/worker\/tasks\/([^/]+)\/tick$/);
+        if (workerRuntime && request.method === "POST" && taskTickMatch) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          const input = await readJsonBody(request, config.maxBodyBytes);
+          sendJson(response, 200, await workerRuntime.tickTask(decodeURIComponent(taskTickMatch[1]), input));
+          return;
+        }
         const migrationMatch = pathname.match(
           /^\/api\/admin\/worker-tasks\/([^/]+)\/migration$/,
         );
@@ -1318,6 +1327,7 @@ export function createApi({
           return;
         }
         if(error instanceof HandoffError){sendJson(response,error.statusCode,{error:error.message,code:error.code});return;}
+        if(error instanceof WorkerError){sendJson(response,error.statusCode,{error:error.message,code:error.code});return;}
         if (
           error instanceof AgentStepLimitError ||
           error instanceof AgentToolCallLimitError

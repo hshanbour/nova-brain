@@ -83,13 +83,14 @@ export class WorkerError extends Error {
   constructor(
     code,
     message,
-    { retryable = RETRYABLE.has(code), details } = {},
+    { retryable = RETRYABLE.has(code), details, statusCode = 409 } = {},
   ) {
     super(message);
     this.name = "WorkerError";
     this.code = code;
     this.retryable = retryable;
     this.details = details;
+    this.statusCode = statusCode;
   }
 }
 
@@ -143,6 +144,7 @@ export function createWorkerRuntime({
       );
     const task = await storage.createAutonomyTask({
       ...input,
+      metadata: redact(input.metadata || {}),
       branch: input.branch || approvedBranch,
       ownerId,
       maxSteps: Math.max(1, Math.min(100, input.maxSteps || 30)),
@@ -232,6 +234,54 @@ export function createWorkerRuntime({
       idempotencyKey,
     });
     if (!task) return { claimed: false };
+    try {
+      return await advance(task);
+    } finally {
+      await storage.releaseAutonomyLease(task.id, ownerId, task.leaseToken);
+    }
+  }
+  async function tickTask(taskId, { idempotencyKey = randomUUID() } = {}) {
+    if (typeof taskId !== "string" || !taskId.trim())
+      throw new WorkerError("invalid_task_id", "An exact task ID is required.", {
+        retryable: false,
+        statusCode: 400,
+      });
+    const requested = await storage.getAutonomyTask(taskId, ownerId);
+    if (!requested)
+      throw new WorkerError("task_not_found", "Task not found.", {
+        retryable: false,
+        statusCode: 404,
+      });
+    if (requested.branch !== approvedBranch)
+      throw new WorkerError("branch_not_allowed", "The requested task branch is not allowed.", { retryable: false, statusCode: 403 });
+    if (requested.status === "waiting_for_approval")
+      throw new WorkerError("approval_required", "The requested task is waiting for approval.", { retryable: false });
+    if (TERMINAL.has(requested.status))
+      throw new WorkerError("task_not_eligible", "The requested task is terminal.", { retryable: false });
+    if (requested.leaseToken || requested.leaseOwner || requested.leaseExpiresAt)
+      throw new WorkerError("task_lease_conflict", "The requested task already has a lease.", { retryable: false });
+    const due = !requested.nextRunAt || new Date(requested.nextRunAt) <= clock();
+    if (!(requested.status === "queued" || requested.status === "retrying" || (requested.status === "waiting" && requested.nextRunAt)) || !due)
+      throw new WorkerError("task_not_eligible", "The requested task is not eligible to run.", { retryable: false });
+    const planned = await next(requested);
+    const requiredCapability = requested.metadata?.requiredCapability || STEP_CAPABILITIES[planned.next_step] || planned.required_capability;
+    if (!requiredCapability || !capabilities.includes(requiredCapability))
+      throw new WorkerError("capability_mismatch", "This worker cannot execute the requested task step.", { retryable: false });
+    const task = await storage.claimAutonomyTask({
+      ownerId,
+      workerId,
+      capabilities,
+      leaseMs,
+      idempotencyKey,
+      taskId: requested.id,
+      expectedBranch: requested.branch,
+      expectedCommit: requested.currentCommit,
+      expectedVersion: requested.stateVersion,
+    });
+    if (!task) {
+      const latest = await storage.getAutonomyTask(requested.id, ownerId);
+      throw new WorkerError(latest?.stateVersion !== requested.stateVersion ? "version_conflict" : "task_not_eligible", "The requested task changed before it could be claimed.", { retryable: false });
+    }
     try {
       return await advance(task);
     } finally {
@@ -551,6 +601,7 @@ export function createWorkerRuntime({
     steps: (id) => storage.listAutonomySteps(id),
     control,
     tick,
+    tickTask,
     resumeApproval,
   });
 }

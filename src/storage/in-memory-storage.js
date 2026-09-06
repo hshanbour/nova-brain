@@ -628,11 +628,13 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       taskId,
       expectedBranch,
       expectedCommit,
+      expectedVersion,
     }) {
       const timestamp = clock();
       for (const task of autonomyTasks.values())
         if (
           task.ownerId === ownerId &&
+          (!taskId || task.id === taskId) &&
           task.leaseExpiresAt &&
           new Date(task.leaseExpiresAt) <= timestamp &&
           ["running", "planning", "retrying"].includes(task.status)
@@ -651,6 +653,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
             (!taskId || t.id === taskId) &&
             (!expectedBranch || t.branch === expectedBranch) &&
             (!expectedCommit || t.currentCommit === expectedCommit) &&
+            (expectedVersion === undefined || t.stateVersion === expectedVersion) &&
             (["queued", "retrying"].includes(t.status) ||
               (t.status === "waiting" && t.nextRunAt)) &&
             (!t.nextRunAt || new Date(t.nextRunAt) <= timestamp) &&
