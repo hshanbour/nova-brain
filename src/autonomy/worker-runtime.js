@@ -22,6 +22,7 @@ export const STEP_CAPABILITIES = Object.freeze({
   inspect_logs: "vercel_preview",
   diagnose: "reasoning",
   plan_patch: "reasoning",
+  plan_implementation: "reasoning",
   apply_patch: "repo_mutate_local",
   run_focused_tests: "test_local",
   run_full_tests: "test_local",
@@ -531,7 +532,7 @@ export function createWorkerRuntime({
         pendingStep: null,
         latestResult: redact(result),
       },
-      metadata: { ...task.metadata, requiredCapability: null, ...(result?.deploymentId?{lastDeploymentId:result.deploymentId}:{}) },
+      metadata: { ...task.metadata, requiredCapability: null, ...(result?.implementationPlan?{selfDevelopmentImplementationPlan:redact(result.implementationPlan)}:{}), ...(result?.deploymentId?{lastDeploymentId:result.deploymentId}:{}) },
       blockedReason: null,
       errorCode: null,
     });
@@ -632,5 +633,8 @@ function resolveTaskReferences(value, task) {
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveTaskReferences(item, task)]));
   if(value === "$CURRENT_COMMIT")return task.currentCommit;
   if(value === "$DEPLOYMENT_ID")return task.metadata?.lastDeploymentId;
+  if(value === "$IMPLEMENTATION_FILES")return task.metadata?.selfDevelopmentImplementationPlan?.files;
+  if(value === "$IMPLEMENTATION_TESTS")return task.metadata?.selfDevelopmentImplementationPlan?.focusedTests;
+  if(value === "$IMPLEMENTATION_PATHS")return task.metadata?.selfDevelopmentImplementationPlan?.files?.map(file=>file.path);
   return value;
 }

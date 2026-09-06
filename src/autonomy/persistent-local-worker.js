@@ -10,3 +10,9 @@ export function createPersistentLocalWorker({client,root=process.cwd(),branch="f
   async function runOnce(){const found=await client.request("/api/admin/worker/auto-dispatch/next",{workerId,branch});if(!found.dispatched)return{worked:false};const task=found.task;if(!task||task.branch!==branch)throw Object.assign(new Error("Dispatch binding is invalid."),{code:"invalid_dispatch"});if(task.mode==="local_handoff")return handoff(task);const result=await client.request(`/api/autonomy/worker/tasks/${encodeURIComponent(task.id)}/tick`,{idempotencyKey:`auto:${task.id}:${task.stateVersion}`});return{worked:true,taskId:task.id,status:result.status,stepType:result.stepType};}
   return Object.freeze({workerId,runOnce});
 }
+
+export async function runPersistentWorkerLoop({worker,intervalMs=5000,delay=ms=>new Promise(resolve=>setTimeout(resolve,ms)),shouldStop=()=>false,onState=()=>{},maxIterations=Infinity}={}){
+  if(!worker?.runOnce)throw new Error("Persistent Worker instance is required.");const interval=Math.max(1000,Math.min(60000,Number(intervalMs)||5000));let iterations=0;
+  while(!shouldStop()&&iterations<maxIterations){iterations+=1;try{const result=await worker.runOnce();onState({state:result.worked?"worked":"idle",taskId:result.taskId||null,status:result.status||null,iterations});}catch(error){onState({state:"retrying",code:error.code||"unexpected_error",iterations});}if(!shouldStop()&&iterations<maxIterations)await delay(interval);}
+  return{stopped:true,iterations};
+}
