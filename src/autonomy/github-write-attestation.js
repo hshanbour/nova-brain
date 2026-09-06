@@ -9,6 +9,7 @@ export const LIVE_PUSH_ATTESTATION=Object.freeze({
   deploymentId:"dpl_9G7kQu2oDGMQMiDCtKdrmNZo7XRP",
   deploymentUrl:"nova-test-project-8rvjrq8xl-hamodehshanbour-6196.vercel.app",
 });
+export const REQUIRED_BLOCKER_SHA="1b8dd3f9f900801c0f3ffff1ae399421c0d1772b";
 const COMPLETED=["1:inspect_repo","2:apply_patch","3:run_focused_tests","4:run_full_tests","5:inspect_diff","6:commit"];
 const exact=(value,expected,code)=>{if(value!==expected)throw new AttestationError(code,"Attestation binding does not match.");};
 const fingerprint=value=>createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -31,7 +32,10 @@ export function createGithubWriteAttestation({storage,ownerId,verifyRemote,verif
     if(approval.runId!==task.id||approval.tool!=="git_push")throw new AttestationError("approval_action_mismatch","Approval action does not match.");
     exact(approval.arguments?.branch,input.branch,"approval_branch_mismatch");exact(approval.arguments?.commitSha,input.sha,"approval_sha_mismatch");
     if(task.approvalState?.approvalId!==input.approvalId||task.approvalState?.approved!==true)throw new AttestationError("approval_state_mismatch","Task approval state does not match.");
-    const remote=await verifyRemote(input);exact(remote?.sha,input.sha,"remote_sha_mismatch");
+    const remote=await verifyRemote({...input,requiredAncestors:[input.sha,REQUIRED_BLOCKER_SHA]});
+    if(!/^[a-f0-9]{40}$/.test(remote?.currentTip||""))throw new AttestationError("remote_tip_invalid","Current feature tip could not be verified.");
+    if(remote?.ancestors?.[input.sha]!==true)throw new AttestationError("acceptance_ancestry_mismatch","Acceptance SHA is not an exact ancestor of the current tip.");
+    if(remote?.ancestors?.[REQUIRED_BLOCKER_SHA]!==true)throw new AttestationError("blocker_ancestry_mismatch","Blocker-fix SHA is not an exact ancestor of the current tip.");
     const deployment=await verifyDeployment(input);
     if(deployment?.target==="production")throw new AttestationError("production_target_forbidden","Production cannot be attached.",403);
     exact(deployment?.id,input.deploymentId,"deployment_mismatch");exact(deployment?.url,input.deploymentUrl,"deployment_url_mismatch");exact(deployment?.sha,input.sha,"deployment_sha_mismatch");exact(deployment?.branch,input.branch,"deployment_branch_mismatch");

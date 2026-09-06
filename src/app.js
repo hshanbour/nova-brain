@@ -88,10 +88,13 @@ export function createApp({
   const githubWriteAttestation = createGithubWriteAttestation({
     storage,
     ownerId: OWNER_ID,
-    verifyRemote: async ({repository,branch}) => {
-      const response=await fetch(`https://api.github.com/repos/${repository}/commits/${encodeURIComponent(branch)}`,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"}});
+    verifyRemote: async ({repository,branch,requiredAncestors}) => {
+      const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"};
+      const response=await fetch(`https://api.github.com/repos/${repository}/commits/${encodeURIComponent(branch)}`,{headers});
       if(!response.ok)throw new Error("Remote branch verification failed.");
-      return{sha:(await response.json()).sha};
+      const currentTip=(await response.json()).sha,ancestors={};
+      for(const required of requiredAncestors){const compared=await fetch(`https://api.github.com/repos/${repository}/compare/${required}...${currentTip}`,{headers});if(!compared.ok)throw new Error("Remote ancestry verification failed.");const value=await compared.json();ancestors[required]=["ahead","identical"].includes(value.status)&&value.merge_base_commit?.sha===required;}
+      return{currentTip,ancestors};
     },
     verifyDeployment: async ({deploymentId}) => {
       const response=await fetch(`https://api.vercel.com/v13/deployments/${encodeURIComponent(deploymentId)}`,{headers:{Authorization:`Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN||""}`}});
