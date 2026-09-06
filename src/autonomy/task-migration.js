@@ -74,8 +74,11 @@ export function createTaskMigrationService({
         "task_state_mismatch",
         "Task state cannot be migrated.",
       );
-    if(task.status==="failed"&&task.errorCode!=="invalid_handoff_result")
-      throw new TaskMigrationError("task_state_mismatch","Only the bounded handoff protocol failure may be resumed by this migration.");
+    if (task.status === "failed" && !isRecoverableHandoffFailure(task))
+      throw new TaskMigrationError(
+        "task_state_mismatch",
+        "Only a bounded handoff protocol failure or the failed full-suite continuation step may be resumed by this migration.",
+      );
     if (task.leaseToken && new Date(task.leaseExpiresAt || 0) > clock())
       throw new TaskMigrationError(
         "active_lease_conflict",
@@ -117,6 +120,18 @@ export function createTaskMigrationService({
     return { task: sanitise(migrated), idempotent: false };
   }
   return Object.freeze({ inspect, migrate, planVersion: PLAN_VERSION });
+}
+function isRecoverableHandoffFailure(task) {
+  if (task.errorCode === "invalid_handoff_result") return true;
+  const completed = task.checkpoint?.completedSteps || [];
+  return (
+    task.errorCode === "test_failed" &&
+    task.currentStep === 3 &&
+    task.metadata?.steps?.[task.currentStep]?.type === "run_full_tests" &&
+    ["1:inspect_repo", "2:apply_patch", "3:run_focused_tests"].every((step) =>
+      completed.includes(step),
+    )
+  );
 }
 function validate(input, branch) {
   if (!input || typeof input !== "object" || Array.isArray(input))
