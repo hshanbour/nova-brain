@@ -156,6 +156,7 @@ export function createApi({
   githubWriteAttestation,
   postAttestationRecovery,
   selfDevelopment,
+  selfDevelopmentExpiryRecovery,
   voiceBenchmark,
   voiceService,
   speakerIdentity,
@@ -913,6 +914,8 @@ export function createApi({
         if(selfDevelopment&&selfDevelopmentCommitSupersession&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.supersedeCommit(decodeURIComponent(selfDevelopmentCommitSupersession[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         const selfDevelopmentDeliveryAttestation=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/attest-delivery$/);
         if(selfDevelopment&&selfDevelopmentDeliveryAttestation&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.attestDelivery(decodeURIComponent(selfDevelopmentDeliveryAttestation[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
+        const selfDevelopmentExpiryMatch=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-post-attestation-expiry$/);
+        if(selfDevelopmentExpiryRecovery&&selfDevelopmentExpiryMatch&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);sendJson(response,200,await selfDevelopmentExpiryRecovery.recover({...input,taskId:decodeURIComponent(selfDevelopmentExpiryMatch[1])}));return;}
         if (
           workerRuntime &&
           request.method === "GET" &&
