@@ -799,6 +799,15 @@ export function createPostgresStorage({ connectionString }) {
       ).map(autonomyTaskRow);
     },
     async updateAutonomyTask(id, ownerId, patch, expectedVersion) {
+      if (
+        patch.maxSteps !== undefined &&
+        (!Number.isInteger(patch.maxSteps) ||
+          patch.maxSteps < 1 ||
+          patch.maxSteps > 100)
+      )
+        throw Object.assign(new Error("A bounded integer maxSteps is required."), {
+          code: "invalid_max_steps",
+        });
       const fields = {
         status: "status",
         currentPhase: "current_phase",
@@ -818,6 +827,7 @@ export function createPostgresStorage({ connectionString }) {
         repairIteration: "repair_iteration",
         startedAt: "started_at",
         completedAt: "completed_at",
+        maxSteps: "max_steps",
       };
       const entries = Object.entries(patch).filter(([key]) => fields[key]);
       if (!entries.length) return this.getAutonomyTask(id, ownerId);
@@ -828,6 +838,8 @@ export function createPostgresStorage({ connectionString }) {
             ? JSON.stringify(value)
             : value,
         );
+        if (key === "maxSteps")
+          return `${fields[key]}=GREATEST(${fields[key]},$${i + 3}::int)`;
         return `${fields[key]}=$${i + 3}${["checkpoint", "approvalState", "metadata"].includes(key) ? "::jsonb" : ""}`;
       });
       params.push(expectedVersion??null);

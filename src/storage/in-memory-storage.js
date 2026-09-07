@@ -532,9 +532,21 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async updateAutonomyTask(id, ownerId, patch, expectedVersion) {
       const current = autonomyTasks.get(id);
       if (!current || current.ownerId !== ownerId || (expectedVersion!==undefined&&current.stateVersion!==expectedVersion)) return null;
+      if (
+        patch.maxSteps !== undefined &&
+        (!Number.isInteger(patch.maxSteps) ||
+          patch.maxSteps < 1 ||
+          patch.maxSteps > 100)
+      )
+        throw Object.assign(new Error("A bounded integer maxSteps is required."), {
+          code: "invalid_max_steps",
+        });
       const updated = {
         ...current,
         ...copy(patch),
+        ...(patch.maxSteps === undefined
+          ? {}
+          : { maxSteps: Math.max(current.maxSteps, patch.maxSteps) }),
         id,
         ownerId,
         createdAt: current.createdAt,

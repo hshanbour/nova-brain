@@ -1594,6 +1594,34 @@ test(`post-patch create-over-existing recovery preserves ${algorithm} evidence a
   const duplicate = await service.recoverCreateConflict(current.id, payload);
   assert.equal(duplicate.idempotent, true);
   assert.equal(duplicate.task.stateVersion, result.task.stateVersion);
+  const failed = await f.storage.updateAutonomyTask(
+    current.id,
+    OWNER,
+    {
+      status: "failed",
+      errorCode: "max_steps_reached",
+      currentPhase: "create_conflict_evidence_read",
+    },
+    result.task.stateVersion,
+  );
+  const budget = await service.recoverCreateConflictBudget(current.id, {
+    expectedVersion: failed.stateVersion,
+  });
+  assert.equal(budget.task.id, current.id);
+  assert.equal(budget.task.currentStep, failed.currentStep);
+  assert.ok(budget.maxSteps > failed.currentStep);
+  assert.equal(budget.task.maxSteps, budget.maxSteps);
+  assert.equal(budget.task.status, "queued");
+  assert.equal(budget.task.metadata.autoDispatch, true);
+  assert.equal(
+    budget.task.metadata.createConflictRecoveryHistory.length,
+    result.task.metadata.createConflictRecoveryHistory.length,
+  );
+  const duplicateBudget = await service.recoverCreateConflictBudget(current.id, {
+    expectedVersion: failed.stateVersion,
+  });
+  assert.equal(duplicateBudget.idempotent, true);
+  assert.equal(duplicateBudget.task.stateVersion, budget.task.stateVersion);
 });
 test("create-conflict recovery rejects wrong version missing evidence and missing tasks", async () => {
   const f = await fixture(),

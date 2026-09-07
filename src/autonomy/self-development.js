@@ -1544,6 +1544,131 @@ export function createSelfDevelopmentService({
       pathState: { exists: true, existsInCommit: true },
     };
   }
+  async function recoverCreateConflictBudget(taskId, input) {
+    if (
+      !input ||
+      Object.keys(input).some((key) => key !== "expectedVersion") ||
+      !Number.isInteger(input.expectedVersion)
+    )
+      throw new SelfDevelopmentError(
+        "create_conflict_budget_recovery_invalid",
+        "An exact state version is required.",
+        400,
+      );
+    const current = await runtime.get(taskId);
+    if (!current || current.taskType !== "self_development")
+      throw new SelfDevelopmentError(
+        "task_not_found",
+        "Self-development task not found.",
+        404,
+      );
+    const priorBudgetRecovery =
+      current.metadata?.createConflictBudgetRecoveryHistory?.find(
+        (entry) => entry.fromStateVersion === input.expectedVersion,
+      );
+    if (priorBudgetRecovery)
+      return { task: current, idempotent: true, maxSteps: current.maxSteps };
+    if (current.stateVersion !== input.expectedVersion)
+      throw new SelfDevelopmentError(
+        "version_conflict",
+        "Task changed before recovery-budget repair.",
+      );
+    const recovery = current.metadata?.createConflictRecoveryHistory?.at(-1),
+      steps = await runtime.steps(current.id),
+      approvals = await storage.listApprovals(ownerId, { limit: 100 }),
+      postRecoveryExecution = steps.some((step) => {
+        const index = Number.parseInt(step.stepId, 10);
+        return Number.isInteger(index) && index > current.currentStep;
+      }),
+      delivery =
+        steps.some((step) =>
+          ["commit", "review_commit", "push", "deploy_preview"].includes(
+            step.stepType,
+          ),
+        ) ||
+        current.currentCommit !== current.startingCommit ||
+        current.approvalState ||
+        current.metadata?.lastDeploymentId ||
+        current.metadata?.selfDevelopmentDeliveryAttestation ||
+        approvals.some((approval) => approval.runId === current.id);
+    if (
+      current.status !== "failed" ||
+      current.errorCode !== "max_steps_reached" ||
+      current.currentPhase !== "create_conflict_evidence_read" ||
+      !recovery ||
+      recovery.recoveryClass !== "post_patch_create_over_existing" ||
+      postRecoveryExecution ||
+      delivery ||
+      current.leaseOwner ||
+      current.leaseToken ||
+      current.leaseExpiresAt
+    )
+      throw new SelfDevelopmentError(
+        "create_conflict_budget_recovery_precondition_failed",
+        "Only the exact unexecuted post-create-conflict budget failure may be recovered.",
+      );
+    const repairLimit = Math.max(
+        1,
+        Math.min(3, current.metadata?.maxRepairIterations || 2),
+      ),
+      planLength = current.metadata.steps.length,
+      maxSteps = Math.min(100, planLength + repairLimit * 6);
+    if (maxSteps <= current.currentStep)
+      throw new SelfDevelopmentError(
+        "create_conflict_budget_exhausted",
+        "The bounded recovery plan cannot fit within the safe step limit.",
+      );
+    const now = clock().toISOString(),
+      record = {
+        recoveryClass: "post_create_conflict_max_steps_reached",
+        fromStateVersion: current.stateVersion,
+        currentStep: current.currentStep,
+        priorMaxSteps: current.maxSteps,
+        planLength,
+        repairLimit,
+        maxSteps,
+        recoveredAt: now,
+      },
+      updated = await storage.updateAutonomyTask(
+        current.id,
+        ownerId,
+        {
+          status: "queued",
+          maxSteps,
+          nextRunAt: now,
+          completedAt: null,
+          errorCode: null,
+          blockedReason: null,
+          retryCount: 0,
+          metadata: {
+            ...current.metadata,
+            requiredCapability: "repo_read_remote",
+            autoDispatch: true,
+            createConflictBudgetRecoveryHistory: [
+              ...(current.metadata.createConflictBudgetRecoveryHistory || []),
+              record,
+            ],
+          },
+        },
+        current.stateVersion,
+      );
+    if (!updated)
+      throw new SelfDevelopmentError(
+        "version_conflict",
+        "Task changed during recovery-budget repair.",
+      );
+    await storage.appendActivity({
+      ownerId,
+      projectId: current.projectId,
+      runId: current.id,
+      action: "self_development_create_conflict_budget_recovered",
+      status: "queued",
+      summary:
+        "Persisted a bounded step budget for the pending create-conflict continuation.",
+      metadata: record,
+    });
+    return { task: updated, idempotent: false, maxSteps };
+  }
   async function recoverReview(taskId, input) {
     const current = await runtime.get(taskId);
     if (!current || current.taskType !== "self_development")
@@ -2153,6 +2278,7 @@ export function createSelfDevelopmentService({
     recoverImplementationPlan,
     recoverFocusedTestEvidence,
     recoverCreateConflict,
+    recoverCreateConflictBudget,
     recoverReview,
     supersedeCommit,
     attestDelivery,

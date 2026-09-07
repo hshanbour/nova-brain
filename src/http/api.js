@@ -1057,6 +1057,28 @@ export function createApi({
           );
           return;
         }
+        const selfDevelopmentCreateConflictBudgetRecovery = pathname.match(
+          /^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-create-conflict-budget$/,
+        );
+        if (
+          selfDevelopment &&
+          selfDevelopmentCreateConflictBudgetRecovery &&
+          request.method === "POST"
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await selfDevelopment.recoverCreateConflictBudget(
+              decodeURIComponent(
+                selfDevelopmentCreateConflictBudgetRecovery[1],
+              ),
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
+        }
         const selfDevelopmentCommitSupersession = pathname.match(
           /^\/api\/admin\/self-development\/tasks\/([^/]+)\/supersede-commit$/,
         );
