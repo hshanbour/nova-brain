@@ -438,6 +438,7 @@ export function createWorkerRuntime({
         projectId: task.projectId,
         approvalId: task.approvalState?.approvalId,
       });
+      if(type==="plan_implementation"&&result?.evidenceExpansion){await completeEvidenceExpansion(task,step,plan,result);return{claimed:true,status:"queued",stepType:type,result:redact(result)};}
       await complete(task, step, result, "queued", iso(clock));
       return {
         claimed: true,
@@ -513,6 +514,7 @@ export function createWorkerRuntime({
       if (locked) await storage.releaseAutonomyLocks(task.id, task.leaseToken);
     }
   }
+  async function completeEvidenceExpansion(task,step,plan,result){const expansion=result.evidenceExpansion,paths=[...new Set(expansion.paths||[])],currentPlan=task.metadata.steps[task.currentStep],inserted=paths.map((path,index)=>({type:"read_files",capability:"repo_read_remote",input:{tool:"repo_read",arguments:{path,startLine:1,endLine:1000}},expectedOutput:`Complete contents of ${path}`,successCondition:"Focused test evidence is read before execution",retryClassification:"safe_read",approvalRequired:false,idempotencyIdentity:`self-development:evidence-expansion:${expansion.attempt}:${index}:${fingerprint(task,path)}`})),replan={...currentPlan,input:{...currentPlan.input,arguments:{...currentPlan.input.arguments,candidatePaths:expansion.candidatePaths}}},metadata={...task.metadata,steps:[...task.metadata.steps.slice(0,task.currentStep+1),...inserted,replan,...task.metadata.steps.slice(task.currentStep+1)],requiredCapability:"repo_read_remote",implementationEvidenceExpansionHistory:[...(task.metadata.implementationEvidenceExpansionHistory||[]),{code:expansion.code,category:expansion.category,attempt:expansion.attempt,pathHashes:expansion.pathHashes,requestedAt:iso(clock)}]};await storage.updateAutonomyStep(task.id,step.stepId,{status:"completed",result:redact({ok:true,evidenceExpansion:{code:expansion.code,category:expansion.category,attempt:expansion.attempt,pathHashes:expansion.pathHashes}}),completedAt:iso(clock)});await storage.updateAutonomyTask(task.id,ownerId,{status:"queued",currentStep:task.currentStep+1,currentPhase:"evidence_expansion",nextRunAt:iso(clock),checkpoint:{...task.checkpoint,completedSteps:[...(task.checkpoint?.completedSteps||[]),step.stepId],pendingStep:null,latestResult:redact({evidenceExpansion:{code:expansion.code,attempt:expansion.attempt,pathHashes:expansion.pathHashes}})},metadata,blockedReason:null,errorCode:null});await activity(task,"self_development_evidence_expansion_scheduled","queued","Bounded focused-test evidence reads scheduled before replanning.",{stepId:step.stepId,category:expansion.category,attempt:expansion.attempt,pathHashes:expansion.pathHashes,fileCount:paths.length});}
   async function complete(task, step, result, status, nextRunAt) {
     const completed = [...(task.checkpoint?.completedSteps || []), step.stepId];
     await storage.updateAutonomyStep(task.id, step.stepId, {
