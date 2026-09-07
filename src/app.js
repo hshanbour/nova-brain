@@ -106,6 +106,11 @@ export function createApp({
       for(const required of requiredAncestors){const compared=await fetch(`https://api.github.com/repos/${repository}/compare/${required}...${currentTip}`,{headers});if(!compared.ok)throw new Error("Remote ancestry verification failed.");const value=await compared.json();ancestors[required]=["ahead","identical"].includes(value.status)&&value.merge_base_commit?.sha===required;}
       return{currentTip,ancestors};
     };
+  const compareRemoteEvidence=async ({repository,paths,oldCommit,newCommit})=>{
+    const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
+    for(const path of paths){const encoded=path.split("/").map(encodeURIComponent).join("/"),load=async ref=>{const response=await fetch(`https://api.github.com/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,{headers});if(!response.ok)throw new Error("Remote evidence verification failed.");return(await response.json()).sha;};const [oldSha,newSha]=await Promise.all([load(oldCommit),load(newCommit)]);blobs[path]={oldSha,newSha,equivalent:oldSha===newSha};}
+    return blobs;
+  };
   const githubWriteAttestation = createGithubWriteAttestation({
     storage,
     ownerId: OWNER_ID,
@@ -119,7 +124,7 @@ export function createApp({
   registerWorkerTools(toolRegistry, { runtime: workerRuntime, taskMigration });
   const implementationPlanner=createSelfDevelopmentImplementationPlanner({modelProvider,storage,ownerId:OWNER_ID,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
   toolRegistry.register({name:"self_development_plan_implementation",description:"Generate one evidence-bound structured implementation plan for the exact durable Self-Development task.",category:"autonomy",capability:"reasoning",riskLevel:"READ_ONLY",available:true,configurationStatus:"ready",inputSchema:{type:"object",properties:{taskId:{type:"string"},candidatePaths:{type:"array"},currentCommit:{type:"string"}},required:["taskId","candidatePaths","currentCommit"],additionalProperties:false},execute:input=>implementationPlanner.generate(input)});
-  const selfDevelopment=createSelfDevelopmentService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,currentCommit:environment.VERCEL_GIT_COMMIT_SHA,verifyRemote,verifyDeployment,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
+  const selfDevelopment=createSelfDevelopmentService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,currentCommit:environment.VERCEL_GIT_COMMIT_SHA,verifyRemote,compareRemoteEvidence,verifyDeployment,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
   const selfDevelopmentExpiryRecovery=createSelfDevelopmentExpiryRecovery({storage,ownerId:OWNER_ID,verifyDeployment});
   registerSelfDevelopmentTools(toolRegistry,{service:selfDevelopment});
   const speakerAssertions = createSpeakerAssertions({
