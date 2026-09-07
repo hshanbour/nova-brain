@@ -1027,6 +1027,10 @@ export function createApi({
           /^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-stale-base-patch-conflict$/,
         );
         const selfDevelopmentHandsContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-commit-mismatch$/);
+        const selfDevelopmentRepositoryContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-repository-context$/);
+        if(selfDevelopment&&selfDevelopmentRepositoryContextRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverRepositoryContextFailure(decodeURIComponent(selfDevelopmentRepositoryContextRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
+        }
         if(selfDevelopment&&selfDevelopmentHandsContextRecovery&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverHandsCommitMismatch(decodeURIComponent(selfDevelopmentHandsContextRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
         }

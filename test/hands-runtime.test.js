@@ -25,6 +25,7 @@ async function fixture() {
   await writeFile(join(root, "alpha.js"), "export const alpha = 1;\n", "utf8");
   await writeFile(join(root, "beta.md"), "alpha docs\n", "utf8");
   await run("git", ["init", "-b", BRANCH], { cwd: root });
+  await run("git", ["remote", "add", "origin", "https://github.com/hshanbour/nova-brain.git"], { cwd: root });
   await run("git", ["config", "user.name", "Nova Test"], { cwd: root });
   await run("git", ["config", "user.email", "nova@example.invalid"], {
     cwd: root,

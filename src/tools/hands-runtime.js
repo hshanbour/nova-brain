@@ -773,8 +773,10 @@ export function registerHandsTools(
         if (currentCommit) {
           if (!/^[a-f0-9]{40}$/.test(currentCommit))
             fail("invalid_input", "Invalid bound commit.");
+          const carried=context?.repositoryContext;
+          if(carried&&(carried.version!==1||carried.repository!==repository||carried.branch!==approved()||resolve(carried.root)!==resolve(root)||carried.expectedHead!==currentCommit))fail("repository_context_unproven","Carried repository context does not match the local controlled workspace.",{contextVersion:carried.version,contextSource:carried.source||null,verificationStage:"hands_context_binding",expectedRepository:repository,actualRepository:carried.repository||null,taskCurrentCommit:currentCommit,safeFailureCode:"repository_context_unproven"});
           let repositoryContext;
-          try{repositoryContext=await resolveRepositoryContext({root,expectedRepository:repository,git:(exactRoot,args)=>gitCommand(exactRoot,args,{runner:commandRunner})});}catch(error){fail(error.code||"repository_context_unproven",error.message,error.safeDiagnostics);}
+          try{repositoryContext=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:approved(),expectedHead:currentCommit,requireClean:true,source:carried?.source||"hands_local_reconstruction",git:(exactRoot,args)=>gitCommand(exactRoot,args,{runner:commandRunner})});}catch(error){fail(error.code||"repository_context_unproven",error.message,error.safeDiagnostics);}
           if (repositoryContext.actualHead !== currentCommit)
             fail("commit_mismatch", "Local checkout does not match the task-bound commit.", {...repositoryContext,taskBoundCommit:currentCommit,mismatch:"head"});
           if (!repositoryContext.clean)
