@@ -1020,6 +1020,16 @@ test("planner-format recovery rejects version conflicts and any mutation or appr
   );
   assert.equal(replanned.task.id, f.task.id);
 });
+test("implementation bridge schema recovery appends one bounded replan and is idempotent", async () => {
+  const f=await completedDiscoveryFixture(), planStep={type:"plan_implementation",capability:"reasoning",input:{tool:"self_development_plan_implementation",arguments:{taskId:f.task.id,candidatePaths:candidates(),currentCommit:f.task.currentCommit}},idempotencyIdentity:"plan"}, patchStep={type:"apply_patch",capability:"repo_mutate_local",input:{tool:"repo_apply_patch",arguments:{branch:BRANCH,currentCommit:"$CURRENT_COMMIT",files:"$IMPLEMENTATION_FILES"}},idempotencyIdentity:"patch"}, testStep={type:"run_focused_tests",capability:"test_local",input:{tool:"test_run",arguments:{files:"$IMPLEMENTATION_TESTS"}},idempotencyIdentity:"test"};
+  await f.storage.updateAutonomyTask(f.task.id,OWNER,{maxSteps:6,metadata:{...(await f.runtime.get(f.task.id)).metadata,steps:[planStep,patchStep,testStep],autoDispatch:true}});
+  await f.storage.recordAutonomyStep({taskId:f.task.id,stepId:"1:plan_implementation",stepType:"plan_implementation",capability:"reasoning",operationFingerprint:"valid-plan",status:"completed",result:{implementationPlan:{files:[{path:candidates()[0],operation:"replace",content:"new",expectedContent:"old"}],focusedTests:[{path:candidates()[1],kind:"existing"}]}}});
+  await f.storage.recordAutonomyStep({taskId:f.task.id,stepId:"2:apply_patch",stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:"schema-failure",status:"failed",errorCode:"schema_mismatch",result:{message:"Unknown tool argument: repo_apply_patch.currentCommit"}});
+  const failed=await f.storage.updateAutonomyTask(f.task.id,OWNER,{status:"failed",currentStep:1,currentPhase:"plan_implementation",errorCode:"schema_mismatch",maxSteps:6}), recovered=await f.service.recoverImplementationSchema(f.task.id,{expectedVersion:failed.stateVersion});
+  assert.equal(recovered.task.id,f.task.id);assert.equal(recovered.task.status,"queued");assert.equal(recovered.task.currentStep,3);assert.equal(recovered.task.maxSteps,failed.maxSteps);assert.equal(recovered.task.metadata.steps[3].type,"plan_implementation");assert.equal(recovered.task.metadata.autoDispatch,true);assert.equal(recovered.task.metadata.implementationSchemaRecoveryHistory[0].fieldPath,"repo_apply_patch.currentCommit");
+  const duplicate=await f.service.recoverImplementationSchema(f.task.id,{expectedVersion:failed.stateVersion});assert.equal(duplicate.idempotent,true);assert.equal(duplicate.task.metadata.steps.length,6);
+});
+
 test("focused-test evidence recovery preserves reads and exact same-task auto-dispatch", async () => {
   const f = await completedDiscoveryFixture(),
     replanned = await f.service.replanDiscoveryOnly(f.task.id, f.input);

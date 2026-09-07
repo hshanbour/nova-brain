@@ -1,4 +1,6 @@
 import {createHash} from "node:crypto";
+import {SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION} from "./self-development-implementation-contract.js";
+export {SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION} from "./self-development-implementation-contract.js";
 
 const SHA=/^[a-f0-9]{40}$/;
 const PROTECTED=/(^|\/)(src\/voice|speaker-worker|assets\/(?:voice-(?!input(?:\.|$))|speaker-)|\.github|api\/index\.js|src\/(?:policy|storage|autonomy))(\/|$)|ecapa|elevenlabs|voice-control|production|credential|secret|token/i;
@@ -40,7 +42,7 @@ export function createSelfDevelopmentImplementationPlanner({modelProvider,storag
       if(shape&&seen.has(shape))throw invalid(feedback,shape,attempt+1);if(shape)seen.add(shape);if(attempt===2)throw invalid(feedback,shape,attempt+1);
     }
   }
-  function invalid(issues,shapeHash,attempts){const error=plannerError("implementation_plan_invalid","Nova implementation plan does not match the bounded schema.",issues);error.safeDiagnostics={validationIssues:issues.slice(0,20),outputShapeHash:shapeHash,formatAttempts:attempts};return error;}
+  function invalid(issues,shapeHash,attempts){const error=plannerError("implementation_plan_invalid","Nova implementation plan does not match the bounded schema.",issues);error.safeDiagnostics={validationCode:"implementation_plan_invalid",validationIssues:issues.slice(0,20),outputShapeHash:shapeHash,formatAttempts:attempts,schemaVersion:SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION};return error;}
   async function build(value,{task,steps,candidates,reads,request,evidence,plannerAttempt}){
     const discovered=discoveredPaths(steps),history=task.metadata?.implementationEvidenceExpansionHistory||[],relevantTokens=new Set([...candidates.filter(path=>!path.startsWith("test/")).flatMap(path=>[...pathTokens(path)]),...pathTokens(request.userGoal)]),relevant=path=>[...pathTokens(path)].some(token=>relevantTokens.has(token));
     const files=value.files.map(file=>{const path=safePath(file.path),isNew=file.operation==="create";if(PROTECTED.test(path)||(!isNew&&!candidates.includes(path))||(isNew&&(!TEST_PATH.test(path)||reads.has(path)||!relevant(path))))throw plannerError("implementation_scope_violation","Nova proposed a file outside the evidence-bound scope.",["evidence_bound_path_required"],{proposedPath:path,classification:PROTECTED.test(path)?"protected":isNew&&reads.has(path)?"existing_file":"unrelated",rejectionCode:"evidence_bound_path_required",expansionRound:history.length+1});return{path,operation:file.operation,content:file.content,...(!isNew?{expectedContent:reads.get(path)}:{}),reason:file.reason.slice(0,500),intendedChanges:file.intendedChanges.slice(0,20).map(item=>item.slice(0,300))};});

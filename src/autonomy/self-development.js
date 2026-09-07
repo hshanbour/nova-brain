@@ -1085,6 +1085,27 @@ export function createSelfDevelopmentService({
     });
     return { task: updated, recoveredStepId: failed.stepId };
   }
+  async function recoverImplementationSchema(taskId, input) {
+    if (!input || Object.keys(input).some((key) => key !== "expectedVersion") || !Number.isInteger(input.expectedVersion))
+      throw new SelfDevelopmentError("implementation_schema_recovery_invalid", "An exact task version is required.", 400);
+    const current = await runtime.get(taskId);
+    if (!current || current.taskType !== "self_development")
+      throw new SelfDevelopmentError("task_not_found", "Self-development task not found.", 404);
+    const prior = current.metadata?.implementationSchemaRecoveryHistory?.find((item) => item.previousStateVersion === input.expectedVersion);
+    if (prior && current.status !== "failed") return { task: current, recoveredStepId: prior.failedStepId, idempotent: true };
+    if (current.stateVersion !== input.expectedVersion)
+      throw new SelfDevelopmentError("version_conflict", "Task changed before implementation-schema recovery.");
+    const steps = await runtime.steps(current.id), failedStepId = `${current.currentStep + 1}:apply_patch`, failed = steps.find((step) => step.stepId === failedStepId && step.status === "failed" && step.errorCode === "schema_mismatch"), plannedStepId = `${current.currentStep}:plan_implementation`, planned = steps.find((step) => step.stepId === plannedStepId && step.status === "completed" && step.result?.implementationPlan), approvals = await storage.listApprovals(ownerId, { limit: 100 }), unsafeAfterPlan = steps.some((step) => Number.parseInt(step.stepId, 10) > current.currentStep && ["apply_patch","run_focused_tests","run_full_tests","commit","review_commit","push","deploy_preview"].includes(step.stepType) && step.status === "completed"), schemaMessage = String(failed?.result?.message || ""), planTemplate = current.metadata?.steps?.[current.currentStep - 1], remaining = current.metadata?.steps?.slice(current.currentStep) || [];
+    if (current.status !== "failed" || current.errorCode !== "schema_mismatch" || !failed || !planned || !schemaMessage.includes("repo_apply_patch.currentCommit") || planTemplate?.type !== "plan_implementation" || remaining[0]?.type !== "apply_patch" || unsafeAfterPlan || approvals.some((approval) => approval.runId === current.id) || current.metadata?.lastDeploymentId || current.metadata?.selfDevelopmentDeliveryAttestation)
+      throw new SelfDevelopmentError("implementation_schema_recovery_precondition_failed", "Only the exact pre-mutation implementation bridge schema failure may be recovered.");
+    const continuation = [{...planTemplate}, ...remaining], base = current.metadata.steps.length, nextSteps = continuation.map((step, index) => ({...step, idempotencyIdentity: `${step.idempotencyIdentity || `self-development:${step.type}`}:schema-recovery:${base + index + 1}`})), now = clock().toISOString(), record = {failedStepId: failed.stepId, plannedStepId: planned.stepId, previousStateVersion: current.stateVersion, fieldPath: "repo_apply_patch.currentCommit", expected: "declared string commit binding", received: "string", validationCode: "unsupported_field", schemaVersion: "1", recoveredAt: now};
+    if (base + nextSteps.length > current.maxSteps)
+      throw new SelfDevelopmentError("implementation_schema_recovery_budget_exceeded", "The existing bounded step budget cannot contain schema recovery.");
+    const updated = await storage.updateAutonomyTask(current.id, ownerId, {status:"queued",currentStep:base,currentPhase:"plan_implementation_schema_recovery",nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,retryCount:0,blockedReason:null,metadata:{...current.metadata,steps:[...current.metadata.steps,...nextSteps],requiredCapability:"reasoning",autoDispatch:true,implementationSchemaRecoveryHistory:[...(current.metadata.implementationSchemaRecoveryHistory || []),record]}}, current.stateVersion);
+    if (!updated) throw new SelfDevelopmentError("version_conflict", "Task changed during implementation-schema recovery.");
+    await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_implementation_schema_recovered",status:"queued",summary:"Exact pre-mutation implementation bridge schema failure requeued for canonical replanning.",metadata:{taskId:current.id,failedStepId:failed.stepId,previousStateVersion:current.stateVersion,fieldPath:record.fieldPath,expected:record.expected,received:record.received,validationCode:record.validationCode,schemaVersion:record.schemaVersion}});
+    return { task: updated, recoveredStepId: failed.stepId, idempotent: false };
+  }
   async function recoverFocusedTestEvidence(taskId, input) {
     if (
       !input ||
@@ -2276,6 +2297,7 @@ export function createSelfDevelopmentService({
     repair,
     replanDiscoveryOnly,
     recoverImplementationPlan,
+    recoverImplementationSchema,
     recoverFocusedTestEvidence,
     recoverCreateConflict,
     recoverCreateConflictBudget,

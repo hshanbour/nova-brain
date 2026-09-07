@@ -46,3 +46,9 @@ test("tool registry enforces required, type, and additional-property schemas ser
   await assert.rejects(() => registry.execute("read", { path: "README.md", secret: true }), /Unknown tool argument/);
   assert.deepEqual(await registry.execute("read", { path: "README.md" }), { path: "README.md" });
 });
+
+test("schema failures expose only safe structural diagnostics", async () => {
+  const registry=createToolRegistry();
+  registry.register({name:"bounded",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"],additionalProperties:false},execute:async()=>({ok:true})});
+  await assert.rejects(()=>registry.execute("bounded",{path:"safe",currentCommit:"a".repeat(40)}),error=>error.code==="schema_mismatch"&&error.safeDiagnostics.fieldPath==="bounded.currentCommit"&&error.safeDiagnostics.expected==="declared_property"&&error.safeDiagnostics.received==="string"&&error.safeDiagnostics.validationCode==="unsupported_field");
+});

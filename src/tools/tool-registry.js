@@ -2,11 +2,12 @@ export function createToolRegistry({ policy } = {}) {
   const tools = new Map();
 
   class ToolInputError extends Error {
-    constructor(message) {
+    constructor(message, safeDiagnostics = {}) {
       super(message);
       this.name = "ToolInputError";
       this.code = "schema_mismatch";
       this.statusCode = 400;
+      this.safeDiagnostics = safeDiagnostics;
     }
   }
 
@@ -14,11 +15,11 @@ export function createToolRegistry({ policy } = {}) {
     if (!schema) return;
     const properties = schema.properties || {};
     for (const field of schema.required || []) {
-      if (!(field in input)) throw new ToolInputError(`Missing required tool argument: ${name}.${field}`);
+      if (!(field in input)) throw new ToolInputError(`Missing required tool argument: ${name}.${field}`, {fieldPath:`${name}.${field}`,expected:"required",received:"missing",validationCode:"required_field_missing"});
     }
     if (schema.additionalProperties === false) {
       for (const field of Object.keys(input)) {
-        if (!(field in properties)) throw new ToolInputError(`Unknown tool argument: ${name}.${field}`);
+        if (!(field in properties)) throw new ToolInputError(`Unknown tool argument: ${name}.${field}`, {fieldPath:`${name}.${field}`,expected:"declared_property",received:typeof input[field],validationCode:"unsupported_field"});
       }
     }
     for (const [field, definition] of Object.entries(properties)) {

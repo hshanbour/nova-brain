@@ -6,6 +6,9 @@ import {
   SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA,
 } from "../src/autonomy/self-development-implementation-planner.js";
 import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
+import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA, SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION } from "../src/autonomy/self-development-implementation-contract.js";
+import { createToolRegistry } from "../src/tools/tool-registry.js";
+import { registerHandsTools } from "../src/tools/hands-runtime.js";
 
 const OWNER = "owner",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -132,6 +135,20 @@ test("canonical valid structured output produces the Hands replacement represent
     schema: SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA,
     strict: true,
   });
+});
+test("planner and Hands share the canonical versioned patch bridge contract", () => {
+  const registry=createToolRegistry();registerHandsTools(registry,{root:process.cwd(),environment:{VERCEL:"",NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH}});
+  const patch=registry.list().find((tool)=>tool.name==="repo_apply_patch");
+  assert.equal(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION,"1");
+  assert.deepEqual(patch.inputSchema,SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA);
+  assert.deepEqual(Object.keys(patch.inputSchema.properties).sort(),["branch","currentCommit","files"]);
+});
+test("canonical composer-style plan validates before Hands-compatible mutation", async () => {
+  const output=valid();output.files=[{path:"assets/voice-input.js",operation:"replace",content:"new adapter",reason:"bounded composer dictation",intendedChanges:["preserve editable transcription"]},{path:"test/voice-input.test.js",operation:"replace",content:"new focused tests",reason:"focused evidence",intendedChanges:["cover dictation"]}];output.focusedTests=[{path:"test/voice-input.test.js",kind:"existing"}];output.acceptanceMapping=[{criterion:"Composer dictation stays editable",files:["assets/voice-input.js","test/voice-input.test.js"]}];
+  const f=await fixture([output],{discovered:["assets/voice-input.js","test/voice-input.test.js"],reads:[["assets/voice-input.js","old adapter"],["test/voice-input.test.js","old focused tests"]]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:["assets/voice-input.js","test/voice-input.test.js"],currentCommit:SHA});
+  assert.deepEqual(result.implementationPlan.focusedTests,[{path:"test/voice-input.test.js",kind:"existing"}]);
+  assert.deepEqual(result.implementationPlan.files.map(({path,operation})=>({path,operation})),[{path:"assets/voice-input.js",operation:"replace"},{path:"test/voice-input.test.js",operation:"replace"}]);
+  assert.equal(result.implementationPlan.files.every((file)=>typeof file.expectedContent==="string"),true);
 });
 test("schema-imperfect output receives safe feedback and corrects within the same evidence", async () => {
   const imperfect = {

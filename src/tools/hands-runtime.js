@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { RISK_LEVELS } from "../policy/action-policy.js";
+import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA } from "../autonomy/self-development-implementation-contract.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -745,10 +746,7 @@ export function registerHandsTools(
       autonomous: true,
       available: !remote,
       configurationStatus: remote ? "local_runtime_required" : "ready",
-      inputSchema: schema(
-        { branch: text, currentCommit: text, files: { type: "array" } },
-        ["branch", "files"],
-      ),
+      inputSchema: SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA,
       validate({ branch: requested, files }) {
         if (requested !== approved())
           fail(
