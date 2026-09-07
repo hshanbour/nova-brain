@@ -1,56 +1,801 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {mkdtemp,writeFile,readFile,rm} from "node:fs/promises";
-import {tmpdir} from "node:os";
-import {join} from "node:path";
-import {execFile} from "node:child_process";
-import {promisify} from "node:util";
-import {createToolRegistry} from "../src/tools/tool-registry.js";
-import {registerHandsTools,HandsError} from "../src/tools/hands-runtime.js";
-import {createActionPolicy,ApprovalRequiredError} from "../src/policy/action-policy.js";
-import {createInMemoryStorage} from "../src/storage/in-memory-storage.js";
-import {INITIAL_OWNER_PROFILE,INITIAL_PROJECTS,OWNER_ID} from "../src/identity/initial-context.js";
+import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createToolRegistry } from "../src/tools/tool-registry.js";
+import { registerHandsTools, HandsError } from "../src/tools/hands-runtime.js";
+import {
+  createActionPolicy,
+  ApprovalRequiredError,
+} from "../src/policy/action-policy.js";
+import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
+import {
+  INITIAL_OWNER_PROFILE,
+  INITIAL_PROJECTS,
+  OWNER_ID,
+} from "../src/identity/initial-context.js";
 
-const run=promisify(execFile);const BRANCH="feat/nova-brain-mvp-foundation";
-async function fixture(){const root=await mkdtemp(join(tmpdir(),"nova-hands-"));await writeFile(join(root,"alpha.js"),"export const alpha = 1;\n","utf8");await writeFile(join(root,"beta.md"),"alpha docs\n","utf8");await run("git",["init","-b",BRANCH],{cwd:root});await run("git",["config","user.name","Nova Test"],{cwd:root});await run("git",["config","user.email","nova@example.invalid"],{cwd:root});await run("git",["add","."] ,{cwd:root});await run("git",["commit","-m","initial"],{cwd:root});const storage=createInMemoryStorage();await storage.initialize({owner:INITIAL_OWNER_PROFILE,projects:INITIAL_PROJECTS});const policy=createActionPolicy({storage,ownerId:OWNER_ID,approvedBranch:BRANCH});const registry=createToolRegistry({policy});registerHandsTools(registry,{root,environment:{NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH},storage,ownerId:OWNER_ID});return{root,storage,registry,async close(){await rm(root,{recursive:true,force:true});}};}
+const run = promisify(execFile);
+const BRANCH = "feat/nova-brain-mvp-foundation";
+async function fixture() {
+  const root = await mkdtemp(join(tmpdir(), "nova-hands-"));
+  await writeFile(join(root, "alpha.js"), "export const alpha = 1;\n", "utf8");
+  await writeFile(join(root, "beta.md"), "alpha docs\n", "utf8");
+  await run("git", ["init", "-b", BRANCH], { cwd: root });
+  await run("git", ["config", "user.name", "Nova Test"], { cwd: root });
+  await run("git", ["config", "user.email", "nova@example.invalid"], {
+    cwd: root,
+  });
+  await run("git", ["add", "."], { cwd: root });
+  await run("git", ["commit", "-m", "initial"], { cwd: root });
+  const storage = createInMemoryStorage();
+  await storage.initialize({
+    owner: INITIAL_OWNER_PROFILE,
+    projects: INITIAL_PROJECTS,
+  });
+  const policy = createActionPolicy({
+    storage,
+    ownerId: OWNER_ID,
+    approvedBranch: BRANCH,
+  });
+  const registry = createToolRegistry({ policy });
+  registerHandsTools(registry, {
+    root,
+    environment: { NOVA_BRAIN_DEVELOPMENT_BRANCH: BRANCH },
+    storage,
+    ownerId: OWNER_ID,
+  });
+  return {
+    root,
+    storage,
+    registry,
+    async close() {
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
 
-test("Hands repository discovery read and bounded search return structured matches",async()=>{const f=await fixture();try{const listed=await f.registry.execute("repo_list",{path:".",limit:10});assert.deepEqual(listed.files.sort(),["alpha.js","beta.md"]);assert.equal((await f.registry.execute("repo_read",{path:"alpha.js"})).content,"export const alpha = 1;\n");for(const mode of ["filename","literal","regex","symbol"]){const query=mode==="filename"?"alpha":mode==="regex"?"alpha\\s*=":"alpha";assert.ok((await f.registry.execute("repo_search",{query,mode,limit:10})).count>=1);}}finally{await f.close();}});
+test("Hands repository discovery read and bounded search return structured matches", async () => {
+  const f = await fixture();
+  try {
+    const listed = await f.registry.execute("repo_list", {
+      path: ".",
+      limit: 10,
+    });
+    assert.deepEqual(listed.files.sort(), ["alpha.js", "beta.md"]);
+    assert.equal(
+      (await f.registry.execute("repo_read", { path: "alpha.js" })).content,
+      "export const alpha = 1;\n",
+    );
+    for (const mode of ["filename", "literal", "regex", "symbol"]) {
+      const query =
+        mode === "filename"
+          ? "alpha"
+          : mode === "regex"
+            ? "alpha\\s*="
+            : "alpha";
+      assert.ok(
+        (await f.registry.execute("repo_search", { query, mode, limit: 10 }))
+          .count >= 1,
+      );
+    }
+  } finally {
+    await f.close();
+  }
+});
 
-test("Hands rejects traversal protected paths and invalid regular expressions with stable codes",async()=>{const f=await fixture();try{await assert.rejects(()=>f.registry.execute("repo_read",{path:"../outside"}),e=>e instanceof HandsError&&e.code==="path_traversal");await assert.rejects(()=>f.registry.execute("repo_read",{path:".git/config"}),e=>e.code==="protected_path");await assert.rejects(()=>f.registry.execute("repo_search",{query:"[",mode:"regex"}),e=>e.code==="invalid_regex");}finally{await f.close();}});
+test("Hands rejects traversal protected paths and invalid regular expressions with stable codes", async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(
+      () => f.registry.execute("repo_read", { path: "../outside" }),
+      (e) => e instanceof HandsError && e.code === "path_traversal",
+    );
+    await assert.rejects(
+      () => f.registry.execute("repo_read", { path: ".git/config" }),
+      (e) => e.code === "protected_path",
+    );
+    await assert.rejects(
+      () => f.registry.execute("repo_search", { query: "[", mode: "regex" }),
+      (e) => e.code === "invalid_regex",
+    );
+  } finally {
+    await f.close();
+  }
+});
 
-test("Git status and file-scoped diff expose branch commit and staged state",async()=>{const f=await fixture();try{let status=await f.registry.execute("git_status",{});assert.equal(status.branch,BRANCH);assert.equal(status.clean,true);await writeFile(join(f.root,"alpha.js"),"export const alpha = 2;\n");status=await f.registry.execute("git_status",{});assert.equal(status.clean,false);const diff=await f.registry.execute("repo_diff",{paths:["alpha.js"]});assert.match(diff.diff,/alpha = 2/);}finally{await f.close();}});
-test("durable review includes allowed untracked files deterministically",async()=>{const f=await fixture();try{await writeFile(join(f.root,"new-one.md"),"one\n");await writeFile(join(f.root,"new-two.md"),"two\n");const review=await f.registry.execute("repo_diff",{paths:["new-two.md","new-one.md"]});assert.deepEqual(review.reviewedChangeSet.entries.map(x=>x.path),["new-one.md","new-two.md"]);assert.match(review.diff,/new file mode/);assert.match(review.diff,/\+one/);}finally{await f.close();}});
-test("tracked deletion and rename are represented by bounded review",async()=>{const f=await fixture();try{await rm(join(f.root,"beta.md"));await run("git",["mv","alpha.js","renamed.js"],{cwd:f.root});const review=await f.registry.execute("repo_diff",{paths:["alpha.js","renamed.js","beta.md"]});assert.ok(review.reviewedChangeSet.entries.some(x=>x.status==="D"));assert.match(review.diff,/rename from alpha\.js|deleted file mode/);}finally{await f.close();}});
-test("new binary files fail the bounded text review",async()=>{const f=await fixture();try{await writeFile(join(f.root,"image.bin"),Buffer.from([0,1,2]));await assert.rejects(()=>f.registry.execute("repo_diff",{paths:["image.bin"]}),e=>e.code==="unsupported_review_file");}finally{await f.close();}});
-test("review hash binds the exact commit file set and rejects unexpected files",async()=>{const f=await fixture();try{await writeFile(join(f.root,"allowed.md"),"allowed\n");await writeFile(join(f.root,"unexpected.md"),"unexpected\n");const review=await f.registry.execute("repo_diff",{paths:["allowed.md"]});await assert.rejects(()=>f.registry.execute("git_commit",{branch:BRANCH,message:"bad",paths:["allowed.md","unexpected.md"],reviewedChangeSet:review.reviewedChangeSet}),e=>e.code==="review_mismatch");const committed=await f.registry.execute("git_commit",{branch:BRANCH,message:"reviewed",paths:["allowed.md"],reviewedChangeSet:review.reviewedChangeSet});assert.deepEqual(committed.files,["allowed.md"]);}finally{await f.close();}});
-test("commit review rejects unreviewed files and accepts the exact immutable commit",async()=>{const f=await fixture();try{await writeFile(join(f.root,"one.md"),"one\n");await run("git",["add","one.md"],{cwd:f.root});await run("git",["commit","-m","one"],{cwd:f.root});const sha=(await run("git",["rev-parse","HEAD"],{cwd:f.root})).stdout.trim();await assert.rejects(()=>f.registry.execute("repo_review_commit",{commitSha:sha,paths:["alpha.js"]}),e=>e.code==="unreviewed_commit_file");const review=await f.registry.execute("repo_review_commit",{commitSha:sha,paths:["one.md"]});assert.equal(review.commitSha,sha);assert.match(review.diff,/\+one/);}finally{await f.close();}});
+test("Git status and file-scoped diff expose branch commit and staged state", async () => {
+  const f = await fixture();
+  try {
+    let status = await f.registry.execute("git_status", {});
+    assert.equal(status.branch, BRANCH);
+    assert.equal(status.clean, true);
+    await writeFile(join(f.root, "alpha.js"), "export const alpha = 2;\n");
+    status = await f.registry.execute("git_status", {});
+    assert.equal(status.clean, false);
+    const diff = await f.registry.execute("repo_diff", { paths: ["alpha.js"] });
+    assert.match(diff.diff, /alpha = 2/);
+  } finally {
+    await f.close();
+  }
+});
+test("durable review includes allowed untracked files deterministically", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(join(f.root, "new-one.md"), "one\n");
+    await writeFile(join(f.root, "new-two.md"), "two\n");
+    const review = await f.registry.execute("repo_diff", {
+      paths: ["new-two.md", "new-one.md"],
+    });
+    assert.deepEqual(
+      review.reviewedChangeSet.entries.map((x) => x.path),
+      ["new-one.md", "new-two.md"],
+    );
+    assert.match(review.diff, /new file mode/);
+    assert.match(review.diff, /\+one/);
+  } finally {
+    await f.close();
+  }
+});
+test("tracked deletion and rename are represented by bounded review", async () => {
+  const f = await fixture();
+  try {
+    await rm(join(f.root, "beta.md"));
+    await run("git", ["mv", "alpha.js", "renamed.js"], { cwd: f.root });
+    const review = await f.registry.execute("repo_diff", {
+      paths: ["alpha.js", "renamed.js", "beta.md"],
+    });
+    assert.ok(review.reviewedChangeSet.entries.some((x) => x.status === "D"));
+    assert.match(review.diff, /rename from alpha\.js|deleted file mode/);
+  } finally {
+    await f.close();
+  }
+});
+test("new binary files fail the bounded text review", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(join(f.root, "image.bin"), Buffer.from([0, 1, 2]));
+    await assert.rejects(
+      () => f.registry.execute("repo_diff", { paths: ["image.bin"] }),
+      (e) => e.code === "unsupported_review_file",
+    );
+  } finally {
+    await f.close();
+  }
+});
+test("review hash binds the exact commit file set and rejects unexpected files", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(join(f.root, "allowed.md"), "allowed\n");
+    await writeFile(join(f.root, "unexpected.md"), "unexpected\n");
+    const review = await f.registry.execute("repo_diff", {
+      paths: ["allowed.md"],
+    });
+    await assert.rejects(
+      () =>
+        f.registry.execute("git_commit", {
+          branch: BRANCH,
+          message: "bad",
+          paths: ["allowed.md", "unexpected.md"],
+          reviewedChangeSet: review.reviewedChangeSet,
+        }),
+      (e) => e.code === "review_mismatch",
+    );
+    const committed = await f.registry.execute("git_commit", {
+      branch: BRANCH,
+      message: "reviewed",
+      paths: ["allowed.md"],
+      reviewedChangeSet: review.reviewedChangeSet,
+    });
+    assert.deepEqual(committed.files, ["allowed.md"]);
+  } finally {
+    await f.close();
+  }
+});
+test("commit review rejects unreviewed files and accepts the exact immutable commit", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(join(f.root, "one.md"), "one\n");
+    await run("git", ["add", "one.md"], { cwd: f.root });
+    await run("git", ["commit", "-m", "one"], { cwd: f.root });
+    const sha = (
+      await run("git", ["rev-parse", "HEAD"], { cwd: f.root })
+    ).stdout.trim();
+    await assert.rejects(
+      () =>
+        f.registry.execute("repo_review_commit", {
+          commitSha: sha,
+          paths: ["alpha.js"],
+        }),
+      (e) => e.code === "unreviewed_commit_file",
+    );
+    const review = await f.registry.execute("repo_review_commit", {
+      commitSha: sha,
+      paths: ["one.md"],
+    });
+    assert.equal(review.commitSha, sha);
+    assert.match(review.diff, /\+one/);
+  } finally {
+    await f.close();
+  }
+});
 
-test("controlled Git subprocesses trust only the exact configured repository path",async()=>{const calls=[],root=process.cwd(),registry=createToolRegistry();registerHandsTools(registry,{root,environment:{NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH},commandRunner:async(file,args)=>{calls.push({file,args});return{stdout:args.includes("--show-current")?`${BRANCH}\n`:args.includes("rev-parse")?`${"a".repeat(40)}\n`:"",stderr:""};}});await registry.execute("git_status",{});await registry.execute("repo_diff",{paths:["README.md"]});assert.ok(calls.every(call=>call.file==="git"&&call.args[0]==="-c"&&call.args[1]===`safe.directory=${root.replaceAll("\\","/")}`));});
+test("controlled Git subprocesses trust only the exact configured repository path", async () => {
+  const calls = [],
+    root = process.cwd(),
+    registry = createToolRegistry();
+  registerHandsTools(registry, {
+    root,
+    environment: { NOVA_BRAIN_DEVELOPMENT_BRANCH: BRANCH },
+    commandRunner: async (file, args) => {
+      calls.push({ file, args });
+      return {
+        stdout: args.includes("--show-current")
+          ? `${BRANCH}\n`
+          : args.includes("rev-parse")
+            ? `${"a".repeat(40)}\n`
+            : "",
+        stderr: "",
+      };
+    },
+  });
+  await registry.execute("git_status", {});
+  await registry.execute("repo_diff", { paths: ["README.md"] });
+  assert.ok(
+    calls.every(
+      (call) =>
+        call.file === "git" &&
+        call.args[0] === "-c" &&
+        call.args[1] === `safe.directory=${root.replaceAll("\\", "/")}`,
+    ),
+  );
+});
 
-test("multi-file replacement validates every precondition before changing any file",async()=>{const f=await fixture();try{const result=await f.registry.execute("repo_apply_patch",{branch:BRANCH,files:[{path:"alpha.js",expectedContent:"export const alpha = 1;\n",content:"export const alpha = 2;\n"},{path:"beta.md",expectedContent:"alpha docs\n",content:"beta docs\n"}]});assert.deepEqual(result.files,["alpha.js","beta.md"]);assert.match(await readFile(join(f.root,"alpha.js"),"utf8"),/2/);await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,files:[{path:"alpha.js",expectedContent:"stale",content:"bad"},{path:"beta.md",content:"bad"}]}),e=>e.code==="patch_conflict");assert.equal(await readFile(join(f.root,"beta.md"),"utf8"),"beta docs\n");}finally{await f.close();}});
+test("multi-file replacement validates every precondition before changing any file", async () => {
+  const f = await fixture();
+  try {
+    const result = await f.registry.execute("repo_apply_patch", {
+      branch: BRANCH,
+      files: [
+        {
+          path: "alpha.js",
+          expectedContent: "export const alpha = 1;\n",
+          content: "export const alpha = 2;\n",
+        },
+        {
+          path: "beta.md",
+          expectedContent: "alpha docs\n",
+          content: "beta docs\n",
+        },
+      ],
+    });
+    assert.deepEqual(result.files, ["alpha.js", "beta.md"]);
+    assert.match(await readFile(join(f.root, "alpha.js"), "utf8"), /2/);
+    await assert.rejects(
+      () =>
+        f.registry.execute("repo_apply_patch", {
+          branch: BRANCH,
+          files: [
+            { path: "alpha.js", expectedContent: "stale", content: "bad" },
+            { path: "beta.md", content: "bad" },
+          ],
+        }),
+      (e) => e.code === "patch_conflict",
+    );
+    assert.equal(
+      await readFile(join(f.root, "beta.md"), "utf8"),
+      "beta docs\n",
+    );
+  } finally {
+    await f.close();
+  }
+});
 
-test("protected branches are refused before patch or commit",async()=>{const f=await fixture();try{await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:"main",files:[{path:"alpha.js",content:"bad"}]}),e=>e.code==="branch_not_allowed");await assert.rejects(()=>f.registry.execute("git_commit",{branch:"main",message:"bad",paths:["alpha.js"]}),e=>e.code==="branch_not_allowed");}finally{await f.close();}});
+test("Hands independently rejects create over tracked or untracked existing files", async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(() => f.registry.execute("repo_apply_patch", {branch:BRANCH,files:[{path:"alpha.js",operation:"create",content:"overwrite"}]}), error => error.code === "operation_conflict");
+    await writeFile(join(f.root,"new.test.js"),"untracked\n");
+    await assert.rejects(() => f.registry.execute("repo_apply_patch", {branch:BRANCH,files:[{path:"new.test.js",operation:"create",content:"overwrite"}]}), error => error.code === "operation_conflict");
+    assert.equal(await readFile(join(f.root,"new.test.js"),"utf8"),"untracked\n");
+  } finally { await f.close(); }
+});
 
-test("focused and full test tools return exit codes failures and bounded timeout errors",async()=>{const storage=createInMemoryStorage();await storage.initialize({owner:INITIAL_OWNER_PROFILE,projects:INITIAL_PROJECTS});let behavior="pass",lastCommand;const runner=async(file,args)=>{lastCommand={file,args};if(behavior==="timeout"){const error=new Error("timeout");error.killed=true;throw error;}if(behavior==="fail"){const error=new Error("failed");error.code=2;error.stdout="one failure";throw error;}return{stdout:"all pass",stderr:""};};const registry=createToolRegistry();registerHandsTools(registry,{environment:{NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH},storage,ownerId:OWNER_ID,commandRunner:runner});assert.equal((await registry.execute("test_run",{files:["test/api.test.js"],timeoutMs:1000})).exitCode,0);behavior="fail";const failed=await registry.execute("test_run_full",{});assert.equal(failed.error.code,"test_failed");if(process.platform==="win32"&&process.env.npm_execpath){assert.equal(lastCommand.file,process.execPath);assert.deepEqual(lastCommand.args,[process.env.npm_execpath,"test"]);}behavior="timeout";await assert.rejects(()=>registry.execute("test_run",{files:["test/api.test.js"],timeoutMs:1000}),e=>e.code==="test_timeout");});
+test("protected branches are refused before patch or commit", async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(
+      () =>
+        f.registry.execute("repo_apply_patch", {
+          branch: "main",
+          files: [{ path: "alpha.js", content: "bad" }],
+        }),
+      (e) => e.code === "branch_not_allowed",
+    );
+    await assert.rejects(
+      () =>
+        f.registry.execute("git_commit", {
+          branch: "main",
+          message: "bad",
+          paths: ["alpha.js"],
+        }),
+      (e) => e.code === "branch_not_allowed",
+    );
+  } finally {
+    await f.close();
+  }
+});
 
-test("reviewed changes commit locally and public push stops at durable approval",async()=>{const f=await fixture();try{await f.registry.execute("repo_apply_patch",{branch:BRANCH,files:[{path:"alpha.js",content:"export const alpha = 3;\n"}]});const committed=await f.registry.execute("git_commit",{branch:BRANCH,message:"test hands commit",paths:["alpha.js"]});assert.match(committed.commitSha,/^[a-f0-9]{40}$/);await assert.rejects(()=>f.registry.execute("git_push",{branch:BRANCH,commitSha:committed.commitSha},{runId:"hands-run"}),e=>e instanceof ApprovalRequiredError);assert.equal((await f.storage.listApprovals(OWNER_ID))[0].tool,"git_push");}finally{await f.close();}});
+test("focused and full test tools return exit codes failures and bounded timeout errors", async () => {
+  const storage = createInMemoryStorage();
+  await storage.initialize({
+    owner: INITIAL_OWNER_PROFILE,
+    projects: INITIAL_PROJECTS,
+  });
+  let behavior = "pass",
+    lastCommand;
+  const runner = async (file, args) => {
+    lastCommand = { file, args };
+    if (behavior === "timeout") {
+      const error = new Error("timeout");
+      error.killed = true;
+      throw error;
+    }
+    if (behavior === "fail") {
+      const error = new Error("failed");
+      error.code = 2;
+      error.stdout = "one failure";
+      throw error;
+    }
+    return { stdout: "all pass", stderr: "" };
+  };
+  const registry = createToolRegistry();
+  registerHandsTools(registry, {
+    environment: { NOVA_BRAIN_DEVELOPMENT_BRANCH: BRANCH },
+    storage,
+    ownerId: OWNER_ID,
+    commandRunner: runner,
+  });
+  assert.equal(
+    (
+      await registry.execute("test_run", {
+        files: ["test/api.test.js"],
+        timeoutMs: 1000,
+      })
+    ).exitCode,
+    0,
+  );
+  behavior = "fail";
+  const failed = await registry.execute("test_run_full", {});
+  assert.equal(failed.error.code, "test_failed");
+  if (process.platform === "win32" && process.env.npm_execpath) {
+    assert.equal(lastCommand.file, process.execPath);
+    assert.deepEqual(lastCommand.args, [process.env.npm_execpath, "test"]);
+  }
+  behavior = "timeout";
+  await assert.rejects(
+    () =>
+      registry.execute("test_run", {
+        files: ["test/api.test.js"],
+        timeoutMs: 1000,
+      }),
+    (e) => e.code === "test_timeout",
+  );
+});
 
-test("deployment lookup validates exact Preview source and health verification rejects mismatches and Production",async()=>{const storage=createInMemoryStorage();await storage.initialize({owner:INITIAL_OWNER_PROFILE,projects:INITIAL_PROJECTS});const sha="a".repeat(40);const fetchImpl=async(url)=>{const value=String(url);if(value.includes("/v6/deployments"))return response({deployments:[{uid:"dpl_preview",url:"preview.example",readyState:"READY",target:null,meta:{githubCommitSha:sha,githubCommitRef:BRANCH}}]});if(value.includes("/v13/deployments/dpl_preview"))return response({id:"dpl_preview",url:"preview.example",target:null,gitSource:{sha,ref:BRANCH}});if(value.includes("/v13/deployments/dpl_prod"))return response({id:"dpl_prod",url:"prod.example",target:"production",gitSource:{sha,ref:"main"}});if(value==="https://preview.example/api/health")return response({status:"online"},200);return response({},404);};const registry=createToolRegistry();registerHandsTools(registry,{environment:{VERCEL:"1",NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH,NOVA_BRAIN_VERCEL_TOKEN:"secret",NOVA_BRAIN_VERCEL_PROJECT_ID:"project"},storage,ownerId:OWNER_ID,fetchImpl});const deployment=await registry.execute("deployment_status",{commitSha:sha});assert.equal(deployment.status,"READY");assert.equal((await registry.execute("preview_verify",{deploymentId:"dpl_preview",path:"/api/health",expectedStatus:200,commitSha:sha})).ok,true);await assert.rejects(()=>registry.execute("preview_verify",{deploymentId:"dpl_preview",path:"/api/health",expectedStatus:200,commitSha:"b".repeat(40)}),e=>e.code==="source_mismatch");await assert.rejects(()=>registry.execute("preview_verify",{deploymentId:"dpl_prod",path:"/api/health",expectedStatus:200,commitSha:sha}),e=>e.code==="production_target_forbidden");});
+test("reviewed changes commit locally and public push stops at durable approval", async () => {
+  const f = await fixture();
+  try {
+    await f.registry.execute("repo_apply_patch", {
+      branch: BRANCH,
+      files: [{ path: "alpha.js", content: "export const alpha = 3;\n" }],
+    });
+    const committed = await f.registry.execute("git_commit", {
+      branch: BRANCH,
+      message: "test hands commit",
+      paths: ["alpha.js"],
+    });
+    assert.match(committed.commitSha, /^[a-f0-9]{40}$/);
+    await assert.rejects(
+      () =>
+        f.registry.execute(
+          "git_push",
+          { branch: BRANCH, commitSha: committed.commitSha },
+          { runId: "hands-run" },
+        ),
+      (e) => e instanceof ApprovalRequiredError,
+    );
+    assert.equal((await f.storage.listApprovals(OWNER_ID))[0].tool, "git_push");
+  } finally {
+    await f.close();
+  }
+});
 
-test("deployment failures and logs use structured bounded contracts",async()=>{const registry=createToolRegistry();registerHandsTools(registry,{environment:{VERCEL:"1",NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH,NOVA_BRAIN_VERCEL_TOKEN:"secret",NOVA_BRAIN_VERCEL_PROJECT_ID:"project"},fetchImpl:async(url)=>String(url).includes("events")?response([{type:"stdout",created:1,payload:{text:"safe log"}}]):response({deployments:[]})});await assert.rejects(()=>registry.execute("deployment_status",{commitSha:"x"}),e=>e.code==="deployment_failed");const logs=await registry.execute("deployment_logs",{deploymentId:"dpl",limit:10});assert.equal(logs.events[0].text,"safe log");});
+test("deployment lookup validates exact Preview source and health verification rejects mismatches and Production", async () => {
+  const storage = createInMemoryStorage();
+  await storage.initialize({
+    owner: INITIAL_OWNER_PROFILE,
+    projects: INITIAL_PROJECTS,
+  });
+  const sha = "a".repeat(40);
+  const fetchImpl = async (url) => {
+    const value = String(url);
+    if (value.includes("/v6/deployments"))
+      return response({
+        deployments: [
+          {
+            uid: "dpl_preview",
+            url: "preview.example",
+            readyState: "READY",
+            target: null,
+            meta: { githubCommitSha: sha, githubCommitRef: BRANCH },
+          },
+        ],
+      });
+    if (value.includes("/v13/deployments/dpl_preview"))
+      return response({
+        id: "dpl_preview",
+        url: "preview.example",
+        target: null,
+        gitSource: { sha, ref: BRANCH },
+      });
+    if (value.includes("/v13/deployments/dpl_prod"))
+      return response({
+        id: "dpl_prod",
+        url: "prod.example",
+        target: "production",
+        gitSource: { sha, ref: "main" },
+      });
+    if (value === "https://preview.example/api/health")
+      return response({ status: "online" }, 200);
+    return response({}, 404);
+  };
+  const registry = createToolRegistry();
+  registerHandsTools(registry, {
+    environment: {
+      VERCEL: "1",
+      NOVA_BRAIN_DEVELOPMENT_BRANCH: BRANCH,
+      NOVA_BRAIN_VERCEL_TOKEN: "secret",
+      NOVA_BRAIN_VERCEL_PROJECT_ID: "project",
+    },
+    storage,
+    ownerId: OWNER_ID,
+    fetchImpl,
+  });
+  const deployment = await registry.execute("deployment_status", {
+    commitSha: sha,
+  });
+  assert.equal(deployment.status, "READY");
+  assert.equal(
+    (
+      await registry.execute("preview_verify", {
+        deploymentId: "dpl_preview",
+        path: "/api/health",
+        expectedStatus: 200,
+        commitSha: sha,
+      })
+    ).ok,
+    true,
+  );
+  await assert.rejects(
+    () =>
+      registry.execute("preview_verify", {
+        deploymentId: "dpl_preview",
+        path: "/api/health",
+        expectedStatus: 200,
+        commitSha: "b".repeat(40),
+      }),
+    (e) => e.code === "source_mismatch",
+  );
+  await assert.rejects(
+    () =>
+      registry.execute("preview_verify", {
+        deploymentId: "dpl_prod",
+        path: "/api/health",
+        expectedStatus: 200,
+        commitSha: sha,
+      }),
+    (e) => e.code === "production_target_forbidden",
+  );
+});
 
-test("CI visibility returns concise checks for one feature commit",async()=>{const registry=createToolRegistry();registerHandsTools(registry,{environment:{VERCEL:"1",NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH,NOVA_BRAIN_GITHUB_TOKEN:"secret"},fetchImpl:async()=>response({check_runs:[{name:"tests",status:"completed",conclusion:"failure",html_url:"https://example.invalid/check",output:{summary:"one failed step"}}]})});const result=await registry.execute("ci_status",{commitSha:"a".repeat(40)});assert.deepEqual(result.checks[0],{name:"tests",status:"completed",conclusion:"failure",url:"https://example.invalid/check",summary:"one failed step"});});
+test("deployment failures and logs use structured bounded contracts", async () => {
+  const registry = createToolRegistry();
+  registerHandsTools(registry, {
+    environment: {
+      VERCEL: "1",
+      NOVA_BRAIN_DEVELOPMENT_BRANCH: BRANCH,
+      NOVA_BRAIN_VERCEL_TOKEN: "secret",
+      NOVA_BRAIN_VERCEL_PROJECT_ID: "project",
+    },
+    fetchImpl: async (url) =>
+      String(url).includes("events")
+        ? response([
+            { type: "stdout", created: 1, payload: { text: "safe log" } },
+          ])
+        : response({ deployments: [] }),
+  });
+  await assert.rejects(
+    () => registry.execute("deployment_status", { commitSha: "x" }),
+    (e) => e.code === "deployment_failed",
+  );
+  const logs = await registry.execute("deployment_logs", {
+    deploymentId: "dpl",
+    limit: 10,
+  });
+  assert.equal(logs.events[0].text, "safe log");
+});
 
-test("Preview creation is approval-sensitive and rejects a Production branch before approval",async()=>{const storage=createInMemoryStorage();await storage.initialize({owner:INITIAL_OWNER_PROFILE,projects:INITIAL_PROJECTS});const policy=createActionPolicy({storage,ownerId:OWNER_ID,approvedBranch:BRANCH});const registry=createToolRegistry({policy});registerHandsTools(registry,{environment:{VERCEL:"1",NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH,NOVA_BRAIN_VERCEL_TOKEN:"secret",NOVA_BRAIN_VERCEL_PROJECT_ID:"project"},storage,ownerId:OWNER_ID,fetchImpl:async()=>response({})});await assert.rejects(()=>registry.execute("preview_deploy",{branch:"main",commitSha:"a".repeat(40)}),e=>e.code==="production_target_forbidden");await assert.rejects(()=>registry.execute("preview_deploy",{branch:BRANCH,commitSha:"a".repeat(40)}),e=>e instanceof ApprovalRequiredError);assert.equal((await storage.listApprovals(OWNER_ID))[0].tool,"preview_deploy");});
+test("CI visibility returns concise checks for one feature commit", async () => {
+  const registry = createToolRegistry();
+  registerHandsTools(registry, {
+    environment: {
+      VERCEL: "1",
+      NOVA_BRAIN_DEVELOPMENT_BRANCH: BRANCH,
+      NOVA_BRAIN_GITHUB_TOKEN: "secret",
+    },
+    fetchImpl: async () =>
+      response({
+        check_runs: [
+          {
+            name: "tests",
+            status: "completed",
+            conclusion: "failure",
+            html_url: "https://example.invalid/check",
+            output: { summary: "one failed step" },
+          },
+        ],
+      }),
+  });
+  const result = await registry.execute("ci_status", {
+    commitSha: "a".repeat(40),
+  });
+  assert.deepEqual(result.checks[0], {
+    name: "tests",
+    status: "completed",
+    conclusion: "failure",
+    url: "https://example.invalid/check",
+    summary: "one failed step",
+  });
+});
 
-test("a protected Preview verifies its own exact source and health without a management token",async()=>{const sha="c".repeat(40);let headers;const registry=createToolRegistry();registerHandsTools(registry,{environment:{VERCEL:"1",VERCEL_ENV:"preview",VERCEL_DEPLOYMENT_ID:"dpl_self",VERCEL_URL:"self.example",VERCEL_GIT_COMMIT_SHA:sha,VERCEL_GIT_COMMIT_REF:BRANCH,VERCEL_AUTOMATION_BYPASS_SECRET:"private-bypass",NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH},fetchImpl:async(_url,options)=>{headers=options.headers;return response({status:"online"});}});const status=await registry.execute("deployment_status",{commitSha:sha});assert.equal(status.deploymentId,"dpl_self");assert.equal(status.status,"READY");assert.equal((await registry.execute("preview_verify",{deploymentId:"dpl_self",path:"/api/health",expectedStatus:200,commitSha:sha})).ok,true);assert.equal(headers["x-vercel-protection-bypass"],"private-bypass");await assert.rejects(()=>registry.execute("deployment_status",{commitSha:"d".repeat(40)}),e=>e.code==="source_mismatch");});
+test("Preview creation is approval-sensitive and rejects a Production branch before approval", async () => {
+  const storage = createInMemoryStorage();
+  await storage.initialize({
+    owner: INITIAL_OWNER_PROFILE,
+    projects: INITIAL_PROJECTS,
+  });
+  const policy = createActionPolicy({
+    storage,
+    ownerId: OWNER_ID,
+    approvedBranch: BRANCH,
+  });
+  const registry = createToolRegistry({ policy });
+  registerHandsTools(registry, {
+    environment: {
+      VERCEL: "1",
+      NOVA_BRAIN_DEVELOPMENT_BRANCH: BRANCH,
+      NOVA_BRAIN_VERCEL_TOKEN: "secret",
+      NOVA_BRAIN_VERCEL_PROJECT_ID: "project",
+    },
+    storage,
+    ownerId: OWNER_ID,
+    fetchImpl: async () => response({}),
+  });
+  await assert.rejects(
+    () =>
+      registry.execute("preview_deploy", {
+        branch: "main",
+        commitSha: "a".repeat(40),
+      }),
+    (e) => e.code === "production_target_forbidden",
+  );
+  await assert.rejects(
+    () =>
+      registry.execute("preview_deploy", {
+        branch: BRANCH,
+        commitSha: "a".repeat(40),
+      }),
+    (e) => e instanceof ApprovalRequiredError,
+  );
+  assert.equal(
+    (await storage.listApprovals(OWNER_ID))[0].tool,
+    "preview_deploy",
+  );
+});
 
-test("an immutable Preview reports exact Git source and a clean structured diff",async()=>{const sha="e".repeat(40);const registry=createToolRegistry();registerHandsTools(registry,{environment:{VERCEL:"1",VERCEL_GIT_COMMIT_SHA:sha,VERCEL_GIT_COMMIT_REF:BRANCH,NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH}});const status=await registry.execute("git_status",{});assert.deepEqual({branch:status.branch,currentCommit:status.currentCommit,clean:status.clean,immutable:status.immutable},{branch:BRANCH,currentCommit:sha,clean:true,immutable:true});const diff=await registry.execute("repo_diff",{paths:["src/tools/hands-runtime.js"]});assert.equal(diff.diff,"");assert.equal(diff.clean,true);assert.equal(diff.immutable,true);});
+test("a protected Preview verifies its own exact source and health without a management token", async () => {
+  const sha = "c".repeat(40);
+  let headers;
+  const registry = createToolRegistry();
+  registerHandsTools(registry, {
+    environment: {
+      VERCEL: "1",
+      VERCEL_ENV: "preview",
+      VERCEL_DEPLOYMENT_ID: "dpl_self",
+      VERCEL_URL: "self.example",
+      VERCEL_GIT_COMMIT_SHA: sha,
+      VERCEL_GIT_COMMIT_REF: BRANCH,
+      VERCEL_AUTOMATION_BYPASS_SECRET: "private-bypass",
+      NOVA_BRAIN_DEVELOPMENT_BRANCH: BRANCH,
+    },
+    fetchImpl: async (_url, options) => {
+      headers = options.headers;
+      return response({ status: "online" });
+    },
+  });
+  const status = await registry.execute("deployment_status", {
+    commitSha: sha,
+  });
+  assert.equal(status.deploymentId, "dpl_self");
+  assert.equal(status.status, "READY");
+  assert.equal(
+    (
+      await registry.execute("preview_verify", {
+        deploymentId: "dpl_self",
+        path: "/api/health",
+        expectedStatus: 200,
+        commitSha: sha,
+      })
+    ).ok,
+    true,
+  );
+  assert.equal(headers["x-vercel-protection-bypass"], "private-bypass");
+  await assert.rejects(
+    () => registry.execute("deployment_status", { commitSha: "d".repeat(40) }),
+    (e) => e.code === "source_mismatch",
+  );
+});
 
-test("durable checkpoints persist complete task state and repair iterations stop at the bound",async()=>{const f=await fixture();try{const checkpoint=await f.registry.execute("hands_checkpoint",{taskId:"hands-1",projectId:"nova-brain",branch:BRANCH,startingCommit:"abc",phase:"focused_test",filesTouched:["alpha.js"],tests:{focused:"passed"},approvalNeeded:false});assert.equal(checkpoint.checkpoint.phase,"focused_test");assert.equal((await f.storage.listRuns(OWNER_ID,{projectId:"nova-brain"}))[0].result.checkpoint.taskId,"hands-1");assert.equal((await f.registry.execute("hands_repair_plan",{iteration:0,maxIterations:1,phase:"inspect"})).stop,false);const stopped=await f.registry.execute("hands_repair_plan",{iteration:1,maxIterations:1,phase:"verify",lastErrorCode:"preview_unreachable"});assert.equal(stopped.stop,true);assert.equal(stopped.error.code,"repair_limit_reached");}finally{await f.close();}});
+test("an immutable Preview reports exact Git source and a clean structured diff", async () => {
+  const sha = "e".repeat(40);
+  const registry = createToolRegistry();
+  registerHandsTools(registry, {
+    environment: {
+      VERCEL: "1",
+      VERCEL_GIT_COMMIT_SHA: sha,
+      VERCEL_GIT_COMMIT_REF: BRANCH,
+      NOVA_BRAIN_DEVELOPMENT_BRANCH: BRANCH,
+    },
+  });
+  const status = await registry.execute("git_status", {});
+  assert.deepEqual(
+    {
+      branch: status.branch,
+      currentCommit: status.currentCommit,
+      clean: status.clean,
+      immutable: status.immutable,
+    },
+    { branch: BRANCH, currentCommit: sha, clean: true, immutable: true },
+  );
+  const diff = await registry.execute("repo_diff", {
+    paths: ["src/tools/hands-runtime.js"],
+  });
+  assert.equal(diff.diff, "");
+  assert.equal(diff.clean, true);
+  assert.equal(diff.immutable, true);
+});
 
-test("developer actions are audited without secret values",async()=>{const f=await fixture();try{await f.registry.execute("repo_read",{path:"alpha.js"},{runId:"audit-run",projectId:"nova-brain"});const event=(await f.storage.listActivity(OWNER_ID,{runId:"audit-run"}))[0];assert.equal(event.tool,"repo_read");assert.equal(event.status,"completed");assert.doesNotMatch(JSON.stringify(event),/authorization|private.key/i);}finally{await f.close();}});
+test("durable checkpoints persist complete task state and repair iterations stop at the bound", async () => {
+  const f = await fixture();
+  try {
+    const checkpoint = await f.registry.execute("hands_checkpoint", {
+      taskId: "hands-1",
+      projectId: "nova-brain",
+      branch: BRANCH,
+      startingCommit: "abc",
+      phase: "focused_test",
+      filesTouched: ["alpha.js"],
+      tests: { focused: "passed" },
+      approvalNeeded: false,
+    });
+    assert.equal(checkpoint.checkpoint.phase, "focused_test");
+    assert.equal(
+      (await f.storage.listRuns(OWNER_ID, { projectId: "nova-brain" }))[0]
+        .result.checkpoint.taskId,
+      "hands-1",
+    );
+    assert.equal(
+      (
+        await f.registry.execute("hands_repair_plan", {
+          iteration: 0,
+          maxIterations: 1,
+          phase: "inspect",
+        })
+      ).stop,
+      false,
+    );
+    const stopped = await f.registry.execute("hands_repair_plan", {
+      iteration: 1,
+      maxIterations: 1,
+      phase: "verify",
+      lastErrorCode: "preview_unreachable",
+    });
+    assert.equal(stopped.stop, true);
+    assert.equal(stopped.error.code, "repair_limit_reached");
+  } finally {
+    await f.close();
+  }
+});
 
-test("end-to-end supervised Hands flow searches patches tests diffs commits and stops before push",async()=>{const f=await fixture();try{assert.equal((await f.registry.execute("repo_search",{query:"export",mode:"symbol"})).count,1);await f.registry.execute("repo_read",{path:"alpha.js"});await f.registry.execute("repo_apply_patch",{branch:BRANCH,files:[{path:"alpha.js",content:"export const alpha = 11;\n"},{path:"beta.md",content:"Hands acceptance\n"}]});assert.match((await f.registry.execute("repo_diff",{paths:["alpha.js","beta.md"]})).diff,/Hands acceptance/);const committed=await f.registry.execute("git_commit",{branch:BRANCH,message:"Hands acceptance",paths:["alpha.js","beta.md"]});await assert.rejects(()=>f.registry.execute("git_push",{branch:BRANCH,commitSha:committed.commitSha}),ApprovalRequiredError);assert.equal((await f.registry.execute("git_status",{})).clean,true);}finally{await f.close();}});
+test("developer actions are audited without secret values", async () => {
+  const f = await fixture();
+  try {
+    await f.registry.execute(
+      "repo_read",
+      { path: "alpha.js" },
+      { runId: "audit-run", projectId: "nova-brain" },
+    );
+    const event = (
+      await f.storage.listActivity(OWNER_ID, { runId: "audit-run" })
+    )[0];
+    assert.equal(event.tool, "repo_read");
+    assert.equal(event.status, "completed");
+    assert.doesNotMatch(JSON.stringify(event), /authorization|private.key/i);
+  } finally {
+    await f.close();
+  }
+});
 
-function response(body,status=200){return{ok:status>=200&&status<300,status,async json(){return body;},async text(){return JSON.stringify(body);}};}
+test("end-to-end supervised Hands flow searches patches tests diffs commits and stops before push", async () => {
+  const f = await fixture();
+  try {
+    assert.equal(
+      (
+        await f.registry.execute("repo_search", {
+          query: "export",
+          mode: "symbol",
+        })
+      ).count,
+      1,
+    );
+    await f.registry.execute("repo_read", { path: "alpha.js" });
+    await f.registry.execute("repo_apply_patch", {
+      branch: BRANCH,
+      files: [
+        { path: "alpha.js", content: "export const alpha = 11;\n" },
+        { path: "beta.md", content: "Hands acceptance\n" },
+      ],
+    });
+    assert.match(
+      (
+        await f.registry.execute("repo_diff", {
+          paths: ["alpha.js", "beta.md"],
+        })
+      ).diff,
+      /Hands acceptance/,
+    );
+    const committed = await f.registry.execute("git_commit", {
+      branch: BRANCH,
+      message: "Hands acceptance",
+      paths: ["alpha.js", "beta.md"],
+    });
+    await assert.rejects(
+      () =>
+        f.registry.execute("git_push", {
+          branch: BRANCH,
+          commitSha: committed.commitSha,
+        }),
+      ApprovalRequiredError,
+    );
+    assert.equal((await f.registry.execute("git_status", {})).clean, true);
+  } finally {
+    await f.close();
+  }
+});
+
+function response(body, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async json() {
+      return body;
+    },
+    async text() {
+      return JSON.stringify(body);
+    },
+  };
+}

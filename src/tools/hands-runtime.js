@@ -1,46 +1,1511 @@
-import {readFile,readdir,writeFile,rename,rm} from "node:fs/promises";
-import {resolve,relative,sep,dirname,basename} from "node:path";
-import {execFile} from "node:child_process";
-import {promisify} from "node:util";
-import {createHash,randomUUID} from "node:crypto";
-import {RISK_LEVELS} from "../policy/action-policy.js";
+import { readFile, readdir, writeFile, rename, rm } from "node:fs/promises";
+import { resolve, relative, sep, dirname, basename } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createHash, randomUUID } from "node:crypto";
+import { RISK_LEVELS } from "../policy/action-policy.js";
 
-const exec=promisify(execFile);const protectedName=/(^|[\\/])(\.env|\.git|node_modules|\.vercel)([\\/]|$)|secret|credential|token|private.?key/i;
-export class HandsError extends Error{constructor(code,message,details={}){super(message);this.name="HandsError";this.code=code;this.details=details;}}
-const fail=(code,message,details)=>{throw new HandsError(code,message,details)};
-const schema=(properties={},required=[])=>({type:"object",properties,required,additionalProperties:false});
-const text={type:"string"};const integer={type:"number"};const bool={type:"boolean"};
-function safe(root,input="."){if(typeof input!=="string"||!input.trim())fail("invalid_input","A repository path is required.");const target=resolve(root,input);if(target!==root&&!target.startsWith(`${root}${sep}`))fail("path_traversal","Path is outside the approved repository.");if(protectedName.test(relative(root,target)))fail("protected_path","Protected repository path.");return target;}
-async function tree(root,dir=root,out=[]){for(const entry of await readdir(dir,{withFileTypes:true})){if([".git","node_modules",".vercel"].includes(entry.name))continue;const full=resolve(dir,entry.name);if(entry.isDirectory())await tree(root,full,out);else out.push(relative(root,full).replaceAll("\\","/"));if(out.length>=1000)break;}return out;}
-function redact(value){if(Array.isArray(value))return value.map(redact);if(value&&typeof value==="object")return Object.fromEntries(Object.entries(value).map(([key,item])=>[/token|secret|password|authorization|api.?key/i.test(key)?key:key,/token|secret|password|authorization|api.?key/i.test(key)?"[REDACTED]":redact(item)]));return value;}
-async function command(root,file,args,{timeoutMs=30_000,runner=exec}={}){try{const started=Date.now();const result=await runner(file,args,{cwd:root,timeout:timeoutMs,maxBuffer:500_000});return {exitCode:0,stdout:String(result.stdout||"").slice(-100_000),stderr:String(result.stderr||"").slice(-100_000),durationMs:Date.now()-started,timedOut:false};}catch(error){if(error.killed||error.code==="ETIMEDOUT")fail("test_timeout","Allowlisted command timed out.",{timeoutMs});return {exitCode:Number.isInteger(error.code)?error.code:1,stdout:String(error.stdout||"").slice(-100_000),stderr:String(error.stderr||error.message||"").slice(-100_000),durationMs:0,timedOut:false};}}
-const gitCommand=(root,args,options={})=>command(root,"git",["-c",`safe.directory=${root.replaceAll("\\","/")}`,...args],options);
-const def=(tool)=>({category:"developer",capability:"read",riskLevel:RISK_LEVELS.READ_ONLY,available:true,configurationStatus:"ready",...tool});
-
-export function registerHandsTools(registry,{root=process.cwd(),environment=process.env,storage,ownerId,fetchImpl=fetch,commandRunner}={}){
- const remote=Boolean(environment.VERCEL);const repository=environment.NOVA_BRAIN_GITHUB_REPOSITORY||"hshanbour/nova-brain";const branch=environment.NOVA_BRAIN_DEVELOPMENT_BRANCH||"feat/nova-brain-mvp-foundation";const approved=()=>{if(["main","master"].includes(branch))fail("branch_not_allowed","The configured development branch is protected.");return branch;};
- const audit=async(tool,result,context={},started=Date.now())=>{if(storage&&ownerId)await storage.appendActivity({ownerId,projectId:context.projectId||"nova-brain",runId:context.runId||null,action:"developer_runtime_action",tool,status:result?.ok===false?"failed":"completed",summary:`${tool} ${result?.ok===false?"failed":"completed"}.`,metadata:redact({durationMs:Date.now()-started,files:result?.files,commitSha:result?.commitSha,deploymentId:result?.deploymentId,errorCode:result?.error?.code})});return result;};
- const github=async(path)=>{const response=await fetchImpl(`https://api.github.com/repos/${repository}/${path}`,{headers:{Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28",...(environment.NOVA_BRAIN_GITHUB_TOKEN?{Authorization:`Bearer ${environment.NOVA_BRAIN_GITHUB_TOKEN}`}:{})}});if(!response.ok)fail("remote_repository_failed",`Repository request failed with status ${response.status}.`);return response.json();};
- registry.register(def({name:"repo_list",description:"List a bounded repository tree.",inputSchema:schema({path:text,limit:integer}),async execute({path=".",limit=250},context){const started=Date.now();safe(root,path);let files;if(remote){const data=await github(`git/trees/${encodeURIComponent(approved())}?recursive=1`);const prefix=path==="."?"":`${path.replace(/\/$/,"")}/`;files=(data.tree||[]).filter(x=>x.type==="blob"&&x.path.startsWith(prefix)&&!protectedName.test(x.path)).map(x=>x.path);}else files=await tree(root,safe(root,path));const bounded=files.slice(0,Math.max(1,Math.min(500,limit)));return audit("repo_list",{ok:true,files:bounded,count:bounded.length,truncated:files.length>bounded.length},context,started);}}));
- registry.register(def({name:"repo_read",description:"Read bounded UTF-8 source text.",inputSchema:schema({path:text,startLine:integer,endLine:integer},["path"]),async execute({path,startLine=1,endLine=500},context){const started=Date.now();safe(root,path);let content;if(remote){const data=await github(`contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(approved())}`);content=Buffer.from(data.content||"","base64").toString("utf8");}else content=await readFile(safe(root,path),"utf8");const lines=content.split(/\r?\n/);const end=Math.min(lines.length,startLine+Math.min(1000,Math.max(1,endLine-startLine+1))-1);return audit("repo_read",{ok:true,path,startLine,endLine:end,content:lines.slice(Math.max(0,startLine-1),end).join("\n"),truncated:end<lines.length},context,started);}}));
- registry.register(def({name:"repo_search",description:"Bounded filename, literal, regex, or symbol repository search.",inputSchema:schema({query:text,mode:{type:"string"},path:text,limit:integer},["query"]),async execute({query,mode="literal",path=".",limit=100},context){const started=Date.now();if(query.length>300)fail("invalid_input","Search query is too long.");if(!["filename","literal","regex","symbol"].includes(mode))fail("invalid_input","Unsupported search mode.");let pattern;try{pattern=mode==="regex"?new RegExp(query,"iu"):mode==="symbol"?new RegExp(`\\b${query.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}\\b`,"u"):null;}catch{fail("invalid_regex","Search regex is invalid.");}const paths=remote?(await github(`git/trees/${encodeURIComponent(approved())}?recursive=1`)).tree.filter(x=>x.type==="blob").map(x=>x.path):await tree(root,safe(root,path));const matches=[];for(const file of paths){if(matches.length>=Math.min(200,limit)||protectedName.test(file)||!file.startsWith(path==="."?"":path))continue;if(mode==="filename"){if(basename(file).toLowerCase().includes(query.toLowerCase()))matches.push({path:file});continue;}let content;try{if(remote){const data=await github(`contents/${file.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(approved())}`);content=Buffer.from(data.content||"","base64").toString("utf8");}else content=await readFile(safe(root,file),"utf8");}catch{continue;}for(const [index,line] of content.split(/\r?\n/).entries()){const hit=pattern?pattern.test(line):line.toLowerCase().includes(query.toLowerCase());pattern&&(pattern.lastIndex=0);if(hit)matches.push({path:file,line:index+1,text:line.slice(0,300)});if(matches.length>=Math.min(200,limit))break;}}return audit("repo_search",{ok:true,mode,matches,count:matches.length,truncated:matches.length>=Math.min(200,limit)},context,started);}}));
- registry.register(def({name:"git_status",description:"Return structured branch, commit, and working-tree state.",async execute(_input,context){const started=Date.now();approved();if(remote){if(environment.VERCEL_GIT_COMMIT_REF&&environment.VERCEL_GIT_COMMIT_REF!==branch)fail("branch_not_allowed","Runtime source is not the approved feature branch.");const currentCommit=environment.VERCEL_GIT_COMMIT_SHA||(await github(`commits/${encodeURIComponent(branch)}`)).sha;return audit("git_status",{ok:true,branch,currentCommit,remote:true,immutable:true,clean:true,changes:[]},context,started);}const [branchResult,sha,status]=await Promise.all([gitCommand(root,["branch","--show-current"],{runner:commandRunner}),gitCommand(root,["rev-parse","HEAD"],{runner:commandRunner}),gitCommand(root,["status","--porcelain=v1"],{runner:commandRunner})]);const currentBranch=branchResult.stdout.trim();if(["main","master"].includes(currentBranch))fail("branch_not_allowed","Code mutation is forbidden on the protected branch.");const entries=status.stdout.trim()?status.stdout.trim().split(/\r?\n/).map(line=>({state:line.slice(0,2),path:line.slice(3)})):[];return audit("git_status",{ok:true,branch:currentBranch,currentCommit:sha.stdout.trim(),clean:entries.length===0,changes:entries},context,started);}}));
- const reviewChanges=async(paths,staged=false)=>{const allowed=[...new Set(paths.length?paths:["."])].sort();for(const path of allowed)safe(root,path);const tracked=await gitCommand(root,["diff",...(staged?["--cached"]:[]),"--find-renames","--",...allowed],{runner:commandRunner}),names=await gitCommand(root,["diff",...(staged?["--cached"]:[]),"--name-status","--find-renames","--",...allowed],{runner:commandRunner});if(tracked.exitCode||names.exitCode)return{ok:false,exitCode:tracked.exitCode||names.exitCode,diff:"",entries:[],allowedPaths:allowed,reviewHash:null};const entries=[];for(const line of names.stdout.split(/\r?\n/).filter(Boolean)){const [status,...items]=line.split("\t"),path=items.at(-1);entries.push({status:status.startsWith("R")?"R":status,path,previousPath:status.startsWith("R")?items[0]:undefined});}let extra="";if(!staged){const untracked=await gitCommand(root,["ls-files","--others","--exclude-standard","--",...allowed],{runner:commandRunner});if(untracked.exitCode)return{ok:false,exitCode:untracked.exitCode,diff:"",entries:[],allowedPaths:allowed,reviewHash:null};for(const path of untracked.stdout.split(/\r?\n/).filter(Boolean).sort()){const buffer=await readFile(safe(root,path));if(buffer.length>100_000||buffer.includes(0))fail("unsupported_review_file","New binary or oversized files require an explicit safe review mechanism.",{path});const content=buffer.toString("utf8"),lines=content.split("\n"),body=lines.map(line=>`+${line}`).join("\n");extra+=`diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lines.length} @@\n${body}\n`;entries.push({status:"A",path});}}
-   for(const entry of entries){if(entry.status!=="D"){const buffer=await readFile(safe(root,entry.path));if(buffer.length>100_000||buffer.includes(0))fail("unsupported_review_file","Binary or oversized changes require an explicit safe review mechanism.",{path:entry.path});entry.contentHash=createHash("sha256").update(buffer).digest("hex");}}
-   entries.sort((a,b)=>a.path.localeCompare(b.path));const diff=`${tracked.stdout}${extra}`,manifest={allowedPaths:allowed,entries};return{ok:true,exitCode:0,diff:diff.slice(0,100_000),truncated:diff.length>100_000,clean:entries.length===0,reviewedChangeSet:{...manifest,reviewHash:createHash("sha256").update(JSON.stringify(manifest)).digest("hex")}};};
- registry.register(def({name:"repo_diff",description:"Inspect every bounded tracked and allowed untracked repository change.",inputSchema:schema({paths:{type:"array"},staged:bool}),async execute({paths=[],staged=false},context){const started=Date.now();if(remote)return audit("repo_diff",{ok:true,exitCode:0,diff:"",truncated:false,remote:true,immutable:true,clean:true,paths,staged},context,started);return audit("repo_diff",await reviewChanges(paths,staged),context,started);}}));
- registry.register(def({name:"repo_review_commit",description:"Review one exact unpushed commit against an explicit bounded file allowlist.",inputSchema:schema({commitSha:text,paths:{type:"array"}},["commitSha","paths"]),async execute({commitSha,paths},context){const started=Date.now();if(!/^[a-f0-9]{40}$/.test(commitSha)||!Array.isArray(paths)||!paths.length)fail("invalid_input","Exact commit and file scope are required.");const allowed=[...new Set(paths)].sort();for(const path of allowed)safe(root,path);const head=(await gitCommand(root,["rev-parse",commitSha],{runner:commandRunner})).stdout.trim();if(head!==commitSha)fail("commit_mismatch","The exact local commit is unavailable.");const files=(await gitCommand(root,["diff-tree","--no-commit-id","--name-only","-r",commitSha],{runner:commandRunner})).stdout.split(/\r?\n/).filter(Boolean).sort();if(JSON.stringify(files)!==JSON.stringify(allowed))fail("unreviewed_commit_file","Commit contains files outside the bounded review.",{files});const numstat=await gitCommand(root,["diff","--numstat",`${commitSha}^`,commitSha,"--",...allowed],{runner:commandRunner});if(numstat.stdout.split(/\r?\n/).some(line=>line.startsWith("-\t-\t")))fail("unsupported_review_file","Binary commit content cannot use the text review path.");const shown=await gitCommand(root,["show","--format=","--find-renames",commitSha,"--",...allowed],{runner:commandRunner});if(shown.exitCode)fail("commit_review_failed","Exact commit review failed.");const entries=[];for(const path of allowed){const blob=await gitCommand(root,["rev-parse",`${commitSha}:${path}`],{runner:commandRunner});entries.push({path,status:"committed",contentHash:blob.exitCode?null:blob.stdout.trim()});}const manifest={allowedPaths:allowed,entries,commitSha},reviewHash=createHash("sha256").update(JSON.stringify(manifest)).digest("hex");return audit("repo_review_commit",{ok:true,exitCode:0,commitSha,files,diff:shown.stdout.slice(0,100_000),truncated:shown.stdout.length>100_000,reviewedChangeSet:{...manifest,reviewHash}},context,started);}}));
- registry.register(def({name:"repo_apply_patch",description:"Atomically replace multiple validated files without committing or pushing.",capability:"write",riskLevel:RISK_LEVELS.LOW_RISK_WRITE,branchBound:true,autonomous:true,available:!remote,configurationStatus:remote?"local_runtime_required":"ready",inputSchema:schema({branch:text,files:{type:"array"}},["branch","files"]),validate({branch:requested,files}){if(requested!==approved())fail("branch_not_allowed","Branch is not approved for development writes.");if(!Array.isArray(files)||!files.length||files.length>20)fail("invalid_input","files must contain 1-20 replacements.");for(const item of files){safe(root,item?.path);if(typeof item?.content!=="string"||item.content.length>250_000)fail("invalid_input","Invalid replacement content.");}},async execute({files},context){const started=Date.now();const originals=[];for(const item of files){let current;try{current=await readFile(safe(root,item.path),"utf8");}catch(error){if(error.code!=="ENOENT")throw error;current=null;}if("expectedContent" in item&&item.expectedContent!==current)fail("patch_conflict",`Expected content does not match ${item.path}.`,{path:item.path});originals.push({path:item.path,current});}const temps=[];try{for(const item of files){const target=safe(root,item.path);const temp=resolve(dirname(target),`.nova-${randomUUID()}.tmp`);await writeFile(temp,item.content,"utf8");temps.push({temp,target});}for(const item of temps)await rename(item.temp,item.target);}catch(error){for(const item of temps)await rm(item.temp,{force:true}).catch(()=>{});for(const original of originals){if(original.current!==null)await writeFile(safe(root,original.path),original.current,"utf8");}throw error;}return audit("repo_apply_patch",{ok:true,files:files.map(x=>x.path),changedFiles:files.length},context,started);}}));
- const testTool=(name,full)=>registry.register(def({name,description:full?"Run the complete allowlisted suite.":"Run a bounded focused Node test selection.",capability:"execute",available:!remote,configurationStatus:remote?"local_runtime_required":"ready",inputSchema:full?schema({timeoutMs:integer}):schema({files:{type:"array"},namePattern:text,timeoutMs:integer},["files"]),async execute(input,context){const started=Date.now();const timeoutMs=Math.max(1000,Math.min(180_000,input.timeoutMs||120_000));let file=process.execPath,args;if(full){if(process.platform==="win32"&&process.env.npm_execpath){args=[process.env.npm_execpath,"test"];}else{file="npm";args=["test"];}}else{if(!Array.isArray(input.files)||!input.files.length||input.files.length>20)fail("invalid_input","Focused tests require 1-20 files.");for(const path of input.files)safe(root,path);args=["--test",...(input.namePattern?[`--test-name-pattern=${input.namePattern}`]:[]),...input.files];}const result=await command(root,file,args,{timeoutMs,runner:commandRunner});const output=`${result.stdout}\n${result.stderr}`.trim();const value={ok:result.exitCode===0,exitCode:result.exitCode,durationMs:result.durationMs,output};if(!value.ok)value.error={code:"test_failed",message:"Allowlisted tests failed."};return audit(name,value,context,started);}}));testTool("test_run",false);testTool("test_run_full",true);
- registry.register(def({name:"git_commit",description:"Commit the exact reviewed local feature-branch change-set without pushing.",capability:"write",riskLevel:RISK_LEVELS.LOW_RISK_WRITE,branchBound:true,autonomous:true,available:!remote,configurationStatus:remote?"local_runtime_required":"ready",inputSchema:schema({branch:text,message:text,paths:{type:"array"},reviewedChangeSet:{type:"object"}},["branch","message","paths"]),async execute({branch:requested,message,paths,reviewedChangeSet},context){const started=Date.now();if(requested!==approved()||["main","master"].includes(requested))fail("branch_not_allowed","Commit branch is not approved.");if(!Array.isArray(paths)||!paths.length)fail("invalid_input","Explicit commit paths are required.");for(const path of paths)safe(root,path);const actual=(await gitCommand(root,["branch","--show-current"],{runner:commandRunner})).stdout.trim();if(actual!==requested)fail("branch_not_allowed","Current branch does not match the approved branch.");if(reviewedChangeSet){const current=await reviewChanges(paths);if(current.clean||current.reviewedChangeSet.reviewHash!==reviewedChangeSet.reviewHash||JSON.stringify(current.reviewedChangeSet.allowedPaths)!==JSON.stringify(reviewedChangeSet.allowedPaths))fail("review_mismatch","Commit contents do not match the durable reviewed change-set.");const stagedBefore=await gitCommand(root,["diff","--cached","--name-only"],{runner:commandRunner});if(stagedBefore.stdout.trim())fail("unreviewed_staged_changes","The Git index contains changes outside this bounded review.");}let result=await gitCommand(root,["add","--",...paths],{runner:commandRunner});if(result.exitCode)fail("commit_failed","Git staging failed.");if(reviewedChangeSet){const staged=await reviewChanges(paths,true),expected=reviewedChangeSet.entries.map(x=>x.path).sort(),actualPaths=staged.reviewedChangeSet.entries.map(x=>x.path).sort();if(JSON.stringify(actualPaths)!==JSON.stringify(expected))fail("review_mismatch","Staged commit files do not match the reviewed change-set.");}result=await gitCommand(root,["commit","-m",message],{runner:commandRunner});if(result.exitCode)fail("commit_failed","Git commit failed.",{stderr:result.stderr});const sha=(await gitCommand(root,["rev-parse","HEAD"],{runner:commandRunner})).stdout.trim(),committed=(await gitCommand(root,["diff-tree","--no-commit-id","--name-only","-r",sha],{runner:commandRunner})).stdout.split(/\r?\n/).filter(Boolean).sort();if(reviewedChangeSet&&JSON.stringify(committed)!==JSON.stringify(reviewedChangeSet.entries.map(x=>x.path).sort()))fail("review_mismatch","Created commit contains files outside the reviewed change-set.");return audit("git_commit",{ok:true,commitSha:sha,branch:requested,files:paths,reviewHash:reviewedChangeSet?.reviewHash},context,started);}}));
- registry.register(def({name:"git_push",description:"Push one exact commit to the exact approved public feature branch.",capability:"write",riskLevel:RISK_LEVELS.SENSITIVE,available:!remote,inputSchema:schema({branch:text,commitSha:text},["branch","commitSha"]),async execute({branch:requested,commitSha},context){if(requested!==approved())fail("branch_not_allowed","Push branch is not approved.");const result=await gitCommand(root,["push","origin",`${commitSha}:refs/heads/${requested}`],{runner:commandRunner});if(result.exitCode)fail("push_failed","Public push failed.");return audit("git_push",{ok:true,branch:requested,commitSha},context);}}));
- const vercelReady=Boolean(environment.NOVA_BRAIN_VERCEL_TOKEN&&environment.NOVA_BRAIN_VERCEL_PROJECT_ID);const selfPreview=environment.VERCEL_ENV==="preview"&&Boolean(environment.VERCEL_DEPLOYMENT_ID&&environment.VERCEL_URL&&environment.VERCEL_GIT_COMMIT_SHA);const vercel=async(path,options={})=>{const response=await fetchImpl(`https://api.vercel.com${path}`,{...options,headers:{Authorization:`Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN}`,...(options.body?{"Content-Type":"application/json"}:{}),...options.headers}});if(!response.ok)fail("deployment_failed",`Vercel request failed with status ${response.status}.`);return response.json();};
- registry.register(def({name:"preview_deploy",description:"Create a Git-backed Preview for one exact approved feature commit; Production is never accepted.",capability:"write",riskLevel:RISK_LEVELS.SENSITIVE,available:vercelReady,configurationStatus:vercelReady?"ready":"configuration_required",inputSchema:schema({branch:text,commitSha:text},["branch","commitSha"]),validate({branch:requested}){if(requested!==approved())fail("production_target_forbidden","Only the approved feature branch may create a Preview.");},async execute({branch:requested,commitSha},context){const deployment=await vercel("/v13/deployments",{method:"POST",body:JSON.stringify({name:environment.NOVA_BRAIN_VERCEL_PROJECT_NAME||undefined,project:environment.NOVA_BRAIN_VERCEL_PROJECT_ID,target:"preview",gitSource:{type:"github",repoId:environment.NOVA_BRAIN_GITHUB_REPOSITORY_ID,ref:requested,sha:commitSha}})});if(deployment.target==="production")fail("production_target_forbidden","Vercel returned a Production deployment.");return audit("preview_deploy",{ok:true,deploymentId:deployment.id||deployment.uid,url:deployment.url,status:deployment.readyState,branch:requested,commitSha},context);}}));
- registry.register(def({name:"ci_status",description:"Inspect public GitHub checks for the current feature commit.",inputSchema:schema({commitSha:text},["commitSha"]),async execute({commitSha},context){const data=await github(`commits/${commitSha}/check-runs`);return audit("ci_status",{ok:true,commitSha,checks:(data.check_runs||[]).slice(0,50).map(x=>({name:x.name,status:x.status,conclusion:x.conclusion,url:x.html_url,summary:String(x.output?.summary||"").slice(0,1000)}))},context);}}));
- registry.register(def({name:"deployment_status",description:"Find and validate the Preview deployment for an exact commit.",available:vercelReady||selfPreview,configurationStatus:vercelReady||selfPreview?"ready":"configuration_required",inputSchema:schema({commitSha:text},["commitSha"]),async execute({commitSha},context){if(selfPreview){if(environment.VERCEL_GIT_COMMIT_REF!==approved())fail("production_target_forbidden","Runtime source is not the approved Preview branch.");if(environment.VERCEL_GIT_COMMIT_SHA!==commitSha)fail("source_mismatch","Runtime commit does not match.");return audit("deployment_status",{ok:true,deploymentId:environment.VERCEL_DEPLOYMENT_ID,url:environment.VERCEL_URL,status:"READY",branch:environment.VERCEL_GIT_COMMIT_REF,commitSha},context);}const data=await vercel(`/v6/deployments?projectId=${encodeURIComponent(environment.NOVA_BRAIN_VERCEL_PROJECT_ID)}&limit=20&target=preview`);const deployment=(data.deployments||[]).find(x=>x.meta?.githubCommitSha===commitSha);if(!deployment)fail("deployment_failed","No Preview deployment exists for the commit.");if(deployment.target==="production"||deployment.meta?.githubCommitRef!==approved())fail("production_target_forbidden","Deployment source is not the approved Preview branch.");return audit("deployment_status",{ok:true,deploymentId:deployment.uid||deployment.id,url:deployment.url,status:deployment.readyState,branch:deployment.meta.githubCommitRef,commitSha},context);}}));
- registry.register(def({name:"deployment_logs",description:"Read bounded build/runtime events for one Preview deployment.",available:vercelReady,configurationStatus:vercelReady?"ready":"configuration_required",inputSchema:schema({deploymentId:text,limit:integer},["deploymentId"]),async execute({deploymentId,limit=100},context){const events=await vercel(`/v2/deployments/${encodeURIComponent(deploymentId)}/events?limit=${Math.min(200,limit)}`);return audit("deployment_logs",{ok:true,deploymentId,events:(Array.isArray(events)?events:events.events||[]).slice(0,Math.min(200,limit)).map(x=>({type:x.type,created:x.created,text:String(x.payload?.text||x.text||"").slice(0,2000)}))},context);}}));
- registry.register(def({name:"preview_verify",description:"Verify a protected Preview route and exact source deployment.",available:vercelReady||selfPreview,configurationStatus:vercelReady||selfPreview?"ready":"configuration_required",inputSchema:schema({deploymentId:text,path:text,expectedStatus:integer,commitSha:text},["deploymentId","path","expectedStatus","commitSha"]),async execute(input,context){if(!input.path.startsWith("/")||input.path.includes(".."))fail("invalid_input","Invalid Preview route.");let deployment;if(selfPreview){deployment={id:environment.VERCEL_DEPLOYMENT_ID,url:environment.VERCEL_URL,target:"preview",gitSource:{sha:environment.VERCEL_GIT_COMMIT_SHA,ref:environment.VERCEL_GIT_COMMIT_REF}};if(input.deploymentId!==deployment.id)fail("source_mismatch","Preview deployment does not match this runtime.");}else deployment=await vercel(`/v13/deployments/${encodeURIComponent(input.deploymentId)}`);if(deployment.target==="production"||deployment.gitSource?.ref!==approved())fail("production_target_forbidden","Production verification is forbidden.");if(deployment.gitSource?.sha!==input.commitSha)fail("source_mismatch","Preview commit does not match.");const response=await fetchImpl(`https://${deployment.url}${input.path}`,{headers:{...(environment.NOVA_BRAIN_VERCEL_TOKEN?{Authorization:`Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN}`}:{}),...(environment.VERCEL_AUTOMATION_BYPASS_SECRET?{"x-vercel-protection-bypass":environment.VERCEL_AUTOMATION_BYPASS_SECRET}:{})}});if(response.status!==input.expectedStatus)fail("preview_unreachable","Preview route returned an unexpected status.",{status:response.status});return audit("preview_verify",{ok:true,deploymentId:input.deploymentId,url:`https://${deployment.url}${input.path}`,status:response.status,commitSha:input.commitSha},context);}}));
- registry.register(def({name:"hands_checkpoint",description:"Persist a durable bounded developer-task checkpoint.",capability:"write",riskLevel:RISK_LEVELS.LOW_RISK_WRITE,autonomous:true,available:Boolean(storage&&ownerId),configurationStatus:storage&&ownerId?"ready":"storage_required",inputSchema:schema({taskId:text,projectId:text,branch:text,startingCommit:text,phase:text,filesTouched:{type:"array"},tests:{type:"object"},commitSha:text,deploymentId:text,previewUrl:text,verification:{type:"object"},blocker:text,approvalNeeded:bool},["taskId","projectId","branch","startingCommit","phase"]),async execute(input,context){if(input.branch!==approved())fail("branch_not_allowed","Checkpoint branch is not approved.");const current=(await storage.listRuns(ownerId,{projectId:input.projectId,limit:100})).find(x=>x.id===input.taskId);const result={checkpoint:redact(input),updatedAt:new Date().toISOString()};if(current)await storage.updateRun(input.taskId,ownerId,{status:"running",result,currentStep:phaseStep(input.phase)});else await storage.createRun({id:input.taskId,ownerId,projectId:input.projectId,goal:"Hands developer task",status:"running"}).then(()=>storage.updateRun(input.taskId,ownerId,{result,currentStep:phaseStep(input.phase)}));await audit("hands_checkpoint",{ok:true,...result},context);return {ok:true,...result};}}));
- registry.register(def({name:"hands_repair_plan",description:"Validate one bounded supervised repair iteration and stop conditions.",inputSchema:schema({iteration:integer,maxIterations:integer,phase:text,lastErrorCode:text}),async execute({iteration=0,maxIterations=1,phase="inspect",lastErrorCode=null},context){const bounded=Math.max(1,Math.min(3,maxIterations));if(iteration>=bounded)return audit("hands_repair_plan",{ok:false,stop:true,error:{code:"repair_limit_reached",message:"Bounded repair iteration limit reached."}},context);return audit("hands_repair_plan",{ok:true,stop:false,iteration,nextIteration:iteration+1,maxIterations:bounded,phase,lastErrorCode},context);}}));
+const exec = promisify(execFile);
+const protectedName =
+  /(^|[\\/])(\.env|\.git|node_modules|\.vercel)([\\/]|$)|secret|credential|token|private.?key/i;
+export class HandsError extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.name = "HandsError";
+    this.code = code;
+    this.details = details;
+  }
 }
-function phaseStep(phase){return Math.max(1,["inspect","diagnose","patch","focused_test","full_test","diff","commit","push_wait","deploy","verify","complete"].indexOf(phase)+1);}
+const fail = (code, message, details) => {
+  throw new HandsError(code, message, details);
+};
+const schema = (properties = {}, required = []) => ({
+  type: "object",
+  properties,
+  required,
+  additionalProperties: false,
+});
+const text = { type: "string" };
+const integer = { type: "number" };
+const bool = { type: "boolean" };
+function safe(root, input = ".") {
+  if (typeof input !== "string" || !input.trim())
+    fail("invalid_input", "A repository path is required.");
+  const target = resolve(root, input);
+  if (target !== root && !target.startsWith(`${root}${sep}`))
+    fail("path_traversal", "Path is outside the approved repository.");
+  if (protectedName.test(relative(root, target)))
+    fail("protected_path", "Protected repository path.");
+  return target;
+}
+async function tree(root, dir = root, out = []) {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if ([".git", "node_modules", ".vercel"].includes(entry.name)) continue;
+    const full = resolve(dir, entry.name);
+    if (entry.isDirectory()) await tree(root, full, out);
+    else out.push(relative(root, full).replaceAll("\\", "/"));
+    if (out.length >= 1000) break;
+  }
+  return out;
+}
+function redact(value) {
+  if (Array.isArray(value)) return value.map(redact);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        /token|secret|password|authorization|api.?key/i.test(key) ? key : key,
+        /token|secret|password|authorization|api.?key/i.test(key)
+          ? "[REDACTED]"
+          : redact(item),
+      ]),
+    );
+  return value;
+}
+async function command(
+  root,
+  file,
+  args,
+  { timeoutMs = 30_000, runner = exec } = {},
+) {
+  try {
+    const started = Date.now();
+    const result = await runner(file, args, {
+      cwd: root,
+      timeout: timeoutMs,
+      maxBuffer: 500_000,
+    });
+    return {
+      exitCode: 0,
+      stdout: String(result.stdout || "").slice(-100_000),
+      stderr: String(result.stderr || "").slice(-100_000),
+      durationMs: Date.now() - started,
+      timedOut: false,
+    };
+  } catch (error) {
+    if (error.killed || error.code === "ETIMEDOUT")
+      fail("test_timeout", "Allowlisted command timed out.", { timeoutMs });
+    return {
+      exitCode: Number.isInteger(error.code) ? error.code : 1,
+      stdout: String(error.stdout || "").slice(-100_000),
+      stderr: String(error.stderr || error.message || "").slice(-100_000),
+      durationMs: 0,
+      timedOut: false,
+    };
+  }
+}
+const gitCommand = (root, args, options = {}) =>
+  command(
+    root,
+    "git",
+    ["-c", `safe.directory=${root.replaceAll("\\", "/")}`, ...args],
+    options,
+  );
+const def = (tool) => ({
+  category: "developer",
+  capability: "read",
+  riskLevel: RISK_LEVELS.READ_ONLY,
+  available: true,
+  configurationStatus: "ready",
+  ...tool,
+});
+
+export function registerHandsTools(
+  registry,
+  {
+    root = process.cwd(),
+    environment = process.env,
+    storage,
+    ownerId,
+    fetchImpl = fetch,
+    commandRunner,
+  } = {},
+) {
+  const remote = Boolean(environment.VERCEL);
+  const repository =
+    environment.NOVA_BRAIN_GITHUB_REPOSITORY || "hshanbour/nova-brain";
+  const branch =
+    environment.NOVA_BRAIN_DEVELOPMENT_BRANCH ||
+    "feat/nova-brain-mvp-foundation";
+  const approved = () => {
+    if (["main", "master"].includes(branch))
+      fail(
+        "branch_not_allowed",
+        "The configured development branch is protected.",
+      );
+    return branch;
+  };
+  const audit = async (tool, result, context = {}, started = Date.now()) => {
+    if (storage && ownerId)
+      await storage.appendActivity({
+        ownerId,
+        projectId: context.projectId || "nova-brain",
+        runId: context.runId || null,
+        action: "developer_runtime_action",
+        tool,
+        status: result?.ok === false ? "failed" : "completed",
+        summary: `${tool} ${result?.ok === false ? "failed" : "completed"}.`,
+        metadata: redact({
+          durationMs: Date.now() - started,
+          files: result?.files,
+          commitSha: result?.commitSha,
+          deploymentId: result?.deploymentId,
+          errorCode: result?.error?.code,
+        }),
+      });
+    return result;
+  };
+  const github = async (path) => {
+    const response = await fetchImpl(
+      `https://api.github.com/repos/${repository}/${path}`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          ...(environment.NOVA_BRAIN_GITHUB_TOKEN
+            ? { Authorization: `Bearer ${environment.NOVA_BRAIN_GITHUB_TOKEN}` }
+            : {}),
+        },
+      },
+    );
+    if (!response.ok)
+      fail(
+        "remote_repository_failed",
+        `Repository request failed with status ${response.status}.`,
+      );
+    return response.json();
+  };
+  registry.register(
+    def({
+      name: "repo_list",
+      description: "List a bounded repository tree.",
+      inputSchema: schema({ path: text, limit: integer }),
+      async execute({ path = ".", limit = 250 }, context) {
+        const started = Date.now();
+        safe(root, path);
+        let files;
+        if (remote) {
+          const data = await github(
+            `git/trees/${encodeURIComponent(approved())}?recursive=1`,
+          );
+          const prefix = path === "." ? "" : `${path.replace(/\/$/, "")}/`;
+          files = (data.tree || [])
+            .filter(
+              (x) =>
+                x.type === "blob" &&
+                x.path.startsWith(prefix) &&
+                !protectedName.test(x.path),
+            )
+            .map((x) => x.path);
+        } else files = await tree(root, safe(root, path));
+        const bounded = files.slice(0, Math.max(1, Math.min(500, limit)));
+        return audit(
+          "repo_list",
+          {
+            ok: true,
+            files: bounded,
+            count: bounded.length,
+            truncated: files.length > bounded.length,
+          },
+          context,
+          started,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "repo_read",
+      description: "Read bounded UTF-8 source text.",
+      inputSchema: schema(
+        { path: text, startLine: integer, endLine: integer },
+        ["path"],
+      ),
+      async execute({ path, startLine = 1, endLine = 500 }, context) {
+        const started = Date.now();
+        safe(root, path);
+        let content;
+        if (remote) {
+          const data = await github(
+            `contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(approved())}`,
+          );
+          content = Buffer.from(data.content || "", "base64").toString("utf8");
+        } else content = await readFile(safe(root, path), "utf8");
+        const lines = content.split(/\r?\n/);
+        const end = Math.min(
+          lines.length,
+          startLine + Math.min(1000, Math.max(1, endLine - startLine + 1)) - 1,
+        );
+        return audit(
+          "repo_read",
+          {
+            ok: true,
+            path,
+            startLine,
+            endLine: end,
+            content: lines.slice(Math.max(0, startLine - 1), end).join("\n"),
+            truncated: end < lines.length,
+          },
+          context,
+          started,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "repo_path_state",
+      description:
+        "Resolve authoritative existence for one path at an exact commit and in the current worktree.",
+      inputSchema: schema({ path: text, commitSha: text }, [
+        "path",
+        "commitSha",
+      ]),
+      async execute({ path, commitSha }, context) {
+        const started = Date.now();
+        safe(root, path);
+        if (!/^[a-f0-9]{40}$/.test(commitSha))
+          fail("invalid_input", "An exact commit is required.");
+        if (remote) {
+          const data = await github(
+              `git/trees/${encodeURIComponent(commitSha)}?recursive=1`,
+            ),
+            exists = (data.tree || []).some(
+              (item) => item.type === "blob" && item.path === path,
+            );
+          return audit(
+            "repo_path_state",
+            {
+              ok: true,
+              path,
+              commitSha,
+              existsInCommit: exists,
+              existsInWorktree: exists,
+              staged: false,
+              untracked: false,
+            },
+            context,
+            started,
+          );
+        }
+        const base = await gitCommand(
+            root,
+            ["cat-file", "-e", `${commitSha}:${path}`],
+            { runner: commandRunner },
+          ),
+          untracked = await gitCommand(
+            root,
+            ["ls-files", "--others", "--exclude-standard", "--", path],
+            { runner: commandRunner },
+          );
+        let existsInWorktree = true;
+        try {
+          await readFile(safe(root, path));
+        } catch (error) {
+          if (error.code === "ENOENT") existsInWorktree = false;
+          else throw error;
+        }
+        const staged =
+          (
+            await gitCommand(
+              root,
+              ["diff", "--cached", "--name-only", "--", path],
+              { runner: commandRunner },
+            )
+          ).stdout.trim() !== "";
+        return audit(
+          "repo_path_state",
+          {
+            ok: true,
+            path,
+            commitSha,
+            existsInCommit: base.exitCode === 0,
+            existsInWorktree,
+            staged,
+            untracked: Boolean(untracked.stdout.trim()),
+          },
+          context,
+          started,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "repo_search",
+      description:
+        "Bounded filename, literal, regex, or symbol repository search.",
+      inputSchema: schema(
+        { query: text, mode: { type: "string" }, path: text, limit: integer },
+        ["query"],
+      ),
+      async execute(
+        { query, mode = "literal", path = ".", limit = 100 },
+        context,
+      ) {
+        const started = Date.now();
+        if (query.length > 300)
+          fail("invalid_input", "Search query is too long.");
+        if (!["filename", "literal", "regex", "symbol"].includes(mode))
+          fail("invalid_input", "Unsupported search mode.");
+        let pattern;
+        try {
+          pattern =
+            mode === "regex"
+              ? new RegExp(query, "iu")
+              : mode === "symbol"
+                ? new RegExp(
+                    `\\b${query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+                    "u",
+                  )
+                : null;
+        } catch {
+          fail("invalid_regex", "Search regex is invalid.");
+        }
+        const paths = remote
+          ? (
+              await github(
+                `git/trees/${encodeURIComponent(approved())}?recursive=1`,
+              )
+            ).tree
+              .filter((x) => x.type === "blob")
+              .map((x) => x.path)
+          : await tree(root, safe(root, path));
+        const matches = [];
+        for (const file of paths) {
+          if (
+            matches.length >= Math.min(200, limit) ||
+            protectedName.test(file) ||
+            !file.startsWith(path === "." ? "" : path)
+          )
+            continue;
+          if (mode === "filename") {
+            if (basename(file).toLowerCase().includes(query.toLowerCase()))
+              matches.push({ path: file });
+            continue;
+          }
+          let content;
+          try {
+            if (remote) {
+              const data = await github(
+                `contents/${file.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(approved())}`,
+              );
+              content = Buffer.from(data.content || "", "base64").toString(
+                "utf8",
+              );
+            } else content = await readFile(safe(root, file), "utf8");
+          } catch {
+            continue;
+          }
+          for (const [index, line] of content.split(/\r?\n/).entries()) {
+            const hit = pattern
+              ? pattern.test(line)
+              : line.toLowerCase().includes(query.toLowerCase());
+            pattern && (pattern.lastIndex = 0);
+            if (hit)
+              matches.push({
+                path: file,
+                line: index + 1,
+                text: line.slice(0, 300),
+              });
+            if (matches.length >= Math.min(200, limit)) break;
+          }
+        }
+        return audit(
+          "repo_search",
+          {
+            ok: true,
+            mode,
+            matches,
+            count: matches.length,
+            truncated: matches.length >= Math.min(200, limit),
+          },
+          context,
+          started,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "git_status",
+      description: "Return structured branch, commit, and working-tree state.",
+      async execute(_input, context) {
+        const started = Date.now();
+        approved();
+        if (remote) {
+          if (
+            environment.VERCEL_GIT_COMMIT_REF &&
+            environment.VERCEL_GIT_COMMIT_REF !== branch
+          )
+            fail(
+              "branch_not_allowed",
+              "Runtime source is not the approved feature branch.",
+            );
+          const currentCommit =
+            environment.VERCEL_GIT_COMMIT_SHA ||
+            (await github(`commits/${encodeURIComponent(branch)}`)).sha;
+          return audit(
+            "git_status",
+            {
+              ok: true,
+              branch,
+              currentCommit,
+              remote: true,
+              immutable: true,
+              clean: true,
+              changes: [],
+            },
+            context,
+            started,
+          );
+        }
+        const [branchResult, sha, status] = await Promise.all([
+          gitCommand(root, ["branch", "--show-current"], {
+            runner: commandRunner,
+          }),
+          gitCommand(root, ["rev-parse", "HEAD"], { runner: commandRunner }),
+          gitCommand(root, ["status", "--porcelain=v1"], {
+            runner: commandRunner,
+          }),
+        ]);
+        const currentBranch = branchResult.stdout.trim();
+        if (["main", "master"].includes(currentBranch))
+          fail(
+            "branch_not_allowed",
+            "Code mutation is forbidden on the protected branch.",
+          );
+        const entries = status.stdout.trim()
+          ? status.stdout
+              .trim()
+              .split(/\r?\n/)
+              .map((line) => ({ state: line.slice(0, 2), path: line.slice(3) }))
+          : [];
+        return audit(
+          "git_status",
+          {
+            ok: true,
+            branch: currentBranch,
+            currentCommit: sha.stdout.trim(),
+            clean: entries.length === 0,
+            changes: entries,
+          },
+          context,
+          started,
+        );
+      },
+    }),
+  );
+  const reviewChanges = async (paths, staged = false) => {
+    const allowed = [...new Set(paths.length ? paths : ["."])].sort();
+    for (const path of allowed) safe(root, path);
+    const tracked = await gitCommand(
+        root,
+        [
+          "diff",
+          ...(staged ? ["--cached"] : []),
+          "--find-renames",
+          "--",
+          ...allowed,
+        ],
+        { runner: commandRunner },
+      ),
+      names = await gitCommand(
+        root,
+        [
+          "diff",
+          ...(staged ? ["--cached"] : []),
+          "--name-status",
+          "--find-renames",
+          "--",
+          ...allowed,
+        ],
+        { runner: commandRunner },
+      );
+    if (tracked.exitCode || names.exitCode)
+      return {
+        ok: false,
+        exitCode: tracked.exitCode || names.exitCode,
+        diff: "",
+        entries: [],
+        allowedPaths: allowed,
+        reviewHash: null,
+      };
+    const entries = [];
+    for (const line of names.stdout.split(/\r?\n/).filter(Boolean)) {
+      const [status, ...items] = line.split("\t"),
+        path = items.at(-1);
+      entries.push({
+        status: status.startsWith("R") ? "R" : status,
+        path,
+        previousPath: status.startsWith("R") ? items[0] : undefined,
+      });
+    }
+    let extra = "";
+    if (!staged) {
+      const untracked = await gitCommand(
+        root,
+        ["ls-files", "--others", "--exclude-standard", "--", ...allowed],
+        { runner: commandRunner },
+      );
+      if (untracked.exitCode)
+        return {
+          ok: false,
+          exitCode: untracked.exitCode,
+          diff: "",
+          entries: [],
+          allowedPaths: allowed,
+          reviewHash: null,
+        };
+      for (const path of untracked.stdout
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .sort()) {
+        const buffer = await readFile(safe(root, path));
+        if (buffer.length > 100_000 || buffer.includes(0))
+          fail(
+            "unsupported_review_file",
+            "New binary or oversized files require an explicit safe review mechanism.",
+            { path },
+          );
+        const content = buffer.toString("utf8"),
+          lines = content.split("\n"),
+          body = lines.map((line) => `+${line}`).join("\n");
+        extra += `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lines.length} @@\n${body}\n`;
+        entries.push({ status: "A", path });
+      }
+    }
+    for (const entry of entries) {
+      if (entry.status !== "D") {
+        const buffer = await readFile(safe(root, entry.path));
+        if (buffer.length > 100_000 || buffer.includes(0))
+          fail(
+            "unsupported_review_file",
+            "Binary or oversized changes require an explicit safe review mechanism.",
+            { path: entry.path },
+          );
+        entry.contentHash = createHash("sha256").update(buffer).digest("hex");
+      }
+    }
+    entries.sort((a, b) => a.path.localeCompare(b.path));
+    const diff = `${tracked.stdout}${extra}`,
+      manifest = { allowedPaths: allowed, entries };
+    return {
+      ok: true,
+      exitCode: 0,
+      diff: diff.slice(0, 100_000),
+      truncated: diff.length > 100_000,
+      clean: entries.length === 0,
+      reviewedChangeSet: {
+        ...manifest,
+        reviewHash: createHash("sha256")
+          .update(JSON.stringify(manifest))
+          .digest("hex"),
+      },
+    };
+  };
+  registry.register(
+    def({
+      name: "repo_diff",
+      description:
+        "Inspect every bounded tracked and allowed untracked repository change.",
+      inputSchema: schema({ paths: { type: "array" }, staged: bool }),
+      async execute({ paths = [], staged = false }, context) {
+        const started = Date.now();
+        if (remote)
+          return audit(
+            "repo_diff",
+            {
+              ok: true,
+              exitCode: 0,
+              diff: "",
+              truncated: false,
+              remote: true,
+              immutable: true,
+              clean: true,
+              paths,
+              staged,
+            },
+            context,
+            started,
+          );
+        return audit(
+          "repo_diff",
+          await reviewChanges(paths, staged),
+          context,
+          started,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "repo_review_commit",
+      description:
+        "Review one exact unpushed commit against an explicit bounded file allowlist.",
+      inputSchema: schema({ commitSha: text, paths: { type: "array" } }, [
+        "commitSha",
+        "paths",
+      ]),
+      async execute({ commitSha, paths }, context) {
+        const started = Date.now();
+        if (
+          !/^[a-f0-9]{40}$/.test(commitSha) ||
+          !Array.isArray(paths) ||
+          !paths.length
+        )
+          fail("invalid_input", "Exact commit and file scope are required.");
+        const allowed = [...new Set(paths)].sort();
+        for (const path of allowed) safe(root, path);
+        const head = (
+          await gitCommand(root, ["rev-parse", commitSha], {
+            runner: commandRunner,
+          })
+        ).stdout.trim();
+        if (head !== commitSha)
+          fail("commit_mismatch", "The exact local commit is unavailable.");
+        const files = (
+          await gitCommand(
+            root,
+            ["diff-tree", "--no-commit-id", "--name-only", "-r", commitSha],
+            { runner: commandRunner },
+          )
+        ).stdout
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .sort();
+        if (JSON.stringify(files) !== JSON.stringify(allowed))
+          fail(
+            "unreviewed_commit_file",
+            "Commit contains files outside the bounded review.",
+            { files },
+          );
+        const numstat = await gitCommand(
+          root,
+          ["diff", "--numstat", `${commitSha}^`, commitSha, "--", ...allowed],
+          { runner: commandRunner },
+        );
+        if (
+          numstat.stdout
+            .split(/\r?\n/)
+            .some((line) => line.startsWith("-\t-\t"))
+        )
+          fail(
+            "unsupported_review_file",
+            "Binary commit content cannot use the text review path.",
+          );
+        const shown = await gitCommand(
+          root,
+          ["show", "--format=", "--find-renames", commitSha, "--", ...allowed],
+          { runner: commandRunner },
+        );
+        if (shown.exitCode)
+          fail("commit_review_failed", "Exact commit review failed.");
+        const entries = [];
+        for (const path of allowed) {
+          const blob = await gitCommand(
+            root,
+            ["rev-parse", `${commitSha}:${path}`],
+            { runner: commandRunner },
+          );
+          entries.push({
+            path,
+            status: "committed",
+            contentHash: blob.exitCode ? null : blob.stdout.trim(),
+          });
+        }
+        const manifest = { allowedPaths: allowed, entries, commitSha },
+          reviewHash = createHash("sha256")
+            .update(JSON.stringify(manifest))
+            .digest("hex");
+        return audit(
+          "repo_review_commit",
+          {
+            ok: true,
+            exitCode: 0,
+            commitSha,
+            files,
+            diff: shown.stdout.slice(0, 100_000),
+            truncated: shown.stdout.length > 100_000,
+            reviewedChangeSet: { ...manifest, reviewHash },
+          },
+          context,
+          started,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "repo_apply_patch",
+      description:
+        "Atomically create or replace multiple validated files without committing or pushing.",
+      capability: "write",
+      riskLevel: RISK_LEVELS.LOW_RISK_WRITE,
+      branchBound: true,
+      autonomous: true,
+      available: !remote,
+      configurationStatus: remote ? "local_runtime_required" : "ready",
+      inputSchema: schema(
+        { branch: text, currentCommit: text, files: { type: "array" } },
+        ["branch", "files"],
+      ),
+      validate({ branch: requested, files }) {
+        if (requested !== approved())
+          fail(
+            "branch_not_allowed",
+            "Branch is not approved for development writes.",
+          );
+        if (!Array.isArray(files) || !files.length || files.length > 20)
+          fail("invalid_input", "files must contain 1-20 changes.");
+        for (const item of files) {
+          safe(root, item?.path);
+          if (item?.operation !== undefined && !["create", "replace"].includes(item.operation))
+            fail("invalid_input", "Invalid file operation.");
+          if (
+            typeof item?.content !== "string" ||
+            item.content.length > 250_000
+          )
+            fail("invalid_input", "Invalid replacement content.");
+        }
+      },
+      async execute({ files, currentCommit }, context) {
+        const started = Date.now();
+        const originals = [];
+        for (const item of files) {
+          const operation = item.operation || ("expectedContent" in item ? "replace" : "legacy_replace");
+          let current;
+          try {
+            current = await readFile(safe(root, item.path), "utf8");
+          } catch (error) {
+            if (error.code !== "ENOENT") throw error;
+            current = null;
+          }
+          let baseExists = false;
+          if (currentCommit) {
+            if (!/^[a-f0-9]{40}$/.test(currentCommit))
+              fail("invalid_input", "Invalid bound commit.");
+            baseExists =
+              (
+                await gitCommand(
+                  root,
+                  ["cat-file", "-e", `${currentCommit}:${item.path}`],
+                  { runner: commandRunner },
+                )
+              ).exitCode === 0;
+          }
+          if (operation === "create" && (current !== null || baseExists))
+            fail(
+              "operation_conflict",
+              `Create target already exists: ${item.path}.`,
+              { path: item.path, requiredAction: "read_before_modify" },
+            );
+          if (
+            operation === "replace" &&
+            (current === null ||
+              !("expectedContent" in item) ||
+              item.expectedContent !== current)
+          )
+            fail(
+              "patch_conflict",
+              `Expected existing content does not match ${item.path}.`,
+              { path: item.path },
+            );
+          originals.push({ path: item.path, current });
+        }
+        const temps = [];
+        try {
+          for (const item of files) {
+            const target = safe(root, item.path);
+            const temp = resolve(dirname(target), `.nova-${randomUUID()}.tmp`);
+            await writeFile(temp, item.content, "utf8");
+            temps.push({ temp, target });
+          }
+          for (const item of temps) await rename(item.temp, item.target);
+        } catch (error) {
+          for (const item of temps)
+            await rm(item.temp, { force: true }).catch(() => {});
+          for (const original of originals) {
+            if (original.current !== null)
+              await writeFile(
+                safe(root, original.path),
+                original.current,
+                "utf8",
+              );
+            else
+              await rm(safe(root, original.path), { force: true }).catch(
+                () => {},
+              );
+          }
+          throw error;
+        }
+        return audit(
+          "repo_apply_patch",
+          {
+            ok: true,
+            files: files.map((x) => x.path),
+            changedFiles: files.length,
+          },
+          context,
+          started,
+        );
+      },
+    }),
+  );
+  const testTool = (name, full) =>
+    registry.register(
+      def({
+        name,
+        description: full
+          ? "Run the complete allowlisted suite."
+          : "Run a bounded focused Node test selection.",
+        capability: "execute",
+        available: !remote,
+        configurationStatus: remote ? "local_runtime_required" : "ready",
+        inputSchema: full
+          ? schema({ timeoutMs: integer })
+          : schema(
+              {
+                files: { type: "array" },
+                namePattern: text,
+                timeoutMs: integer,
+              },
+              ["files"],
+            ),
+        async execute(input, context) {
+          const started = Date.now();
+          const timeoutMs = Math.max(
+            1000,
+            Math.min(180_000, input.timeoutMs || 120_000),
+          );
+          let file = process.execPath,
+            args;
+          if (full) {
+            if (process.platform === "win32" && process.env.npm_execpath) {
+              args = [process.env.npm_execpath, "test"];
+            } else {
+              file = "npm";
+              args = ["test"];
+            }
+          } else {
+            if (
+              !Array.isArray(input.files) ||
+              !input.files.length ||
+              input.files.length > 20
+            )
+              fail("invalid_input", "Focused tests require 1-20 files.");
+            for (const path of input.files) safe(root, path);
+            args = [
+              "--test",
+              ...(input.namePattern
+                ? [`--test-name-pattern=${input.namePattern}`]
+                : []),
+              ...input.files,
+            ];
+          }
+          const result = await command(root, file, args, {
+            timeoutMs,
+            runner: commandRunner,
+          });
+          const output = `${result.stdout}\n${result.stderr}`.trim();
+          const value = {
+            ok: result.exitCode === 0,
+            exitCode: result.exitCode,
+            durationMs: result.durationMs,
+            output,
+          };
+          if (!value.ok)
+            value.error = {
+              code: "test_failed",
+              message: "Allowlisted tests failed.",
+            };
+          return audit(name, value, context, started);
+        },
+      }),
+    );
+  testTool("test_run", false);
+  testTool("test_run_full", true);
+  registry.register(
+    def({
+      name: "git_commit",
+      description:
+        "Commit the exact reviewed local feature-branch change-set without pushing.",
+      capability: "write",
+      riskLevel: RISK_LEVELS.LOW_RISK_WRITE,
+      branchBound: true,
+      autonomous: true,
+      available: !remote,
+      configurationStatus: remote ? "local_runtime_required" : "ready",
+      inputSchema: schema(
+        {
+          branch: text,
+          message: text,
+          paths: { type: "array" },
+          reviewedChangeSet: { type: "object" },
+        },
+        ["branch", "message", "paths"],
+      ),
+      async execute(
+        { branch: requested, message, paths, reviewedChangeSet },
+        context,
+      ) {
+        const started = Date.now();
+        if (requested !== approved() || ["main", "master"].includes(requested))
+          fail("branch_not_allowed", "Commit branch is not approved.");
+        if (!Array.isArray(paths) || !paths.length)
+          fail("invalid_input", "Explicit commit paths are required.");
+        for (const path of paths) safe(root, path);
+        const actual = (
+          await gitCommand(root, ["branch", "--show-current"], {
+            runner: commandRunner,
+          })
+        ).stdout.trim();
+        if (actual !== requested)
+          fail(
+            "branch_not_allowed",
+            "Current branch does not match the approved branch.",
+          );
+        if (reviewedChangeSet) {
+          const current = await reviewChanges(paths);
+          if (
+            current.clean ||
+            current.reviewedChangeSet.reviewHash !==
+              reviewedChangeSet.reviewHash ||
+            JSON.stringify(current.reviewedChangeSet.allowedPaths) !==
+              JSON.stringify(reviewedChangeSet.allowedPaths)
+          )
+            fail(
+              "review_mismatch",
+              "Commit contents do not match the durable reviewed change-set.",
+            );
+          const stagedBefore = await gitCommand(
+            root,
+            ["diff", "--cached", "--name-only"],
+            { runner: commandRunner },
+          );
+          if (stagedBefore.stdout.trim())
+            fail(
+              "unreviewed_staged_changes",
+              "The Git index contains changes outside this bounded review.",
+            );
+        }
+        let result = await gitCommand(root, ["add", "--", ...paths], {
+          runner: commandRunner,
+        });
+        if (result.exitCode) fail("commit_failed", "Git staging failed.");
+        if (reviewedChangeSet) {
+          const staged = await reviewChanges(paths, true),
+            expected = reviewedChangeSet.entries.map((x) => x.path).sort(),
+            actualPaths = staged.reviewedChangeSet.entries
+              .map((x) => x.path)
+              .sort();
+          if (JSON.stringify(actualPaths) !== JSON.stringify(expected))
+            fail(
+              "review_mismatch",
+              "Staged commit files do not match the reviewed change-set.",
+            );
+        }
+        result = await gitCommand(root, ["commit", "-m", message], {
+          runner: commandRunner,
+        });
+        if (result.exitCode)
+          fail("commit_failed", "Git commit failed.", {
+            stderr: result.stderr,
+          });
+        const sha = (
+            await gitCommand(root, ["rev-parse", "HEAD"], {
+              runner: commandRunner,
+            })
+          ).stdout.trim(),
+          committed = (
+            await gitCommand(
+              root,
+              ["diff-tree", "--no-commit-id", "--name-only", "-r", sha],
+              { runner: commandRunner },
+            )
+          ).stdout
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .sort();
+        if (
+          reviewedChangeSet &&
+          JSON.stringify(committed) !==
+            JSON.stringify(reviewedChangeSet.entries.map((x) => x.path).sort())
+        )
+          fail(
+            "review_mismatch",
+            "Created commit contains files outside the reviewed change-set.",
+          );
+        return audit(
+          "git_commit",
+          {
+            ok: true,
+            commitSha: sha,
+            branch: requested,
+            files: paths,
+            reviewHash: reviewedChangeSet?.reviewHash,
+          },
+          context,
+          started,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "git_push",
+      description:
+        "Push one exact commit to the exact approved public feature branch.",
+      capability: "write",
+      riskLevel: RISK_LEVELS.SENSITIVE,
+      available: !remote,
+      inputSchema: schema({ branch: text, commitSha: text }, [
+        "branch",
+        "commitSha",
+      ]),
+      async execute({ branch: requested, commitSha }, context) {
+        if (requested !== approved())
+          fail("branch_not_allowed", "Push branch is not approved.");
+        const result = await gitCommand(
+          root,
+          ["push", "origin", `${commitSha}:refs/heads/${requested}`],
+          { runner: commandRunner },
+        );
+        if (result.exitCode) fail("push_failed", "Public push failed.");
+        return audit(
+          "git_push",
+          { ok: true, branch: requested, commitSha },
+          context,
+        );
+      },
+    }),
+  );
+  const vercelReady = Boolean(
+    environment.NOVA_BRAIN_VERCEL_TOKEN &&
+      environment.NOVA_BRAIN_VERCEL_PROJECT_ID,
+  );
+  const selfPreview =
+    environment.VERCEL_ENV === "preview" &&
+    Boolean(
+      environment.VERCEL_DEPLOYMENT_ID &&
+        environment.VERCEL_URL &&
+        environment.VERCEL_GIT_COMMIT_SHA,
+    );
+  const vercel = async (path, options = {}) => {
+    const response = await fetchImpl(`https://api.vercel.com${path}`, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN}`,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...options.headers,
+      },
+    });
+    if (!response.ok)
+      fail(
+        "deployment_failed",
+        `Vercel request failed with status ${response.status}.`,
+      );
+    return response.json();
+  };
+  registry.register(
+    def({
+      name: "preview_deploy",
+      description:
+        "Create a Git-backed Preview for one exact approved feature commit; Production is never accepted.",
+      capability: "write",
+      riskLevel: RISK_LEVELS.SENSITIVE,
+      available: vercelReady,
+      configurationStatus: vercelReady ? "ready" : "configuration_required",
+      inputSchema: schema({ branch: text, commitSha: text }, [
+        "branch",
+        "commitSha",
+      ]),
+      validate({ branch: requested }) {
+        if (requested !== approved())
+          fail(
+            "production_target_forbidden",
+            "Only the approved feature branch may create a Preview.",
+          );
+      },
+      async execute({ branch: requested, commitSha }, context) {
+        const deployment = await vercel("/v13/deployments", {
+          method: "POST",
+          body: JSON.stringify({
+            name: environment.NOVA_BRAIN_VERCEL_PROJECT_NAME || undefined,
+            project: environment.NOVA_BRAIN_VERCEL_PROJECT_ID,
+            target: "preview",
+            gitSource: {
+              type: "github",
+              repoId: environment.NOVA_BRAIN_GITHUB_REPOSITORY_ID,
+              ref: requested,
+              sha: commitSha,
+            },
+          }),
+        });
+        if (deployment.target === "production")
+          fail(
+            "production_target_forbidden",
+            "Vercel returned a Production deployment.",
+          );
+        return audit(
+          "preview_deploy",
+          {
+            ok: true,
+            deploymentId: deployment.id || deployment.uid,
+            url: deployment.url,
+            status: deployment.readyState,
+            branch: requested,
+            commitSha,
+          },
+          context,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "ci_status",
+      description:
+        "Inspect public GitHub checks for the current feature commit.",
+      inputSchema: schema({ commitSha: text }, ["commitSha"]),
+      async execute({ commitSha }, context) {
+        const data = await github(`commits/${commitSha}/check-runs`);
+        return audit(
+          "ci_status",
+          {
+            ok: true,
+            commitSha,
+            checks: (data.check_runs || [])
+              .slice(0, 50)
+              .map((x) => ({
+                name: x.name,
+                status: x.status,
+                conclusion: x.conclusion,
+                url: x.html_url,
+                summary: String(x.output?.summary || "").slice(0, 1000),
+              })),
+          },
+          context,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "deployment_status",
+      description:
+        "Find and validate the Preview deployment for an exact commit.",
+      available: vercelReady || selfPreview,
+      configurationStatus:
+        vercelReady || selfPreview ? "ready" : "configuration_required",
+      inputSchema: schema({ commitSha: text }, ["commitSha"]),
+      async execute({ commitSha }, context) {
+        if (selfPreview) {
+          if (environment.VERCEL_GIT_COMMIT_REF !== approved())
+            fail(
+              "production_target_forbidden",
+              "Runtime source is not the approved Preview branch.",
+            );
+          if (environment.VERCEL_GIT_COMMIT_SHA !== commitSha)
+            fail("source_mismatch", "Runtime commit does not match.");
+          return audit(
+            "deployment_status",
+            {
+              ok: true,
+              deploymentId: environment.VERCEL_DEPLOYMENT_ID,
+              url: environment.VERCEL_URL,
+              status: "READY",
+              branch: environment.VERCEL_GIT_COMMIT_REF,
+              commitSha,
+            },
+            context,
+          );
+        }
+        const data = await vercel(
+          `/v6/deployments?projectId=${encodeURIComponent(environment.NOVA_BRAIN_VERCEL_PROJECT_ID)}&limit=20&target=preview`,
+        );
+        const deployment = (data.deployments || []).find(
+          (x) => x.meta?.githubCommitSha === commitSha,
+        );
+        if (!deployment)
+          fail(
+            "deployment_failed",
+            "No Preview deployment exists for the commit.",
+          );
+        if (
+          deployment.target === "production" ||
+          deployment.meta?.githubCommitRef !== approved()
+        )
+          fail(
+            "production_target_forbidden",
+            "Deployment source is not the approved Preview branch.",
+          );
+        return audit(
+          "deployment_status",
+          {
+            ok: true,
+            deploymentId: deployment.uid || deployment.id,
+            url: deployment.url,
+            status: deployment.readyState,
+            branch: deployment.meta.githubCommitRef,
+            commitSha,
+          },
+          context,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "deployment_logs",
+      description:
+        "Read bounded build/runtime events for one Preview deployment.",
+      available: vercelReady,
+      configurationStatus: vercelReady ? "ready" : "configuration_required",
+      inputSchema: schema({ deploymentId: text, limit: integer }, [
+        "deploymentId",
+      ]),
+      async execute({ deploymentId, limit = 100 }, context) {
+        const events = await vercel(
+          `/v2/deployments/${encodeURIComponent(deploymentId)}/events?limit=${Math.min(200, limit)}`,
+        );
+        return audit(
+          "deployment_logs",
+          {
+            ok: true,
+            deploymentId,
+            events: (Array.isArray(events) ? events : events.events || [])
+              .slice(0, Math.min(200, limit))
+              .map((x) => ({
+                type: x.type,
+                created: x.created,
+                text: String(x.payload?.text || x.text || "").slice(0, 2000),
+              })),
+          },
+          context,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "preview_verify",
+      description:
+        "Verify a protected Preview route and exact source deployment.",
+      available: vercelReady || selfPreview,
+      configurationStatus:
+        vercelReady || selfPreview ? "ready" : "configuration_required",
+      inputSchema: schema(
+        {
+          deploymentId: text,
+          path: text,
+          expectedStatus: integer,
+          commitSha: text,
+        },
+        ["deploymentId", "path", "expectedStatus", "commitSha"],
+      ),
+      async execute(input, context) {
+        if (!input.path.startsWith("/") || input.path.includes(".."))
+          fail("invalid_input", "Invalid Preview route.");
+        let deployment;
+        if (selfPreview) {
+          deployment = {
+            id: environment.VERCEL_DEPLOYMENT_ID,
+            url: environment.VERCEL_URL,
+            target: "preview",
+            gitSource: {
+              sha: environment.VERCEL_GIT_COMMIT_SHA,
+              ref: environment.VERCEL_GIT_COMMIT_REF,
+            },
+          };
+          if (input.deploymentId !== deployment.id)
+            fail(
+              "source_mismatch",
+              "Preview deployment does not match this runtime.",
+            );
+        } else
+          deployment = await vercel(
+            `/v13/deployments/${encodeURIComponent(input.deploymentId)}`,
+          );
+        if (
+          deployment.target === "production" ||
+          deployment.gitSource?.ref !== approved()
+        )
+          fail(
+            "production_target_forbidden",
+            "Production verification is forbidden.",
+          );
+        if (deployment.gitSource?.sha !== input.commitSha)
+          fail("source_mismatch", "Preview commit does not match.");
+        const response = await fetchImpl(
+          `https://${deployment.url}${input.path}`,
+          {
+            headers: {
+              ...(environment.NOVA_BRAIN_VERCEL_TOKEN
+                ? {
+                    Authorization: `Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN}`,
+                  }
+                : {}),
+              ...(environment.VERCEL_AUTOMATION_BYPASS_SECRET
+                ? {
+                    "x-vercel-protection-bypass":
+                      environment.VERCEL_AUTOMATION_BYPASS_SECRET,
+                  }
+                : {}),
+            },
+          },
+        );
+        if (response.status !== input.expectedStatus)
+          fail(
+            "preview_unreachable",
+            "Preview route returned an unexpected status.",
+            { status: response.status },
+          );
+        return audit(
+          "preview_verify",
+          {
+            ok: true,
+            deploymentId: input.deploymentId,
+            url: `https://${deployment.url}${input.path}`,
+            status: response.status,
+            commitSha: input.commitSha,
+          },
+          context,
+        );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "hands_checkpoint",
+      description: "Persist a durable bounded developer-task checkpoint.",
+      capability: "write",
+      riskLevel: RISK_LEVELS.LOW_RISK_WRITE,
+      autonomous: true,
+      available: Boolean(storage && ownerId),
+      configurationStatus: storage && ownerId ? "ready" : "storage_required",
+      inputSchema: schema(
+        {
+          taskId: text,
+          projectId: text,
+          branch: text,
+          startingCommit: text,
+          phase: text,
+          filesTouched: { type: "array" },
+          tests: { type: "object" },
+          commitSha: text,
+          deploymentId: text,
+          previewUrl: text,
+          verification: { type: "object" },
+          blocker: text,
+          approvalNeeded: bool,
+        },
+        ["taskId", "projectId", "branch", "startingCommit", "phase"],
+      ),
+      async execute(input, context) {
+        if (input.branch !== approved())
+          fail("branch_not_allowed", "Checkpoint branch is not approved.");
+        const current = (
+          await storage.listRuns(ownerId, {
+            projectId: input.projectId,
+            limit: 100,
+          })
+        ).find((x) => x.id === input.taskId);
+        const result = {
+          checkpoint: redact(input),
+          updatedAt: new Date().toISOString(),
+        };
+        if (current)
+          await storage.updateRun(input.taskId, ownerId, {
+            status: "running",
+            result,
+            currentStep: phaseStep(input.phase),
+          });
+        else
+          await storage
+            .createRun({
+              id: input.taskId,
+              ownerId,
+              projectId: input.projectId,
+              goal: "Hands developer task",
+              status: "running",
+            })
+            .then(() =>
+              storage.updateRun(input.taskId, ownerId, {
+                result,
+                currentStep: phaseStep(input.phase),
+              }),
+            );
+        await audit("hands_checkpoint", { ok: true, ...result }, context);
+        return { ok: true, ...result };
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "hands_repair_plan",
+      description:
+        "Validate one bounded supervised repair iteration and stop conditions.",
+      inputSchema: schema({
+        iteration: integer,
+        maxIterations: integer,
+        phase: text,
+        lastErrorCode: text,
+      }),
+      async execute(
+        {
+          iteration = 0,
+          maxIterations = 1,
+          phase = "inspect",
+          lastErrorCode = null,
+        },
+        context,
+      ) {
+        const bounded = Math.max(1, Math.min(3, maxIterations));
+        if (iteration >= bounded)
+          return audit(
+            "hands_repair_plan",
+            {
+              ok: false,
+              stop: true,
+              error: {
+                code: "repair_limit_reached",
+                message: "Bounded repair iteration limit reached.",
+              },
+            },
+            context,
+          );
+        return audit(
+          "hands_repair_plan",
+          {
+            ok: true,
+            stop: false,
+            iteration,
+            nextIteration: iteration + 1,
+            maxIterations: bounded,
+            phase,
+            lastErrorCode,
+          },
+          context,
+        );
+      },
+    }),
+  );
+}
+function phaseStep(phase) {
+  return Math.max(
+    1,
+    [
+      "inspect",
+      "diagnose",
+      "patch",
+      "focused_test",
+      "full_test",
+      "diff",
+      "commit",
+      "push_wait",
+      "deploy",
+      "verify",
+      "complete",
+    ].indexOf(phase) + 1,
+  );
+}
