@@ -42,9 +42,12 @@ import {
   authorizeWorkerAdmin,
   TaskMigrationError,
 } from "../autonomy/task-migration.js";
-import {authorizeLocalWorker,HandoffError} from "../autonomy/local-worker-handoff.js";
-import {WorkerError} from "../autonomy/worker-runtime.js";
-import {SelfDevelopmentError} from "../autonomy/self-development.js";
+import {
+  authorizeLocalWorker,
+  HandoffError,
+} from "../autonomy/local-worker-handoff.js";
+import { WorkerError } from "../autonomy/worker-runtime.js";
+import { SelfDevelopmentError } from "../autonomy/self-development.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -903,26 +906,218 @@ export function createApi({
           sendJson(response, 200, { tools: toolRegistry.list() });
           return;
         }
-        if(selfDevelopment&&request.method==="POST"&&pathname==="/api/self-development/tasks"){
-          await ready();sendJson(response,201,await selfDevelopment.create(await readJsonBody(request,config.maxBodyBytes)));return;
+        if (
+          selfDevelopment &&
+          request.method === "POST" &&
+          pathname === "/api/self-development/tasks"
+        ) {
+          await ready();
+          sendJson(
+            response,
+            201,
+            await selfDevelopment.create(
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
         }
-        const selfDevelopmentMatch=pathname.match(/^\/api\/self-development\/tasks\/([^/]+)(?:\/(repair))?$/);
-        if(selfDevelopment&&selfDevelopmentMatch&&request.method==="GET"&&!selfDevelopmentMatch[2]){await ready();sendJson(response,200,await selfDevelopment.get(decodeURIComponent(selfDevelopmentMatch[1])));return;}
-        if(selfDevelopment&&selfDevelopmentMatch&&request.method==="POST"&&selfDevelopmentMatch[2]){await ready();sendJson(response,200,await selfDevelopment.repair(decodeURIComponent(selfDevelopmentMatch[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
-        const selfDevelopmentReviewRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-review$/);
-        if(selfDevelopment&&selfDevelopmentReviewRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverReview(decodeURIComponent(selfDevelopmentReviewRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
-        const selfDevelopmentDiscoveryReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/replan-discovery-only$/);
-        if(selfDevelopment&&selfDevelopmentDiscoveryReplan&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.replanDiscoveryOnly(decodeURIComponent(selfDevelopmentDiscoveryReplan[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
-        const selfDevelopmentPlanRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-implementation-plan$/);
-        if(selfDevelopment&&selfDevelopmentPlanRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverImplementationPlan(decodeURIComponent(selfDevelopmentPlanRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
-        const selfDevelopmentFocusedTestRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-focused-test-evidence$/);
-        if(selfDevelopment&&selfDevelopmentFocusedTestRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverFocusedTestEvidence(decodeURIComponent(selfDevelopmentFocusedTestRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
-        const selfDevelopmentCommitSupersession=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/supersede-commit$/);
-        if(selfDevelopment&&selfDevelopmentCommitSupersession&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.supersedeCommit(decodeURIComponent(selfDevelopmentCommitSupersession[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
-        const selfDevelopmentDeliveryAttestation=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/attest-delivery$/);
-        if(selfDevelopment&&selfDevelopmentDeliveryAttestation&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.attestDelivery(decodeURIComponent(selfDevelopmentDeliveryAttestation[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
-        const selfDevelopmentExpiryMatch=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-post-attestation-expiry$/);
-        if(selfDevelopmentExpiryRecovery&&selfDevelopmentExpiryMatch&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);sendJson(response,200,await selfDevelopmentExpiryRecovery.recover({...input,taskId:decodeURIComponent(selfDevelopmentExpiryMatch[1])}));return;}
+        const selfDevelopmentMatch = pathname.match(
+          /^\/api\/self-development\/tasks\/([^/]+)(?:\/(repair))?$/,
+        );
+        if (
+          selfDevelopment &&
+          selfDevelopmentMatch &&
+          request.method === "GET" &&
+          !selfDevelopmentMatch[2]
+        ) {
+          await ready();
+          sendJson(
+            response,
+            200,
+            await selfDevelopment.get(
+              decodeURIComponent(selfDevelopmentMatch[1]),
+            ),
+          );
+          return;
+        }
+        if (
+          selfDevelopment &&
+          selfDevelopmentMatch &&
+          request.method === "POST" &&
+          selfDevelopmentMatch[2]
+        ) {
+          await ready();
+          sendJson(
+            response,
+            200,
+            await selfDevelopment.repair(
+              decodeURIComponent(selfDevelopmentMatch[1]),
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
+        }
+        const selfDevelopmentReviewRecovery = pathname.match(
+          /^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-review$/,
+        );
+        if (
+          selfDevelopment &&
+          selfDevelopmentReviewRecovery &&
+          request.method === "POST"
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await selfDevelopment.recoverReview(
+              decodeURIComponent(selfDevelopmentReviewRecovery[1]),
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
+        }
+        const selfDevelopmentDiscoveryReplan = pathname.match(
+          /^\/api\/admin\/self-development\/tasks\/([^/]+)\/replan-discovery-only$/,
+        );
+        if (
+          selfDevelopment &&
+          selfDevelopmentDiscoveryReplan &&
+          request.method === "POST"
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await selfDevelopment.replanDiscoveryOnly(
+              decodeURIComponent(selfDevelopmentDiscoveryReplan[1]),
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
+        }
+        const selfDevelopmentPlanRecovery = pathname.match(
+          /^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-implementation-plan$/,
+        );
+        if (
+          selfDevelopment &&
+          selfDevelopmentPlanRecovery &&
+          request.method === "POST"
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await selfDevelopment.recoverImplementationPlan(
+              decodeURIComponent(selfDevelopmentPlanRecovery[1]),
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
+        }
+        const selfDevelopmentFocusedTestRecovery = pathname.match(
+          /^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-focused-test-evidence$/,
+        );
+        if (
+          selfDevelopment &&
+          selfDevelopmentFocusedTestRecovery &&
+          request.method === "POST"
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await selfDevelopment.recoverFocusedTestEvidence(
+              decodeURIComponent(selfDevelopmentFocusedTestRecovery[1]),
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
+        }
+        const selfDevelopmentCreateConflictRecovery = pathname.match(
+          /^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-create-conflict$/,
+        );
+        if (
+          selfDevelopment &&
+          selfDevelopmentCreateConflictRecovery &&
+          request.method === "POST"
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await selfDevelopment.recoverCreateConflict(
+              decodeURIComponent(selfDevelopmentCreateConflictRecovery[1]),
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
+        }
+        const selfDevelopmentCommitSupersession = pathname.match(
+          /^\/api\/admin\/self-development\/tasks\/([^/]+)\/supersede-commit$/,
+        );
+        if (
+          selfDevelopment &&
+          selfDevelopmentCommitSupersession &&
+          request.method === "POST"
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await selfDevelopment.supersedeCommit(
+              decodeURIComponent(selfDevelopmentCommitSupersession[1]),
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
+        }
+        const selfDevelopmentDeliveryAttestation = pathname.match(
+          /^\/api\/admin\/self-development\/tasks\/([^/]+)\/attest-delivery$/,
+        );
+        if (
+          selfDevelopment &&
+          selfDevelopmentDeliveryAttestation &&
+          request.method === "POST"
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await selfDevelopment.attestDelivery(
+              decodeURIComponent(selfDevelopmentDeliveryAttestation[1]),
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
+        }
+        const selfDevelopmentExpiryMatch = pathname.match(
+          /^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-post-attestation-expiry$/,
+        );
+        if (
+          selfDevelopmentExpiryRecovery &&
+          selfDevelopmentExpiryMatch &&
+          request.method === "POST"
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          const input = await readJsonBody(request, config.maxBodyBytes);
+          sendJson(
+            response,
+            200,
+            await selfDevelopmentExpiryRecovery.recover({
+              ...input,
+              taskId: decodeURIComponent(selfDevelopmentExpiryMatch[1]),
+            }),
+          );
+          return;
+        }
         if (
           workerRuntime &&
           request.method === "GET" &&
@@ -995,12 +1190,21 @@ export function createApi({
           sendJson(response, 200, await workerRuntime.tick(input));
           return;
         }
-        const taskTickMatch = pathname.match(/^\/api\/autonomy\/worker\/tasks\/([^/]+)\/tick$/);
+        const taskTickMatch = pathname.match(
+          /^\/api\/autonomy\/worker\/tasks\/([^/]+)\/tick$/,
+        );
         if (workerRuntime && request.method === "POST" && taskTickMatch) {
           await ready();
           authorizeLocalWorker(request, config.localWorkerToken);
           const input = await readJsonBody(request, config.maxBodyBytes);
-          sendJson(response, 200, await workerRuntime.tickTask(decodeURIComponent(taskTickMatch[1]), input));
+          sendJson(
+            response,
+            200,
+            await workerRuntime.tickTask(
+              decodeURIComponent(taskTickMatch[1]),
+              input,
+            ),
+          );
           return;
         }
         const migrationMatch = pathname.match(
@@ -1032,29 +1236,102 @@ export function createApi({
           return;
         }
         const handoffClaim = pathname === "/api/admin/worker/handoff/claim";
-        if(autoDispatch&&request.method==="POST"&&pathname==="/api/admin/worker/auto-dispatch/next"){
-          await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await autoDispatch.next(await readJsonBody(request,config.maxBodyBytes)));return;
-        }
-        const handoffMatch = pathname.match(/^\/api\/admin\/worker\/handoff\/([^/]+)(?:\/(complete|fail))?$/);
-        if(localWorkerHandoff&&request.method==="POST"&&(handoffClaim||handoffMatch)){
+        if (
+          autoDispatch &&
+          request.method === "POST" &&
+          pathname === "/api/admin/worker/auto-dispatch/next"
+        ) {
           await ready();
-          authorizeLocalWorker(request,config.localWorkerToken);
-          const input=await readJsonBody(request,config.maxBodyBytes);
-          const result=handoffClaim?await localWorkerHandoff.claim(input):handoffMatch[2]==="complete"?await localWorkerHandoff.complete(decodeURIComponent(handoffMatch[1]),input):handoffMatch[2]==="fail"?await localWorkerHandoff.fail(decodeURIComponent(handoffMatch[1]),input):null;
-          if(!result){sendJson(response,404,{error:"Handoff route not found."});return;}
-          sendJson(response,200,result);return;
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await autoDispatch.next(
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
         }
-        if(localWorkerHandoff&&request.method==="GET"&&handoffMatch&&!handoffMatch[2]){
-          await ready();authorizeLocalWorker(request,config.localWorkerToken);
-          sendJson(response,200,await localWorkerHandoff.inspect(decodeURIComponent(handoffMatch[1]),url.searchParams.get("taskId")));return;
+        const handoffMatch = pathname.match(
+          /^\/api\/admin\/worker\/handoff\/([^/]+)(?:\/(complete|fail))?$/,
+        );
+        if (
+          localWorkerHandoff &&
+          request.method === "POST" &&
+          (handoffClaim || handoffMatch)
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          const input = await readJsonBody(request, config.maxBodyBytes);
+          const result = handoffClaim
+            ? await localWorkerHandoff.claim(input)
+            : handoffMatch[2] === "complete"
+              ? await localWorkerHandoff.complete(
+                  decodeURIComponent(handoffMatch[1]),
+                  input,
+                )
+              : handoffMatch[2] === "fail"
+                ? await localWorkerHandoff.fail(
+                    decodeURIComponent(handoffMatch[1]),
+                    input,
+                  )
+                : null;
+          if (!result) {
+            sendJson(response, 404, { error: "Handoff route not found." });
+            return;
+          }
+          sendJson(response, 200, result);
+          return;
         }
-        if(githubWriteAttestation&&request.method==="POST"&&pathname==="/api/admin/worker/github-write-attestation"){
-          await ready();authorizeLocalWorker(request,config.localWorkerToken);
-          sendJson(response,200,await githubWriteAttestation.attest(await readJsonBody(request,config.maxBodyBytes)));return;
+        if (
+          localWorkerHandoff &&
+          request.method === "GET" &&
+          handoffMatch &&
+          !handoffMatch[2]
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await localWorkerHandoff.inspect(
+              decodeURIComponent(handoffMatch[1]),
+              url.searchParams.get("taskId"),
+            ),
+          );
+          return;
         }
-        if(postAttestationRecovery&&request.method==="POST"&&pathname==="/api/admin/worker/post-attestation-expiry-recovery"){
-          await ready();authorizeLocalWorker(request,config.localWorkerToken);
-          sendJson(response,200,await postAttestationRecovery.recover(await readJsonBody(request,config.maxBodyBytes)));return;
+        if (
+          githubWriteAttestation &&
+          request.method === "POST" &&
+          pathname === "/api/admin/worker/github-write-attestation"
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await githubWriteAttestation.attest(
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
+        }
+        if (
+          postAttestationRecovery &&
+          request.method === "POST" &&
+          pathname === "/api/admin/worker/post-attestation-expiry-recovery"
+        ) {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(
+            response,
+            200,
+            await postAttestationRecovery.recover(
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          );
+          return;
         }
         if (request.method === "GET" && pathname === "/api/projects") {
           await ready();
@@ -1353,9 +1630,27 @@ export function createApi({
           });
           return;
         }
-        if(error instanceof HandoffError){sendJson(response,error.statusCode,{error:error.message,code:error.code});return;}
-        if(error instanceof WorkerError){sendJson(response,error.statusCode,{error:error.message,code:error.code});return;}
-        if(error instanceof SelfDevelopmentError){sendJson(response,error.statusCode,{error:error.message,code:error.code});return;}
+        if (error instanceof HandoffError) {
+          sendJson(response, error.statusCode, {
+            error: error.message,
+            code: error.code,
+          });
+          return;
+        }
+        if (error instanceof WorkerError) {
+          sendJson(response, error.statusCode, {
+            error: error.message,
+            code: error.code,
+          });
+          return;
+        }
+        if (error instanceof SelfDevelopmentError) {
+          sendJson(response, error.statusCode, {
+            error: error.message,
+            code: error.code,
+          });
+          return;
+        }
         if (
           error instanceof AgentStepLimitError ||
           error instanceof AgentToolCallLimitError

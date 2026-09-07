@@ -119,7 +119,7 @@ export function createApp({
   registerWorkerTools(toolRegistry, { runtime: workerRuntime, taskMigration });
   const implementationPlanner=createSelfDevelopmentImplementationPlanner({modelProvider,storage,ownerId:OWNER_ID,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
   toolRegistry.register({name:"self_development_plan_implementation",description:"Generate one evidence-bound structured implementation plan for the exact durable Self-Development task.",category:"autonomy",capability:"reasoning",riskLevel:"READ_ONLY",available:true,configurationStatus:"ready",inputSchema:{type:"object",properties:{taskId:{type:"string"},candidatePaths:{type:"array"},currentCommit:{type:"string"}},required:["taskId","candidatePaths","currentCommit"],additionalProperties:false},execute:input=>implementationPlanner.generate(input)});
-  const selfDevelopment=createSelfDevelopmentService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,currentCommit:environment.VERCEL_GIT_COMMIT_SHA,verifyRemote,verifyDeployment});
+  const selfDevelopment=createSelfDevelopmentService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,currentCommit:environment.VERCEL_GIT_COMMIT_SHA,verifyRemote,verifyDeployment,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
   const selfDevelopmentExpiryRecovery=createSelfDevelopmentExpiryRecovery({storage,ownerId:OWNER_ID,verifyDeployment});
   registerSelfDevelopmentTools(toolRegistry,{service:selfDevelopment});
   const speakerAssertions = createSpeakerAssertions({
