@@ -481,7 +481,7 @@ export function createWorkerRuntime({
       await storage.updateAutonomyStep(task.id, step.stepId, {
         status: "failed",
         errorCode: code,
-        result: { message: String(error.message).slice(0, 300) },
+        result: { message: String(error.message).slice(0, 300), ...(error.safeDiagnostics ? { diagnostics: redact(error.safeDiagnostics) } : {}) },
         completedAt: iso(clock),
       });
       if (retryable && task.retryCount < task.maxRetries) {

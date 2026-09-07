@@ -116,7 +116,8 @@ export function createOpenAIModelProvider({ apiKey, model, fetchImpl = fetch }) 
       tools,
       toolResults = [],
       continuationToken,
-      systemContext
+      systemContext,
+      responseFormat
     }) {
       const requestBody = {
         model,
@@ -127,6 +128,7 @@ export function createOpenAIModelProvider({ apiKey, model, fetchImpl = fetch }) 
         tools: tools.map(toolDefinition),
         parallel_tool_calls: false,
         store: true,
+        ...(responseFormat ? { text: { format: { type: "json_schema", name: responseFormat.name, schema: responseFormat.schema, strict: responseFormat.strict !== false } } } : {}),
         ...(continuationToken ? { previous_response_id: continuationToken } : {})
       };
       const response = await fetchImpl(OPENAI_RESPONSES_URL, {

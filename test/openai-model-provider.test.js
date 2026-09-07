@@ -101,6 +101,8 @@ test("OpenAI provider failures do not expose response bodies or API keys", async
   );
 });
 
+test("OpenAI provider sends a strict Responses JSON schema when requested",async()=>{let body;const schema={type:"object",properties:{ok:{type:"boolean"}},required:["ok"],additionalProperties:false},provider=createOpenAIModelProvider({apiKey:"test-secret",model:"test-model",async fetchImpl(_url,options){body=JSON.parse(options.body);return jsonResponse({id:"structured",output:[{type:"message",content:[{type:"output_text",text:'{"ok":true}'}]}]});}}),result=await provider.generate({message:"structured",conversationHistory:[],context:{},tools:[],responseFormat:{name:"bounded_plan",schema,strict:true}});assert.deepEqual(body.text.format,{type:"json_schema",name:"bounded_plan",schema,strict:true});assert.deepEqual(result,{type:"final",message:'{"ok":true}'});});
+
 test("tool definitions default to non-strict and support no, optional, and required arguments", () => {
   const definitions = [
     toolDefinition({ name: "no_args" }),
