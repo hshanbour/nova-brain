@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { RISK_LEVELS } from "../policy/action-policy.js";
 import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA } from "../autonomy/self-development-implementation-contract.js";
 import { resolveRepositoryContext } from "./repository-context.js";
+import { createGitExecutor } from "./git-execution.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -96,13 +97,12 @@ async function command(
     };
   }
 }
-const gitCommand = (root, args, options = {}) =>
-  command(
-    root,
-    "git",
-    ["-c", `safe.directory=${root.replaceAll("\\", "/")}`, ...args],
-    options,
-  );
+const gitCommand = (root, args, options = {}) => {
+  const executable=options.gitExecutable||process.env.NOVA_BRAIN_GIT_EXECUTABLE;
+  return executable
+    ? createGitExecutor({executable,environment:options.environment||process.env,runner:options.runner||exec})(root,args)
+    : command(root,"git",["-c",`safe.directory=${root.replaceAll("\\", "/")}`,...args],options);
+};
 const def = (tool) => ({
   category: "developer",
   capability: "read",
@@ -121,9 +121,11 @@ export function registerHandsTools(
     ownerId,
     fetchImpl = fetch,
     commandRunner,
+    gitExecutable = environment.NOVA_BRAIN_GIT_EXECUTABLE,
   } = {},
 ) {
   const remote = Boolean(environment.VERCEL);
+  const localGit = gitExecutable ? createGitExecutor({executable:gitExecutable,environment,runner:commandRunner||exec}) : null;
   const repository =
     environment.NOVA_BRAIN_GITHUB_REPOSITORY || "hshanbour/nova-brain";
   const branch =
@@ -776,7 +778,7 @@ export function registerHandsTools(
           const carried=context?.repositoryContext;
           if(carried&&(carried.version!==1||carried.repository!==repository||carried.branch!==approved()||resolve(carried.root)!==resolve(root)||carried.expectedHead!==currentCommit))fail("repository_context_unproven","Carried repository context does not match the local controlled workspace.",{contextVersion:carried.version,contextSource:carried.source||null,verificationStage:"hands_context_binding",expectedRepository:repository,actualRepository:carried.repository||null,taskCurrentCommit:currentCommit,safeFailureCode:"repository_context_unproven"});
           let repositoryContext;
-          try{repositoryContext=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:approved(),expectedHead:currentCommit,requireClean:true,source:carried?.source||"hands_local_reconstruction",git:(exactRoot,args)=>gitCommand(exactRoot,args,{runner:commandRunner})});}catch(error){fail(error.code||"repository_context_unproven",error.message,error.safeDiagnostics);}
+          try{repositoryContext=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:approved(),expectedHead:currentCommit,requireClean:true,source:carried?.source||"hands_local_reconstruction",git:(exactRoot,args)=>localGit?localGit(exactRoot,args):gitCommand(exactRoot,args,{runner:commandRunner,environment})});}catch(error){fail(error.code||"repository_context_unproven",error.message,error.safeDiagnostics);}
           if (repositoryContext.actualHead !== currentCommit)
             fail("commit_mismatch", "Local checkout does not match the task-bound commit.", {...repositoryContext,taskBoundCommit:currentCommit,mismatch:"head"});
           if (!repositoryContext.clean)

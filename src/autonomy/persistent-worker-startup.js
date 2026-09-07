@@ -8,8 +8,8 @@ const safeCode=error=>String(error?.code||error?.name||"unexpected_error").slice
 const bounded=async(promise,ms,code)=>{let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Object.assign(new Error(code),{code})),ms);})]);}finally{clearTimeout(timer);}};
 const fatalAuth=error=>error?.statusCode===401||error?.statusCode===403||["unauthorized","handoff_not_configured"].includes(error?.code);
 
-export async function runPersistentWorkerService({baseUrl,repositoryRoot,intervalMs=5000,version="local",probeOnly=false,maxIterations=Infinity,shouldStop=()=>false,delay=sleep,credentialLoader=loadLocalWorkerCredentials,clientFactory=createLocalWorkerClient,workerFactory=createPersistentLocalWorker,acquireInstance=acquirePersistentWorkerInstance,statusWriter=writePersistentWorkerStatus,credentialTimeoutMs=12000,authTimeoutMs=20000}={}){
-  const startedAt=new Date().toISOString();let state={startedAt,version};let credentials=null,instance=null;
+export async function runPersistentWorkerService({baseUrl,repositoryRoot,intervalMs=5000,version="local",startupMetadata={},probeOnly=false,maxIterations=Infinity,shouldStop=()=>false,delay=sleep,credentialLoader=loadLocalWorkerCredentials,clientFactory=createLocalWorkerClient,workerFactory=createPersistentLocalWorker,acquireInstance=acquirePersistentWorkerInstance,statusWriter=writePersistentWorkerStatus,credentialTimeoutMs=12000,authTimeoutMs=20000}={}){
+  const startedAt=new Date().toISOString();let state={startedAt,version,...startupMetadata};let credentials=null,instance=null;
   const report=async update=>{state={...state,...update};return statusWriter(state);};
   instance=await acquireInstance();
   if(!instance.acquired)return{started:false,reason:"active_instance"};
