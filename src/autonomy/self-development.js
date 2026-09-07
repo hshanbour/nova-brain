@@ -1106,6 +1106,29 @@ export function createSelfDevelopmentService({
     await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_implementation_schema_recovered",status:"queued",summary:"Exact pre-mutation implementation bridge schema failure requeued for canonical replanning.",metadata:{taskId:current.id,failedStepId:failed.stepId,previousStateVersion:current.stateVersion,fieldPath:record.fieldPath,expected:record.expected,received:record.received,validationCode:record.validationCode,schemaVersion:record.schemaVersion}});
     return { task: updated, recoveredStepId: failed.stepId, idempotent: false };
   }
+  async function recoverStaleBasePatchConflict(taskId, input) {
+    if (!input || Object.keys(input).some((key) => !["expectedVersion","workspace"].includes(key)) || !Number.isInteger(input.expectedVersion) || !input.workspace || Object.keys(input.workspace).some((key) => !["head","clean"].includes(key)) || !SHA.test(input.workspace.head || "") || input.workspace.clean !== true)
+      throw new SelfDevelopmentError("stale_base_recovery_invalid", "Exact version and clean controlled-workspace attestation are required.", 400);
+    const current = await runtime.get(taskId);
+    if (!current || current.taskType !== "self_development") throw new SelfDevelopmentError("task_not_found", "Self-development task not found.", 404);
+    const prior = current.metadata?.baseRevisionHistory?.find((item) => item.previousStateVersion === input.expectedVersion);
+    if (prior && current.status !== "failed") return {task:current,previousBaseCommit:prior.previousBaseCommit,newBaseCommit:prior.newBaseCommit,idempotent:true};
+    if (current.stateVersion !== input.expectedVersion) throw new SelfDevelopmentError("version_conflict", "Task changed before base-revision recovery.");
+    if (!verifyRemote || !SHA.test(currentCommit || "") || input.workspace.head !== currentCommit) throw new SelfDevelopmentError("base_revision_verification_unavailable", "The exact deployed branch tip and controlled workspace must agree.", 503);
+    const steps=await runtime.steps(current.id), failed=steps.find((step)=>step.stepId===`${current.currentStep+1}:apply_patch`&&step.status==="failed"&&step.errorCode==="patch_conflict"), planned=steps.find((step)=>step.stepId===`${current.currentStep}:plan_implementation`&&step.status==="completed"&&step.result?.implementationPlan), approvals=await storage.listApprovals(ownerId,{limit:100}), completedDelivery=steps.some((step)=>["commit","review_commit","push","deploy_preview"].includes(step.stepType)&&step.status==="completed"), planTemplate=current.metadata?.steps?.[current.currentStep-1], remaining=current.metadata?.steps?.slice(current.currentStep)||[], oldCommit=current.currentCommit;
+    if (current.status!=="failed"||current.errorCode!=="patch_conflict"||!failed||!planned||!String(failed.result?.message||"").includes("Expected existing content does not match")||current.branch!==approvedBranch||["main","master"].includes(current.branch)||current.startingCommit!==oldCommit||oldCommit===currentCommit||completedDelivery||approvals.some((approval)=>approval.runId===current.id)||current.metadata?.lastDeploymentId||current.metadata?.selfDevelopmentDeliveryAttestation||current.leaseOwner||planTemplate?.type!=="plan_implementation"||remaining[0]?.type!=="apply_patch") throw new SelfDevelopmentError("stale_base_recovery_precondition_failed","Only the exact clean pre-commit stale-base patch conflict may be recovered.");
+    const remote=await verifyRemote({repository,branch:current.branch,requiredAncestors:[oldCommit,currentCommit]});
+    if(remote.currentTip!==currentCommit||remote.ancestors?.[oldCommit]!==true||remote.ancestors?.[currentCommit]!==true) throw new SelfDevelopmentError("base_revision_ancestry_mismatch","The new base is not the exact live descendant tip.");
+    const implementation=planned.result.implementationPlan, evidencePaths=[...new Set([...(implementation.evidencePaths||[]),...implementation.files.map((file)=>file.path)].map(safePath))];
+    if(!evidencePaths.length||evidencePaths.length>12||evidencePaths.some((path)=>REPLAN_PROTECTED.test(path))) throw new SelfDevelopmentError("stale_base_evidence_invalid","Bounded implementation evidence cannot be refreshed.");
+    const base=current.metadata.steps.length, reads=evidencePaths.map((path,index)=>annotation(base+index+1,"read_files","repo_read_remote",{tool:"repo_read",arguments:{path,startLine:1,endLine:1000}},`Current contents of ${path}`,"New-base evidence is read before replanning",{retry:"safe_read"})), replan={...planTemplate,input:{...planTemplate.input,arguments:{...planTemplate.input.arguments,taskId:current.id,candidatePaths:evidencePaths,currentCommit}},idempotencyIdentity:`${planTemplate.idempotencyIdentity||"self-development:plan_implementation"}:base-refresh:${currentCommit}`}, continuation=[...reads,replan,...remaining], maxSteps=Math.min(100,base+continuation.length);
+    if(maxSteps<base+continuation.length) throw new SelfDevelopmentError("stale_base_recovery_budget_exceeded","Bounded recovery exceeds the safe step maximum.");
+    const now=clock().toISOString(), record={previousBaseCommit:oldCommit,newBaseCommit:currentCommit,previousStateVersion:current.stateVersion,failedStepId:failed.stepId,invalidatedEvidencePaths:evidencePaths,workingTreeClean:true,ancestryVerified:true,recoveredAt:now};
+    const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",currentStep:base,currentPhase:"stale_base_evidence_refresh",currentCommit,maxSteps,nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,retryCount:0,blockedReason:null,checkpoint:{...current.checkpoint,pendingStep:null},metadata:{...current.metadata,steps:[...current.metadata.steps,...continuation],requiredCapability:"repo_read_remote",autoDispatch:true,selfDevelopmentImplementationPlan:null,baseRevisionHistory:[...(current.metadata.baseRevisionHistory||[]),record],staleContentEvidence:[...(current.metadata.staleContentEvidence||[]),{baseCommit:oldCommit,paths:evidencePaths,invalidatedAt:now}]}},current.stateVersion);
+    if(!updated) throw new SelfDevelopmentError("version_conflict","Task changed during base-revision recovery.");
+    await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_base_revision_advanced",status:"queued",summary:"Task base advanced along verified feature history; stale content evidence requires bounded refresh.",metadata:{taskId:current.id,previousBaseCommit:oldCommit,newBaseCommit:currentCommit,previousStateVersion:current.stateVersion,failedStepId:failed.stepId,invalidatedEvidencePaths:evidencePaths,workingTreeClean:true,ancestryVerified:true,maxSteps}});
+    return{task:updated,previousBaseCommit:oldCommit,newBaseCommit:currentCommit,invalidatedEvidencePaths:evidencePaths,idempotent:false};
+  }
   async function recoverFocusedTestEvidence(taskId, input) {
     if (
       !input ||
@@ -2298,6 +2321,7 @@ export function createSelfDevelopmentService({
     replanDiscoveryOnly,
     recoverImplementationPlan,
     recoverImplementationSchema,
+    recoverStaleBasePatchConflict,
     recoverFocusedTestEvidence,
     recoverCreateConflict,
     recoverCreateConflictBudget,

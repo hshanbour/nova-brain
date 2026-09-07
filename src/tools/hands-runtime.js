@@ -768,6 +768,18 @@ export function registerHandsTools(
       },
       async execute({ files, currentCommit }, context) {
         const started = Date.now();
+        if (currentCommit) {
+          if (!/^[a-f0-9]{40}$/.test(currentCommit))
+            fail("invalid_input", "Invalid bound commit.");
+          const [head, status] = await Promise.all([
+            gitCommand(root, ["rev-parse", "HEAD"], { runner: commandRunner }),
+            gitCommand(root, ["status", "--porcelain=v1"], { runner: commandRunner }),
+          ]);
+          if (head.exitCode !== 0 || head.stdout.trim() !== currentCommit)
+            fail("commit_mismatch", "Local checkout does not match the task-bound commit.");
+          if (status.exitCode !== 0 || status.stdout.trim())
+            fail("working_tree_dirty", "Local checkout must be clean before a task-bound patch.");
+        }
         const originals = [];
         for (const item of files) {
           const operation = item.operation || ("expectedContent" in item ? "replace" : "legacy_replace");
@@ -780,8 +792,6 @@ export function registerHandsTools(
           }
           let baseExists = false;
           if (currentCommit) {
-            if (!/^[a-f0-9]{40}$/.test(currentCommit))
-              fail("invalid_input", "Invalid bound commit.");
             baseExists =
               (
                 await gitCommand(

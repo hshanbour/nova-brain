@@ -294,6 +294,17 @@ test("multi-file replacement validates every precondition before changing any fi
   }
 });
 
+test("task-bound patch requires the exact clean local base revision", async () => {
+  const f=await fixture();
+  try{
+    const {stdout}=await run("git",["rev-parse","HEAD"],{cwd:f.root}),sha=stdout.trim();
+    await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:"f".repeat(40),files:[{path:"alpha.js",operation:"replace",expectedContent:"export const alpha = 1;\n",content:"changed\n"}]}),error=>error.code==="commit_mismatch");
+    await writeFile(join(f.root,"unrelated.txt"),"dirty","utf8");
+    await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:sha,files:[{path:"alpha.js",operation:"replace",expectedContent:"export const alpha = 1;\n",content:"changed\n"}]}),error=>error.code==="working_tree_dirty");
+    assert.equal(await readFile(join(f.root,"alpha.js"),"utf8"),"export const alpha = 1;\n");
+  }finally{await f.close();}
+});
+
 test("Hands independently rejects create over tracked or untracked existing files", async () => {
   const f = await fixture();
   try {
