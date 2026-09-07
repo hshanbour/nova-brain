@@ -21,6 +21,19 @@ const IMPLEMENTATION_GOAL =
   /\b(add|build|change|create|develop|fix|implement|improve|modify|update)\b/i;
 const REPLAN_PROTECTED =
   /(^|\/)(src\/(?:voice|policy|storage|autonomy)|speaker-worker|api\/index\.js|\.github|assets\/(?:voice-(?!input(?:\.|$))|speaker-))(\/|$)|ecapa|elevenlabs|voice-control|production|credential|secret|token/i;
+const TASK_DIFF_DIGESTS = Object.freeze({
+  git_sha1: /^[a-f0-9]{40}$/i,
+  sha256: /^[a-f0-9]{64}$/i,
+});
+const LEGACY_TASK_DIFF_EVIDENCE = Object.freeze({
+  selfdev_10721df97b8cbc63c70d4171f6f4a440: Object.freeze({
+    semantic: "task_diff",
+    algorithm: "git_sha1",
+    digest: "a901d364098ffc719aceab431dc63ac19ddb3731",
+    expectedVersion: 43,
+    targetPath: "test/voice-input.test.js",
+  }),
+});
 export class SelfDevelopmentError extends Error {
   constructor(code, message, statusCode = 409) {
     super(message);
@@ -60,6 +73,27 @@ const safePath = (value) => {
       400,
     );
   return path;
+};
+const taskDiffEvidence = (task, targetPath, expectedVersion) => {
+  const stored = task.metadata?.failedAttemptEvidence?.taskDiff;
+  const evidence = stored || LEGACY_TASK_DIFF_EVIDENCE[task.id];
+  if (
+    !evidence ||
+    evidence.semantic !== "task_diff" ||
+    !TASK_DIFF_DIGESTS[evidence.algorithm]?.test(evidence.digest || "") ||
+    (evidence.expectedVersion !== undefined &&
+      evidence.expectedVersion !== expectedVersion) ||
+    (evidence.targetPath !== undefined && evidence.targetPath !== targetPath)
+  )
+    throw new SelfDevelopmentError(
+      "create_conflict_evidence_missing",
+      "Exact durable task-diff evidence is unavailable or invalid.",
+    );
+  return Object.freeze({
+    semantic: "task_diff",
+    algorithm: evidence.algorithm,
+    digest: evidence.digest.toLowerCase(),
+  });
 };
 const annotation = (
   index,
@@ -1172,7 +1206,9 @@ export function createSelfDevelopmentService({
       !input ||
       Object.keys(input).some((key) => !allowed.has(key)) ||
       !Number.isInteger(input.expectedVersion) ||
-      !REVIEW_HASH.test(input.taskDiffHash || "") ||
+      !Object.values(TASK_DIFF_DIGESTS).some((pattern) =>
+        pattern.test(input.taskDiffHash || ""),
+      ) ||
       input.workingTree?.clean !== true ||
       input.workingTree?.unrelatedChanges !== false
     )
@@ -1201,6 +1237,16 @@ export function createSelfDevelopmentService({
       throw new SelfDevelopmentError(
         "version_conflict",
         "Task changed before create-conflict recovery.",
+      );
+    const durableTaskDiff = taskDiffEvidence(
+      current,
+      targetPath,
+      input.expectedVersion,
+    );
+    if (input.taskDiffHash.toLowerCase() !== durableTaskDiff.digest)
+      throw new SelfDevelopmentError(
+        "create_conflict_evidence_mismatch",
+        "Caller task-diff evidence does not match the immutable durable evidence.",
       );
     const steps = await runtime.steps(current.id),
       approvals = await storage.listApprovals(ownerId, { limit: 100 }),
@@ -1416,7 +1462,8 @@ export function createSelfDevelopmentService({
         recoveryClass: "post_patch_create_over_existing",
         fromStateVersion: current.stateVersion,
         targetPath,
-        taskDiffHash: input.taskDiffHash,
+        taskDiffHash: durableTaskDiff.digest,
+        taskDiffEvidence: durableTaskDiff,
         priorPlanHash: implementation.planHash || null,
         priorPatchStepId: patch.stepId,
         priorFocusedStepId: focused.stepId,
@@ -1484,7 +1531,8 @@ export function createSelfDevelopmentService({
       metadata: {
         taskId: current.id,
         targetPath,
-        taskDiffHash: input.taskDiffHash,
+        taskDiffHash: durableTaskDiff.digest,
+        taskDiffAlgorithm: durableTaskDiff.algorithm,
         fromStateVersion: current.stateVersion,
         priorFailedStepId: failedFull.stepId,
       },

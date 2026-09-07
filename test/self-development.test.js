@@ -1462,11 +1462,14 @@ for (const tip of ["d".repeat(40), "f".repeat(40)])
       "queued",
     );
   });
-test("post-patch create-over-existing recovery preserves evidence and schedules one read", async () => {
+for (const [algorithm, diffHash] of [
+  ["git_sha1", "a".repeat(40)],
+  ["sha256", "a".repeat(64)],
+])
+test(`post-patch create-over-existing recovery preserves ${algorithm} evidence and schedules one read`, async () => {
   const f = await fixture(),
     created = await f.service.create(input()),
-    target = "test/existing.test.js",
-    diffHash = "a".repeat(64);
+    target = "test/existing.test.js";
   for (const step of [
     {
       stepId: "old:plan",
@@ -1516,6 +1519,15 @@ test("post-patch create-over-existing recovery preserves evidence and schedules 
           evidencePaths: ["assets/input.js"],
           planHash: "p",
         },
+        failedAttemptEvidence: {
+          taskDiff: {
+            semantic: "task_diff",
+            algorithm,
+            digest: diffHash,
+            targetPath: target,
+            expectedVersion: current.stateVersion + 1,
+          },
+        },
       },
     },
     current.stateVersion,
@@ -1536,8 +1548,29 @@ test("post-patch create-over-existing recovery preserves evidence and schedules 
       targetPath: target,
       taskDiffHash: diffHash,
       workingTree: { clean: true, unrelatedChanges: false },
-    },
-    result = await service.recoverCreateConflict(current.id, payload);
+    };
+  for (const invalid of [
+    "a".repeat(39),
+    "a".repeat(41),
+    "a".repeat(63),
+    "a".repeat(65),
+    `${"a".repeat(diffHash.length - 1)}z`,
+  ])
+    await rejects(
+      service.recoverCreateConflict(current.id, {
+        ...payload,
+        taskDiffHash: invalid,
+      }),
+      "create_conflict_recovery_invalid",
+    );
+  await rejects(
+    service.recoverCreateConflict(current.id, {
+      ...payload,
+      taskDiffHash: "b".repeat(diffHash.length),
+    }),
+    "create_conflict_evidence_mismatch",
+  );
+  const result = await service.recoverCreateConflict(current.id, payload);
   assert.equal(result.task.id, current.id);
   assert.equal(result.task.status, "queued");
   assert.ok(result.task.stateVersion > current.stateVersion);
@@ -1548,6 +1581,10 @@ test("post-patch create-over-existing recovery preserves evidence and schedules 
   assert.equal(
     result.task.metadata.createConflictRecoveryHistory[0].taskDiffHash,
     diffHash,
+  );
+  assert.deepEqual(
+    result.task.metadata.createConflictRecoveryHistory[0].taskDiffEvidence,
+    { semantic: "task_diff", algorithm, digest: diffHash },
   );
   assert.ok(
     (await f.runtime.steps(current.id)).some(
@@ -1583,7 +1620,7 @@ test("create-conflict recovery rejects wrong version missing evidence and missin
   );
   await rejects(
     service.recoverCreateConflict(created.task.id, payload),
-    "create_conflict_recovery_precondition_failed",
+    "create_conflict_evidence_missing",
   );
   await rejects(
     service.recoverCreateConflict("missing", payload),
