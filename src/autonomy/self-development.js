@@ -1129,6 +1129,20 @@ export function createSelfDevelopmentService({
     await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_base_revision_advanced",status:"queued",summary:"Task base advanced along verified feature history; stale content evidence requires bounded refresh.",metadata:{taskId:current.id,previousBaseCommit:oldCommit,newBaseCommit:currentCommit,previousStateVersion:current.stateVersion,failedStepId:failed.stepId,invalidatedEvidencePaths:evidencePaths,workingTreeClean:true,ancestryVerified:true,maxSteps}});
     return{task:updated,previousBaseCommit:oldCommit,newBaseCommit:currentCommit,invalidatedEvidencePaths:evidencePaths,idempotent:false};
   }
+  async function recoverHandsCommitMismatch(taskId,input){
+    if(!input||Object.keys(input).some(key=>!["expectedVersion","workspace"].includes(key))||!Number.isInteger(input.expectedVersion)||!input.workspace||Object.keys(input.workspace).some(key=>!["root","gitTopLevel","head","clean"].includes(key))||!SHA.test(input.workspace.head||"")||input.workspace.clean!==true||typeof input.workspace.root!=="string"||input.workspace.root!==input.workspace.gitTopLevel)
+      throw new SelfDevelopmentError("hands_context_recovery_invalid","Exact version and proven clean repository context are required.",400);
+    const current=await runtime.get(taskId);if(!current||current.taskType!=="self_development")throw new SelfDevelopmentError("task_not_found","Self-development task not found.",404);
+    const prior=current.metadata?.handsContextRecoveryHistory?.find(item=>item.previousStateVersion===input.expectedVersion);if(prior&&current.status!=="failed")return{task:current,recoveredStepId:prior.failedStepId,idempotent:true};
+    if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before Hands-context recovery.");
+    const steps=await runtime.steps(current.id),failed=steps.find(step=>step.stepId===`${current.currentStep+1}:apply_patch`&&step.status==="failed"&&step.errorCode==="commit_mismatch"),planned=steps.find(step=>step.stepId===`${current.currentStep}:plan_implementation`&&step.status==="completed"&&step.result?.implementationPlan),approvals=await storage.listApprovals(ownerId,{limit:100}),remaining=current.metadata?.steps?.slice(current.currentStep)||[],completedAfterPlan=steps.some(step=>Number.parseInt(step.stepId,10)>current.currentStep&&["apply_patch","run_focused_tests","run_full_tests","commit","review_commit","push","deploy_preview"].includes(step.stepType)&&step.status==="completed");
+    if(current.status!=="failed"||current.errorCode!=="commit_mismatch"||!failed||!planned||current.branch!==approvedBranch||["main","master"].includes(current.branch)||input.workspace.head!==current.currentCommit||completedAfterPlan||approvals.some(approval=>approval.runId===current.id)||current.metadata?.lastDeploymentId||current.metadata?.selfDevelopmentDeliveryAttestation||current.leaseOwner||remaining[0]?.type!=="apply_patch")throw new SelfDevelopmentError("hands_context_recovery_precondition_failed","Only the exact pre-mutation Hands repository-context mismatch may be recovered.");
+    const base=current.metadata.steps.length,nextSteps=remaining.map((step,index)=>({...step,idempotencyIdentity:`${step.idempotencyIdentity||`self-development:${step.type}`}:hands-context-recovery:${base+index+1}`})),maxSteps=Math.min(100,Math.max(current.maxSteps,base+nextSteps.length));if(base+nextSteps.length>maxSteps)throw new SelfDevelopmentError("hands_context_recovery_budget_exceeded","Bounded recovery exceeds the safe step maximum.");
+    const now=clock().toISOString(),record={previousStateVersion:current.stateVersion,failedStepId:failed.stepId,currentCommit:current.currentCommit,repositoryRoot:input.workspace.root,gitTopLevel:input.workspace.gitTopLevel,workingTreeClean:true,recoveredAt:now};
+    const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"waiting_for_worker",currentStep:base,currentPhase:"hands_repository_context_recovery",maxSteps,nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,retryCount:0,blockedReason:null,checkpoint:{...current.checkpoint,pendingStep:null},metadata:{...current.metadata,steps:[...current.metadata.steps,...nextSteps],requiredCapability:"repo_mutate_local",autoDispatch:true,handsContextRecoveryHistory:[...(current.metadata.handsContextRecoveryHistory||[]),record]}},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during Hands-context recovery.");
+    await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_hands_context_recovered",status:"waiting_for_worker",summary:"Exact pre-mutation Hands repository context was revalidated for bounded continuation.",metadata:{taskId:current.id,previousStateVersion:current.stateVersion,failedStepId:failed.stepId,currentCommit:current.currentCommit,repositoryRoot:input.workspace.root,maxSteps}});
+    return{task:updated,recoveredStepId:failed.stepId,idempotent:false};
+  }
   async function recoverFocusedTestEvidence(taskId, input) {
     if (
       !input ||
@@ -2322,6 +2336,7 @@ export function createSelfDevelopmentService({
     recoverImplementationPlan,
     recoverImplementationSchema,
     recoverStaleBasePatchConflict,
+    recoverHandsCommitMismatch,
     recoverFocusedTestEvidence,
     recoverCreateConflict,
     recoverCreateConflictBudget,

@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { RISK_LEVELS } from "../policy/action-policy.js";
 import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA } from "../autonomy/self-development-implementation-contract.js";
+import { resolveRepositoryContext } from "./repository-context.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -15,6 +16,7 @@ export class HandsError extends Error {
     this.name = "HandsError";
     this.code = code;
     this.details = details;
+    this.safeDiagnostics = details;
   }
 }
 const fail = (code, message, details) => {
@@ -771,13 +773,11 @@ export function registerHandsTools(
         if (currentCommit) {
           if (!/^[a-f0-9]{40}$/.test(currentCommit))
             fail("invalid_input", "Invalid bound commit.");
-          const [head, status] = await Promise.all([
-            gitCommand(root, ["rev-parse", "HEAD"], { runner: commandRunner }),
-            gitCommand(root, ["status", "--porcelain=v1"], { runner: commandRunner }),
-          ]);
-          if (head.exitCode !== 0 || head.stdout.trim() !== currentCommit)
-            fail("commit_mismatch", "Local checkout does not match the task-bound commit.");
-          if (status.exitCode !== 0 || status.stdout.trim())
+          let repositoryContext;
+          try{repositoryContext=await resolveRepositoryContext({root,expectedRepository:repository,git:(exactRoot,args)=>gitCommand(exactRoot,args,{runner:commandRunner})});}catch(error){fail(error.code||"repository_context_unproven",error.message,error.safeDiagnostics);}
+          if (repositoryContext.actualHead !== currentCommit)
+            fail("commit_mismatch", "Local checkout does not match the task-bound commit.", {...repositoryContext,taskBoundCommit:currentCommit,mismatch:"head"});
+          if (!repositoryContext.clean)
             fail("working_tree_dirty", "Local checkout must be clean before a task-bound patch.");
         }
         const originals = [];
