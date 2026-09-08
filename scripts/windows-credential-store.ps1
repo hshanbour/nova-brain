@@ -1,6 +1,7 @@
 param([Parameter(Mandatory=$true)][ValidateSet('get','get-pair','set','delete','status')][string]$Action,[Parameter(Mandatory=$true)][ValidatePattern('^NovaBrain/LocalWorker/[A-Z0-9_]+$')][string]$Target,[ValidatePattern('^NovaBrain/LocalWorker/[A-Z0-9_]+$')][string]$Target2)
 $ErrorActionPreference='Stop'
-[Console]::Error.WriteLine('NOVA_STAGE:powershell_started')
+[Console]::Error.WriteLine('NOVA_STAGE:script_started')
+[Console]::Error.WriteLine('NOVA_STAGE:native_api_loading')
 try { Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -18,8 +19,8 @@ public static class NovaCredentialManager {
 } catch { [Console]::Error.WriteLine('NOVA_ERROR:add_type_failed'); exit 10 }
 [Console]::Error.WriteLine('NOVA_STAGE:native_api_loaded')
 switch($Action){
-  'get' { try { [Console]::Error.WriteLine('NOVA_STAGE:credential_api_read'); $value=[NovaCredentialManager]::Get($Target); [Console]::Error.WriteLine('NOVA_STAGE:credential_api_complete'); if($null -eq $value){exit 3}; [Console]::Out.Write($value) } catch { [Console]::Error.WriteLine('NOVA_ERROR:credential_read_failed'); exit 11 } }
-  'get-pair' { if([string]::IsNullOrWhiteSpace($Target2)){[Console]::Error.WriteLine('NOVA_ERROR:invalid_arguments');exit 2}; try { [Console]::Error.WriteLine('NOVA_STAGE:credential_api_read'); $first=[NovaCredentialManager]::Get($Target); $second=[NovaCredentialManager]::Get($Target2); [Console]::Error.WriteLine('NOVA_STAGE:credential_api_complete'); if($null -eq $first -or $null -eq $second){exit 3}; $payload=@([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($first)),[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($second)))|ConvertTo-Json -Compress; [Console]::Out.Write($payload) } catch { [Console]::Error.WriteLine('NOVA_ERROR:credential_read_failed'); exit 11 } }
+  'get' { try { [Console]::Error.WriteLine('NOVA_STAGE:credread_start'); $value=[NovaCredentialManager]::Get($Target); [Console]::Error.WriteLine('NOVA_STAGE:credread_complete'); if($null -eq $value){exit 3}; [Console]::Out.Write($value); [Console]::Error.WriteLine('NOVA_STAGE:output_complete') } catch { [Console]::Error.WriteLine('NOVA_ERROR:credential_read_failed'); exit 11 } }
+  'get-pair' { if([string]::IsNullOrWhiteSpace($Target2)){[Console]::Error.WriteLine('NOVA_ERROR:invalid_arguments');exit 2}; try { [Console]::Error.WriteLine('NOVA_STAGE:credread_start'); $first=[NovaCredentialManager]::Get($Target); $second=[NovaCredentialManager]::Get($Target2); [Console]::Error.WriteLine('NOVA_STAGE:credread_complete'); if($null -eq $first -or $null -eq $second){exit 3}; $payload=@([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($first)),[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($second)))|ConvertTo-Json -Compress; [Console]::Out.Write($payload); [Console]::Error.WriteLine('NOVA_STAGE:output_complete') } catch { [Console]::Error.WriteLine('NOVA_ERROR:credential_read_failed'); exit 11 } }
   'set' { $value=[Console]::In.ReadToEnd(); [NovaCredentialManager]::Set($Target,$value); [Console]::Out.Write('stored') }
   'delete' { [void][NovaCredentialManager]::Delete($Target); [Console]::Out.Write('deleted') }
   'status' { if($null -eq [NovaCredentialManager]::Get($Target)){[Console]::Out.Write('missing')}else{[Console]::Out.Write('configured')} }
