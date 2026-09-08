@@ -8,11 +8,12 @@ export const LOCAL_WORKER_CREDENTIALS=Object.freeze({
 });
 const SCRIPT=fileURLToPath(new URL("../../scripts/windows-credential-store.ps1",import.meta.url));
 const TARGET=name=>`NovaBrain/LocalWorker/${name}`;
+const TYPE=name=>name===LOCAL_WORKER_CREDENTIALS.nova?"nova_worker":"vercel_bypass";
 
-export function createWindowsCredentialStore({platform=process.platform,run=execFile}={}){
+export function createWindowsCredentialStore({platform=process.platform,run=execFile,helperTimeoutMs=30000}={}){
   if(platform!=="win32")throw new Error("secure_os_store_unavailable");
   const invoke=(action,name,secret)=>new Promise((resolve,reject)=>{
-    const child=run("powershell.exe",["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",SCRIPT,action,TARGET(name)],{windowsHide:true,maxBuffer:8192,timeout:10000,killSignal:"SIGKILL"},(error,stdout)=>error?reject(Object.assign(new Error(error.killed?"credential_load_timeout":"secure_os_store_failed"),{code:error.killed?"credential_load_timeout":"secure_os_store_failed"})):resolve(String(stdout).trim()));
+    const child=run("powershell.exe",["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",SCRIPT,action,TARGET(name)],{windowsHide:true,maxBuffer:8192,timeout:helperTimeoutMs,killSignal:"SIGKILL"},(error,stdout)=>error?reject(Object.assign(new Error(error.killed?"credential_helper_timeout":"secure_os_store_failed"),{code:error.killed?"credential_helper_timeout":"secure_os_store_failed",safeDiagnostics:{source:"windows_credential_manager",credentialType:TYPE(name),stage:"helper_process",operation:action}})):resolve(String(stdout).trim()));
     if(secret!==undefined){child.stdin.end(secret);}else child.stdin.end();
   });
   return Object.freeze({
@@ -24,9 +25,10 @@ export function createWindowsCredentialStore({platform=process.platform,run=exec
   });
 }
 
-export async function loadLocalWorkerCredentials({environment=process.env,store=createWindowsCredentialStore()}={}){
-  const novaToken=environment.NOVA_LOCAL_WORKER_TOKEN||await store.get(LOCAL_WORKER_CREDENTIALS.nova);
-  const vercelBypassToken=environment.VERCEL_AUTOMATION_BYPASS_SECRET||await store.get(LOCAL_WORKER_CREDENTIALS.vercel);
+export async function loadLocalWorkerCredentials({environment=process.env,store=createWindowsCredentialStore(),onStage=async()=>{}}={}){
+  const read=async(name,type,environmentValue)=>{if(environmentValue){await onStage({source:"process_environment",credentialType:type,stage:"loaded"});return environmentValue;}await onStage({source:"windows_credential_manager",credentialType:type,stage:"loading"});try{const value=await store.get(name);await onStage({source:"windows_credential_manager",credentialType:type,stage:"loaded"});return value;}catch(error){error.safeDiagnostics={source:"windows_credential_manager",credentialType:type,stage:error.safeDiagnostics?.stage||"credential_read",operation:"get"};throw error;}};
+  const novaToken=await read(LOCAL_WORKER_CREDENTIALS.nova,"nova_worker",environment.NOVA_LOCAL_WORKER_TOKEN);
+  const vercelBypassToken=await read(LOCAL_WORKER_CREDENTIALS.vercel,"vercel_bypass",environment.VERCEL_AUTOMATION_BYPASS_SECRET);
   if(novaToken===vercelBypassToken)throw new Error("credentials_must_remain_separate");
   return{novaToken,vercelBypassToken,clear(){this.novaToken=null;this.vercelBypassToken=null;}};
 }
