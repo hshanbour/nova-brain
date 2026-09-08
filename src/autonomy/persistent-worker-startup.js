@@ -10,7 +10,7 @@ const fatalAuth=error=>error?.statusCode===401||error?.statusCode===403||["unaut
 
 export async function runPersistentWorkerService({baseUrl,repositoryRoot,intervalMs=5000,version="local",startupMetadata={},probeOnly=false,maxIterations=Infinity,shouldStop=()=>false,delay=sleep,credentialLoader=loadLocalWorkerCredentials,clientFactory=createLocalWorkerClient,workerFactory=createPersistentLocalWorker,acquireInstance=acquirePersistentWorkerInstance,statusWriter=writePersistentWorkerStatus,credentialTimeoutMs=135000,authTimeoutMs=20000}={}){
   const startedAt=new Date().toISOString();let state={startedAt,version,...startupMetadata};let credentials=null,instance=null;
-  const report=async update=>{state={...state,...update};return statusWriter(state);};
+  const report=async update=>{const startupStage=update.startupStage||(["credential_loading","credentials_loaded"].includes(update.state)?"credential_loading":update.state==="authenticating"||update.state==="authenticated"||update.state==="retrying"&&state.startupStage==="authenticating"?"authenticating":["polling","idle","executing"].includes(update.state)?"polling":state.startupStage);state={...state,...update,startupStage};return statusWriter(state);};
   instance=await acquireInstance();
   if(!instance.acquired)return{started:false,reason:"active_instance"};
   await report({state:"starting"});await report({state:"lock_acquired"});
