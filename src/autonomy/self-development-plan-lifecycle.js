@@ -43,7 +43,13 @@ export function activeContinuationExceeded(task){
   return task.currentStep-generation.startStep>=generation.maxSteps;
 }
 
-export function createActiveContinuation({task,startStep,plannedSteps,repairLimit=2,recoveryClass}){
+export function taskRuntimeWindow(task,now=new Date()){
+  const continuation=task.metadata?.activeContinuation,startedAt=continuation?.runtimeStartedAt||task.startedAt||task.createdAt,maxRuntimeMinutes=continuation?.runtimeMinutes||task.maxRuntimeMinutes,startedMs=new Date(startedAt).getTime(),maxRuntimeMs=Math.max(1,Number(maxRuntimeMinutes)||30)*60000,deadlineMs=startedMs+maxRuntimeMs;
+  return Object.freeze({scope:continuation?.runtimeStartedAt?"active_continuation":"task",startedAt:new Date(startedMs).toISOString(),deadline:new Date(deadlineMs).toISOString(),elapsedMs:Math.max(0,now.getTime()-startedMs),maxRuntimeMs,expired:deadlineMs<=now.getTime(),continuationGenerationId:continuation?.generationId||null});
+}
+
+export function createActiveContinuation({task,startStep,plannedSteps,repairLimit=2,recoveryClass,runtimeStartedAt,runtimeMinutes=15}){
   const maxSteps=Math.min(30,Math.max(1,plannedSteps+Math.max(0,Math.min(3,repairLimit))*2));
-  return{version:1,generationId:lifecycleHash({taskId:task.id,startStep,currentCommit:task.currentCommit,recoveryClass,ordinal:(task.metadata?.continuationHistory||[]).length+1}),startStep,maxSteps,recoveryClass};
+  const boundedRuntimeMinutes=Math.max(5,Math.min(120,Number(runtimeMinutes)||15)),started=runtimeStartedAt?new Date(runtimeStartedAt).toISOString():null;
+  return{version:2,generationId:lifecycleHash({taskId:task.id,startStep,currentCommit:task.currentCommit,recoveryClass,ordinal:(task.metadata?.continuationHistory||[]).length+1}),startStep,maxSteps,recoveryClass,...(started?{runtimeStartedAt:started,runtimeMinutes:boundedRuntimeMinutes,runtimeDeadline:new Date(new Date(started).getTime()+boundedRuntimeMinutes*60000).toISOString()}:{})};
 }

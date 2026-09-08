@@ -1030,6 +1030,10 @@ export function createApi({
         const selfDevelopmentRepositoryContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-repository-context$/);
         const selfDevelopmentPlanLifecycleRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-plan-lifecycle$/);
         const selfDevelopmentFullTestRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-full-test-failure$/);
+        const selfDevelopmentContinuationRuntimeResume = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/resume-continuation-runtime$/);
+        if(selfDevelopment&&selfDevelopmentContinuationRuntimeResume&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.resumeFullTestContinuationRuntime(decodeURIComponent(selfDevelopmentContinuationRuntimeResume[1]),await readJsonBody(request,config.maxBodyBytes)));return;
+        }
         if(selfDevelopment&&selfDevelopmentFullTestRecovery&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverFullTestFailure(decodeURIComponent(selfDevelopmentFullTestRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
         }

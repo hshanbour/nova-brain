@@ -1,5 +1,5 @@
 import {createHash,randomUUID,timingSafeEqual} from "node:crypto";
-import {createActiveContinuation} from "./self-development-plan-lifecycle.js";
+import {createActiveContinuation,taskRuntimeWindow} from "./self-development-plan-lifecycle.js";
 
 const LOCAL_STEPS=Object.freeze({
   apply_patch:{capability:"repo_mutate_local",tool:"repo_apply_patch",lock:true},
@@ -41,7 +41,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
       return{claimed:false};
     }
     if(!SAFE_STATUSES.has(before.status)&&!(active&&new Date(active.expiresAt)<=clock()))return{claimed:false};
-    if(new Date(before.startedAt||before.createdAt).getTime()+before.maxRuntimeMinutes*60000<=clock().getTime())throw new HandoffError("max_runtime_reached","Task runtime budget expired.");
+    const runtimeWindow=taskRuntimeWindow(before,clock());if(runtimeWindow.expired){const error=new HandoffError("max_runtime_reached","The active bounded runtime window expired.");error.safeDiagnostics={taskId:before.id,claimStage:"pre_claim_runtime",...runtimeWindow};throw error;}
     const planned=before.metadata?.steps?.[before.currentStep],definition=LOCAL_STEPS[planned?.type];
     if(!definition||!capabilities.includes(definition.capability))return{claimed:false};
     let args=resolvePlan(planned.input?.arguments||{},before);
@@ -86,7 +86,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
             {type:"apply_patch",input:{tool:"repo_apply_patch",arguments:{files:"$IMPLEMENTATION_FILES",expectedCommit:"$CURRENT_COMMIT"}},idempotencyIdentity:`full-test-repair-patch:${failureEvidence.fingerprint}`},
             {type:"run_focused_tests",input:{tool:"test_run",arguments:{tests:"$IMPLEMENTATION_TESTS"}},idempotencyIdentity:`full-test-repair-focused:${failureEvidence.fingerprint}`},
             {type:"run_full_tests",input:{tool:"test_run_full",arguments:{}},idempotencyIdentity:`full-test-repair-full:${failureEvidence.fingerprint}`},...remaining];
-          failureMetadata={...metadata,steps:[...task.metadata.steps,...repairSteps],fullTestRepairHistory:[...history,{fingerprint:failureEvidence.fingerprint,iteration:iteration+1,failedStepId:handoff.stepId,recordedAt:nowIso(clock)}],activeContinuation:createActiveContinuation({task,startStep:base,plannedSteps:repairSteps.length,repairLimit:maxIterations,recoveryClass:"structured_full_test_repair"}),requiredCapability:"reasoning",autoDispatch:true};
+          failureMetadata={...metadata,steps:[...task.metadata.steps,...repairSteps],fullTestRepairHistory:[...history,{fingerprint:failureEvidence.fingerprint,iteration:iteration+1,failedStepId:handoff.stepId,recordedAt:nowIso(clock)}],activeContinuation:createActiveContinuation({task,startStep:base,plannedSteps:repairSteps.length,repairLimit:maxIterations,recoveryClass:"structured_full_test_repair",runtimeStartedAt:nowIso(clock),runtimeMinutes:15}),requiredCapability:"reasoning",autoDispatch:true};
           currentStep=base;status="queued";nextRunAt=nowIso(clock);errorCode:null;
         }else{status="failed";nextRunAt=null;errorCode="repair_limit_reached";}
       }

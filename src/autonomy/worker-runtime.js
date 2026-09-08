@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { ApprovalRequiredError } from "../policy/action-policy.js";
-import {activeContinuationExceeded,assertActiveImplementationPlan,planLifecycleMetadata} from "./self-development-plan-lifecycle.js";
+import {activeContinuationExceeded,assertActiveImplementationPlan,planLifecycleMetadata,taskRuntimeWindow} from "./self-development-plan-lifecycle.js";
 
 export const AUTONOMY_STATUSES = Object.freeze([
   "queued",
@@ -296,11 +296,7 @@ export function createWorkerRuntime({
   async function advance(task) {
     if (activeContinuationExceeded(task))
       return stop(task, "failed", "max_steps_reached");
-    if (
-      new Date(task.startedAt || task.createdAt).getTime() +
-        task.maxRuntimeMinutes * 60000 <=
-      clock().getTime()
-    )
+    if (taskRuntimeWindow(task,clock()).expired)
       return stop(task, "expired", "max_runtime_reached");
     const plan = await next(task),
       type = plan.next_step,
