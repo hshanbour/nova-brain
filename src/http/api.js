@@ -1029,6 +1029,10 @@ export function createApi({
         const selfDevelopmentHandsContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-commit-mismatch$/);
         const selfDevelopmentRepositoryContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-repository-context$/);
         const selfDevelopmentPlanLifecycleRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-plan-lifecycle$/);
+        const selfDevelopmentFullTestRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-full-test-failure$/);
+        if(selfDevelopment&&selfDevelopmentFullTestRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverFullTestFailure(decodeURIComponent(selfDevelopmentFullTestRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
+        }
         if(selfDevelopment&&selfDevelopmentPlanLifecycleRecovery&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverPlanLifecycle(decodeURIComponent(selfDevelopmentPlanLifecycleRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
         }

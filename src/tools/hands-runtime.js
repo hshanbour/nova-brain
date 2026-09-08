@@ -8,6 +8,7 @@ import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA } from "../autonomy/self-deve
 import { resolveRepositoryContext } from "./repository-context.js";
 import { createGitExecutor } from "./git-execution.js";
 import {canonicalContentHash,IMPLEMENTATION_PLAN_PROVENANCE_VERSION} from "../autonomy/self-development-plan-lifecycle.js";
+import {parseTestFailure} from "./test-failure-evidence.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -81,6 +82,7 @@ async function command(
     });
     return {
       exitCode: 0,
+      signal: null,
       stdout: String(result.stdout || "").slice(-100_000),
       stderr: String(result.stderr || "").slice(-100_000),
       durationMs: Date.now() - started,
@@ -91,6 +93,7 @@ async function command(
       fail("test_timeout", "Allowlisted command timed out.", { timeoutMs });
     return {
       exitCode: Number.isInteger(error.code) ? error.code : 1,
+      signal: error.signal?String(error.signal):null,
       stdout: String(error.stdout || "").slice(-100_000),
       stderr: String(error.stderr || error.message || "").slice(-100_000),
       durationMs: 0,
@@ -935,6 +938,7 @@ export function registerHandsTools(
             value.error = {
               code: "test_failed",
               message: "Allowlisted tests failed.",
+              evidence: parseTestFailure({root,runner:"node_test",command:full?"npm:test":"node:test:focused",exitCode:result.exitCode,signal:result.signal,stdout:result.stdout,stderr:result.stderr,durationMs:result.durationMs}),
             };
           return audit(name, value, context, started);
         },

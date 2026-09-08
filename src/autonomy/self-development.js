@@ -2381,12 +2381,26 @@ export function createSelfDevelopmentService({
     });
     return { task: updated, repairLimitReached: false };
   }
+  async function recoverFullTestFailure(taskId,input){
+    if(!input||Object.keys(input).some(key=>!["expectedVersion","workspace"].includes(key))||!Number.isInteger(input.expectedVersion))throw new SelfDevelopmentError("full_test_recovery_invalid","An exact state version and bounded workspace proof are required.",400);
+    const current=await runtime.get(taskId);if(!current||current.taskType!=="self_development")throw new SelfDevelopmentError("task_not_found","Self-development task not found.",404);
+    const prior=current.metadata?.fullTestFailureRecoveryHistory?.find(item=>item.fromStateVersion===input.expectedVersion);if(prior)return{task:current,idempotent:true,recovery:prior};
+    if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before full-test recovery.");
+    const workspace=input.workspace||{},root=String(workspace.root||"").replaceAll("\\","/").replace(/\/$/,""),top=String(workspace.gitTopLevel||"").replaceAll("\\","/").replace(/\/$/,""),changed=[...(workspace.changedPaths||[])].map(safePath).sort(),planned=(current.metadata?.selfDevelopmentImplementationPlan?.files||[]).map(file=>safePath(file.path)).sort(),steps=await runtime.steps(current.id),failed=steps.filter(step=>step.stepType==="run_full_tests"&&step.status==="failed").at(-1),focused=steps.some(step=>step.stepType==="run_focused_tests"&&step.status==="completed"),patched=steps.some(step=>step.stepType==="apply_patch"&&step.status==="completed"),delivered=steps.some(step=>["commit","review_commit","push","deploy_preview"].includes(step.stepType)&&step.status==="completed");
+    if(current.status!=="failed"||current.errorCode!=="test_failed"||!failed||!focused||!patched||delivered||current.approvalState||current.leaseOwner||root!==top||!root||workspace.head!==currentCommit||changed.join("|")!==planned.join("|")||!/^[a-f0-9]{40}$/.test(workspace.taskDiffHash||""))throw new SelfDevelopmentError("full_test_recovery_precondition_failed","Only the exact task-owned post-full-test failure may be recovered.");
+    const remote=await verifyRemote?.({repository,branch:current.branch,requiredAncestors:[current.currentCommit,currentCommit]});if(!remote||remote.currentTip!==currentCommit||remote.ancestors?.[current.currentCommit]!==true)throw new SelfDevelopmentError("full_test_recovery_ancestry_mismatch","The deployed commit is not a verified descendant of the task commit.");
+    const failedOrdinal=Number.parseInt(failed.stepId,10),remaining=current.metadata.steps.slice(failedOrdinal),base=current.metadata.steps.length,recoverySteps=[{type:"run_full_tests",input:{tool:"test_run_full",arguments:{}},idempotencyIdentity:`full-test-diagnostic:${workspace.taskDiffHash}`},...remaining],now=clock().toISOString(),record={recoveryClass:"structured_full_test_evidence_reconstruction",fromStateVersion:current.stateVersion,previousCurrentCommit:current.currentCommit,currentCommit,failedStepId:failed.stepId,taskDiffHash:workspace.taskDiffHash,changedPaths:changed,recoveredAt:now};
+    const metadata={...current.metadata,steps:[...current.metadata.steps,...recoverySteps],requiredCapability:"test_local",autoDispatch:true,activeContinuation:createActiveContinuation({task:current,startStep:base,plannedSteps:recoverySteps.length,repairLimit:Math.min(2,current.metadata?.selfDevelopment?.repairLimit??2),recoveryClass:record.recoveryClass}),fullTestFailureRecoveryHistory:[...(current.metadata.fullTestFailureRecoveryHistory||[]),record]};
+    const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"waiting_for_worker",currentStep:base,currentCommit,maxSteps:Math.min(100,Math.max(current.maxSteps,base+recoverySteps.length+4)),nextRunAt:now,completedAt:null,errorCode:null,blockedReason:null,retryCount:0,metadata},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during full-test recovery.");
+    await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_full_test_failure_recovered",status:"waiting_for_worker",summary:"Exact task-owned full-suite failure was requeued for structured diagnostic evidence.",metadata:record});return{task:updated,idempotent:false,recovery:record};
+  }
   return Object.freeze({
     structure,
     plan,
     create,
     get,
     repair,
+    recoverFullTestFailure,
     replanDiscoveryOnly,
     recoverImplementationPlan,
     recoverImplementationSchema,

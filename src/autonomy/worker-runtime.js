@@ -24,6 +24,7 @@ export const STEP_CAPABILITIES = Object.freeze({
   diagnose: "reasoning",
   plan_patch: "reasoning",
   plan_implementation: "reasoning",
+  plan_repair: "reasoning",
   apply_patch: "repo_mutate_local",
   run_focused_tests: "test_local",
   run_full_tests: "test_local",
@@ -440,7 +441,7 @@ export function createWorkerRuntime({
         projectId: task.projectId,
         approvalId: task.approvalState?.approvalId,
       });
-      if(type==="plan_implementation"&&result?.evidenceExpansion){await completeEvidenceExpansion(task,step,plan,result);return{claimed:true,status:"queued",stepType:type,result:redact(result)};}
+      if(["plan_implementation","plan_repair"].includes(type)&&result?.evidenceExpansion){await completeEvidenceExpansion(task,step,plan,result);return{claimed:true,status:"queued",stepType:type,result:redact(result)};}
       await complete(task, step, result, "queued", iso(clock));
       return {
         claimed: true,
@@ -621,6 +622,7 @@ function toolFor(type) {
       read_files: "repo_read",
       inspect_logs: "deployment_logs",
       apply_patch: "repo_apply_patch",
+      plan_repair: "self_development_plan_implementation",
       run_focused_tests: "test_run",
       run_full_tests: "test_run_full",
       inspect_diff: "repo_diff",
