@@ -141,7 +141,7 @@ test("planner and Hands share the canonical versioned patch bridge contract", ()
   const patch=registry.list().find((tool)=>tool.name==="repo_apply_patch");
   assert.equal(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION,"1");
   assert.deepEqual(patch.inputSchema,SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA);
-  assert.deepEqual(Object.keys(patch.inputSchema.properties).sort(),["branch","currentCommit","files"]);
+  assert.deepEqual(Object.keys(patch.inputSchema.properties).sort(),["branch","currentCommit","files","planProvenance"]);
 });
 test("canonical composer-style plan validates before Hands-compatible mutation", async () => {
   const output=valid();output.files=[{path:"assets/voice-input.js",operation:"replace",content:"new adapter",reason:"bounded composer dictation",intendedChanges:["preserve editable transcription"]},{path:"test/voice-input.test.js",operation:"replace",content:"new focused tests",reason:"focused evidence",intendedChanges:["cover dictation"]}];output.focusedTests=[{path:"test/voice-input.test.js",kind:"existing"}];output.acceptanceMapping=[{criterion:"Composer dictation stays editable",files:["assets/voice-input.js","test/voice-input.test.js"]}];

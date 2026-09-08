@@ -7,6 +7,7 @@ import { RISK_LEVELS } from "../policy/action-policy.js";
 import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA } from "../autonomy/self-development-implementation-contract.js";
 import { resolveRepositoryContext } from "./repository-context.js";
 import { createGitExecutor } from "./git-execution.js";
+import {canonicalContentHash,IMPLEMENTATION_PLAN_PROVENANCE_VERSION} from "../autonomy/self-development-plan-lifecycle.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -770,7 +771,7 @@ export function registerHandsTools(
             fail("invalid_input", "Invalid replacement content.");
         }
       },
-      async execute({ files, currentCommit }, context) {
+      async execute({ files, currentCommit, planProvenance }, context) {
         const started = Date.now();
         if (currentCommit) {
           if (!/^[a-f0-9]{40}$/.test(currentCommit))
@@ -785,6 +786,11 @@ export function registerHandsTools(
             fail("working_tree_dirty", "Local checkout must be clean before a task-bound patch.");
         }
         const originals = [];
+        if(planProvenance){
+          const preconditions=new Map((planProvenance.mutationPreconditions||[]).map(item=>[item.path,item]));
+          if(planProvenance.version!==IMPLEMENTATION_PLAN_PROVENANCE_VERSION||planProvenance.taskId!==context?.runId||planProvenance.currentCommit!==currentCommit||preconditions.size!==files.length)fail("implementation_plan_stale","Hands rejected a stale or unbound implementation plan.",{planGenerationId:planProvenance.generationId||null,planCurrentCommit:planProvenance.currentCommit||null,taskCurrentCommit:currentCommit||null});
+          for(const item of files){const bound=preconditions.get(item.path);if(!bound||bound.operation!==(item.operation||("expectedContent" in item?"replace":"legacy_replace"))||(bound.operation==="replace"&&bound.expectedContentHash!==canonicalContentHash(item.expectedContent)))fail("implementation_plan_precondition_mismatch","Hands rejected mismatched plan preconditions.",{path:item.path,planGenerationId:planProvenance.generationId||null,expectedContentHash:bound?.expectedContentHash||null,providedContentHash:canonicalContentHash(item.expectedContent)});}
+        }
         for (const item of files) {
           const operation = item.operation || ("expectedContent" in item ? "replace" : "legacy_replace");
           let current;
@@ -815,12 +821,12 @@ export function registerHandsTools(
             operation === "replace" &&
             (current === null ||
               !("expectedContent" in item) ||
-              item.expectedContent !== current)
+              canonicalContentHash(item.expectedContent) !== canonicalContentHash(current))
           )
             fail(
               "patch_conflict",
               `Expected existing content does not match ${item.path}.`,
-              { path: item.path },
+              { path: item.path, planGenerationId:planProvenance?.generationId||null, planCurrentCommit:planProvenance?.currentCommit||null, taskCurrentCommit:currentCommit||null, expectedContentHash:canonicalContentHash(item.expectedContent), actualContentHash:canonicalContentHash(current) },
             );
           originals.push({ path: item.path, current });
         }

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import {createActiveContinuation} from "./self-development-plan-lifecycle.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -1179,6 +1180,24 @@ export function createSelfDevelopmentService({
     return{task:updated,recoveredStepId:failed.stepId,previousCurrentCommit:oldCommit,newCurrentCommit:newCommit,invalidatedEvidencePaths:changedPaths,evidence,idempotent:false};
   }
   const recoverRepositoryContextFailure=(taskId,input)=>recoverHandsCommitMismatch(taskId,input,{failureCode:"repository_context_unproven",recoveryClass:"repository_context_descendant_rebind"});
+  async function recoverPlanLifecycle(taskId,input){
+    if(!input||Object.keys(input).some(key=>!["expectedVersion","workspace"].includes(key))||!Number.isInteger(input.expectedVersion)||!input.workspace||Object.keys(input.workspace).some(key=>!["root","gitTopLevel","head","clean"].includes(key))||!SHA.test(input.workspace.head||"")||input.workspace.clean!==true||input.workspace.root!==input.workspace.gitTopLevel)throw new SelfDevelopmentError("plan_lifecycle_recovery_invalid","Exact version and clean repository proof are required.",400);
+    const current=await runtime.get(taskId);if(!current||current.taskType!=="self_development")throw new SelfDevelopmentError("task_not_found","Self-development task not found.",404);
+    const prior=current.metadata?.planLifecycleRecoveryHistory?.find(item=>item.previousStateVersion===input.expectedVersion);if(prior&&current.status!=="failed")return{task:current,idempotent:true,recovery:prior};
+    if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before plan-lifecycle recovery.");
+    const steps=await runtime.steps(current.id),semantic=resolveSemanticPlanApplyState(current,steps,"patch_conflict"),{failed,planned,planTemplate,remaining,completedAfterPlan}=semantic,approvals=await storage.listApprovals(ownerId,{limit:100}),oldCommit=current.currentCommit,newCommit=currentCommit;
+    const noMutation=failed.result?.mutationApplied!==true&&failed.result?.changed!==true&&!(failed.result?.changedFiles||[]).length;
+    if(current.status!=="failed"||current.errorCode!=="patch_conflict"||!String(failed.result?.message||"").includes("Expected existing content does not match")||!noMutation||completedAfterPlan||approvals.some(item=>item.runId===current.id)||current.metadata?.lastDeploymentId||current.metadata?.selfDevelopmentDeliveryAttestation||current.leaseOwner||remaining[0]?.type!=="apply_patch"||current.branch!==approvedBranch||input.workspace.head!==newCommit||!SHA.test(newCommit||""))throw new SelfDevelopmentError("plan_lifecycle_recovery_precondition_failed","Only the exact pre-mutation stale-plan conflict may be recovered.");
+    if(!verifyRemote||!compareRemoteEvidence)throw new SelfDevelopmentError("plan_lifecycle_verification_unavailable","Remote ancestry and evidence verification are required.",503);
+    const remote=await verifyRemote({repository,branch:current.branch,requiredAncestors:[oldCommit,newCommit]});if(remote.currentTip!==newCommit||remote.ancestors?.[oldCommit]!==true||remote.ancestors?.[newCommit]!==true)throw new SelfDevelopmentError("plan_lifecycle_ancestry_mismatch","The corrective commit is not the exact descendant feature tip.");
+    const implementation=planned.result.implementationPlan,evidencePaths=[...new Set([...(implementation.evidencePaths||[]),...implementation.files.map(file=>file.path)].map(safePath))];if(!evidencePaths.length||evidencePaths.length>12||evidencePaths.some(path=>REPLAN_PROTECTED.test(path)))throw new SelfDevelopmentError("plan_lifecycle_evidence_invalid","Bounded plan evidence cannot be refreshed.");
+    const evidence=await compareRemoteEvidence({repository,paths:evidencePaths,oldCommit,newCommit}),base=current.metadata.steps.length,reads=evidencePaths.map((path,index)=>annotation(base+index+1,"read_files","repo_read_remote",{tool:"repo_read",arguments:{path,startLine:1,endLine:1000}},`Complete contents of ${path}`,"Authoritative current-generation evidence is read before replanning",{retry:"safe_read"})),replan={...planTemplate,input:{...planTemplate.input,arguments:{...planTemplate.input.arguments,taskId:current.id,candidatePaths:evidencePaths,currentCommit:newCommit}},idempotencyIdentity:`${planTemplate.idempotencyIdentity||"self-development:plan_implementation"}:plan-generation:${newCommit}:${base}`},continuation=[...reads,replan,...remaining],nextSteps=continuation.map((step,index)=>({...step,idempotencyIdentity:`${step.idempotencyIdentity||`self-development:${step.type}`}:continuation:${base+index+1}`}));
+    const rebound={...current,currentCommit:newCommit},activeContinuation=createActiveContinuation({task:rebound,startStep:base,plannedSteps:nextSteps.length,repairLimit:current.metadata?.maxRepairIterations??2,recoveryClass:"plan_provenance_descendant_rebind"}),now=clock().toISOString(),generations=(current.metadata?.implementationPlanGenerations||[]).map(item=>item.authority==="active"?{...item,authority:"superseded",supersededReason:"descendant_rebind_requires_replan"}:item),record={previousStateVersion:current.stateVersion,failedStepId:failed.stepId,plannedStepId:planned.stepId,previousCurrentCommit:oldCommit,newCurrentCommit:newCommit,evidence:Object.fromEntries(evidencePaths.map(path=>[path,{oldBlob:evidence[path].oldSha,newBlob:evidence[path].newSha,equivalent:evidence[path].equivalent===true}])),supersededPlanHash:implementation.planHash||null,activeContinuation,recoveredAt:now};
+    const metadata={...current.metadata,steps:[...current.metadata.steps,...nextSteps],requiredCapability:"repo_read_remote",autoDispatch:true,selfDevelopmentImplementationPlan:null,activeImplementationPlanGeneration:null,implementationPlanGenerations:generations,activeContinuation,continuationHistory:[...(current.metadata?.continuationHistory||[]),activeContinuation],planLifecycleRecoveryHistory:[...(current.metadata?.planLifecycleRecoveryHistory||[]),record],baseRevisionHistory:[...(current.metadata?.baseRevisionHistory||[]),{previousBaseCommit:oldCommit,newBaseCommit:newCommit,previousStateVersion:current.stateVersion,ancestryVerified:true,recoveredAt:now}]};
+    const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",currentStep:base,currentPhase:"plan_lifecycle_recovery",currentCommit:newCommit,nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,retryCount:0,blockedReason:null,checkpoint:{...current.checkpoint,pendingStep:null},metadata},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during plan-lifecycle recovery.");
+    await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_plan_generation_recovered",status:"queued",summary:"Stale implementation authority was superseded and a bounded evidence-backed continuation was created.",metadata:{taskId:current.id,previousStateVersion:current.stateVersion,previousCurrentCommit:oldCommit,newCurrentCommit:newCommit,failedStepId:failed.stepId,evidencePaths,continuationGenerationId:activeContinuation.generationId,continuationStepBudget:activeContinuation.maxSteps}});
+    return{task:updated,idempotent:false,recovery:record};
+  }
   async function recoverFocusedTestEvidence(taskId, input) {
     if (
       !input ||
@@ -2374,6 +2393,7 @@ export function createSelfDevelopmentService({
     recoverStaleBasePatchConflict,
     recoverHandsCommitMismatch,
     recoverRepositoryContextFailure,
+    recoverPlanLifecycle,
     recoverFocusedTestEvidence,
     recoverCreateConflict,
     recoverCreateConflictBudget,

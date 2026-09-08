@@ -1028,6 +1028,10 @@ export function createApi({
         );
         const selfDevelopmentHandsContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-commit-mismatch$/);
         const selfDevelopmentRepositoryContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-repository-context$/);
+        const selfDevelopmentPlanLifecycleRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-plan-lifecycle$/);
+        if(selfDevelopment&&selfDevelopmentPlanLifecycleRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverPlanLifecycle(decodeURIComponent(selfDevelopmentPlanLifecycleRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
+        }
         if(selfDevelopment&&selfDevelopmentRepositoryContextRecovery&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverRepositoryContextFailure(decodeURIComponent(selfDevelopmentRepositoryContextRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
         }

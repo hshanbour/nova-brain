@@ -7,6 +7,7 @@ export const SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA = Object.freeze({
     branch: { type: "string" },
     currentCommit: { type: "string" },
     files: { type: "array" },
+    planProvenance: { type: "object" },
   },
   required: ["branch", "files"],
   additionalProperties: false,

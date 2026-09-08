@@ -12,6 +12,7 @@ import {
   ApprovalRequiredError,
 } from "../src/policy/action-policy.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
+import { canonicalContentHash } from "../src/autonomy/self-development-plan-lifecycle.js";
 import {
   INITIAL_OWNER_PROFILE,
   INITIAL_PROJECTS,
@@ -294,6 +295,8 @@ test("multi-file replacement validates every precondition before changing any fi
     await f.close();
   }
 });
+
+test("Hands accepts canonical line-ending equivalence with exact plan provenance",async()=>{const f=await fixture();try{await writeFile(join(f.root,"alpha.js"),"export const alpha = 1;\r\n","utf8");const expectedContent="export const alpha = 1;\n",runId="selfdev_line_endings",planProvenance={version:"2",generationId:"generation",taskId:runId,mutationPreconditions:[{path:"alpha.js",operation:"replace",expectedContentHash:canonicalContentHash(expectedContent)}]};const result=await f.registry.execute("repo_apply_patch",{branch:BRANCH,planProvenance,files:[{path:"alpha.js",operation:"replace",expectedContent,content:"export const alpha = 2;\n"}]},{runId});assert.deepEqual(result.files,["alpha.js"]);await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,files:[{path:"beta.md",operation:"replace",expectedContent:"wrong\n",content:"changed\n"}]}),error=>error.code==="patch_conflict"&&error.safeDiagnostics.expectedContentHash!==error.safeDiagnostics.actualContentHash);}finally{await f.close();}});
 
 test("task-bound patch requires the exact clean local base revision", async () => {
   const f=await fixture();

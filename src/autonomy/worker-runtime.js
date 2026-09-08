@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { ApprovalRequiredError } from "../policy/action-policy.js";
+import {activeContinuationExceeded,assertActiveImplementationPlan,planLifecycleMetadata} from "./self-development-plan-lifecycle.js";
 
 export const AUTONOMY_STATUSES = Object.freeze([
   "queued",
@@ -292,7 +293,7 @@ export function createWorkerRuntime({
     }
   }
   async function advance(task) {
-    if (task.currentStep >= task.maxSteps)
+    if (activeContinuationExceeded(task))
       return stop(task, "failed", "max_steps_reached");
     if (
       new Date(task.startedAt || task.createdAt).getTime() +
@@ -433,6 +434,7 @@ export function createWorkerRuntime({
       const tool = plan.required_inputs.tool || toolFor(type);
       const rawArgs = plan.required_inputs.arguments || plan.required_inputs;
       const args = resolveTaskReferences(rawArgs, task);
+      if(type==="apply_patch"&&task.taskType==="self_development"&&rawArgs?.files==="$IMPLEMENTATION_FILES")args.planProvenance=assertActiveImplementationPlan(task,args.files||[]);
       const result = await toolRegistry.execute(tool, args, {
         runId: task.id,
         projectId: task.projectId,
@@ -534,7 +536,7 @@ export function createWorkerRuntime({
         pendingStep: null,
         latestResult: redact(result),
       },
-      metadata: { ...task.metadata, requiredCapability: null, ...(result?.implementationPlan?{selfDevelopmentImplementationPlan:redact(result.implementationPlan)}:{}), ...(result?.deploymentId?{lastDeploymentId:result.deploymentId}:{}) },
+      metadata: { ...(result?.implementationPlan?planLifecycleMetadata(task,redact(result.implementationPlan)):task.metadata), requiredCapability: null, ...(result?.deploymentId?{lastDeploymentId:result.deploymentId}:{}) },
       blockedReason: null,
       errorCode: null,
     });
