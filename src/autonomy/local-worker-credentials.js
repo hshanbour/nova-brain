@@ -3,6 +3,7 @@ import {execFile,spawn as spawnChild} from "node:child_process";
 import {fileURLToPath} from "node:url";
 import {join} from "node:path";
 import {promisify} from "node:util";
+import {existsSync} from "node:fs";
 
 export const LOCAL_WORKER_CREDENTIALS=Object.freeze({
   nova:"NOVA_LOCAL_WORKER_TOKEN",
@@ -15,9 +16,9 @@ const exec=promisify(execFile),MAX_OUTPUT=8192;
 const defaultKillTree=pid=>Number.isInteger(pid)?exec("taskkill.exe",["/PID",String(pid),"/T","/F"],{windowsHide:true,timeout:5000}).catch(()=>{}):Promise.resolve();
 const defaultAlive=pid=>{if(!Number.isInteger(pid))return false;try{process.kill(pid,0);return true;}catch{return false;}};
 
-export function createWindowsCredentialStore({platform=process.platform,spawn=spawnChild,killTree=defaultKillTree,isAlive=defaultAlive,environment=process.env,helperExecutable="",helperTimeoutMs=60000}={}){
+export function createWindowsCredentialStore({platform=process.platform,spawn=spawnChild,killTree=defaultKillTree,isAlive=defaultAlive,exists=existsSync,environment=process.env,helperExecutable="",requireNativeHelper=false,helperTimeoutMs=60000}={}){
   if(platform!=="win32")throw new Error("secure_os_store_unavailable");
-  const powershell=join(environment.SystemRoot||environment.WINDIR||"C:\\Windows","System32","WindowsPowerShell","v1.0","powershell.exe"),native=typeof helperExecutable==="string"&&/^[A-Za-z]:\\[^\r\n]+\.exe$/i.test(helperExecutable),executable=native?helperExecutable:powershell;
+  const powershell=join(environment.SystemRoot||environment.WINDIR||"C:\\Windows","System32","WindowsPowerShell","v1.0","powershell.exe"),configured=typeof helperExecutable==="string"&&helperExecutable.length>0,native=configured&&/^[A-Za-z]:\\[^\r\n]+\.exe$/i.test(helperExecutable)&&exists(helperExecutable);if(requireNativeHelper&&!native)throw Object.assign(new Error("credential_native_helper_required"),{code:"credential_native_helper_required",safeDiagnostics:{source:"windows_credential_manager",credentialType:"credential_set",stage:"initializing",helperKind:"native",helperExecutable:configured?helperExecutable:null,nativeExists:configured&&exists(helperExecutable),selectionSource:"worker_cli",fallbackUsed:false}});const executable=native?helperExecutable:powershell;
   const invoke=(action,name,secret,secondName)=>new Promise((resolve,reject)=>{
     const args=native?[action,TARGET(name)]:["-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",SCRIPT,action,TARGET(name)];if(secondName)args.push(TARGET(secondName));
     const startedAt=new Date().toISOString(),type=secondName?"credential_set":TYPE(name),child=spawn(executable,args,{windowsHide:true,shell:false,stdio:[secret===undefined?"ignore":"pipe","pipe","pipe"]});
@@ -34,6 +35,7 @@ export function createWindowsCredentialStore({platform=process.platform,spawn=sp
   });
   return Object.freeze({
     storage:"secure_os_store",
+    helper:Object.freeze({kind:native?"native":"powershell",executable,selectionSource:native?"worker_cli":"management_fallback",nativeExists:native,fallbackUsed:!native}),
     async get(name){const value=await invoke("get",name);if(!value)throw Object.assign(new Error("credential_missing"),{code:"credential_missing"});return value;},
     async getPair(firstName,secondName){const value=await invoke("get-pair",firstName,undefined,secondName);let encoded;try{encoded=JSON.parse(value);}catch{throw Object.assign(new Error("credential_helper_output_invalid"),{code:"credential_helper_output_invalid"});}if(!Array.isArray(encoded)||encoded.length!==2||encoded.some(item=>typeof item!=="string"||!/^[A-Za-z0-9+/]+={0,2}$/.test(item)))throw Object.assign(new Error("credential_helper_output_invalid"),{code:"credential_helper_output_invalid"});return encoded.map(item=>Buffer.from(item,"base64").toString("utf8"));},
     async set(name,value){if(typeof value!=="string"||value.length<32)throw new Error("credential_invalid");await invoke("set",name,value);return{configured:true,storage:"secure_os_store"};},

@@ -9,4 +9,5 @@ $arguments='"'+$script+'" --preview-url "'+$PreviewUrl.TrimEnd('/')+'" --git-exe
 $trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $name -Action $taskAction -Trigger $trigger -Settings $settings -Description 'Bounded Nova Self-Development worker; credentials load from Windows Credential Manager.' -Force | Out-Null
+$installedAction=(Get-ScheduledTask -TaskName $name -ErrorAction Stop).Actions | Select-Object -First 1; if($installedAction.Execute -ne $node -or $installedAction.Arguments -notlike ('*--credential-helper "'+$helper+'"*')){throw 'The Scheduled Task credential-helper binding could not be verified.'}
 [Console]::Out.Write('installed')
