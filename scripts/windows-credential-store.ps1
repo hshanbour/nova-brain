@@ -1,5 +1,6 @@
 param([Parameter(Mandatory=$true)][ValidateSet('get','set','delete','status')][string]$Action,[Parameter(Mandatory=$true)][string]$Target)
 $ErrorActionPreference='Stop'
+[Console]::Error.WriteLine('NOVA_STAGE:powershell_started')
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -14,8 +15,9 @@ public static class NovaCredentialManager {
   public static bool Delete(string target){return CredDelete(target,1,0)||Marshal.GetLastWin32Error()==1168;}
 }
 '@
+[Console]::Error.WriteLine('NOVA_STAGE:native_api_loaded')
 switch($Action){
-  'get' { $value=[NovaCredentialManager]::Get($Target); if($null -eq $value){exit 3}; [Console]::Out.Write($value) }
+  'get' { [Console]::Error.WriteLine('NOVA_STAGE:credential_api_read'); $value=[NovaCredentialManager]::Get($Target); [Console]::Error.WriteLine('NOVA_STAGE:credential_api_complete'); if($null -eq $value){exit 3}; [Console]::Out.Write($value) }
   'set' { $value=[Console]::In.ReadToEnd(); [NovaCredentialManager]::Set($Target,$value); [Console]::Out.Write('stored') }
   'delete' { [void][NovaCredentialManager]::Delete($Target); [Console]::Out.Write('deleted') }
   'status' { if($null -eq [NovaCredentialManager]::Get($Target)){[Console]::Out.Write('missing')}else{[Console]::Out.Write('configured')} }
