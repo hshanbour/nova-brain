@@ -1,5 +1,6 @@
 import {createHash,randomUUID,timingSafeEqual} from "node:crypto";
 import {createActiveContinuation,taskRuntimeWindow} from "./self-development-plan-lifecycle.js";
+import {canonicalSchemaDiagnostic} from "./schema-diagnostics.js";
 
 const LOCAL_STEPS=Object.freeze({
   apply_patch:{capability:"repo_mutate_local",tool:"repo_apply_patch",lock:true},
@@ -75,7 +76,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     if(!failed&&handoff.stepType==="apply_patch"){const allowed=new Set((handoff.arguments.files||[]).map(item=>item.path));if(!Array.isArray(result.files)||result.files.some(path=>!allowed.has(path)))throw new HandoffError("invalid_handoff_result","Patch result files do not match the server plan.",400);}
     const completed=[...(task.checkpoint?.completedSteps||[]),handoff.stepId],completedHandoffs=[...(task.metadata?.completedHandoffs||[]),handoff.id].slice(-20),metadata={...task.metadata,localHandoff:null,completedHandoffs,requiredCapability:null};
     if(failed){
-      const failureEvidence=result.diagnostics;
+      const failureEvidence=input.error?.code==="schema_mismatch"?canonicalSchemaDiagnostic({...result.diagnostics,taskId:task.id,handoffId:handoff.id,stepId:handoff.stepId,stepType:handoff.stepType,tool:handoff.tool}):result.diagnostics;if(input.error?.code==="schema_mismatch")result.diagnostics=failureEvidence;
       const structuredFullFailure=task.taskType==="self_development"&&handoff.stepType==="run_full_tests"&&input.error?.code==="test_failed"&&failureEvidence?.version===1&&typeof failureEvidence.fingerprint==="string";
       let retryable=RETRYABLE.has(input.error?.code),retry=task.retryCount+1,status=retryable&&retry<=task.maxRetries?"retrying":"failed",failureMetadata=metadata,currentStep=task.currentStep,nextRunAt=retryable?new Date(clock().getTime()+1000).toISOString():null,errorCode=input.error?.code||"worker_failed";
       if(structuredFullFailure){

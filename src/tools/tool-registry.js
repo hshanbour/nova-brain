@@ -1,3 +1,5 @@
+import {canonicalSchemaDiagnostic} from "../autonomy/schema-diagnostics.js";
+
 export function createToolRegistry({ policy } = {}) {
   const tools = new Map();
 
@@ -25,19 +27,19 @@ export function createToolRegistry({ policy } = {}) {
     for (const [field, definition] of Object.entries(properties)) {
       if (!(field in input)) continue;
       if (definition.type === "string" && typeof input[field] !== "string") {
-        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`);
+        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`,{fieldPath:`${name}.${field}`,expected:{type:"string"},received:{type:Array.isArray(input[field])?"array":input[field]===null?"null":typeof input[field]},validationCode:"invalid_type"});
       }
       if (definition.type === "number" && typeof input[field] !== "number") {
-        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`);
+        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`,{fieldPath:`${name}.${field}`,expected:{type:"number"},received:{type:Array.isArray(input[field])?"array":input[field]===null?"null":typeof input[field]},validationCode:"invalid_type"});
       }
       if (definition.type === "boolean" && typeof input[field] !== "boolean") {
-        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`);
+        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`,{fieldPath:`${name}.${field}`,expected:{type:"boolean"},received:{type:Array.isArray(input[field])?"array":input[field]===null?"null":typeof input[field]},validationCode:"invalid_type"});
       }
       if (definition.type === "array" && !Array.isArray(input[field])) {
-        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`);
+        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`,{fieldPath:`${name}.${field}`,expected:{type:"array"},received:{type:input[field]===null?"null":typeof input[field]},validationCode:"invalid_type"});
       }
       if (definition.type === "object" && (!input[field] || typeof input[field] !== "object" || Array.isArray(input[field]))) {
-        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`);
+        throw new ToolInputError(`Invalid tool argument type: ${name}.${field}`,{fieldPath:`${name}.${field}`,expected:{type:"object"},received:{type:Array.isArray(input[field])?"array":input[field]===null?"null":typeof input[field]},validationCode:"invalid_type"});
       }
     }
   }
@@ -76,8 +78,7 @@ export function createToolRegistry({ policy } = {}) {
 
       if (tool.available === false) throw new Error(`Tool is unavailable: ${name}`);
 
-      validateSchemaInput(tool.inputSchema, input, name);
-      if (tool.validate) await tool.validate(input);
+      try{validateSchemaInput(tool.inputSchema, input, name);if (tool.validate) await tool.validate(input);}catch(error){if(error?.code==="schema_mismatch")error.safeDiagnostics=canonicalSchemaDiagnostic({...error.safeDiagnostics,...context?.schemaDiagnosticContext,tool:name,schemaVersion:tool.inputSchema?.schemaVersion||tool.inputSchema?.version||"1",argumentKeys:Object.keys(input),validationLayer:"hands_tool_registry"});throw error;}
       if (policy) await policy.authorize(tool, input, context);
 
       return tool.execute(input, context);
