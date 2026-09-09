@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
@@ -369,6 +369,11 @@ test("focused and full test tools return exit codes failures and bounded timeout
       error.stdout = "one failure";
       throw error;
     }
+    if (behavior === "spawn") {
+      const error = new Error("spawn runner ENOENT");
+      error.code = "ENOENT";
+      throw error;
+    }
     return { stdout: "all pass", stderr: "" };
   };
   const registry = createToolRegistry();
@@ -390,10 +395,18 @@ test("focused and full test tools return exit codes failures and bounded timeout
   behavior = "fail";
   const failed = await registry.execute("test_run_full", {});
   assert.equal(failed.error.code, "test_failed");
-  if (process.platform === "win32" && process.env.npm_execpath) {
+  if (process.platform === "win32") {
     assert.equal(lastCommand.file, process.execPath);
-    assert.deepEqual(lastCommand.args, [process.env.npm_execpath, "test"]);
+    assert.deepEqual(lastCommand.args, [
+      join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+      "test",
+    ]);
   }
+  behavior = "spawn";
+  const unavailable = await registry.execute("test_run_full", {});
+  assert.equal(unavailable.error.code, "test_runner_unavailable");
+  assert.equal(unavailable.error.diagnostics.operation, "spawn_test_runner");
+  assert.equal(unavailable.error.diagnostics.code, "ENOENT");
   behavior = "timeout";
   await assert.rejects(
     () =>

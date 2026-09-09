@@ -1,5 +1,6 @@
 import { readFile, readdir, writeFile, rename, rm } from "node:fs/promises";
-import { resolve, relative, sep, dirname, basename } from "node:path";
+import { existsSync } from "node:fs";
+import { resolve, relative, sep, dirname, basename, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
@@ -93,6 +94,7 @@ async function command(
       fail("test_timeout", "Allowlisted command timed out.", { timeoutMs });
     return {
       exitCode: Number.isInteger(error.code) ? error.code : 1,
+      spawnErrorCode: typeof error.code === "string" ? error.code : null,
       signal: error.signal?String(error.signal):null,
       stdout: String(error.stdout || "").slice(-100_000),
       stderr: String(error.stderr || error.message || "").slice(-100_000),
@@ -910,8 +912,22 @@ export function registerHandsTools(
           let file = process.execPath,
             args;
           if (full) {
-            if (process.platform === "win32" && process.env.npm_execpath) {
-              args = [process.env.npm_execpath, "test"];
+            if (process.platform === "win32") {
+              const npmCli = environment.npm_execpath || join(
+                dirname(process.execPath),
+                "node_modules",
+                "npm",
+                "bin",
+                "npm-cli.js",
+              );
+              if (!existsSync(npmCli))
+                fail("test_runner_unavailable", "The bounded npm test runner is unavailable.", {
+                  operation: "resolve_test_runner",
+                  executableKind: "npm_cli",
+                  path: npmCli,
+                  pathExisted: false,
+                });
+              args = [npmCli, "test"];
             } else {
               file = "npm";
               args = ["test"];
@@ -943,7 +959,17 @@ export function registerHandsTools(
             durationMs: result.durationMs,
             output,
           };
-          if (!value.ok)
+          if (result.spawnErrorCode)
+            value.error = {
+              code: "test_runner_unavailable",
+              message: "The allowlisted test runner could not start.",
+              diagnostics: {
+                operation: "spawn_test_runner",
+                executableKind: full ? "npm" : "node",
+                code: result.spawnErrorCode,
+              },
+            };
+          else if (!value.ok)
             value.error = {
               code: "test_failed",
               message: "Allowlisted tests failed.",
