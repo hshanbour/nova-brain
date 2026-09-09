@@ -1023,6 +1023,7 @@ export function createApi({
         const selfDevelopmentSchemaRecovery = pathname.match(
           /^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-implementation-schema$/,
         );
+        const selfDevelopmentFocusedTestSchemaRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-focused-test-schema$/);
         const selfDevelopmentStaleBaseRecovery = pathname.match(
           /^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-stale-base-patch-conflict$/,
         );
@@ -1060,6 +1061,9 @@ export function createApi({
           authorizeLocalWorker(request, config.localWorkerToken);
           sendJson(response, 200, await selfDevelopment.recoverImplementationSchema(decodeURIComponent(selfDevelopmentSchemaRecovery[1]), await readJsonBody(request, config.maxBodyBytes)));
           return;
+        }
+        if(selfDevelopment&&selfDevelopmentFocusedTestSchemaRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverFocusedTestSchema(decodeURIComponent(selfDevelopmentFocusedTestSchemaRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
         }
         if (
           selfDevelopment &&
