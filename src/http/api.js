@@ -1027,6 +1027,7 @@ export function createApi({
           /^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-stale-base-patch-conflict$/,
         );
         const selfDevelopmentHandsContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-commit-mismatch$/);
+        const selfDevelopmentHandsDirtyRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-working-tree-dirty$/);
         const selfDevelopmentRepositoryContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-repository-context$/);
         const selfDevelopmentPlanLifecycleRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-plan-lifecycle$/);
         const selfDevelopmentFullTestRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-full-test-failure$/);
@@ -1045,6 +1046,9 @@ export function createApi({
         }
         if(selfDevelopment&&selfDevelopmentHandsContextRecovery&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverHandsCommitMismatch(decodeURIComponent(selfDevelopmentHandsContextRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
+        }
+        if(selfDevelopment&&selfDevelopmentHandsDirtyRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverHandsWorkingTreeDirty(decodeURIComponent(selfDevelopmentHandsDirtyRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
         }
         if (selfDevelopment && selfDevelopmentStaleBaseRecovery && request.method === "POST") {
           await ready();authorizeLocalWorker(request,config.localWorkerToken);
