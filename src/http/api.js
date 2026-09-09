@@ -1707,6 +1707,9 @@ export function createApi({
           sendJson(response, error.statusCode, {
             error: error.message,
             code: error.code,
+            ...(error.safeDiagnostics
+              ? { diagnostics: error.safeDiagnostics, requestId }
+              : {}),
           });
           return;
         }
