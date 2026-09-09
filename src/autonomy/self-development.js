@@ -2266,7 +2266,35 @@ export function createSelfDevelopmentService({
         "Self-development task not found.",
         404,
       );
-    if (!["failed", "retrying"].includes(current.status))
+    const durableSteps = await runtime.steps(current.id),
+      latestFocusedFailure = durableSteps
+        .filter(
+          (step) =>
+            step.stepType === "run_focused_tests" &&
+            step.status === "failed" &&
+            step.errorCode === "test_failed",
+        )
+        .at(-1),
+      focusedFailureOrdinal = stepOrdinal(latestFocusedFailure),
+      deliveredAfterFocused = durableSteps.some(
+        (step) =>
+          stepOrdinal(step) > focusedFailureOrdinal &&
+          ["commit", "review_commit", "push", "deploy_preview"].includes(
+            step.stepType,
+          ) &&
+          step.status === "completed",
+      ),
+      legacyEmptyRepairCompletion =
+        current.status === "completed" &&
+        current.currentPhase === "inspect_failure" &&
+        Boolean(latestFocusedFailure) &&
+        !deliveredAfterFocused &&
+        durableSteps.slice(-2).map((step) => step.stepType).join("|") ===
+          "inspect_failure|summarize";
+    if (
+      !["failed", "retrying"].includes(current.status) &&
+      !legacyEmptyRepairCompletion
+    )
       throw new SelfDevelopmentError(
         "repair_state_invalid",
         "Task is not repairable.",
@@ -2347,10 +2375,24 @@ export function createSelfDevelopmentService({
               "verify_preview",
               "summarize",
             ],
-      repairSteps = plan(repairRequest).filter((step) =>
+      activePlan = current.metadata?.selfDevelopmentImplementationPlan,
+      focusedRepairSteps = latestFocusedFailure
+        ? [
+            { type: "plan_repair", input: { tool: "self_development_plan_implementation", arguments: { taskId: current.id, candidatePaths: (activePlan?.files || []).map((file) => file.path), currentCommit: "$CURRENT_COMMIT", failureEvidence: latestFocusedFailure.result?.diagnostics } }, idempotencyIdentity: `focused-test-repair-plan:${latestFocusedFailure.result?.diagnostics?.fingerprint}` },
+            { type: "apply_patch", input: { tool: "repo_apply_patch", arguments: { branch: "$TASK_BRANCH", currentCommit: "$CURRENT_COMMIT", files: "$IMPLEMENTATION_FILES", planProvenance: "$IMPLEMENTATION_PLAN_PROVENANCE" } }, idempotencyIdentity: `focused-test-repair-patch:${latestFocusedFailure.result?.diagnostics?.fingerprint}` },
+            { type: "run_focused_tests", input: { tool: "test_run", arguments: { files: "$IMPLEMENTATION_TESTS" } }, idempotencyIdentity: `focused-test-repair-focused:${latestFocusedFailure.result?.diagnostics?.fingerprint}` },
+            { type: "run_full_tests", input: { tool: "test_run_full", arguments: {} }, idempotencyIdentity: `focused-test-repair-full:${latestFocusedFailure.result?.diagnostics?.fingerprint}` },
+            { type: "inspect_diff", input: { tool: "repo_diff", arguments: { paths: "$IMPLEMENTATION_PATHS" } }, idempotencyIdentity: `focused-test-repair-diff:${latestFocusedFailure.result?.diagnostics?.fingerprint}` },
+            { type: "commit", input: { tool: "git_commit", arguments: { paths: "$IMPLEMENTATION_PATHS", branch: current.branch, message: "Complete bounded Nova self-development task" } }, idempotencyIdentity: `focused-test-repair-commit:${latestFocusedFailure.result?.diagnostics?.fingerprint}` },
+            { type: "review_commit", input: { tool: "repo_review_commit", arguments: { commitSha: "$CURRENT_COMMIT", paths: "$IMPLEMENTATION_PATHS" } }, idempotencyIdentity: `focused-test-repair-review:${latestFocusedFailure.result?.diagnostics?.fingerprint}` },
+          ]
+        : null,
+      repairSteps = focusedRepairSteps || plan(repairRequest).filter((step) =>
         allowed.includes(step.type),
       ),
-      prefix = current.metadata.steps.slice(0, current.currentStep),
+      prefix = latestFocusedFailure
+        ? current.metadata.steps
+        : current.metadata.steps.slice(0, current.currentStep),
       inspection = annotation(
         prefix.length + 1,
         "inspect_failure",
@@ -2360,13 +2402,20 @@ export function createSelfDevelopmentService({
         "Repair decision uses new evidence",
         { retry: "not_retryable" },
       ),
-      steps = [...prefix, inspection, ...repairSteps];
+      steps = [...prefix, inspection, ...repairSteps],
+      continuationStart = prefix.length,
+      now = clock().toISOString(),
+      activeContinuation = latestFocusedFailure
+        ? createActiveContinuation({ task: current, startStep: continuationStart, plannedSteps: repairSteps.length + 1, repairLimit: Math.min(2, current.metadata?.selfDevelopment?.repairLimit ?? 2), recoveryClass: legacyEmptyRepairCompletion ? "focused_test_empty_repair_recovery" : "structured_focused_test_repair", runtimeStartedAt: now, runtimeMinutes: 15 })
+        : current.metadata?.activeContinuation;
     const updated = await storage.updateAutonomyTask(
       current.id,
       ownerId,
       {
         status: "queued",
-        nextRunAt: clock().toISOString(),
+        currentStep: latestFocusedFailure ? continuationStart : current.currentStep,
+        currentPhase: latestFocusedFailure ? "plan_repair" : current.currentPhase,
+        nextRunAt: now,
         errorCode: null,
         completedAt: null,
         retryCount: 0,
@@ -2383,6 +2432,16 @@ export function createSelfDevelopmentService({
               createdAt: clock().toISOString(),
             },
           ],
+          ...(latestFocusedFailure
+            ? {
+                activeContinuation,
+                continuationHistory: [
+                  ...(current.metadata?.continuationHistory || []),
+                  activeContinuation,
+                ],
+                autoDispatch: true,
+              }
+            : {}),
         },
       },
       current.stateVersion,

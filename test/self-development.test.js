@@ -384,6 +384,37 @@ test("recoverable failure gets one evidence-based repair plan", async () => {
     "inspect_failure",
   );
 });
+test("legacy empty focused-test repair completion reopens a bounded semantic repair", async () => {
+  const f = await fixture(),
+    created = await f.service.create(input()),
+    diagnostics = {
+      version: 1,
+      fingerprint: "focused-syntax-fingerprint",
+      failedFiles: ["test/voice-input.test.js"],
+      errorClass: "SyntaxError",
+    },
+    implementationPlan = {
+      files: [
+        {
+          path: "assets/voice-input.js",
+          operation: "replace",
+          expectedContent: "old\n",
+          content: "new\n",
+        },
+      ],
+      focusedTests: [{ path: "test/voice-input.test.js", kind: "existing" }],
+    };
+  await f.storage.recordAutonomyStep({ taskId: created.task.id, stepId: "1:run_focused_tests", stepType: "run_focused_tests", capability: "test_local", operationFingerprint: "focused", status: "failed", errorCode: "test_failed", result: { diagnostics } });
+  await f.storage.recordAutonomyStep({ taskId: created.task.id, stepId: "2:inspect_failure", stepType: "inspect_failure", capability: "reasoning", operationFingerprint: "inspect", status: "completed", result: { ok: true } });
+  await f.storage.recordAutonomyStep({ taskId: created.task.id, stepId: "3:summarize", stepType: "summarize", capability: "reasoning", operationFingerprint: "summary", status: "completed", result: { ok: true } });
+  const completed = await f.storage.updateAutonomyTask(created.task.id, OWNER, { status: "completed", currentPhase: "inspect_failure", currentStep: 2, repairIteration: 1, metadata: { ...created.task.metadata, selfDevelopmentImplementationPlan: implementationPlan } });
+  const result = await f.service.repair(completed.id, { evidence: "Focused tests contain planning prose and fail parsing." }),
+    tail = result.task.metadata.steps.slice(result.task.currentStep);
+  assert.equal(result.task.status, "queued");
+  assert.deepEqual(tail.map((step) => step.type), ["inspect_failure", "plan_repair", "apply_patch", "run_focused_tests", "run_full_tests", "inspect_diff", "commit", "review_commit"]);
+  assert.equal(result.task.metadata.activeContinuation.recoveryClass, "focused_test_empty_repair_recovery");
+  assert.equal(result.task.metadata.requiredCapability, "reasoning");
+});
 test("a step-zero planner failure repairs the same task by reinspecting before mutation", async () => {
   const f = await fixture(),
     created = await f.service.create(input());
