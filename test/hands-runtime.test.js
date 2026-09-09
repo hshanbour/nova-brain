@@ -356,8 +356,8 @@ test("focused and full test tools return exit codes failures and bounded timeout
   });
   let behavior = "pass",
     lastCommand;
-  const runner = async (file, args) => {
-    lastCommand = { file, args };
+  const runner = async (file, args, options) => {
+    lastCommand = { file, args, options };
     if (behavior === "timeout") {
       const error = new Error("timeout");
       error.killed = true;
@@ -379,6 +379,7 @@ test("focused and full test tools return exit codes failures and bounded timeout
   const registry = createToolRegistry();
   registerHandsTools(registry, {
     environment: { NOVA_BRAIN_DEVELOPMENT_BRANCH: BRANCH },
+    gitExecutable: "C:\\controlled\\git\\cmd\\git.exe",
     storage,
     ownerId: OWNER_ID,
     commandRunner: runner,
@@ -401,6 +402,7 @@ test("focused and full test tools return exit codes failures and bounded timeout
       join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
       "test",
     ]);
+    assert.equal(lastCommand.options.env.Path.split(";")[0], "C:\\controlled\\git\\cmd");
   }
   behavior = "spawn";
   const unavailable = await registry.execute("test_run_full", {});

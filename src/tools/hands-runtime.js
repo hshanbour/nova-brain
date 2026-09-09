@@ -1,6 +1,6 @@
 import { readFile, readdir, writeFile, rename, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { resolve, relative, sep, dirname, basename, join } from "node:path";
+import { resolve, relative, sep, dirname, basename, join, delimiter } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
@@ -72,7 +72,7 @@ async function command(
   root,
   file,
   args,
-  { timeoutMs = 30_000, runner = exec } = {},
+  { timeoutMs = 30_000, runner = exec, environment } = {},
 ) {
   try {
     const started = Date.now();
@@ -80,6 +80,7 @@ async function command(
       cwd: root,
       timeout: timeoutMs,
       maxBuffer: 500_000,
+      ...(environment ? { env: environment } : {}),
     });
     return {
       exitCode: 0,
@@ -951,6 +952,7 @@ export function registerHandsTools(
           const result = await command(root, file, args, {
             timeoutMs,
             runner: commandRunner,
+            environment: full&&gitExecutable?(()=>{const child={...process.env,...environment};for(const key of Object.keys(child))if(key.toLowerCase()==="path")delete child[key];const inherited=environment.PATH||environment.Path||process.env.PATH||process.env.Path||"";child[process.platform==="win32"?"Path":"PATH"]=[dirname(gitExecutable),inherited].filter(Boolean).join(delimiter);return child;})():undefined,
           });
           const output = `${result.stdout}\n${result.stderr}`.trim();
           const value = {
