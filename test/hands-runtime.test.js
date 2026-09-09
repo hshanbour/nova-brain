@@ -309,6 +309,10 @@ test("task-bound patch requires the exact clean local base revision", async () =
   }finally{await f.close();}
 });
 
+test("task-bound patch accepts only exact active-plan task-owned dirty files",async()=>{const f=await fixture();try{const {stdout}=await run("git",["rev-parse","HEAD"],{cwd:f.root}),sha=stdout.trim(),runId="selfdev_dirty_recovery",expectedContent="task-owned current\n",content="repaired\n";await writeFile(join(f.root,"alpha.js"),expectedContent,"utf8");const planProvenance={version:"2",generationId:"rebound-generation",taskId:runId,currentCommit:sha,mutationPreconditions:[{path:"alpha.js",operation:"replace",expectedContentHash:canonicalContentHash(expectedContent)}]};const result=await f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:sha,planProvenance,files:[{path:"alpha.js",operation:"replace",expectedContent,content}]},{runId});assert.deepEqual(result.files,["alpha.js"]);assert.equal(await readFile(join(f.root,"alpha.js"),"utf8"),content);}finally{await f.close();}});
+
+test("task-owned dirty recovery rejects any unrelated dirty file",async()=>{const f=await fixture();try{const {stdout}=await run("git",["rev-parse","HEAD"],{cwd:f.root}),sha=stdout.trim(),runId="selfdev_dirty_reject",expectedContent="task-owned current\n";await writeFile(join(f.root,"alpha.js"),expectedContent,"utf8");await writeFile(join(f.root,"unrelated.txt"),"unrelated\n","utf8");const planProvenance={version:"2",generationId:"rebound-generation",taskId:runId,currentCommit:sha,mutationPreconditions:[{path:"alpha.js",operation:"replace",expectedContentHash:canonicalContentHash(expectedContent)}]};await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:sha,planProvenance,files:[{path:"alpha.js",operation:"replace",expectedContent,content:"repaired\n"}]},{runId}),error=>error.code==="working_tree_dirty"&&error.safeDiagnostics.taskOwnedDirtyProven===false);assert.equal(await readFile(join(f.root,"alpha.js"),"utf8"),expectedContent);}finally{await f.close();}});
+
 test("Hands independently rejects create over tracked or untracked existing files", async () => {
   const f = await fixture();
   try {

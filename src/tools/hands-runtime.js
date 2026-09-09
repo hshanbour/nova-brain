@@ -785,8 +785,17 @@ export function registerHandsTools(
           try{repositoryContext=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:approved(),expectedHead:currentCommit,requireClean:true,source:carried?.source||"hands_local_reconstruction",git:(exactRoot,args)=>localGit?localGit(exactRoot,args):gitCommand(exactRoot,args,{runner:commandRunner,environment})});}catch(error){fail(error.code||"repository_context_unproven",error.message,error.safeDiagnostics);}
           if (repositoryContext.actualHead !== currentCommit)
             fail("commit_mismatch", "Local checkout does not match the task-bound commit.", {...repositoryContext,taskBoundCommit:currentCommit,mismatch:"head"});
-          if (!repositoryContext.clean)
-            fail("working_tree_dirty", "Local checkout must be clean before a task-bound patch.");
+          if (!repositoryContext.clean) {
+            const statusResult=await (localGit?localGit(root,["status","--porcelain=v1"]):gitCommand(root,["status","--porcelain=v1"],{runner:commandRunner,environment}));
+            const dirtyPaths=statusResult.exitCode===0?statusResult.stdout.split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replaceAll("\\","/")).sort():[];
+            const plannedPaths=files.map(item=>item.path).sort(),preconditions=new Map((planProvenance?.mutationPreconditions||[]).map(item=>[item.path,item]));
+            const exactPlan=planProvenance?.version===IMPLEMENTATION_PLAN_PROVENANCE_VERSION&&planProvenance.taskId===context?.runId&&planProvenance.currentCommit===currentCommit&&preconditions.size===files.length;
+            const exactPaths=dirtyPaths.length===plannedPaths.length&&dirtyPaths.every((path,index)=>path===plannedPaths[index]);
+            const exactContents=exactPlan&&files.every(item=>item.operation==="replace"&&preconditions.get(item.path)?.operation==="replace"&&preconditions.get(item.path)?.expectedContentHash===canonicalContentHash(item.expectedContent));
+            let currentContentsMatch=exactContents;
+            if(currentContentsMatch)for(const item of files){try{if(canonicalContentHash(await readFile(safe(root,item.path),"utf8"))!==canonicalContentHash(item.expectedContent)){currentContentsMatch=false;break;}}catch{currentContentsMatch=false;break;}}
+            if(!exactPaths||!currentContentsMatch)fail("working_tree_dirty", "Local checkout must be clean or exactly match the active task-owned patch preconditions.",{dirtyFileCount:dirtyPaths.length,plannedFileCount:plannedPaths.length,dirtyPaths,plannedPaths,exactPlan,exactPaths,currentContentsMatch,taskOwnedDirtyProven:false});
+          }
         }
         const originals = [];
         if(planProvenance){
