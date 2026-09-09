@@ -150,6 +150,11 @@ test("canonical composer-style plan validates before Hands-compatible mutation",
   assert.deepEqual(result.implementationPlan.files.map(({path,operation})=>({path,operation})),[{path:"assets/voice-input.js",operation:"replace"},{path:"test/voice-input.test.js",operation:"replace"}]);
   assert.equal(result.implementationPlan.files.every((file)=>typeof file.expectedContent==="string"),true);
 });
+test("repair planning includes a relevant previously read failing test as exact evidence",async()=>{
+  const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];
+  const f=await fixture([output],{discovered:[DOC,TEST,EXTRA],reads:[[DOC,"old doc"],[TEST,"old test"],[EXTRA,"exact failing test"]]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{fingerprint:"f".repeat(64),failedFiles:["test/hands-runtime.test.js",EXTRA]}}),prompt=JSON.parse(f.prompts[0].message.split("\n")[1]);
+  assert.deepEqual(prompt.candidateFiles.map(item=>item.path),[DOC,TEST,EXTRA]);assert.equal(prompt.candidateFiles.at(-1).content,"exact failing test");assert.ok(result.implementationPlan.evidencePaths.includes(EXTRA));
+});
 test("schema-imperfect output receives safe feedback and corrects within the same evidence", async () => {
   const imperfect = {
       files: [DOC],

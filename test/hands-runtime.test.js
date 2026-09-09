@@ -246,10 +246,11 @@ test("controlled Git subprocesses trust only the exact configured repository pat
   });
   await registry.execute("git_status", {});
   await registry.execute("repo_diff", { paths: ["README.md"] });
+  const expectedGit = process.env.NOVA_BRAIN_GIT_EXECUTABLE || "git";
   assert.ok(
     calls.every(
       (call) =>
-        call.file === "git" &&
+        call.file === expectedGit &&
         call.args[0] === "-c" &&
         call.args[1] === `safe.directory=${root.replaceAll("\\", "/")}`,
     ),
