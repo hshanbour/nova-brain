@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { createApp } from "../src/app.js";
+import { createApp,createRemoteEvidenceComparator } from "../src/app.js";
 import { createApi } from "../src/http/api.js";
 import { OpenAIProviderError } from "../src/providers/openai-model-provider.js";
 
@@ -32,6 +32,10 @@ function response() {
     },
   };
 }
+
+test("remote evidence treats a task-owned path absent at both descendant revisions as equivalent",async()=>{const compared=createRemoteEvidenceComparator({fetchImpl:async url=>url.includes("assets/voice-input.js")?{ok:true,status:200,json:async()=>({sha:"a".repeat(40)})}:{ok:false,status:404}}),result=await compared({repository:"hshanbour/nova-brain",paths:["assets/voice-input.js","test/composer-dictation.test.js"],oldCommit:"1".repeat(40),newCommit:"2".repeat(40)});assert.deepEqual(result["test/composer-dictation.test.js"],{oldSha:null,newSha:null,oldExists:false,newExists:false,equivalent:true});assert.equal(result["assets/voice-input.js"].equivalent,true);});
+
+test("remote evidence distinguishes one-sided absence and rejects non-404 failures",async()=>{let calls=0;const oneSided=createRemoteEvidenceComparator({fetchImpl:async()=>++calls===1?{ok:false,status:404}:{ok:true,status:200,json:async()=>({sha:"b".repeat(40)})}}),result=await oneSided({repository:"hshanbour/nova-brain",paths:["test/composer-dictation.test.js"],oldCommit:"1".repeat(40),newCommit:"2".repeat(40)});assert.deepEqual(result["test/composer-dictation.test.js"],{oldSha:null,newSha:"b".repeat(40),oldExists:false,newExists:true,equivalent:false});const failed=createRemoteEvidenceComparator({fetchImpl:async()=>({ok:false,status:500})});await assert.rejects(()=>failed({repository:"hshanbour/nova-brain",paths:["safe.js"],oldCommit:"1".repeat(40),newCommit:"2".repeat(40)}),error=>error.code==="remote_evidence_verification_failed"&&error.status===500);});
 
 test("health endpoint returns an online response with defensive headers", async () => {
   const app = createApp({ environment: {} });

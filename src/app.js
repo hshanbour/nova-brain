@@ -36,6 +36,15 @@ import { registerSelfDevelopmentTools } from "./autonomy/self-development-tools.
 import { createSelfDevelopmentImplementationPlanner } from "./autonomy/self-development-implementation-planner.js";
 import { createAutoDispatchService } from "./autonomy/auto-dispatch.js";
 
+export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
+  const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
+  for(const path of paths){
+    const encoded=path.split("/").map(encodeURIComponent).join("/"),load=async ref=>{const response=await fetchImpl(`https://api.github.com/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,{headers});if(response.status===404)return{exists:false,sha:null};if(!response.ok)throw Object.assign(new Error("Remote evidence verification failed."),{code:"remote_evidence_verification_failed",status:response.status});const value=await response.json();if(typeof value.sha!=="string")throw Object.assign(new Error("Remote evidence verification failed."),{code:"remote_evidence_verification_failed",status:response.status});return{exists:true,sha:value.sha};},[oldState,newState]=await Promise.all([load(oldCommit),load(newCommit)]),equivalent=oldState.exists===newState.exists&&(!oldState.exists||oldState.sha===newState.sha);
+    blobs[path]={oldSha:oldState.sha,newSha:newState.sha,oldExists:oldState.exists,newExists:newState.exists,equivalent};
+  }
+  return blobs;
+};
+
 export function createApp({
   environment = process.env,
   storage: storageOverride,
@@ -106,11 +115,7 @@ export function createApp({
       for(const required of requiredAncestors){const compared=await fetch(`https://api.github.com/repos/${repository}/compare/${required}...${currentTip}`,{headers});if(!compared.ok)throw new Error("Remote ancestry verification failed.");const value=await compared.json();ancestors[required]=["ahead","identical"].includes(value.status)&&value.merge_base_commit?.sha===required;}
       return{currentTip,ancestors};
     };
-  const compareRemoteEvidence=async ({repository,paths,oldCommit,newCommit})=>{
-    const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
-    for(const path of paths){const encoded=path.split("/").map(encodeURIComponent).join("/"),load=async ref=>{const response=await fetch(`https://api.github.com/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,{headers});if(!response.ok)throw new Error("Remote evidence verification failed.");return(await response.json()).sha;};const [oldSha,newSha]=await Promise.all([load(oldCommit),load(newCommit)]);blobs[path]={oldSha,newSha,equivalent:oldSha===newSha};}
-    return blobs;
-  };
+  const compareRemoteEvidence=createRemoteEvidenceComparator();
   const githubWriteAttestation = createGithubWriteAttestation({
     storage,
     ownerId: OWNER_ID,
