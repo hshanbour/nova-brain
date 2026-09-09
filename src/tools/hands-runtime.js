@@ -793,7 +793,7 @@ export function registerHandsTools(
             const dirtyPaths=statusResult.exitCode===0?statusResult.stdout.split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replaceAll("\\","/")).sort():[];
             const plannedPaths=files.map(item=>item.path).sort(),preconditions=new Map((planProvenance?.mutationPreconditions||[]).map(item=>[item.path,item]));
             const exactPlan=planProvenance?.version===IMPLEMENTATION_PLAN_PROVENANCE_VERSION&&planProvenance.taskId===context?.runId&&planProvenance.currentCommit===currentCommit&&preconditions.size===files.length;
-            const exactPaths=dirtyPaths.length===plannedPaths.length&&dirtyPaths.every((path,index)=>path===plannedPaths[index]);
+            const exactPaths=dirtyPaths.length>0&&dirtyPaths.length<=plannedPaths.length&&dirtyPaths.every(path=>plannedPaths.includes(path));
             const exactContents=exactPlan&&files.every(item=>item.operation==="replace"&&preconditions.get(item.path)?.operation==="replace"&&preconditions.get(item.path)?.expectedContentHash===canonicalContentHash(item.expectedContent));
             let currentContentsMatch=exactContents;
             if(currentContentsMatch)for(const item of files){try{if(canonicalContentHash(await readFile(safe(root,item.path),"utf8"))!==canonicalContentHash(item.expectedContent)){currentContentsMatch=false;break;}}catch{currentContentsMatch=false;break;}}
