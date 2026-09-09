@@ -75,6 +75,11 @@ const safePath = (value) => {
     );
   return path;
 };
+export const isExactMissingBranchSchemaDiagnostic = (diagnostic) =>
+  diagnostic?.tool === "repo_apply_patch" &&
+  diagnostic?.fieldPath === "repo_apply_patch.branch" &&
+  diagnostic?.validationCode === "required_field_missing" &&
+  diagnostic?.received?.type === "missing";
 const taskDiffEvidence = (task, targetPath, expectedVersion) => {
   const stored = task.metadata?.failedAttemptEvidence?.taskDiff;
   const evidence = stored || LEGACY_TASK_DIFF_EVIDENCE[task.id];
@@ -123,7 +128,7 @@ const RECOVERY_SIDE_EFFECT_STEPS = new Set([
   "apply_patch", "run_focused_tests", "run_full_tests", "inspect_diff",
   "commit", "review_commit", "push", "deploy_preview",
 ]);
-export function resolveSemanticPlanApplyState(task, steps, failureCode) {
+export function resolveSemanticPlanApplyState(task, steps, failureCode, {planStepTypes=["plan_implementation"]}={}) {
   const ordered = steps.map((step) => ({step, ordinal: stepOrdinal(step)}))
     .filter((entry) => entry.ordinal !== null).sort((a, b) => a.ordinal - b.ordinal);
   const failedApplies = ordered.filter(({step}) => step.stepType === "apply_patch" && step.status === "failed" && step.errorCode === failureCode);
@@ -133,7 +138,7 @@ export function resolveSemanticPlanApplyState(task, steps, failureCode) {
   if (failures.length !== 1) throw new SelfDevelopmentError("semantic_recovery_state_ambiguous", "The failed mutation history is ambiguous.");
   const failed = failures[0];
   const laterMutationAttempts = ordered.filter(({step, ordinal}) => ordinal > failed.ordinal && step.stepType === "apply_patch");
-  const plans = ordered.filter(({step, ordinal}) => ordinal < failed.ordinal && step.stepType === "plan_implementation" && step.status === "completed" && step.result?.implementationPlan);
+  const plans = ordered.filter(({step, ordinal}) => ordinal < failed.ordinal && planStepTypes.includes(step.stepType) && step.status === "completed" && step.result?.implementationPlan);
   if (!plans.length || laterMutationAttempts.length) throw new SelfDevelopmentError("semantic_recovery_state_unresolved", "A unique latest implementation plan and mutation attempt are required.");
   const plannedOrdinal = Math.max(...plans.map((entry) => entry.ordinal));
   const latestPlans = plans.filter((entry) => entry.ordinal === plannedOrdinal);
@@ -141,7 +146,7 @@ export function resolveSemanticPlanApplyState(task, steps, failureCode) {
   const planned = latestPlans[0], planTemplate = task.metadata?.steps?.[planned.ordinal - 1], failedTemplate = task.metadata?.steps?.[failed.ordinal - 1];
   const mutationReported = failed.step.result?.mutationApplied === true || failed.step.result?.changed === true || (Array.isArray(failed.step.result?.changedFiles) && failed.step.result.changedFiles.length > 0);
   const completedAfterPlan = ordered.some(({step, ordinal}) => ordinal > planned.ordinal && RECOVERY_SIDE_EFFECT_STEPS.has(step.stepType) && step.status === "completed");
-  if (planTemplate?.type !== "plan_implementation" || failedTemplate?.type !== "apply_patch" || mutationReported) throw new SelfDevelopmentError("semantic_recovery_state_unresolved", "The durable plan or no-mutation boundary cannot be proven.");
+  if (!planStepTypes.includes(planTemplate?.type) || failedTemplate?.type !== "apply_patch" || mutationReported) throw new SelfDevelopmentError("semantic_recovery_state_unresolved", "The durable plan or no-mutation boundary cannot be proven.");
   return {failed:failed.step, failedOrdinal:failed.ordinal, planned:planned.step, plannedOrdinal:planned.ordinal, planTemplate, remaining:task.metadata.steps.slice(failed.ordinal - 1), completedAfterPlan};
 }
 
@@ -1127,8 +1132,8 @@ export function createSelfDevelopmentService({
     if (prior && current.status !== "failed") return { task: current, recoveredStepId: prior.failedStepId, idempotent: true };
     if (current.stateVersion !== input.expectedVersion)
       throw new SelfDevelopmentError("version_conflict", "Task changed before implementation-schema recovery.");
-    const steps = await runtime.steps(current.id), semantic = resolveSemanticPlanApplyState(current, steps, "schema_mismatch"), {failed, planned, planTemplate, remaining, completedAfterPlan: unsafeAfterPlan} = semantic, approvals = await storage.listApprovals(ownerId, { limit: 100 }), schemaMessage = String(failed?.result?.message || ""), diagnostic=failed?.result?.diagnostics, repairBranchMissing=diagnostic?.tool==="repo_apply_patch"&&diagnostic?.fieldPath==="repo_apply_patch.branch"&&diagnostic?.validationCode==="required_field_missing"&&diagnostic?.received?.type==="missing", legacyCurrentCommit=schemaMessage.includes("repo_apply_patch.currentCommit");
-    if (current.status !== "failed" || current.errorCode !== "schema_mismatch" || (!repairBranchMissing&&!legacyCurrentCommit) || remaining[0]?.type !== "apply_patch" || unsafeAfterPlan || approvals.some((approval) => approval.runId === current.id) || current.metadata?.lastDeploymentId || current.metadata?.selfDevelopmentDeliveryAttestation)
+    const steps = await runtime.steps(current.id), semantic = resolveSemanticPlanApplyState(current, steps, "schema_mismatch",{planStepTypes:["plan_implementation","plan_repair"]}), {failed, planned, planTemplate, remaining, completedAfterPlan: unsafeAfterPlan} = semantic, approvals = await storage.listApprovals(ownerId, { limit: 100 }), schemaMessage = String(failed?.result?.message || ""), diagnostic=failed?.result?.diagnostics, repairBranchMissing=isExactMissingBranchSchemaDiagnostic(diagnostic), legacyCurrentCommit=schemaMessage.includes("repo_apply_patch.currentCommit"), exactFailedStep=failed.stepId===`${current.currentStep+1}:apply_patch`;
+    if (current.status !== "failed" || current.errorCode !== "schema_mismatch" || (!repairBranchMissing&&!legacyCurrentCommit) || !exactFailedStep || current.branch!==approvedBranch || ["main","master"].includes(current.branch) || remaining[0]?.type !== "apply_patch" || unsafeAfterPlan || current.leaseOwner || current.approvalState || approvals.some((approval) => approval.runId === current.id) || current.metadata?.lastDeploymentId || current.metadata?.selfDevelopmentDeliveryAttestation)
       throw new SelfDevelopmentError("implementation_schema_recovery_precondition_failed", "Only the exact pre-mutation implementation bridge schema failure may be recovered.");
     const canonicalPatch={...remaining[0],input:{...remaining[0].input,tool:"repo_apply_patch",arguments:{branch:"$TASK_BRANCH",currentCommit:"$CURRENT_COMMIT",files:"$IMPLEMENTATION_FILES",planProvenance:"$IMPLEMENTATION_PLAN_PROVENANCE"}}}, continuation=repairBranchMissing?[canonicalPatch,...remaining.slice(1)]:[{...planTemplate}, ...remaining], base = current.metadata.steps.length, nextSteps = continuation.map((step, index) => ({...step, idempotencyIdentity: `${step.idempotencyIdentity || `self-development:${step.type}`}:schema-recovery:${base + index + 1}`})), now = clock().toISOString(), record = {failedStepId: failed.stepId, plannedStepId: planned.stepId, previousStateVersion: current.stateVersion, fieldPath: repairBranchMissing?"repo_apply_patch.branch":"repo_apply_patch.currentCommit", expected: repairBranchMissing?"required exact task branch":"declared string commit binding", received: repairBranchMissing?"missing":"string", validationCode: repairBranchMissing?"required_field_missing":"unsupported_field", schemaVersion: diagnostic?.schemaVersion||"1", recoveredAt: now};
     if (!repairBranchMissing && base + nextSteps.length > current.maxSteps)

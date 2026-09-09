@@ -4,6 +4,7 @@ import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
 import {
   createSelfDevelopmentService,
+  isExactMissingBranchSchemaDiagnostic,
   resolveSemanticPlanApplyState,
   SELF_DEVELOPMENT_DEFAULTS,
 } from "../src/autonomy/self-development.js";
@@ -39,6 +40,12 @@ const input = (overrides = {}) => ({
     focusedTests: ["test/self-development.test.js"],
   },
   ...overrides,
+});
+
+test("missing-branch recovery diagnostic accepts only the exact safe structural contract",()=>{
+  const exact={tool:"repo_apply_patch",fieldPath:"repo_apply_patch.branch",validationCode:"required_field_missing",received:{type:"missing"}};
+  assert.equal(isExactMissingBranchSchemaDiagnostic(exact),true);
+  for(const changed of [{...exact,tool:"git_commit"},{...exact,fieldPath:"repo_apply_patch.files"},{...exact,validationCode:"invalid_type"},{...exact,received:{type:"string"}},null])assert.equal(isExactMissingBranchSchemaDiagnostic(changed),false);
 });
 async function fixture({
   capabilities,
@@ -1035,11 +1042,11 @@ test("implementation bridge schema recovery appends one bounded replan and is id
 });
 
 test("exact missing repair branch recovery requeues only the canonical immutable patch and is idempotent",async()=>{
-  const f=await completedDiscoveryFixture(),planStep={type:"plan_implementation",capability:"reasoning",input:{tool:"self_development_plan_implementation",arguments:{taskId:f.task.id,candidatePaths:candidates(),currentCommit:f.task.currentCommit}},idempotencyIdentity:"repair-plan"},patchStep={type:"apply_patch",capability:"repo_mutate_local",input:{tool:"repo_apply_patch",arguments:{files:"$IMPLEMENTATION_FILES",expectedCommit:"$CURRENT_COMMIT"}},idempotencyIdentity:"repair-patch"},testStep={type:"run_focused_tests",capability:"test_local",input:{tool:"test_run",arguments:{files:"$IMPLEMENTATION_TESTS"}},idempotencyIdentity:"repair-test"};
-  await f.storage.updateAutonomyTask(f.task.id,OWNER,{maxSteps:3,metadata:{...(await f.runtime.get(f.task.id)).metadata,steps:[planStep,patchStep,testStep],autoDispatch:true}});
-  await f.storage.recordAutonomyStep({taskId:f.task.id,stepId:"1:plan_implementation",stepType:"plan_implementation",capability:"reasoning",operationFingerprint:"repair-plan",status:"completed",result:{implementationPlan:{files:[{path:candidates()[0],operation:"replace",content:"new",expectedContent:"old"}],focusedTests:[{path:candidates()[1],kind:"existing"}]}}});
-  await f.storage.recordAutonomyStep({taskId:f.task.id,stepId:"2:apply_patch",stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:"repair-patch",status:"failed",errorCode:"schema_mismatch",result:{message:"Tool input failed schema validation.",diagnostics:{tool:"repo_apply_patch",schemaVersion:"1",fieldPath:"repo_apply_patch.branch",expected:{required:true},received:{type:"missing"},validationCode:"required_field_missing",validationLayer:"hands_tool_registry",payloadProvenance:"server_handoff_arguments"}}});
-  const failed=await f.storage.updateAutonomyTask(f.task.id,OWNER,{status:"failed",currentStep:1,errorCode:"schema_mismatch"}),recovered=await f.service.recoverImplementationSchema(f.task.id,{expectedVersion:failed.stateVersion}),step=recovered.task.metadata.steps[recovered.task.currentStep];
+  const f=await completedDiscoveryFixture(),oldPlan={type:"plan_implementation",capability:"reasoning",input:{tool:"self_development_plan_implementation",arguments:{taskId:f.task.id,candidatePaths:candidates(),currentCommit:f.task.currentCommit}},idempotencyIdentity:"old-plan"},oldPatch={type:"apply_patch",capability:"repo_mutate_local",input:{tool:"repo_apply_patch",arguments:{branch:BRANCH,files:"$IMPLEMENTATION_FILES"}},idempotencyIdentity:"old-patch"},oldFull={type:"run_full_tests",capability:"test_local",input:{tool:"test_run_full",arguments:{}},idempotencyIdentity:"old-full"},repairPlan={type:"plan_repair",capability:"reasoning",input:{tool:"self_development_plan_implementation",arguments:{taskId:f.task.id,candidatePaths:candidates(),currentCommit:f.task.currentCommit}},idempotencyIdentity:"repair-plan"},patchStep={type:"apply_patch",capability:"repo_mutate_local",input:{tool:"repo_apply_patch",arguments:{files:"$IMPLEMENTATION_FILES",expectedCommit:"$CURRENT_COMMIT"}},idempotencyIdentity:"repair-patch"},testStep={type:"run_focused_tests",capability:"test_local",input:{tool:"test_run",arguments:{files:"$IMPLEMENTATION_TESTS"}},idempotencyIdentity:"repair-test"},implementationPlan={files:[{path:candidates()[0],operation:"replace",content:"new",expectedContent:"old"}],focusedTests:[{path:candidates()[1],kind:"existing"}]};
+  await f.storage.updateAutonomyTask(f.task.id,OWNER,{metadata:{...(await f.runtime.get(f.task.id)).metadata,steps:[oldPlan,oldPatch,oldFull,repairPlan,patchStep,testStep],autoDispatch:true}});
+  for(const record of [{stepId:"1:plan_implementation",stepType:"plan_implementation",result:{implementationPlan}},{stepId:"2:apply_patch",stepType:"apply_patch",result:{ok:true,files:[candidates()[0]]}},{stepId:"3:run_full_tests",stepType:"run_full_tests",result:{ok:true,exitCode:0}},{stepId:"4:plan_repair",stepType:"plan_repair",result:{implementationPlan}}])await f.storage.recordAutonomyStep({taskId:f.task.id,capability:"reasoning",operationFingerprint:record.stepId,status:"completed",...record});
+  await f.storage.recordAutonomyStep({taskId:f.task.id,stepId:"5:apply_patch",stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:"repair-patch",status:"failed",errorCode:"schema_mismatch",result:{message:"Tool input failed schema validation.",diagnostics:{tool:"repo_apply_patch",schemaVersion:"1",fieldPath:"repo_apply_patch.branch",expected:{type:"required"},received:{type:"missing"},validationCode:"required_field_missing",validationLayer:"hands_tool_registry",payloadProvenance:"server_handoff_arguments"}}});
+  const failed=await f.storage.updateAutonomyTask(f.task.id,OWNER,{status:"failed",currentStep:4,errorCode:"schema_mismatch"}),recovered=await f.service.recoverImplementationSchema(f.task.id,{expectedVersion:failed.stateVersion}),step=recovered.task.metadata.steps[recovered.task.currentStep];
   assert.equal(recovered.task.id,f.task.id);assert.equal(recovered.task.status,"queued");assert.equal(recovered.task.maxSteps,failed.maxSteps);assert.equal(recovered.task.metadata.requiredCapability,"repo_mutate_local");assert.equal(recovered.task.metadata.activeContinuation.recoveryClass,"repair_apply_patch_schema_binding");assert.deepEqual(step.input.arguments,{branch:"$TASK_BRANCH",currentCommit:"$CURRENT_COMMIT",files:"$IMPLEMENTATION_FILES",planProvenance:"$IMPLEMENTATION_PLAN_PROVENANCE"});assert.equal(recovered.task.metadata.implementationSchemaRecoveryHistory.at(-1).fieldPath,"repo_apply_patch.branch");const duplicate=await f.service.recoverImplementationSchema(f.task.id,{expectedVersion:failed.stateVersion});assert.equal(duplicate.idempotent,true);assert.equal(duplicate.task.metadata.steps.length,recovered.task.metadata.steps.length);
 });
 
