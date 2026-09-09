@@ -44,8 +44,15 @@ const input = (overrides = {}) => ({
 
 test("missing-branch recovery diagnostic accepts only the exact safe structural contract",()=>{
   const exact={tool:"repo_apply_patch",fieldPath:"repo_apply_patch.branch",validationCode:"required_field_missing",received:{type:"missing"}};
-  assert.equal(isExactMissingBranchSchemaDiagnostic(exact),true);
+  exact.expected={type:"required"};assert.equal(isExactMissingBranchSchemaDiagnostic(exact),true);
   for(const changed of [{...exact,tool:"git_commit"},{...exact,fieldPath:"repo_apply_patch.files"},{...exact,validationCode:"invalid_type"},{...exact,received:{type:"string"}},null])assert.equal(isExactMissingBranchSchemaDiagnostic(changed),false);
+});
+
+test("missing-branch recovery accepts only the exact historical diagnostic with authoritative apply bridge context",()=>{
+  const historical={expected:"required",received:"missing",fieldPath:"repo_apply_patch.branch",validationCode:"required_field_missing"},context={stepType:"apply_patch",templateTool:"repo_apply_patch"};
+  assert.equal(isExactMissingBranchSchemaDiagnostic(historical,context),true);
+  for(const changedContext of [{stepType:"run_full_tests",templateTool:"repo_apply_patch"},{stepType:"apply_patch",templateTool:"git_commit"},{}])assert.equal(isExactMissingBranchSchemaDiagnostic(historical,changedContext),false);
+  for(const changed of [{...historical,expected:"object"},{...historical,received:"string"},{...historical,fieldPath:"repo_apply_patch.files"},{...historical,validationCode:"invalid_type"}])assert.equal(isExactMissingBranchSchemaDiagnostic(changed,context),false);
 });
 async function fixture({
   capabilities,

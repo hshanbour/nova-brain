@@ -75,11 +75,13 @@ const safePath = (value) => {
     );
   return path;
 };
-export const isExactMissingBranchSchemaDiagnostic = (diagnostic) =>
-  diagnostic?.tool === "repo_apply_patch" &&
+export const isExactMissingBranchSchemaDiagnostic = (diagnostic, {stepType, templateTool}={}) =>
+  (diagnostic?.tool === "repo_apply_patch" ||
+    (!diagnostic?.tool && stepType === "apply_patch" && templateTool === "repo_apply_patch")) &&
   diagnostic?.fieldPath === "repo_apply_patch.branch" &&
   diagnostic?.validationCode === "required_field_missing" &&
-  diagnostic?.received?.type === "missing";
+  (diagnostic?.received === "missing" || diagnostic?.received?.type === "missing") &&
+  (diagnostic?.expected === "required" || diagnostic?.expected?.type === "required");
 const taskDiffEvidence = (task, targetPath, expectedVersion) => {
   const stored = task.metadata?.failedAttemptEvidence?.taskDiff;
   const evidence = stored || LEGACY_TASK_DIFF_EVIDENCE[task.id];
@@ -1132,7 +1134,7 @@ export function createSelfDevelopmentService({
     if (prior && current.status !== "failed") return { task: current, recoveredStepId: prior.failedStepId, idempotent: true };
     if (current.stateVersion !== input.expectedVersion)
       throw new SelfDevelopmentError("version_conflict", "Task changed before implementation-schema recovery.");
-    const steps = await runtime.steps(current.id), semantic = resolveSemanticPlanApplyState(current, steps, "schema_mismatch",{planStepTypes:["plan_implementation","plan_repair"]}), {failed, planned, planTemplate, remaining, completedAfterPlan: unsafeAfterPlan} = semantic, approvals = await storage.listApprovals(ownerId, { limit: 100 }), schemaMessage = String(failed?.result?.message || ""), diagnostic=failed?.result?.diagnostics, repairBranchMissing=isExactMissingBranchSchemaDiagnostic(diagnostic), legacyCurrentCommit=schemaMessage.includes("repo_apply_patch.currentCommit"), exactFailedStep=failed.stepId===`${current.currentStep+1}:apply_patch`;
+    const steps = await runtime.steps(current.id), semantic = resolveSemanticPlanApplyState(current, steps, "schema_mismatch",{planStepTypes:["plan_implementation","plan_repair"]}), {failed, planned, planTemplate, remaining, completedAfterPlan: unsafeAfterPlan} = semantic, approvals = await storage.listApprovals(ownerId, { limit: 100 }), schemaMessage = String(failed?.result?.message || ""), diagnostic=failed?.result?.diagnostics, repairBranchMissing=isExactMissingBranchSchemaDiagnostic(diagnostic,{stepType:failed?.stepType,templateTool:remaining[0]?.input?.tool}), legacyCurrentCommit=schemaMessage.includes("repo_apply_patch.currentCommit"), exactFailedStep=failed.stepId===`${current.currentStep+1}:apply_patch`;
     if (current.status !== "failed" || current.errorCode !== "schema_mismatch" || (!repairBranchMissing&&!legacyCurrentCommit) || !exactFailedStep || current.branch!==approvedBranch || ["main","master"].includes(current.branch) || remaining[0]?.type !== "apply_patch" || unsafeAfterPlan || current.leaseOwner || current.approvalState || approvals.some((approval) => approval.runId === current.id) || current.metadata?.lastDeploymentId || current.metadata?.selfDevelopmentDeliveryAttestation)
       throw new SelfDevelopmentError("implementation_schema_recovery_precondition_failed", "Only the exact pre-mutation implementation bridge schema failure may be recovered.");
     const canonicalPatch={...remaining[0],input:{...remaining[0].input,tool:"repo_apply_patch",arguments:{branch:"$TASK_BRANCH",currentCommit:"$CURRENT_COMMIT",files:"$IMPLEMENTATION_FILES",planProvenance:"$IMPLEMENTATION_PLAN_PROVENANCE"}}}, continuation=repairBranchMissing?[canonicalPatch,...remaining.slice(1)]:[{...planTemplate}, ...remaining], base = current.metadata.steps.length, nextSteps = continuation.map((step, index) => ({...step, idempotencyIdentity: `${step.idempotencyIdentity || `self-development:${step.type}`}:schema-recovery:${base + index + 1}`})), now = clock().toISOString(), record = {failedStepId: failed.stepId, plannedStepId: planned.stepId, previousStateVersion: current.stateVersion, fieldPath: repairBranchMissing?"repo_apply_patch.branch":"repo_apply_patch.currentCommit", expected: repairBranchMissing?"required exact task branch":"declared string commit binding", received: repairBranchMissing?"missing":"string", validationCode: repairBranchMissing?"required_field_missing":"unsupported_field", schemaVersion: diagnostic?.schemaVersion||"1", recoveredAt: now};
