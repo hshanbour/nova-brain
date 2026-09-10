@@ -2290,7 +2290,20 @@ export function createSelfDevelopmentService({
         Boolean(latestFocusedFailure) &&
         !deliveredAfterFocused &&
         durableSteps.slice(-2).map((step) => step.stepType).join("|") ===
-          "inspect_failure|summarize";
+          "inspect_failure|summarize",
+      priorEmptyRepairRecovery = (
+        current.metadata?.continuationHistory || []
+      ).some(
+        (item) => item.recoveryClass === "focused_test_empty_repair_recovery",
+      ),
+      falseRepairBudgetConsumed =
+        legacyEmptyRepairCompletion ||
+        (current.status === "failed" &&
+          current.errorCode === "repair_limit_reached" &&
+          priorEmptyRepairRecovery),
+      effectiveRepairIteration = falseRepairBudgetConsumed
+        ? Math.max(0, current.repairIteration - 1)
+        : current.repairIteration;
     if (
       !["failed", "retrying"].includes(current.status) &&
       !legacyEmptyRepairCompletion
@@ -2308,7 +2321,7 @@ export function createSelfDevelopmentService({
         "identical_repair_rejected",
         "Repeated repair requires new evidence.",
       );
-    if (current.repairIteration >= limit) {
+    if (effectiveRepairIteration >= limit) {
       const stopped = await storage.updateAutonomyTask(
         current.id,
         ownerId,
@@ -2419,7 +2432,7 @@ export function createSelfDevelopmentService({
         errorCode: null,
         completedAt: null,
         retryCount: 0,
-        repairIteration: current.repairIteration + 1,
+        repairIteration: effectiveRepairIteration + 1,
         metadata: {
           ...current.metadata,
           steps,
@@ -2440,6 +2453,22 @@ export function createSelfDevelopmentService({
                   activeContinuation,
                 ],
                 autoDispatch: true,
+                ...(falseRepairBudgetConsumed
+                  ? {
+                      focusedTestRepairBudgetRecoveryHistory: [
+                        ...(current.metadata
+                          ?.focusedTestRepairBudgetRecoveryHistory || []),
+                        {
+                          recoveryClass:
+                            "empty_focused_repair_budget_reclassification",
+                          fromStateVersion: current.stateVersion,
+                          previousRepairIteration: current.repairIteration,
+                          effectiveRepairIteration,
+                          recoveredAt: now,
+                        },
+                      ],
+                    }
+                  : {}),
               }
             : {}),
         },

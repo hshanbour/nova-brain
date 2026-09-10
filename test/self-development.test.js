@@ -414,6 +414,13 @@ test("legacy empty focused-test repair completion reopens a bounded semantic rep
   assert.deepEqual(tail.map((step) => step.type), ["inspect_failure", "plan_repair", "apply_patch", "run_focused_tests", "run_full_tests", "inspect_diff", "commit", "review_commit"]);
   assert.equal(result.task.metadata.activeContinuation.recoveryClass, "focused_test_empty_repair_recovery");
   assert.equal(result.task.metadata.requiredCapability, "reasoning");
+  assert.equal(result.task.repairIteration, 1);
+  const exhausted = await f.storage.updateAutonomyTask(result.task.id, OWNER, { status: "failed", errorCode: "repair_limit_reached", repairIteration: 2 });
+  const corrected = await f.service.repair(exhausted.id, { evidence: "A later focused syntax failure requires the remaining genuine repair iteration." });
+  assert.equal(corrected.task.status, "queued");
+  assert.equal(corrected.task.repairIteration, 2);
+  assert.equal(corrected.task.metadata.focusedTestRepairBudgetRecoveryHistory.at(-1).previousRepairIteration, 2);
+  assert.equal(corrected.task.metadata.focusedTestRepairBudgetRecoveryHistory.at(-1).effectiveRepairIteration, 1);
 });
 test("a step-zero planner failure repairs the same task by reinspecting before mutation", async () => {
   const f = await fixture(),
