@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { ApprovalRequiredError } from "../policy/action-policy.js";
 import {activeContinuationExceeded,assertActiveImplementationPlan,planLifecycleMetadata,taskRuntimeWindow} from "./self-development-plan-lifecycle.js";
+import {isExactApprovedDelivery} from "./auto-dispatch.js";
 
 export const AUTONOMY_STATUSES = Object.freeze([
   "queued",
@@ -211,6 +212,7 @@ export function createWorkerRuntime({
     );
   }
   async function next(task) {
+    if(task.approvalState?.approved===true&&!task.metadata?.steps?.[task.currentStep]){const approval=await storage.getApproval(task.approvalState.approvalId,ownerId),steps=await storage.listAutonomySteps(task.id);if(!isExactApprovedDelivery({task,approval,steps,approvedBranch,allowClaimed:true}))throw new WorkerError("approval_invalidated","Approved delivery binding is stale or inconsistent.",{retryable:false});return{next_step:"push",reason:"Execute the exact owner-approved immutable delivery.",required_inputs:{tool:"git_push",arguments:{branch:task.branch,commitSha:task.currentCommit}},approval_required:false};}
     const planned =
       task.metadata?.steps?.[task.currentStep] ||
       (await planner?.({ task, checkpoint: task.checkpoint }));
@@ -536,6 +538,7 @@ export function createWorkerRuntime({
       metadata: { ...(result?.implementationPlan?planLifecycleMetadata(task,redact(result.implementationPlan)):task.metadata), requiredCapability: null, ...(result?.deploymentId?{lastDeploymentId:result.deploymentId}:{}) },
       blockedReason: null,
       errorCode: null,
+      ...(step.stepType === "push" ? { approvalState: null } : {}),
     });
     await activity(
       task,
