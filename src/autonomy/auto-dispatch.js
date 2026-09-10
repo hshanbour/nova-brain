@@ -2,6 +2,7 @@ const ACTIVE=new Set(["queued","retrying","waiting","waiting_for_worker"]);
 const LOCAL=new Set(["apply_patch","run_focused_tests","run_full_tests","inspect_diff","review_commit","commit"]);
 const ordinal=step=>Number.parseInt(step?.stepId,10);
 const HISTORICAL_DELIVERY_RECOVERY="historical_approved_delivery_max_steps_recovery";
+const HISTORICAL_DELIVERY_RUNTIME_RECOVERY="historical_approved_delivery_runtime_recovery";
 
 function exactRepository(task){return task?.metadata?.selfDevelopment?.repository;}
 function exactVersionBinding({task,approval,state,allowClaimed}){
@@ -11,12 +12,16 @@ function exactVersionBinding({task,approval,state,allowClaimed}){
     const record=task.metadata?.approvedDeliveryRecoveryHistory?.at(-1);
     return Boolean(record&&record.recoveryClass===HISTORICAL_DELIVERY_RECOVERY&&record.approvalId===state.approvalId&&record.approvedStateVersion===state.approvedStateVersion&&record.toStateVersion===deliveryStateVersion);
   }
+  if(state.bindingSource===HISTORICAL_DELIVERY_RUNTIME_RECOVERY){
+    const record=task.metadata?.approvedDeliveryRuntimeRecoveryHistory?.at(-1);
+    return Boolean(record&&record.recoveryClass===HISTORICAL_DELIVERY_RUNTIME_RECOVERY&&record.approvalId===state.approvalId&&record.approvedStateVersion===state.approvedStateVersion&&record.deliveryStateVersion===deliveryStateVersion&&record.priorDeliveryStateVersion===267&&record.claimStateVersion===268&&record.expirationStateVersion===269);
+  }
   return state.bindingSource==="approval_contract"&&state.arguments?.approvedStateVersion===state.approvedStateVersion&&approval?.arguments?.approvedStateVersion===state.approvedStateVersion;
 }
 
 export function isExactApprovedDelivery({task,approval,steps=[],approvedBranch="feat/nova-brain-mvp-foundation",approvedRepository="hshanbour/nova-brain",allowClaimed=false}={}){
   const state=task?.approvalState,review=steps.filter(step=>step.stepType==="review_commit"&&step.status==="completed").at(-1),commit=steps.filter(step=>step.stepType==="commit"&&step.status==="completed"&&ordinal(step)<ordinal(review)).at(-1),reviewedCommit=review?.result?.commitSha,committedCommit=commit?.result?.commitSha;
-  const repository=exactRepository(task),historical=state?.bindingSource===HISTORICAL_DELIVERY_RECOVERY,repositoryBound=historical?state?.repository===approvedRepository:state?.repository===approvedRepository&&state?.arguments?.repository===approvedRepository&&approval?.arguments?.repository===approvedRepository;
+  const repository=exactRepository(task),historical=[HISTORICAL_DELIVERY_RECOVERY,HISTORICAL_DELIVERY_RUNTIME_RECOVERY].includes(state?.bindingSource),repositoryBound=historical?state?.repository===approvedRepository:state?.repository===approvedRepository&&state?.arguments?.repository===approvedRepository&&approval?.arguments?.repository===approvedRepository;
   return Boolean(task&&task.taskType==="self_development"&&(task.status==="queued"||(allowClaimed&&["planning","running"].includes(task.status)&&Boolean(task.leaseToken)))&&repository===approvedRepository&&repositoryBound&&task.branch===approvedBranch&&!['main','master'].includes(task.branch)&&state?.approved===true&&state.tool==="git_push"&&typeof state.approvalId==="string"&&state.stepId===`${task.currentStep+1}:push`&&state.branch===task.branch&&state.commitSha===task.currentCommit&&state.arguments?.branch===task.branch&&state.arguments?.commitSha===task.currentCommit&&approval?.id===state.approvalId&&approval.status==="approved"&&approval.tool==="git_push"&&approval.runId===task.id&&approval.projectId===task.projectId&&approval.arguments?.branch===task.branch&&approval.arguments?.commitSha===task.currentCommit&&exactVersionBinding({task,approval,state,allowClaimed})&&ordinal(review)===task.currentStep&&reviewedCommit===task.currentCommit&&committedCommit===task.currentCommit&&!steps.some(step=>ordinal(step)>task.currentStep));
 }
 
