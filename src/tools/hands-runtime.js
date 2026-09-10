@@ -954,12 +954,15 @@ export function registerHandsTools(
             runner: commandRunner,
             environment: full&&gitExecutable?(()=>{const child={...process.env,...environment};for(const key of Object.keys(child))if(key.toLowerCase()==="path")delete child[key];const inherited=environment.PATH||environment.Path||process.env.PATH||process.env.Path||"";child[process.platform==="win32"?"Path":"PATH"]=[dirname(gitExecutable),inherited].filter(Boolean).join(delimiter);return child;})():undefined,
           });
-          const output = `${result.stdout}\n${result.stderr}`.trim();
+          const completeOutput = `${result.stdout}\n${result.stderr}`.trim(),
+            outputLimit = 20_000,
+            output = completeOutput.slice(-outputLimit);
           const value = {
             ok: result.exitCode === 0,
             exitCode: result.exitCode,
             durationMs: result.durationMs,
             output,
+            outputTruncated: completeOutput.length > outputLimit,
           };
           if (result.spawnErrorCode)
             value.error = {

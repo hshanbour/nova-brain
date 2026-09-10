@@ -375,6 +375,8 @@ test("focused and full test tools return exit codes failures and bounded timeout
       error.code = "ENOENT";
       throw error;
     }
+    if (behavior === "oversized")
+      return { stdout: "x".repeat(120_000), stderr: "tail" };
     return { stdout: "all pass", stderr: "" };
   };
   const registry = createToolRegistry();
@@ -397,6 +399,11 @@ test("focused and full test tools return exit codes failures and bounded timeout
   behavior = "fail";
   const failed = await registry.execute("test_run_full", {});
   assert.equal(failed.error.code, "test_failed");
+  behavior = "oversized";
+  const oversized = await registry.execute("test_run_full", {});
+  assert.equal(oversized.output.length, 20_000);
+  assert.equal(oversized.output.endsWith("tail"), true);
+  assert.equal(oversized.outputTruncated, true);
   if (process.platform === "win32") {
     assert.equal(lastCommand.file, process.execPath);
     assert.deepEqual(lastCommand.args, [

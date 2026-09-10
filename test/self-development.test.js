@@ -402,6 +402,23 @@ test("escalated repair refuses unbounded, unrelated, non-progressing, or deliver
   const cases=[{name:"no progress",mutate:async f=>f.storage.updateAutonomyStep(f.task.id,"1:run_focused_tests",{result:{diagnostics:{fingerprint:"prior",counts:{tests:6,failed:1,passed:5},failedFiles:["test/composer-dictation.test.js"]}}})},{name:"unrelated file",mutate:async f=>f.storage.updateAutonomyStep(f.task.id,"2:run_focused_tests",{result:{diagnostics:{fingerprint:"remaining",counts:{tests:6,failed:1,passed:5},failedFiles:["test/unrelated.test.js"]}}})},{name:"delivered",mutate:async f=>f.storage.recordAutonomyStep({taskId:f.task.id,stepId:"3:commit",stepType:"commit",capability:"github_write",operationFingerprint:"delivered",status:"completed",result:{commitSha:"b".repeat(40)}})}];
   for(const item of cases){const f=await exhaustedFocusedRepairFixture();await item.mutate(f);await assert.rejects(()=>f.service.requestEscalatedRepair(f.task.id,{expectedVersion:f.task.stateVersion}),error=>error.code==="escalated_repair_precondition_failed",item.name);}
 });
+
+test("post-focused full-test handoff overflow reopens only the bounded delivery tail",async()=>{
+  const f=await fixture(),files=[{path:"assets/voice-input.js",operation:"replace",expectedContent:"old\n",content:"new\n"},{path:"test/composer-dictation.test.js",operation:"replace",expectedContent:"old test\n",content:"new test\n"}],steps=[{type:"run_focused_tests"},{type:"run_full_tests"},{type:"inspect_diff"},{type:"commit"},{type:"review_commit"}];
+  await f.storage.createAutonomyTask({id:"full-test-handoff-overflow",ownerId:OWNER,projectId:"nova-brain",title:"Full test envelope",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:SHA,currentCommit:SHA,maxSteps:100,maxRuntimeMinutes:60,repairIteration:2,metadata:{steps,maxRepairIterations:2,selfDevelopment:{userGoal:"Repair composer",acceptanceCriteria:["Full suite passes"],repairLimit:2},implementationPlanGenerations:[]}});
+  let task=await f.storage.getAutonomyTask("full-test-handoff-overflow",OWNER),plain={files,focusedTests:[{path:"test/composer-dictation.test.js",kind:"existing"}],evidencePaths:files.map(file=>file.path),planHash:"full-test-plan"},plan={...plain,provenance:bindImplementationPlan({task,plan:plain,evidence:files.map(file=>({path:file.path,content:file.expectedContent}))})};
+  task=await f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...planLifecycleMetadata(task,plan),steps}});
+  await f.storage.recordAutonomyStep({taskId:task.id,stepId:"1:run_focused_tests",stepType:"run_focused_tests",capability:"test_local",operationFingerprint:"focused-pass",status:"completed",result:{ok:true,exitCode:0}});
+  await f.storage.recordAutonomyStep({taskId:task.id,stepId:"2:run_full_tests",stepType:"run_full_tests",capability:"test_local",operationFingerprint:"oversized-result",status:"failed",errorCode:"handoff_failed",result:{message:"Local worker handoff failed."}});
+  task=await f.storage.updateAutonomyTask(task.id,OWNER,{status:"failed",currentStep:1,currentPhase:"run_full_tests",errorCode:"handoff_failed"});
+  const recovered=await f.service.recoverFullTestHandoffOverflow(task.id,{expectedVersion:task.stateVersion}),added=recovered.task.metadata.steps.slice(steps.length);
+  assert.equal(recovered.task.status,"waiting_for_worker");
+  assert.deepEqual(added.map(step=>step.type),["run_full_tests","inspect_diff","commit","review_commit"]);
+  assert.equal(recovered.recovery.maxResultBytes,20000);
+  assert.equal(recovered.task.metadata.activeContinuation.maxSteps,4);
+  assert.equal((await f.service.recoverFullTestHandoffOverflow(task.id,{expectedVersion:task.stateVersion})).idempotent,true);
+});
+
 test("legacy empty focused-test repair completion reopens a bounded semantic repair", async () => {
   const f = await fixture(),
     created = await f.service.create(input()),

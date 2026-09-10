@@ -926,8 +926,10 @@ export function createApi({
         );
         const selfDevelopmentEscalatedRepairRequest=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/request-escalated-repair$/);
         const selfDevelopmentEscalatedRepairRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-escalated-repair$/);
+        const selfDevelopmentFullTestHandoffRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-full-test-handoff$/);
         if(selfDevelopment&&selfDevelopmentEscalatedRepairRequest&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.requestEscalatedRepair(decodeURIComponent(selfDevelopmentEscalatedRepairRequest[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if(selfDevelopment&&selfDevelopmentEscalatedRepairRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverEscalatedRepair(decodeURIComponent(selfDevelopmentEscalatedRepairRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
+        if(selfDevelopment&&selfDevelopmentFullTestHandoffRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverFullTestHandoffOverflow(decodeURIComponent(selfDevelopmentFullTestHandoffRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if (
           selfDevelopment &&
           selfDevelopmentMatch &&
