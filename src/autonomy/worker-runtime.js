@@ -51,6 +51,7 @@ const TERMINAL = new Set([
 ]);
 const HISTORICAL_APPROVED_DELIVERY=Object.freeze({taskId:"selfdev_10721df97b8cbc63c70d4171f6f4a440",fromStateVersion:266,approvedStateVersion:264,currentStep:308,approvalId:"fb4e62f7-9189-4151-ac11-c620e934d3aa",commitSha:"5818ce4a8b0eb13285971cfcede009c7ae0d5aad",repository:"hshanbour/nova-brain",branch:"feat/nova-brain-mvp-foundation",recoveryClass:"historical_approved_delivery_max_steps_recovery"});
 const HISTORICAL_APPROVED_DELIVERY_RUNTIME=Object.freeze({...HISTORICAL_APPROVED_DELIVERY,fromStateVersion:269,priorDeliveryStateVersion:267,claimStateVersion:268,expirationStateVersion:269,claimKey:`auto:${HISTORICAL_APPROVED_DELIVERY.taskId}:267`,recoveryClass:"historical_approved_delivery_runtime_recovery",runtimeMinutes:5});
+const HISTORICAL_APPROVED_DELIVERY_HANDOFF=Object.freeze({...HISTORICAL_APPROVED_DELIVERY,fromStateVersion:272,deliveryStateVersion:270,failedStepId:"309:push",recoveryClass:"historical_approved_delivery_handoff_recovery",runtimeMinutes:5});
 const MUTATING = new Set(["apply_patch", "commit", "push"]);
 const REASONING = new Set(["diagnose", "plan_patch", "inspect_failure"]);
 const RETRYABLE = new Set([
@@ -276,7 +277,7 @@ export function createWorkerRuntime({
     const planned = await next(requested);
     const approvedDelivery = planned.next_step === "push" && requested.approvalState?.approved === true && !requested.metadata?.steps?.[requested.currentStep];
     const requiredCapability = requested.metadata?.requiredCapability || STEP_CAPABILITIES[planned.next_step] || planned.required_capability;
-    if (!requiredCapability || (!capabilities.includes(requiredCapability) && !approvedDelivery))
+    if (!requiredCapability || !capabilities.includes(requiredCapability))
       throw new WorkerError("capability_mismatch", "This worker cannot execute the requested task step.", { retryable: false });
     const task = await storage.claimAutonomyTask({
       ownerId,
@@ -311,7 +312,7 @@ export function createWorkerRuntime({
     if (taskRuntimeWindow(task,clock()).expired&&!deliveryRuntimeValid)
       return stop(task, "expired", "max_runtime_reached");
     if (!capability) return stop(task, "failed", "invalid_step_type");
-    if (!capabilities.includes(capability) && !approvedDelivery) {
+    if (!capabilities.includes(capability)) {
       await storage.updateAutonomyTask(task.id, ownerId, {
         status: "waiting_for_worker",
         blockedReason: `Worker capability required: ${capability}`,
@@ -654,6 +655,24 @@ export function createWorkerRuntime({
     await activity(updated,"approved_delivery_runtime_recovered","queued","One exact immutable approved delivery received a bounded runtime window.",record);
     return{task:updated,recovery:record,idempotent:false};
   }
+  async function recoverApprovedDeliveryHandoff(taskId,input){
+    const expected=HISTORICAL_APPROVED_DELIVERY_HANDOFF;
+    if(!input||Object.keys(input).some(key=>key!=="expectedVersion")||input.expectedVersion!==expected.fromStateVersion)throw new WorkerError("approved_delivery_handoff_recovery_invalid","Exact failed delivery version is required.",{retryable:false,statusCode:400});
+    const current=await storage.getAutonomyTask(taskId,ownerId),prior=current?.metadata?.approvedDeliveryHandoffRecoveryHistory?.find(item=>item.recoveryClass===expected.recoveryClass&&item.fromStateVersion===input.expectedVersion);
+    if(prior){if(current.stateVersion===prior.toStateVersion)return{task:current,recovery:prior,idempotent:true};throw new WorkerError("version_conflict","Approved delivery handoff recovery was already consumed or superseded.",{retryable:false,statusCode:409});}
+    if(!current)throw new WorkerError("task_not_found","Task not found.",{retryable:false,statusCode:404});
+    if(current.stateVersion!==expected.fromStateVersion)throw new WorkerError("version_conflict","Task changed before approved delivery handoff recovery.",{retryable:false,statusCode:409});
+    const approval=await storage.getApproval(expected.approvalId,ownerId),steps=await storage.listAutonomySteps(current.id),failed=steps.find(step=>step.stepId===expected.failedStepId),review=steps.find(step=>step.stepId==="308:review_commit"),commit=steps.find(step=>step.stepId==="307:commit"),state=current.approvalState,runtime=current.metadata?.approvedDeliveryRuntime;
+    const exact=current.id===expected.taskId&&current.status==="failed"&&current.errorCode==="unexpected_error"&&current.currentStep===expected.currentStep&&current.currentCommit===expected.commitSha&&current.branch===expected.branch&&current.metadata?.selfDevelopment?.repository===expected.repository&&state?.approved===true&&state.approvalId===expected.approvalId&&state.approvedStateVersion===expected.approvedStateVersion&&state.deliveryStateVersion===expected.deliveryStateVersion&&state.commitSha===expected.commitSha&&approval?.status==="approved"&&approval.id===expected.approvalId&&approval.runId===current.id&&approval.arguments?.branch===expected.branch&&approval.arguments?.commitSha===expected.commitSha&&commit?.status==="completed"&&commit.result?.commitSha===expected.commitSha&&review?.status==="completed"&&review.result?.commitSha===expected.commitSha&&failed?.stepType==="push"&&failed.status==="failed"&&failed.attempt===1&&failed.errorCode==="unexpected_error"&&failed.result?.message==="Tool is unavailable: git_push"&&steps.filter(step=>Number.parseInt(step.stepId,10)>expected.currentStep).length===1&&runtime?.recoveryClass===HISTORICAL_APPROVED_DELIVERY_RUNTIME.recoveryClass&&runtime.fromStateVersion===269&&runtime.toStateVersion===expected.deliveryStateVersion&&runtime.consumed===false;
+    if(!exact)throw new WorkerError("approved_delivery_handoff_recovery_precondition_failed","Only the exact uninvoked approved delivery routing failure may be recovered.",{retryable:false,statusCode:409});
+    const now=iso(clock),toStateVersion=current.stateVersion+1,deadline=iso(clock,expected.runtimeMinutes*60000),record={recoveryClass:expected.recoveryClass,fromStateVersion:current.stateVersion,toStateVersion,taskId:current.id,approvalId:expected.approvalId,approvedStateVersion:expected.approvedStateVersion,deliveryStateVersion:toStateVersion,repository:expected.repository,branch:expected.branch,commitSha:expected.commitSha,failedStepId:expected.failedStepId,failedAttempt:1,maxAdditionalDeliverySteps:1,runtimeMinutes:expected.runtimeMinutes,startedAt:now,deadline},approvalState={...state,deliveryStateVersion:toStateVersion,bindingSource:expected.recoveryClass},metadata={...current.metadata,autoDispatch:true,requiredCapability:"github_write",approvedDeliveryRuntime:{...runtime,startedAt:now,deadline,deliveryStateVersion:toStateVersion,consumed:false,handoffRecoveryFromStateVersion:current.stateVersion},approvedDeliveryHandoffRecoveryHistory:[...(current.metadata?.approvedDeliveryHandoffRecoveryHistory||[]),record]};
+    const prospective={...current,status:"waiting_for_worker",stateVersion:toStateVersion,errorCode:null,approvalState,metadata};
+    if(!isExactApprovedDelivery({task:prospective,approval,steps,approvedBranch,approvedRepository}))throw new WorkerError("approved_delivery_handoff_recovery_binding_invalid","Recovered local delivery binding is not exact.",{retryable:false,statusCode:409});
+    const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"waiting_for_worker",nextRunAt:now,completedAt:null,errorCode:null,blockedReason:"Waiting for exact approved local delivery.",approvalState,metadata,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},current.stateVersion);
+    if(!updated)throw new WorkerError("version_conflict","Task changed during approved delivery handoff recovery.",{retryable:false,statusCode:409});
+    await activity(updated,"approved_delivery_handoff_recovered","waiting_for_worker","Exact approved delivery was rebound to the controlled local worker.",record);
+    return{task:updated,recovery:record,idempotent:false};
+  }
   return Object.freeze({
     workerId,
     capabilities: [...capabilities],
@@ -667,6 +686,7 @@ export function createWorkerRuntime({
     resumeApproval,
     recoverApprovedDeliveryMaxSteps,
     recoverApprovedDeliveryRuntime,
+    recoverApprovedDeliveryHandoff,
   });
 }
 

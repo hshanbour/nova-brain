@@ -2,6 +2,7 @@ import {createHash,randomUUID,timingSafeEqual} from "node:crypto";
 import {createActiveContinuation,taskRuntimeWindow} from "./self-development-plan-lifecycle.js";
 import {assertActiveImplementationPlan} from "./self-development-plan-lifecycle.js";
 import {canonicalSchemaDiagnostic} from "./schema-diagnostics.js";
+import {isExactApprovedDelivery} from "./auto-dispatch.js";
 
 const LOCAL_STEPS=Object.freeze({
   apply_patch:{capability:"repo_mutate_local",tool:"repo_apply_patch",lock:true},
@@ -10,6 +11,7 @@ const LOCAL_STEPS=Object.freeze({
   inspect_diff:{capability:"repo_read_remote",tool:"repo_diff"},
   review_commit:{capability:"repo_read_remote",tool:"repo_review_commit"},
   commit:{capability:"repo_mutate_local",tool:"git_commit",lock:true},
+  push:{capability:"github_write",tool:"git_push",lock:true},
 });
 const SAFE_STATUSES=new Set(["queued","retrying","waiting_for_worker"]);
 const RETRYABLE=new Set(["network_error","test_timeout","worker_crash"]);
@@ -34,7 +36,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     const taskId=boundedString(input?.taskId,"taskId"),workerId=boundedString(input?.workerId,"workerId"),idempotencyKey=boundedString(input?.idempotencyKey,"idempotencyKey");
     if(input.expectedBranch!==approvedBranch||["main","master"].includes(input.expectedBranch))throw new HandoffError("branch_not_allowed","Only the approved feature branch may be handed off.",403);
     boundedString(input.expectedCommit,"expectedCommit",64);
-    const capabilities=[...new Set(Array.isArray(input.capabilities)?input.capabilities:[])].filter(value=>["repo_mutate_local","test_local","repo_read_remote"].includes(value));
+    const capabilities=[...new Set(Array.isArray(input.capabilities)?input.capabilities:[])].filter(value=>["repo_mutate_local","test_local","repo_read_remote","github_write"].includes(value));
     const before=await storage.getAutonomyTask(taskId,ownerId);if(!before)return{claimed:false};
     if(before.branch!==input.expectedBranch)throw new HandoffError("branch_mismatch","Task branch does not match.");
     if(before.currentCommit!==input.expectedCommit)throw new HandoffError("commit_mismatch","Task commit does not match.");
@@ -45,12 +47,16 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     }
     if(!SAFE_STATUSES.has(before.status)&&!(active&&new Date(active.expiresAt)<=clock()))return{claimed:false};
     const runtimeWindow=taskRuntimeWindow(before,clock());if(runtimeWindow.expired){const error=new HandoffError("max_runtime_reached","The active bounded runtime window expired.");error.safeDiagnostics={taskId:before.id,claimStage:"pre_claim_runtime",...runtimeWindow};throw error;}
-    const planned=before.metadata?.steps?.[before.currentStep],definition=LOCAL_STEPS[planned?.type];
-    if(!definition||!capabilities.includes(definition.capability))return{claimed:false};
+    let planned=before.metadata?.steps?.[before.currentStep];
+    if(!planned&&before.approvalState?.approved===true){const approval=await storage.getApproval(before.approvalState.approvalId,ownerId),steps=await storage.listAutonomySteps(before.id);if(isExactApprovedDelivery({task:before,approval,steps,approvedBranch}))planned={type:"push",input:{tool:"git_push",arguments:{branch:before.branch,commitSha:before.currentCommit}}};}
+    const definition=LOCAL_STEPS[planned?.type];
+    const capabilityAvailable=definition&&capabilities.includes(definition.capability);
+    if(!capabilityAvailable)return{claimed:false};
     let args=resolvePlan(planned.input?.arguments||{},before);
     if(planned.input?.tool!==definition.tool)throw new HandoffError("invalid_step_payload","Server plan contains an invalid local tool.");
     if(before.taskType==="self_development"&&planned.type==="apply_patch")args=taskBoundPatchArguments(before,args);
     if(before.taskType==="self_development"&&planned.type==="commit"){const reviewed=(await storage.listAutonomySteps(before.id)).filter(step=>step.stepType==="inspect_diff"&&step.status==="completed").at(-1)?.result?.reviewedChangeSet;if(!reviewed?.reviewHash)throw new HandoffError("review_required","Self-development commits require a durable reviewed change-set.");args={...args,reviewedChangeSet:reviewed};}
+    if(planned.type==="push"){const approval=await storage.getApproval(before.approvalState?.approvalId,ownerId),steps=await storage.listAutonomySteps(before.id);if(!isExactApprovedDelivery({task:before,approval,steps,approvedBranch}))throw new HandoffError("approved_delivery_invalid","Only the exact immutable approved delivery may be handed off.",409);}
     const handoff={id:randomUUID(),workerId,idempotencyKey,stepId:`${before.currentStep+1}:${planned.type}`,stepType:planned.type,tool:definition.tool,arguments:redact(args),branch:before.branch,expectedCommit:before.currentCommit,expiresAt:new Date(clock().getTime()+Math.max(30000,Math.min(300000,leaseMs))).toISOString(),fingerprint:hash([before.id,before.currentStep,planned.type,redact(planned.input),before.currentCommit])};
     const task=await storage.claimAutonomyTask({ownerId,workerId:`local:${workerId}`,capabilities,leaseMs, idempotencyKey,taskId,expectedBranch:input.expectedBranch,expectedCommit:input.expectedCommit});if(!task)return{claimed:false};
     if(definition.lock&&!await storage.acquireAutonomyLock({lockKey:`${task.projectId||"repo"}:${task.branch}`,taskId:task.id,leaseToken:task.leaseToken,expiresAt:task.leaseExpiresAt})){await storage.releaseAutonomyLease(task.id,ownerId,task.leaseToken);return{claimed:false,code:"branch_locked"};}
@@ -95,12 +101,14 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
         }else{status="failed";nextRunAt=null;errorCode="repair_limit_reached";}
       }
       const updated=await storage.updateAutonomyTask(task.id,ownerId,{status,currentStep,retryCount:retry,errorCode,nextRunAt,metadata:failureMetadata,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},task.stateVersion);if(!updated)throw new HandoffError("version_conflict","Task changed before failure could be persisted.");await storage.updateAutonomyStep(task.id,handoff.stepId,{status:"failed",result,errorCode:input.error?.code||"worker_failed",completedAt:nowIso(clock)});await storage.releaseAutonomyLocks(task.id,task.leaseToken);await activity(updated,structuredFullFailure&&status==="queued"?"self_development_full_test_repair_scheduled":"local_worker_handoff_failed",status,structuredFullFailure&&status==="queued"?"Structured full-suite failure evidence scheduled a bounded autonomous repair.":"Controlled local step failed.",{handoffId,stepId:handoff.stepId,errorCode:input.error?.code,failureEvidence});return{idempotent:false,status};}
-    const commitSha=result.commitSha||task.currentCommit;let status="queued",approvalState=null;
+    const commitSha=result.commitSha||task.currentCommit;let status=handoff.stepType==="push"?"completed":"queued",approvalState=null;
+    if(handoff.stepType==="push"&&(result.commitSha!==task.currentCommit||result.branch!==task.branch))throw new HandoffError("invalid_handoff_result","Push result must bind the exact approved commit and branch.",400);
     const nextPlanned=task.metadata?.steps?.[task.currentStep+1];if(handoff.stepType==="review_commit"||(handoff.stepType==="commit"&&nextPlanned?.type!=="review_commit")){
       const exactSelfDevelopment=task.taskType==="self_development",repository=task.metadata?.selfDevelopment?.repository,approvedStateVersion=task.stateVersion+1,args={...(exactSelfDevelopment?{repository,approvedStateVersion}:{}),branch:task.branch,commitSha};const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:"git_push",reason:"Owner approval is required to push the exact local Worker commit.",riskLevel:"SENSITIVE",arguments:args});status="waiting_for_approval";approvalState={approvalId:approval.id,tool:"git_push",arguments:args,...(exactSelfDevelopment?{repository,approvedStateVersion,bindingSource:"approval_contract"}:{}),branch:task.branch,commitSha,stepId:`${task.currentStep+2}:push`};
       await activity(task,"autonomy_approval_requested","waiting","Task paused for exact public-push approval.",{approvalId:approval.id,commitSha,branch:task.branch});
     }
-    const updated=await storage.updateAutonomyTask(task.id,ownerId,{status,currentStep:task.currentStep+1,currentPhase:handoff.stepType,currentCommit:commitSha,nextRunAt:nowIso(clock),checkpoint:{...task.checkpoint,completedSteps:completed,pendingStep:null,latestResult:result},metadata,approvalState,blockedReason:status==="waiting_for_approval"?"Owner approval required.":null,errorCode:null,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},task.stateVersion);
+    if(handoff.stepType==="push")metadata.approvedDeliveryRuntime={...metadata.approvedDeliveryRuntime,consumed:true,consumedAt:nowIso(clock)};
+    const updated=await storage.updateAutonomyTask(task.id,ownerId,{status,currentStep:task.currentStep+1,currentPhase:handoff.stepType,currentCommit:commitSha,nextRunAt:status==="completed"?null:nowIso(clock),completedAt:status==="completed"?nowIso(clock):null,checkpoint:{...task.checkpoint,completedSteps:completed,pendingStep:null,latestResult:result},metadata,approvalState,blockedReason:status==="waiting_for_approval"?"Owner approval required.":null,errorCode:null,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},task.stateVersion);
     if(!updated)throw new HandoffError("version_conflict","Task changed before the result could be persisted.");
     await storage.updateAutonomyStep(task.id,handoff.stepId,{status:"completed",result,errorCode:null,completedAt:nowIso(clock)});
     await storage.releaseAutonomyLocks(task.id,task.leaseToken);await activity(updated,"local_worker_handoff_completed","completed",`${handoff.stepType} completed by the controlled local worker.`,{handoffId,stepId:handoff.stepId,commitSha:result.commitSha});
