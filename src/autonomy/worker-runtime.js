@@ -49,6 +49,7 @@ const TERMINAL = new Set([
   "expired",
   "blocked",
 ]);
+const HISTORICAL_APPROVED_DELIVERY=Object.freeze({taskId:"selfdev_10721df97b8cbc63c70d4171f6f4a440",fromStateVersion:266,approvedStateVersion:264,currentStep:308,approvalId:"fb4e62f7-9189-4151-ac11-c620e934d3aa",commitSha:"5818ce4a8b0eb13285971cfcede009c7ae0d5aad",repository:"hshanbour/nova-brain",branch:"feat/nova-brain-mvp-foundation",recoveryClass:"historical_approved_delivery_max_steps_recovery"});
 const MUTATING = new Set(["apply_patch", "commit", "push"]);
 const REASONING = new Set(["diagnose", "plan_patch", "inspect_failure"]);
 const RETRYABLE = new Set([
@@ -115,6 +116,7 @@ export function createWorkerRuntime({
   ],
   leaseMs = 30000,
   approvedBranch = "feat/nova-brain-mvp-foundation",
+  approvedRepository = "hshanbour/nova-brain",
 } = {}) {
   if (!storage || !ownerId || !toolRegistry)
     throw new Error(
@@ -212,7 +214,7 @@ export function createWorkerRuntime({
     );
   }
   async function next(task) {
-    if(task.approvalState?.approved===true&&!task.metadata?.steps?.[task.currentStep]){const approval=await storage.getApproval(task.approvalState.approvalId,ownerId),steps=await storage.listAutonomySteps(task.id);if(!isExactApprovedDelivery({task,approval,steps,approvedBranch,allowClaimed:true}))throw new WorkerError("approval_invalidated","Approved delivery binding is stale or inconsistent.",{retryable:false});return{next_step:"push",reason:"Execute the exact owner-approved immutable delivery.",required_inputs:{tool:"git_push",arguments:{branch:task.branch,commitSha:task.currentCommit}},approval_required:false};}
+    if(task.approvalState?.approved===true&&!task.metadata?.steps?.[task.currentStep]){const approval=await storage.getApproval(task.approvalState.approvalId,ownerId),steps=await storage.listAutonomySteps(task.id);if(!isExactApprovedDelivery({task,approval,steps,approvedBranch,approvedRepository,allowClaimed:true}))throw new WorkerError("approval_invalidated","Approved delivery binding is stale or inconsistent.",{retryable:false});return{next_step:"push",reason:"Execute the exact owner-approved immutable delivery.",required_inputs:{tool:"git_push",arguments:{branch:task.branch,commitSha:task.currentCommit}},approval_required:false};}
     const planned =
       task.metadata?.steps?.[task.currentStep] ||
       (await planner?.({ task, checkpoint: task.checkpoint }));
@@ -297,14 +299,14 @@ export function createWorkerRuntime({
     }
   }
   async function advance(task) {
-    if (activeContinuationExceeded(task))
-      return stop(task, "failed", "max_steps_reached");
-    if (taskRuntimeWindow(task,clock()).expired)
-      return stop(task, "expired", "max_runtime_reached");
     const plan = await next(task),
       type = plan.next_step,
       capability = STEP_CAPABILITIES[type] || plan.required_capability;
     const approvedDelivery = type === "push" && task.approvalState?.approved === true && !task.metadata?.steps?.[task.currentStep];
+    if (!approvedDelivery && activeContinuationExceeded(task))
+      return stop(task, "failed", "max_steps_reached");
+    if (taskRuntimeWindow(task,clock()).expired)
+      return stop(task, "expired", "max_runtime_reached");
     if (!capability) return stop(task, "failed", "invalid_step_type");
     if (!capabilities.includes(capability) && !approvedDelivery) {
       await storage.updateAutonomyTask(task.id, ownerId, {
@@ -442,10 +444,10 @@ export function createWorkerRuntime({
         approvalId: task.approvalState?.approvalId,
       });
       if(["plan_implementation","plan_repair"].includes(type)&&result?.evidenceExpansion){await completeEvidenceExpansion(task,step,plan,result);return{claimed:true,status:"queued",stepType:type,result:redact(result)};}
-      await complete(task, step, result, "queued", iso(clock));
+      await complete(task, step, result, approvedDelivery?"completed":"queued", approvedDelivery?null:iso(clock));
       return {
         claimed: true,
-        status: "queued",
+        status: approvedDelivery?"completed":"queued",
         stepType: type,
         result: redact(result),
       };
@@ -540,6 +542,7 @@ export function createWorkerRuntime({
       metadata: { ...(result?.implementationPlan?planLifecycleMetadata(task,redact(result.implementationPlan)):task.metadata), requiredCapability: null, ...(result?.deploymentId?{lastDeploymentId:result.deploymentId}:{}) },
       blockedReason: null,
       errorCode: null,
+      ...(status === "completed" ? { completedAt: iso(clock) } : {}),
       ...(step.stepType === "push" ? { approvalState: null } : {}),
     });
     await activity(
@@ -585,9 +588,20 @@ export function createWorkerRuntime({
     const pending = task.approvalState;
     if (approval.status !== "approved")
       return stop(task, "cancelled", "approval_rejected");
+    const durableApproval=await storage.getApproval(pending.approvalId,ownerId);
+    const exactSelfDevelopment=task.taskType==="self_development"&&pending.bindingSource==="approval_contract";
     if (
       pending.commitSha !== task.currentCommit ||
-      pending.branch !== task.branch
+      pending.branch !== task.branch ||
+      (exactSelfDevelopment&&(
+        pending.repository !== approvedRepository ||
+        pending.arguments?.repository !== approvedRepository ||
+        durableApproval?.status !== "approved" ||
+        durableApproval?.arguments?.repository !== approvedRepository ||
+        pending.approvedStateVersion !== task.stateVersion ||
+        pending.arguments?.approvedStateVersion !== task.stateVersion ||
+        durableApproval?.arguments?.approvedStateVersion !== task.stateVersion
+      ))
     )
       throw new WorkerError(
         "approval_invalidated",
@@ -598,8 +612,25 @@ export function createWorkerRuntime({
       status: "queued",
       nextRunAt: iso(clock),
       blockedReason: null,
-      approvalState: { ...pending, approved: true },
+      approvalState: { ...pending, approved: true, deliveryStateVersion: task.stateVersion+1 },
     });
+  }
+  async function recoverApprovedDeliveryMaxSteps(taskId,input){
+    if(!input||Object.keys(input).some(key=>key!=="expectedVersion")||!Number.isInteger(input.expectedVersion))throw new WorkerError("approved_delivery_recovery_invalid","Exact version is required.",{retryable:false,statusCode:400});
+    const expected=HISTORICAL_APPROVED_DELIVERY,current=await storage.getAutonomyTask(taskId,ownerId),prior=current?.metadata?.approvedDeliveryRecoveryHistory?.find(item=>item.recoveryClass===expected.recoveryClass&&item.fromStateVersion===input.expectedVersion);
+    if(prior)return{task:current,recovery:prior,idempotent:true};
+    if(!current)throw new WorkerError("task_not_found","Task not found.",{retryable:false,statusCode:404});
+    if(current.stateVersion!==input.expectedVersion)throw new WorkerError("version_conflict","Task changed before approved-delivery recovery.",{retryable:false,statusCode:409});
+    const approval=await storage.getApproval(expected.approvalId,ownerId),steps=await storage.listAutonomySteps(current.id),review=steps.find(step=>step.stepId==="308:review_commit"),commit=steps.find(step=>step.stepId==="307:commit"),state=current.approvalState;
+    const exact=current.id===expected.taskId&&current.status==="failed"&&current.errorCode==="max_steps_reached"&&current.currentStep===expected.currentStep&&current.currentCommit===expected.commitSha&&current.branch===expected.branch&&current.metadata?.selfDevelopment?.repository===expected.repository&&state?.approved===true&&state.approvalId===expected.approvalId&&state.tool==="git_push"&&state.stepId==="309:push"&&state.branch===expected.branch&&state.commitSha===expected.commitSha&&state.arguments?.branch===expected.branch&&state.arguments?.commitSha===expected.commitSha&&approval?.id===expected.approvalId&&approval.status==="approved"&&approval.tool==="git_push"&&approval.runId===current.id&&approval.projectId===current.projectId&&approval.arguments?.branch===expected.branch&&approval.arguments?.commitSha===expected.commitSha&&commit?.status==="completed"&&commit.result?.commitSha===expected.commitSha&&review?.status==="completed"&&review.result?.commitSha===expected.commitSha&&!steps.some(step=>Number.parseInt(step.stepId,10)>expected.currentStep);
+    if(!exact)throw new WorkerError("approved_delivery_recovery_precondition_failed","Only the exact historical immutable approved-delivery max-step failure may be recovered.",{retryable:false,statusCode:409});
+    const now=iso(clock),toStateVersion=current.stateVersion+1,record={recoveryClass:expected.recoveryClass,fromStateVersion:current.stateVersion,toStateVersion,approvedStateVersion:expected.approvedStateVersion,taskId:current.id,approvalId:expected.approvalId,repository:expected.repository,branch:expected.branch,commitSha:expected.commitSha,reviewStepId:"308:review_commit",deliveryStepId:"309:push",maxAdditionalDeliverySteps:1,recoveredAt:now},approvalState={...state,repository:expected.repository,approvedStateVersion:expected.approvedStateVersion,deliveryStateVersion:toStateVersion,bindingSource:expected.recoveryClass},metadata={...current.metadata,autoDispatch:true,approvedDeliveryRecoveryHistory:[...(current.metadata?.approvedDeliveryRecoveryHistory||[]),record]};
+    const prospective={...current,status:"queued",stateVersion:toStateVersion,approvalState,metadata};
+    if(!isExactApprovedDelivery({task:prospective,approval,steps,approvedBranch,approvedRepository}))throw new WorkerError("approved_delivery_recovery_binding_invalid","Recovered approved delivery binding is not exact.",{retryable:false,statusCode:409});
+    const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",nextRunAt:now,completedAt:null,errorCode:null,blockedReason:null,approvalState,metadata},current.stateVersion);
+    if(!updated)throw new WorkerError("version_conflict","Task changed during approved-delivery recovery.",{retryable:false,statusCode:409});
+    await activity(updated,"approved_delivery_max_steps_recovered","queued","Exact immutable post-approval delivery eligibility restored.",{approvalId:expected.approvalId,commitSha:expected.commitSha,repository:expected.repository,branch:expected.branch,fromStateVersion:current.stateVersion,toStateVersion,maxAdditionalDeliverySteps:1});
+    return{task:updated,recovery:record,idempotent:false};
   }
   return Object.freeze({
     workerId,
@@ -612,6 +643,7 @@ export function createWorkerRuntime({
     tick,
     tickTask,
     resumeApproval,
+    recoverApprovedDeliveryMaxSteps,
   });
 }
 
