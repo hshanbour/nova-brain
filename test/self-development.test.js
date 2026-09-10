@@ -384,6 +384,24 @@ test("recoverable failure gets one evidence-based repair plan", async () => {
     "inspect_failure",
   );
 });
+
+async function exhaustedFocusedRepairFixture(){
+  const f=await fixture(),files=[{path:"assets/voice-input.js",operation:"replace",expectedContent:"old\n",content:"new\n"},{path:"test/composer-dictation.test.js",operation:"replace",expectedContent:"old test\n",content:"new test\n"}],plain={files,focusedTests:[{path:"test/composer-dictation.test.js",kind:"existing"}],evidencePaths:files.map(file=>file.path),planHash:"active-repair"};
+  await f.storage.createAutonomyTask({id:"exhausted-focused",ownerId:OWNER,projectId:"nova-brain",title:"Focused",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:SHA,currentCommit:SHA,maxSteps:100,maxRuntimeMinutes:60,repairIteration:2,metadata:{steps:[{type:"run_focused_tests"},{type:"run_focused_tests"}],maxRepairIterations:2,selfDevelopment:{userGoal:"Repair composer",acceptanceCriteria:["Six focused tests pass"],repairLimit:2},implementationPlanGenerations:[]}});
+  let task=await f.storage.getAutonomyTask("exhausted-focused",OWNER),plan={...plain,provenance:bindImplementationPlan({task,plan:plain,evidence:files.map(file=>({path:file.path,content:file.expectedContent}))})};task=await f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...planLifecycleMetadata(task,plan),steps:task.metadata.steps}});
+  for(const [ordinal,failed,passed,fingerprint] of [[1,2,4,"prior"],[2,1,5,"remaining"]])await f.storage.recordAutonomyStep({taskId:task.id,stepId:`${ordinal}:run_focused_tests`,stepType:"run_focused_tests",capability:"test_local",operationFingerprint:fingerprint,status:"failed",errorCode:"test_failed",result:{diagnostics:{fingerprint,counts:{tests:6,failed,passed,skipped:0},failedFiles:["test/composer-dictation.test.js"],failedTitles:["remaining"]}}});
+  task=await f.storage.updateAutonomyTask(task.id,OWNER,{status:"failed",currentStep:1,currentPhase:"run_focused_tests",errorCode:"repair_limit_reached",repairIteration:2});return{...f,task,plan};
+}
+
+test("genuine repair-limit exhaustion requires one exact owner-approved extension",async()=>{
+  const f=await exhaustedFocusedRepairFixture(),requested=await f.service.requestEscalatedRepair(f.task.id,{expectedVersion:f.task.stateVersion});assert.equal(requested.approval.status,"pending");assert.equal(requested.approval.arguments.maxAdditionalAttempts,1);assert.equal((await f.service.requestEscalatedRepair(f.task.id,{expectedVersion:f.task.stateVersion})).approval.id,requested.approval.id);
+  await assert.rejects(()=>f.service.recoverEscalatedRepair(f.task.id,{expectedVersion:f.task.stateVersion,approvalId:requested.approval.id}),error=>error.code==="escalated_repair_recovery_precondition_failed");await f.storage.decideApproval(requested.approval.id,OWNER,"approved");const recovered=await f.service.recoverEscalatedRepair(f.task.id,{expectedVersion:f.task.stateVersion,approvalId:requested.approval.id}),added=recovered.task.metadata.steps.slice(f.task.metadata.steps.length);assert.equal(recovered.task.status,"queued");assert.equal(recovered.task.repairIteration,2);assert.deepEqual(added.map(step=>step.type),["plan_repair","apply_patch","run_focused_tests","run_full_tests","inspect_diff","commit","review_commit"]);assert.equal(recovered.recovery.maxAdditionalAttempts,1);assert.equal(recovered.task.metadata.activeContinuation.maxSteps,9);assert.equal((await f.service.recoverEscalatedRepair(f.task.id,{expectedVersion:f.task.stateVersion,approvalId:requested.approval.id})).idempotent,true);
+});
+
+test("escalated repair refuses unbounded, unrelated, non-progressing, or delivered failures",async()=>{
+  const cases=[{name:"no progress",mutate:async f=>f.storage.updateAutonomyStep(f.task.id,"1:run_focused_tests",{result:{diagnostics:{fingerprint:"prior",counts:{tests:6,failed:1,passed:5},failedFiles:["test/composer-dictation.test.js"]}}})},{name:"unrelated file",mutate:async f=>f.storage.updateAutonomyStep(f.task.id,"2:run_focused_tests",{result:{diagnostics:{fingerprint:"remaining",counts:{tests:6,failed:1,passed:5},failedFiles:["test/unrelated.test.js"]}}})},{name:"delivered",mutate:async f=>f.storage.recordAutonomyStep({taskId:f.task.id,stepId:"3:commit",stepType:"commit",capability:"github_write",operationFingerprint:"delivered",status:"completed",result:{commitSha:"b".repeat(40)}})}];
+  for(const item of cases){const f=await exhaustedFocusedRepairFixture();await item.mutate(f);await assert.rejects(()=>f.service.requestEscalatedRepair(f.task.id,{expectedVersion:f.task.stateVersion}),error=>error.code==="escalated_repair_precondition_failed",item.name);}
+});
 test("legacy empty focused-test repair completion reopens a bounded semantic repair", async () => {
   const f = await fixture(),
     created = await f.service.create(input()),

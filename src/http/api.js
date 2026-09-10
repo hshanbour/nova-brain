@@ -924,6 +924,10 @@ export function createApi({
         const selfDevelopmentMatch = pathname.match(
           /^\/api\/self-development\/tasks\/([^/]+)(?:\/(repair))?$/,
         );
+        const selfDevelopmentEscalatedRepairRequest=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/request-escalated-repair$/);
+        const selfDevelopmentEscalatedRepairRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-escalated-repair$/);
+        if(selfDevelopment&&selfDevelopmentEscalatedRepairRequest&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.requestEscalatedRepair(decodeURIComponent(selfDevelopmentEscalatedRepairRequest[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
+        if(selfDevelopment&&selfDevelopmentEscalatedRepairRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverEscalatedRepair(decodeURIComponent(selfDevelopmentEscalatedRepairRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if (
           selfDevelopment &&
           selfDevelopmentMatch &&
@@ -1490,7 +1494,9 @@ export function createApi({
             workerRuntime && approval.runId
               ? await workerRuntime.get(approval.runId)
               : null;
-          if (autonomyTask) {
+          if(approval.tool==="self_development_escalated_repair"){
+            execution={authorized:decision==="approved",approvalId:approval.id};
+          } else if (autonomyTask) {
             execution =
               decision === "approved"
                 ? await workerRuntime.resumeApproval(autonomyTask.id, approval)
