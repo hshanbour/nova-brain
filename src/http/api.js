@@ -928,10 +928,12 @@ export function createApi({
         const selfDevelopmentEscalatedRepairRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-escalated-repair$/);
         const selfDevelopmentFullTestHandoffRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-full-test-handoff$/);
         const approvedDeliveryMaxStepsRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-approved-delivery-max-steps$/);
+        const approvedDeliveryRuntimeRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-approved-delivery-runtime$/);
         if(selfDevelopment&&selfDevelopmentEscalatedRepairRequest&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.requestEscalatedRepair(decodeURIComponent(selfDevelopmentEscalatedRepairRequest[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if(selfDevelopment&&selfDevelopmentEscalatedRepairRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverEscalatedRepair(decodeURIComponent(selfDevelopmentEscalatedRepairRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if(selfDevelopment&&selfDevelopmentFullTestHandoffRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverFullTestHandoffOverflow(decodeURIComponent(selfDevelopmentFullTestHandoffRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if(workerRuntime&&approvedDeliveryMaxStepsRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await workerRuntime.recoverApprovedDeliveryMaxSteps(decodeURIComponent(approvedDeliveryMaxStepsRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
+        if(workerRuntime&&approvedDeliveryRuntimeRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await workerRuntime.recoverApprovedDeliveryRuntime(decodeURIComponent(approvedDeliveryRuntimeRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if (
           selfDevelopment &&
           selfDevelopmentMatch &&

@@ -50,6 +50,7 @@ const TERMINAL = new Set([
   "blocked",
 ]);
 const HISTORICAL_APPROVED_DELIVERY=Object.freeze({taskId:"selfdev_10721df97b8cbc63c70d4171f6f4a440",fromStateVersion:266,approvedStateVersion:264,currentStep:308,approvalId:"fb4e62f7-9189-4151-ac11-c620e934d3aa",commitSha:"5818ce4a8b0eb13285971cfcede009c7ae0d5aad",repository:"hshanbour/nova-brain",branch:"feat/nova-brain-mvp-foundation",recoveryClass:"historical_approved_delivery_max_steps_recovery"});
+const HISTORICAL_APPROVED_DELIVERY_RUNTIME=Object.freeze({...HISTORICAL_APPROVED_DELIVERY,fromStateVersion:268,priorDeliveryStateVersion:267,recoveryClass:"historical_approved_delivery_runtime_recovery",runtimeMinutes:5});
 const MUTATING = new Set(["apply_patch", "commit", "push"]);
 const REASONING = new Set(["diagnose", "plan_patch", "inspect_failure"]);
 const RETRYABLE = new Set([
@@ -305,7 +306,9 @@ export function createWorkerRuntime({
     const approvedDelivery = type === "push" && task.approvalState?.approved === true && !task.metadata?.steps?.[task.currentStep];
     if (!approvedDelivery && activeContinuationExceeded(task))
       return stop(task, "failed", "max_steps_reached");
-    if (taskRuntimeWindow(task,clock()).expired)
+    const deliveryRuntime=approvedDelivery&&task.metadata?.approvedDeliveryRuntime,
+      deliveryRuntimeValid=Boolean(deliveryRuntime&&deliveryRuntime.recoveryClass===HISTORICAL_APPROVED_DELIVERY_RUNTIME.recoveryClass&&deliveryRuntime.taskId===task.id&&deliveryRuntime.approvalId===task.approvalState?.approvalId&&deliveryRuntime.approvedStateVersion===task.approvalState?.approvedStateVersion&&deliveryRuntime.deliveryStateVersion===task.approvalState?.deliveryStateVersion&&deliveryRuntime.repository===approvedRepository&&deliveryRuntime.branch===task.branch&&deliveryRuntime.commitSha===task.currentCommit&&deliveryRuntime.reviewStepId===`${task.currentStep}:review_commit`&&deliveryRuntime.deliveryStepId===`${task.currentStep+1}:push`&&deliveryRuntime.maxAdditionalDeliverySteps===1&&deliveryRuntime.consumed!==true&&new Date(deliveryRuntime.deadline)>clock());
+    if (taskRuntimeWindow(task,clock()).expired&&!deliveryRuntimeValid)
       return stop(task, "expired", "max_runtime_reached");
     if (!capability) return stop(task, "failed", "invalid_step_type");
     if (!capabilities.includes(capability) && !approvedDelivery) {
@@ -632,6 +635,24 @@ export function createWorkerRuntime({
     await activity(updated,"approved_delivery_max_steps_recovered","queued","Exact immutable post-approval delivery eligibility restored.",{approvalId:expected.approvalId,commitSha:expected.commitSha,repository:expected.repository,branch:expected.branch,fromStateVersion:current.stateVersion,toStateVersion,maxAdditionalDeliverySteps:1});
     return{task:updated,recovery:record,idempotent:false};
   }
+  async function recoverApprovedDeliveryRuntime(taskId,input){
+    if(!input||Object.keys(input).some(key=>key!=="expectedVersion")||input.expectedVersion!==268)throw new WorkerError("approved_delivery_runtime_recovery_invalid","Exact historical version is required.",{retryable:false,statusCode:400});
+    const expected=HISTORICAL_APPROVED_DELIVERY_RUNTIME,current=await storage.getAutonomyTask(taskId,ownerId),prior=current?.metadata?.approvedDeliveryRuntimeRecoveryHistory?.find(item=>item.recoveryClass===expected.recoveryClass&&item.fromStateVersion===input.expectedVersion);
+    if(prior)return{task:current,recovery:prior,idempotent:true};
+    if(!current)throw new WorkerError("task_not_found","Task not found.",{retryable:false,statusCode:404});
+    if(current.stateVersion!==input.expectedVersion)throw new WorkerError("version_conflict","Task changed before approved-delivery runtime recovery.",{retryable:false,statusCode:409});
+    const approval=await storage.getApproval(expected.approvalId,ownerId),steps=await storage.listAutonomySteps(current.id),review=steps.find(step=>step.stepId==="308:review_commit"),commit=steps.find(step=>step.stepId==="307:commit"),state=current.approvalState,previous=current.metadata?.approvedDeliveryRecoveryHistory?.at(-1);
+    const exact=current.id===expected.taskId&&current.status==="expired"&&current.errorCode==="max_runtime_reached"&&current.currentStep===expected.currentStep&&current.currentCommit===expected.commitSha&&current.branch===expected.branch&&current.metadata?.selfDevelopment?.repository===expected.repository&&state?.approved===true&&state.approvalId===expected.approvalId&&state.approvedStateVersion===expected.approvedStateVersion&&state.deliveryStateVersion===expected.priorDeliveryStateVersion&&state.tool==="git_push"&&state.stepId==="309:push"&&state.branch===expected.branch&&state.commitSha===expected.commitSha&&state.arguments?.branch===expected.branch&&state.arguments?.commitSha===expected.commitSha&&approval?.status==="approved"&&approval.id===expected.approvalId&&approval.tool==="git_push"&&approval.runId===current.id&&approval.arguments?.branch===expected.branch&&approval.arguments?.commitSha===expected.commitSha&&commit?.status==="completed"&&commit.result?.commitSha===expected.commitSha&&review?.status==="completed"&&review.result?.commitSha===expected.commitSha&&previous?.recoveryClass===HISTORICAL_APPROVED_DELIVERY.recoveryClass&&previous.toStateVersion===expected.priorDeliveryStateVersion&&previous.maxAdditionalDeliverySteps===1&&!steps.some(step=>Number.parseInt(step.stepId,10)>expected.currentStep)&&!current.metadata?.approvedDeliveryRuntime;
+    if(!exact)throw new WorkerError("approved_delivery_runtime_recovery_precondition_failed","Only the exact unconsumed historical approved delivery may receive a runtime window.",{retryable:false,statusCode:409});
+    const now=iso(clock),toStateVersion=current.stateVersion+1,deadline=iso(clock,expected.runtimeMinutes*60000),record={recoveryClass:expected.recoveryClass,fromStateVersion:current.stateVersion,toStateVersion,taskId:current.id,approvalId:expected.approvalId,approvedStateVersion:expected.approvedStateVersion,priorDeliveryStateVersion:expected.priorDeliveryStateVersion,deliveryStateVersion:toStateVersion,repository:expected.repository,branch:expected.branch,commitSha:expected.commitSha,reviewStepId:"308:review_commit",deliveryStepId:"309:push",maxAdditionalDeliverySteps:1,runtimeMinutes:expected.runtimeMinutes,startedAt:now,deadline};
+    const approvalState={...state,deliveryStateVersion:toStateVersion},metadata={...current.metadata,autoDispatch:true,approvedDeliveryRuntime:{...record,consumed:false},approvedDeliveryRuntimeRecoveryHistory:[...(current.metadata?.approvedDeliveryRuntimeRecoveryHistory||[]),record]};
+    const prospective={...current,status:"queued",stateVersion:toStateVersion,approvalState,metadata};
+    if(!isExactApprovedDelivery({task:prospective,approval,steps,approvedBranch,approvedRepository}))throw new WorkerError("approved_delivery_runtime_recovery_binding_invalid","Recovered delivery runtime binding is not exact.",{retryable:false,statusCode:409});
+    const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",nextRunAt:now,completedAt:null,errorCode:null,blockedReason:null,approvalState,metadata},current.stateVersion);
+    if(!updated)throw new WorkerError("version_conflict","Task changed during approved-delivery runtime recovery.",{retryable:false,statusCode:409});
+    await activity(updated,"approved_delivery_runtime_recovered","queued","One exact immutable approved delivery received a bounded runtime window.",record);
+    return{task:updated,recovery:record,idempotent:false};
+  }
   return Object.freeze({
     workerId,
     capabilities: [...capabilities],
@@ -644,6 +665,7 @@ export function createWorkerRuntime({
     tickTask,
     resumeApproval,
     recoverApprovedDeliveryMaxSteps,
+    recoverApprovedDeliveryRuntime,
   });
 }
 
