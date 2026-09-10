@@ -17,6 +17,8 @@ if([string]::IsNullOrWhiteSpace($RepositoryRoot)){$RepositoryRoot=$sourceRoot}
 $root=(Resolve-Path -LiteralPath $RepositoryRoot).Path
 $runtimeVersion=(& $git -C $sourceRoot rev-parse HEAD).Trim()
 if($LASTEXITCODE -ne 0 -or $runtimeVersion -notmatch '^[0-9a-f]{40}$'){throw 'The trusted worker runtime source commit could not be resolved.'}
+$runtimeSourceChanges=@(& $git -C $sourceRoot status --porcelain=v1 --untracked-files=all -- scripts src package.json package-lock.json)
+if($LASTEXITCODE -ne 0 -or $runtimeSourceChanges.Count -ne 0){throw 'The trusted worker runtime source contains uncommitted content.'}
 $runtimeFiles=@(& $git -C $sourceRoot ls-tree -r --name-only $runtimeVersion -- scripts src package.json package-lock.json)
 if($LASTEXITCODE -ne 0 -or $runtimeFiles.Count -eq 0){throw 'The trusted worker runtime manifest could not be resolved.'}
 function Assert-RuntimeContent([string]$CandidateRoot){
@@ -24,7 +26,7 @@ function Assert-RuntimeContent([string]$CandidateRoot){
     $candidate=Join-Path $CandidateRoot $relative
     if(-not (Test-Path -LiteralPath $candidate -PathType Leaf)){throw 'The worker runtime snapshot is incomplete.'}
     $expected=(& $git -C $sourceRoot rev-parse ($runtimeVersion+':'+$relative)).Trim()
-    $actual=(& $git hash-object -- $candidate).Trim()
+    $actual=(& $git hash-object --no-filters -- $candidate).Trim()
     if($LASTEXITCODE -ne 0 -or $actual -ne $expected){throw 'The worker runtime snapshot does not match its immutable commit.'}
   }
 }
@@ -45,13 +47,13 @@ $versions=Join-Path $runtime 'worker-runtimes'
 New-Item -ItemType Directory -Path $versions -Force | Out-Null
 $finalRuntime=Join-Path $versions $runtimeVersion
 $stagedRuntime=Join-Path $versions ($runtimeVersion+'.install-'+[Guid]::NewGuid().ToString('N'))
+$stagedArchive=$stagedRuntime+'.zip'
 try {
   if(-not (Test-Path -LiteralPath $finalRuntime -PathType Container)){
     New-Item -ItemType Directory -Path $stagedRuntime | Out-Null
-    Copy-Item -LiteralPath (Join-Path $sourceRoot 'scripts') -Destination $stagedRuntime -Recurse
-    Copy-Item -LiteralPath (Join-Path $sourceRoot 'src') -Destination $stagedRuntime -Recurse
-    Copy-Item -LiteralPath (Join-Path $sourceRoot 'package.json') -Destination $stagedRuntime
-    if(Test-Path -LiteralPath (Join-Path $sourceRoot 'package-lock.json')){Copy-Item -LiteralPath (Join-Path $sourceRoot 'package-lock.json') -Destination $stagedRuntime}
+    & $git -c core.autocrlf=false -C $sourceRoot archive --format=zip --output=$stagedArchive $runtimeVersion -- scripts src package.json package-lock.json
+    if($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $stagedArchive -PathType Leaf)){throw 'The canonical worker runtime export failed.'}
+    Expand-Archive -LiteralPath $stagedArchive -DestinationPath $stagedRuntime
     Assert-RuntimeContent $stagedRuntime
     $stagedScript=Join-Path $stagedRuntime 'scripts\persistent-local-worker.js'
     $verification=& $node $stagedScript --verify-runtime --runtime-version $runtimeVersion --repository-root $root
@@ -76,5 +78,6 @@ try {
   if($installedAction.Execute -ne $node -or $installedAction.Arguments -notlike ('*"'+$script+'"*') -or $installedAction.Arguments -notlike ('*--repository-root "'+$root+'"*') -or $installedAction.Arguments -notlike ('*--runtime-version "'+$runtimeVersion+'"*') -or $installedAction.Arguments -notlike ('*--credential-helper "'+$helper+'"*')){throw 'The Scheduled Task immutable runtime binding could not be verified.'}
   [Console]::Out.Write('installed')
 } finally {
+  if(Test-Path -LiteralPath $stagedArchive){Remove-Item -LiteralPath $stagedArchive -Force}
   if(Test-Path -LiteralPath $stagedRuntime){Remove-Item -LiteralPath $stagedRuntime -Recurse -Force}
 }
