@@ -271,8 +271,9 @@ export function createWorkerRuntime({
     if (!(requested.status === "queued" || requested.status === "retrying" || (requested.status === "waiting" && requested.nextRunAt)) || !due)
       throw new WorkerError("task_not_eligible", "The requested task is not eligible to run.", { retryable: false });
     const planned = await next(requested);
+    const approvedDelivery = planned.next_step === "push" && requested.approvalState?.approved === true && !requested.metadata?.steps?.[requested.currentStep];
     const requiredCapability = requested.metadata?.requiredCapability || STEP_CAPABILITIES[planned.next_step] || planned.required_capability;
-    if (!requiredCapability || !capabilities.includes(requiredCapability))
+    if (!requiredCapability || (!capabilities.includes(requiredCapability) && !approvedDelivery))
       throw new WorkerError("capability_mismatch", "This worker cannot execute the requested task step.", { retryable: false });
     const task = await storage.claimAutonomyTask({
       ownerId,
@@ -303,8 +304,9 @@ export function createWorkerRuntime({
     const plan = await next(task),
       type = plan.next_step,
       capability = STEP_CAPABILITIES[type] || plan.required_capability;
+    const approvedDelivery = type === "push" && task.approvalState?.approved === true && !task.metadata?.steps?.[task.currentStep];
     if (!capability) return stop(task, "failed", "invalid_step_type");
-    if (!capabilities.includes(capability)) {
+    if (!capabilities.includes(capability) && !approvedDelivery) {
       await storage.updateAutonomyTask(task.id, ownerId, {
         status: "waiting_for_worker",
         blockedReason: `Worker capability required: ${capability}`,
