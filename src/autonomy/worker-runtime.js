@@ -55,6 +55,7 @@ const HISTORICAL_APPROVED_DELIVERY_RUNTIME=Object.freeze({...HISTORICAL_APPROVED
 const HISTORICAL_APPROVED_DELIVERY_HANDOFF=Object.freeze({...HISTORICAL_APPROVED_DELIVERY,fromStateVersion:272,deliveryStateVersion:270,failedStepId:"309:push",recoveryClass:"historical_approved_delivery_handoff_recovery",runtimeMinutes:5});
 const HISTORICAL_APPROVED_DELIVERY_HANDOFF_RUNTIME=Object.freeze({...HISTORICAL_APPROVED_DELIVERY,fromStateVersion:274,priorDeliveryStateVersion:273,failedStepId:"309:push",recoveryClass:"historical_approved_delivery_handoff_runtime_recovery",runtimeMinutes:5});
 const HISTORICAL_APPROVED_DELIVERY_WORKER_CAPABILITY_RUNTIME=Object.freeze({...HISTORICAL_APPROVED_DELIVERY,fromStateVersion:276,priorDeliveryStateVersion:275,failedStepId:"309:push",priorRecoveryClass:HISTORICAL_APPROVED_DELIVERY_HANDOFF_RUNTIME.recoveryClass,recoveryClass:"historical_approved_delivery_worker_capability_runtime_recovery",runtimeMinutes:5});
+const APPROVAL_CONTRACT_DELIVERY_RUNTIME="approval_contract_delivery_runtime";
 const MUTATING = new Set(["apply_patch", "commit", "push"]);
 const REASONING = new Set(["diagnose", "plan_patch", "inspect_failure"]);
 const RETRYABLE = new Set([
@@ -278,7 +279,7 @@ export function createWorkerRuntime({
     if (!(requested.status === "queued" || requested.status === "retrying" || (requested.status === "waiting" && requested.nextRunAt)) || !due)
       throw new WorkerError("task_not_eligible", "The requested task is not eligible to run.", { retryable: false });
     const planned = await next(requested);
-    const approvedDelivery = planned.next_step === "push" && requested.approvalState?.approved === true && !requested.metadata?.steps?.[requested.currentStep];
+    const approvedDelivery = planned.next_step === "push" && requested.approvalState?.approved === true && (!requested.metadata?.steps?.[requested.currentStep]||(requested.metadata.steps[requested.currentStep].type==="push"&&Boolean(requested.metadata?.approvedDeliveryRuntime)));
     const requiredCapability = requested.metadata?.requiredCapability || STEP_CAPABILITIES[planned.next_step] || planned.required_capability;
     if (!requiredCapability || !capabilities.includes(requiredCapability))
       throw new WorkerError("capability_mismatch", "This worker cannot execute the requested task step.", { retryable: false });
@@ -307,11 +308,12 @@ export function createWorkerRuntime({
     const plan = await next(task),
       type = plan.next_step,
       capability = STEP_CAPABILITIES[type] || plan.required_capability;
-    const approvedDelivery = type === "push" && task.approvalState?.approved === true && !task.metadata?.steps?.[task.currentStep];
+    const approvedDelivery = type === "push" && task.approvalState?.approved === true && (!task.metadata?.steps?.[task.currentStep]||(task.metadata.steps[task.currentStep].type==="push"&&Boolean(task.metadata?.approvedDeliveryRuntime)));
     if (!approvedDelivery && activeContinuationExceeded(task))
       return stop(task, "failed", "max_steps_reached");
     const deliveryRuntime=approvedDelivery&&task.metadata?.approvedDeliveryRuntime,
-      deliveryRuntimeValid=Boolean(deliveryRuntime&&deliveryRuntime.recoveryClass===HISTORICAL_APPROVED_DELIVERY_RUNTIME.recoveryClass&&deliveryRuntime.taskId===task.id&&deliveryRuntime.approvalId===task.approvalState?.approvalId&&deliveryRuntime.approvedStateVersion===task.approvalState?.approvedStateVersion&&deliveryRuntime.deliveryStateVersion===task.approvalState?.deliveryStateVersion&&deliveryRuntime.repository===approvedRepository&&deliveryRuntime.branch===task.branch&&deliveryRuntime.commitSha===task.currentCommit&&deliveryRuntime.reviewStepId===`${task.currentStep}:review_commit`&&deliveryRuntime.deliveryStepId===`${task.currentStep+1}:push`&&deliveryRuntime.maxAdditionalDeliverySteps===1&&deliveryRuntime.consumed!==true&&new Date(deliveryRuntime.deadline)>clock());
+      deliveryRuntimeClassValid=deliveryRuntime?.recoveryClass===HISTORICAL_APPROVED_DELIVERY_RUNTIME.recoveryClass||deliveryRuntime?.recoveryClass===APPROVAL_CONTRACT_DELIVERY_RUNTIME||deliveryRuntime?.recoveryClass==="historical_v288_approval_contract_delivery_runtime_recovery",
+      deliveryRuntimeValid=Boolean(deliveryRuntime&&deliveryRuntimeClassValid&&deliveryRuntime.taskId===task.id&&deliveryRuntime.approvalId===task.approvalState?.approvalId&&deliveryRuntime.approvedStateVersion===task.approvalState?.approvedStateVersion&&deliveryRuntime.deliveryStateVersion===task.approvalState?.deliveryStateVersion&&deliveryRuntime.repository===approvedRepository&&deliveryRuntime.branch===task.branch&&deliveryRuntime.commitSha===task.currentCommit&&deliveryRuntime.reviewStepId===`${task.currentStep}:review_commit`&&deliveryRuntime.deliveryStepId===`${task.currentStep+1}:push`&&deliveryRuntime.maxAdditionalDeliverySteps===1&&deliveryRuntime.consumed!==true&&new Date(deliveryRuntime.deadline)>clock());
     if (taskRuntimeWindow(task,clock()).expired&&!deliveryRuntimeValid)
       return stop(task, "expired", "max_runtime_reached");
     if (!capability) return stop(task, "failed", "invalid_step_type");
@@ -615,11 +617,13 @@ export function createWorkerRuntime({
         "Task state changed after approval.",
         { retryable: false },
       );
+    const deliveryStateVersion=task.stateVersion+1,startedAt=iso(clock),deadline=iso(clock,5*60000),approvedDeliveryRuntime=exactSelfDevelopment?{recoveryClass:APPROVAL_CONTRACT_DELIVERY_RUNTIME,taskId:task.id,approvalId:pending.approvalId,approvedStateVersion:task.stateVersion,deliveryStateVersion,repository:approvedRepository,branch:task.branch,commitSha:task.currentCommit,reviewStepId:`${task.currentStep}:review_commit`,deliveryStepId:`${task.currentStep+1}:push`,maxAdditionalDeliverySteps:1,runtimeMinutes:5,startedAt,deadline,consumed:false}:null;
     return storage.updateAutonomyTask(task.id, ownerId, {
       status: "queued",
-      nextRunAt: iso(clock),
+      nextRunAt: startedAt,
       blockedReason: null,
-      approvalState: { ...pending, approved: true, deliveryStateVersion: task.stateVersion+1 },
+      approvalState: { ...pending, approved: true, deliveryStateVersion },
+      ...(approvedDeliveryRuntime?{metadata:{...task.metadata,approvedDeliveryRuntime}}:{}),
     });
   }
   async function recoverApprovedDeliveryMaxSteps(taskId,input){

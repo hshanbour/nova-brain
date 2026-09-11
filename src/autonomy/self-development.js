@@ -62,6 +62,20 @@ const HISTORICAL_DELIVERY_REPOSITORY_HISTORY_KEYS = Object.freeze([
   "approvedDeliveryRuntimeRecoveryHistory",
   "approvedDeliveryHandoffRuntimeRecoveryHistory",
 ]);
+const HISTORICAL_V288_APPROVAL_CONTRACT_DELIVERY = Object.freeze({
+  recoveryClass: "historical_v288_approval_contract_delivery_runtime_recovery",
+  taskId: "selfdev_10721df97b8cbc63c70d4171f6f4a440",
+  fromStateVersion: 288,
+  currentStep: 310,
+  approvalId: "b624260c-4cf2-4d4a-8e52-bf0efdede8dc",
+  commitSha: "911c1bc472e6017fac65146dd14298966a11c26f",
+  firstParentSha: "c60e7dd036b8faa6ff655ec8eb0b702a7f671d20",
+  secondParentSha: "5818ce4a8b0eb13285971cfcede009c7ae0d5aad",
+  repository: REPOSITORY,
+  branch: BRANCH,
+  runtimeMinutes: 5,
+  maxAdditionalDeliverySteps: 1,
+});
 export class SelfDevelopmentError extends Error {
   constructor(code, message, statusCode = 409, safeDiagnostics) {
     super(message);
@@ -2604,6 +2618,23 @@ export function createSelfDevelopmentService({
     const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"waiting_for_worker",currentStep:base,currentPhase:"integrate_commit",nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,blockedReason:"Waiting for deterministic reviewed integration.",approvalState:null,metadata,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during integration recovery.");
     await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_diverged_delivery_integration_recovered",status:"waiting_for_worker",summary:"The divergent approved delivery was retired and a deterministic integration review continuation opened.",metadata:{taskId:current.id,...record}});return{task:updated,recovery:record,idempotent:false};
   }
+  async function recoverApprovedContractDeliveryRuntime(taskId,input){
+    const expected=HISTORICAL_V288_APPROVAL_CONTRACT_DELIVERY;
+    if(!input||Object.keys(input).some(key=>key!=="expectedVersion")||input.expectedVersion!==expected.fromStateVersion)throw new SelfDevelopmentError("approval_contract_delivery_runtime_recovery_invalid","The exact historical state version is required.",400);
+    const current=await runtime.get(taskId);if(!current||current.taskType!=="self_development")throw new SelfDevelopmentError("task_not_found","Self-development task not found.",404);
+    const prior=current.metadata?.approvalContractDeliveryRuntimeRecoveryHistory?.find(item=>item.fromStateVersion===input.expectedVersion);
+    if(prior){if(current.stateVersion===prior.toStateVersion)return{task:current,recovery:prior,idempotent:true};throw new SelfDevelopmentError("version_conflict","The exact approval-contract runtime recovery was already superseded.");}
+    if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before approval-contract runtime recovery.");
+    const steps=await runtime.steps(current.id),approval=await storage.getApproval(expected.approvalId,ownerId),state=current.approvalState,review=steps.find(step=>step.stepId==="310:review_commit"),integration=steps.find(step=>step.stepId==="309:integrate_commit"),push=steps.find(step=>step.stepId==="311:push"),planned=current.metadata?.steps?.[current.currentStep],reviewResult=review?.result||{},integrationResult=integration?.result||{};
+    const exact=current.id===expected.taskId&&current.status==="queued"&&current.currentStep===expected.currentStep&&current.currentCommit===expected.commitSha&&current.branch===expected.branch&&current.metadata?.selfDevelopment?.repository===expected.repository&&!current.leaseOwner&&!current.leaseToken&&!current.metadata?.localHandoff&&!current.metadata?.approvedDeliveryRuntime&&state?.approvalId===expected.approvalId&&state?.approved===true&&state?.bindingSource==="approval_contract"&&state?.approvedStateVersion===287&&state?.deliveryStateVersion===288&&state?.repository===expected.repository&&state?.branch===expected.branch&&state?.commitSha===expected.commitSha&&state?.stepId==="311:push"&&approval?.id===expected.approvalId&&approval.status==="approved"&&approval.tool==="git_push"&&approval.runId===current.id&&approval.arguments?.repository===expected.repository&&approval.arguments?.branch===expected.branch&&approval.arguments?.commitSha===expected.commitSha&&approval.arguments?.approvedStateVersion===287&&planned?.type==="push"&&planned.input?.tool==="git_push"&&!push&&review?.status==="completed"&&reviewResult.commitSha===expected.commitSha&&reviewResult.firstParentSha===expected.firstParentSha&&reviewResult.secondParentSha===expected.secondParentSha&&integration?.status==="completed"&&integrationResult.commitSha===expected.commitSha&&Array.isArray(integrationResult.parents)&&integrationResult.parents.length===2&&integrationResult.parents[0]===expected.firstParentSha&&integrationResult.parents[1]===expected.secondParentSha&&!steps.some(step=>Number.parseInt(step.stepId,10)>expected.currentStep)&&!steps.some(step=>step.stepType==="push"&&step.status==="completed")&&!steps.some(step=>step.stepType==="deploy_preview"&&step.status==="completed");
+    if(!exact)throw new SelfDevelopmentError("approval_contract_delivery_runtime_recovery_precondition_failed","Only the exact approved, unclaimed v288 integration delivery may receive a compatibility runtime.");
+    if(!verifyRemote)throw new SelfDevelopmentError("approval_contract_delivery_runtime_verification_unavailable","Exact remote-tip verification is required.",503);
+    const remote=await verifyRemote({repository:expected.repository,branch:expected.branch,requiredAncestors:[expected.firstParentSha]});
+    if(remote?.currentTip!==expected.firstParentSha||remote?.ancestors?.[expected.firstParentSha]!==true)throw new SelfDevelopmentError("approval_contract_delivery_runtime_remote_changed","The target feature branch changed before delivery runtime recovery.");
+    const now=clock().toISOString(),toStateVersion=current.stateVersion+1,deadline=new Date(new Date(now).getTime()+expected.runtimeMinutes*60000).toISOString(),record={recoveryClass:expected.recoveryClass,fromStateVersion:current.stateVersion,toStateVersion,taskId:current.id,approvalId:expected.approvalId,approvedStateVersion:state.approvedStateVersion,deliveryStateVersion:toStateVersion,repository:expected.repository,branch:expected.branch,commitSha:expected.commitSha,firstParentSha:expected.firstParentSha,secondParentSha:expected.secondParentSha,reviewStepId:"310:review_commit",deliveryStepId:"311:push",maxAdditionalDeliverySteps:expected.maxAdditionalDeliverySteps,runtimeMinutes:expected.runtimeMinutes,startedAt:now,deadline,consumed:false},approvalState={...state,deliveryStateVersion:toStateVersion},metadata={...current.metadata,approvedDeliveryRuntime:record,approvalContractDeliveryRuntimeRecoveryHistory:[...(current.metadata?.approvalContractDeliveryRuntimeRecoveryHistory||[]),record]};
+    const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",nextRunAt:now,errorCode:null,blockedReason:null,approvalState,metadata},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during approval-contract runtime recovery.");
+    await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"approval_contract_delivery_runtime_recovered",status:"queued",summary:"The exact approved integration delivery received one bounded runtime window.",metadata:{taskId:current.id,...record}});return{task:updated,recovery:record,idempotent:false};
+  }
   return Object.freeze({
     structure,
     plan,
@@ -2617,6 +2648,7 @@ export function createSelfDevelopmentService({
     recoverTestRunnerInfrastructure,
     resumeFullTestContinuationRuntime,
     recoverDivergedApprovedDeliveryIntegration,
+    recoverApprovedContractDeliveryRuntime,
     replanDiscoveryOnly,
     recoverImplementationPlan,
     recoverImplementationSchema,
