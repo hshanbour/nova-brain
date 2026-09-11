@@ -35,6 +35,27 @@ const LEGACY_TASK_DIFF_EVIDENCE = Object.freeze({
     targetPath: "test/voice-input.test.js",
   }),
 });
+const HISTORICAL_DIVERGED_APPROVED_DELIVERY = Object.freeze({
+  recoveryClass: "historical_diverged_approved_delivery_integration_recovery",
+  taskId: "selfdev_10721df97b8cbc63c70d4171f6f4a440",
+  fromStateVersion: 280,
+  currentStep: 308,
+  failedStepId: "309:push",
+  approvalId: "fb4e62f7-9189-4151-ac11-c620e934d3aa",
+  minimumFirstParentSha: "523386be918a4072e7990f559e6870f5c652498a",
+  secondParentSha: "5818ce4a8b0eb13285971cfcede009c7ae0d5aad",
+  mergeBaseSha: "e8fe14200c1cd2060aca9328b38036b771be6cba",
+  reviewHash: "f1ed0eddac728d408160c564c0944cc506630d1de2da611e980672684c61dd10",
+  allowedPaths: Object.freeze([
+    "assets/voice-input.js",
+    "test/composer-dictation.test.js",
+    "test/voice-input.test.js",
+  ]),
+  repository: REPOSITORY,
+  branch: BRANCH,
+  runtimeMinutes: 10,
+  maxContinuationSteps: 3,
+});
 export class SelfDevelopmentError extends Error {
   constructor(code, message, statusCode = 409, safeDiagnostics) {
     super(message);
@@ -2557,6 +2578,26 @@ export function createSelfDevelopmentService({
     const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"waiting_for_worker",nextRunAt:now,blockedReason:null,errorCode:null,metadata},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during continuation runtime repair.");
     await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_continuation_runtime_resumed",status:"waiting_for_worker",summary:"A fresh bounded runtime window was attached to the exact recovered continuation.",metadata:{taskId:current.id,...record}});return{task:updated,idempotent:false,runtimeWindow};
   }
+  async function recoverDivergedApprovedDeliveryIntegration(taskId,input){
+    const expected=HISTORICAL_DIVERGED_APPROVED_DELIVERY;
+    if(!input||Object.keys(input).some(key=>key!=="expectedVersion")||input.expectedVersion!==expected.fromStateVersion)throw new SelfDevelopmentError("diverged_delivery_integration_recovery_invalid","The exact historical state version is required.",400);
+    const current=await runtime.get(taskId);if(!current||current.taskType!=="self_development")throw new SelfDevelopmentError("task_not_found","Self-development task not found.",404);
+    const prior=current.metadata?.divergedApprovedDeliveryIntegrationRecoveryHistory?.find(item=>item.fromStateVersion===input.expectedVersion);if(prior)return{task:current,recovery:prior,idempotent:true};
+    if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before integration recovery.");
+    const steps=await runtime.steps(current.id),approval=await storage.getApproval(expected.approvalId,ownerId),failed=steps.find(step=>step.stepId===expected.failedStepId),review=steps.find(step=>step.stepId===`${expected.currentStep}:review_commit`),reviewed=review?.result?.reviewedChangeSet,state=current.approvalState,runtimeState=current.metadata?.approvedDeliveryRuntime,paths=[...(reviewed?.allowedPaths||[])].map(safePath).sort(),expectedPaths=[...expected.allowedPaths].sort(),completedPush=steps.some(step=>step.stepType==="push"&&step.status==="completed"),laterStep=steps.some(step=>(stepOrdinal(step)||0)>expected.currentStep+1),approvalArgs=approval?.arguments||{};
+    if(current.id!==expected.taskId||current.status!=="failed"||current.errorCode!=="push_failed"||current.stateVersion!==expected.fromStateVersion||current.currentStep!==expected.currentStep||current.currentCommit!==expected.secondParentSha||current.branch!==expected.branch||current.metadata?.selfDevelopment?.repository!==expected.repository||current.leaseOwner||current.leaseToken||failed?.stepType!=="push"||failed?.status!=="failed"||failed?.errorCode!=="push_failed"||failed?.attempt!==2||failed?.result?.message!=="Public push failed."||laterStep||completedPush||state?.approvalId!==expected.approvalId||state?.approved!==true||state?.commitSha!==expected.secondParentSha||state?.branch!==expected.branch||approval?.status!=="approved"||approval?.tool!=="git_push"||approvalArgs.repository!==expected.repository||approvalArgs.branch!==expected.branch||approvalArgs.commitSha!==expected.secondParentSha||runtimeState?.consumed===true||review?.status!=="completed"||review?.result?.commitSha!==expected.secondParentSha||reviewed?.commitSha!==expected.secondParentSha||reviewed?.reviewHash!==expected.reviewHash||paths.join("|")!==expectedPaths.join("|")||!Array.isArray(reviewed?.entries)||reviewed.entries.length!==expectedPaths.length||reviewed.entries.some(entry=>!expectedPaths.includes(safePath(entry.path))||entry.status!=="committed"||!SHA.test(entry.contentHash||"")))throw new SelfDevelopmentError("diverged_delivery_integration_recovery_precondition_failed","Only the exact unconsumed divergent approved delivery may enter integration review.");
+    if(!verifyRemote)throw new SelfDevelopmentError("diverged_delivery_integration_verification_unavailable","Exact remote-tip verification is required.",503);
+    const remote=await verifyRemote({repository:expected.repository,branch:expected.branch,requiredAncestors:[expected.minimumFirstParentSha]}),firstParentSha=remote?.currentTip;
+    if(!SHA.test(firstParentSha||"")||remote?.ancestors?.[expected.minimumFirstParentSha]!==true||firstParentSha===expected.secondParentSha)throw new SelfDevelopmentError("diverged_delivery_integration_remote_changed","The feature branch tip is not a verified descendant of the approved integration-recovery infrastructure.");
+    const base=current.metadata.steps.length;if(base!==expected.currentStep)throw new SelfDevelopmentError("diverged_delivery_integration_history_changed","The immutable task plan no longer ends at the reviewed boundary.");
+    const continuation=[
+      {type:"integrate_commit",input:{tool:"git_integrate_reviewed_commit",arguments:{branch:expected.branch,firstParentSha,secondParentSha:expected.secondParentSha,mergeBaseSha:expected.mergeBaseSha,message:"Integrate reviewed Nova composer change",paths:expected.allowedPaths,reviewedChangeSet:reviewed}},idempotencyIdentity:`integration:${firstParentSha}:${expected.secondParentSha}`},
+      {type:"review_commit",input:{tool:"repo_review_commit",arguments:{commitSha:"$CURRENT_COMMIT",firstParentSha,secondParentSha:expected.secondParentSha,paths:expected.allowedPaths}},idempotencyIdentity:`integration-review:${firstParentSha}:${expected.secondParentSha}`},
+      {type:"push",input:{tool:"git_push",arguments:{branch:expected.branch,commitSha:"$CURRENT_COMMIT"}},idempotencyIdentity:`integration-push:${firstParentSha}:${expected.secondParentSha}`},
+    ],now=clock().toISOString(),activeContinuation=createActiveContinuation({task:current,startStep:base,plannedSteps:expected.maxContinuationSteps,repairLimit:0,recoveryClass:expected.recoveryClass,runtimeStartedAt:now,runtimeMinutes:expected.runtimeMinutes}),record={recoveryClass:expected.recoveryClass,fromStateVersion:current.stateVersion,toStateVersion:current.stateVersion+1,taskId:current.id,supersededApprovalId:expected.approvalId,supersededApprovalCommitSha:expected.secondParentSha,oldApprovalConsumed:false,firstParentSha,minimumFirstParentSha:expected.minimumFirstParentSha,secondParentSha:expected.secondParentSha,mergeBaseSha:expected.mergeBaseSha,reviewHash:expected.reviewHash,allowedPaths:expected.allowedPaths,maxContinuationSteps:expected.maxContinuationSteps,runtimeMinutes:expected.runtimeMinutes,recoveredAt:now},metadata={...current.metadata,steps:[...current.metadata.steps,...continuation],autoDispatch:true,requiredCapability:"repo_mutate_local",approvedDeliveryRuntime:null,activeContinuation,continuationHistory:[...(current.metadata?.continuationHistory||[]),activeContinuation],supersededDeliveryApproval:{approvalId:expected.approvalId,commitSha:expected.secondParentSha,reason:"branch_divergence_requires_integration_review",supersededAt:now},divergedApprovedDeliveryIntegrationRecoveryHistory:[...(current.metadata?.divergedApprovedDeliveryIntegrationRecoveryHistory||[]),record]};
+    const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"waiting_for_worker",currentStep:base,currentPhase:"integrate_commit",nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,blockedReason:"Waiting for deterministic reviewed integration.",approvalState:null,metadata,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during integration recovery.");
+    await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_diverged_delivery_integration_recovered",status:"waiting_for_worker",summary:"The divergent approved delivery was retired and a deterministic integration review continuation opened.",metadata:{taskId:current.id,...record}});return{task:updated,recovery:record,idempotent:false};
+  }
   return Object.freeze({
     structure,
     plan,
@@ -2569,6 +2610,7 @@ export function createSelfDevelopmentService({
     recoverFullTestFailure,
     recoverTestRunnerInfrastructure,
     resumeFullTestContinuationRuntime,
+    recoverDivergedApprovedDeliveryIntegration,
     replanDiscoveryOnly,
     recoverImplementationPlan,
     recoverImplementationSchema,
