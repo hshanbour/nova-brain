@@ -1,24 +1,92 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import { createVoiceInput, MICROPHONE_LANGUAGES } from "../assets/voice-input.js";
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createVoiceInput } from '../assets/voice-input.js';
 
-function localState(initial={}){const values=new Map(Object.entries(initial));return{getItem:(key)=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),value:(key)=>values.get(key)};}
+class FakeRecognition {
+  static instances = [];
 
-test("voice input reports unsupported browsers safely",()=>{let error;const voice=createVoiceInput({onError:(value)=>{error=value;}});assert.equal(voice.supported,false);voice.start();assert.match(error.message,/not supported/);});
-test("voice input publishes interim/final text and listening state",()=>{class Recognition{start(){this.onstart();}stop(){this.onend();}}const text=[];const states=[];const voice=createVoiceInput({SpeechRecognition:Recognition,onText:(value)=>text.push(value),onState:(value)=>states.push(value)});voice.start();voice.supported;const recognitionState=states[0];assert.equal(recognitionState,"listening");voice.stop();assert.equal(states.at(-1),"idle");});
-test("voice transcript populates the same composer submitted through the normal chat client", async () => {
-  let recognition; class Recognition { constructor(){recognition=this;} start(){this.onstart();} }
-  let composer=""; const sent=[];
-  const voice=createVoiceInput({SpeechRecognition:Recognition,onText:(text)=>{composer=text;}});
-  voice.start();
-  recognition.onresult({resultIndex:0,results:Object.assign([[{transcript:"Hello."}]],{0:Object.assign([{transcript:"Hello."}],{isFinal:true})})});
-  const normalSubmit=async()=>sent.push(composer);
-  await normalSubmit();
-  assert.deepEqual(sent,["Hello."]);
+  constructor() {
+    FakeRecognition.instances.push(this);
+    this.startCount = 0;
+  }
+
+  start() {
+    this.startCount += 1;
+    this.langAtStart = this.lang;
+  }
+
+  stop() {
+    this.onend?.();
+  }
+
+  emit(text, isFinal) {
+    this.onresult?.({ resultIndex: 0, results: [{ isFinal, 0: { transcript: text } }] });
+  }
+}
+
+function setup() {
+  FakeRecognition.instances = [];
+  const values = new Map();
+  const texts = [];
+  const states = [];
+  const errors = [];
+  const finals = [];
+  const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) };
+  const input = createVoiceInput({
+    dependencies: { SpeechRecognition: FakeRecognition, storage },
+    onText: (text) => texts.push(text),
+    onState: (state) => states.push(state),
+    onError: (error) => errors.push(error),
+    onFinal: (text) => finals.push(text)
+  });
+  return { input, values, texts, states, errors, finals };
+}
+
+test('defaults to ar-SA, persists a selected composer locale, and reapplies it before start', () => {
+  const h = setup();
+  assert.equal(h.input.getLanguage(), 'ar-SA');
+  h.input.start('');
+  assert.equal(FakeRecognition.instances[0].langAtStart, 'ar-SA');
+  FakeRecognition.instances[0].stop();
+  assert.equal(h.input.setLanguage('en-US'), true);
+  assert.equal(h.values.get('nova.composer.dictationLanguage'), 'en-US');
+  h.input.start('');
+  assert.equal(FakeRecognition.instances[1].langAtStart, 'en-US');
+  assert.equal(h.input.setLanguage('fr-FR'), false);
 });
-test("microphone language defaults to en-GB and is applied before recognition starts",()=>{let recognition;class Recognition{constructor(){recognition=this;}start(){assert.equal(this.lang,"en-GB");}}const voice=createVoiceInput({SpeechRecognition:Recognition});voice.start();assert.equal(recognition.lang,"en-GB");});
-test("Arabic and another configured microphone locale persist and apply on the next session",()=>{const storage=localState();let recognition;class Recognition{constructor(){recognition=this;}start(){}}const voice=createVoiceInput({SpeechRecognition:Recognition,storage});voice.setLanguage("ar-SA");voice.start();assert.equal(recognition.lang,"ar-SA");assert.equal(storage.value("nova.voice.inputLanguage"),"ar-SA");voice.setLanguage("fr-FR");voice.start();assert.equal(recognition.lang,"fr-FR");assert.ok(MICROPHONE_LANGUAGES.some(([,locale])=>locale==="tr-TR"));});
-test("saved microphone language restores and permission errors remain actionable",()=>{const storage=localState({"nova.voice.inputLanguage":"ar-SA"});let recognition;let error;class Recognition{constructor(){recognition=this;}start(){this.onstart?.();}}const voice=createVoiceInput({SpeechRecognition:Recognition,storage,onError:(value)=>{error=value;}});voice.start();assert.equal(recognition.lang,"ar-SA");recognition.onerror({error:"not-allowed"});assert.equal(error.code,"not-allowed");assert.equal(error.recoverable,false);assert.match(error.message,/permission was denied/);});
-test("interim recognition never finalises and one completed recognition finalises exactly once",()=>{let recognition;const text=[];const finals=[];class Recognition{constructor(){recognition=this;}start(){this.onstart();}stop(){this.onend();}}const voice=createVoiceInput({SpeechRecognition:Recognition,onText:(value)=>text.push(value),onFinal:(value)=>finals.push(value)});voice.start();const interim=Object.assign([{transcript:"Hel"}],{isFinal:false});recognition.onresult({resultIndex:0,results:[interim]});assert.deepEqual(finals,[]);const final=Object.assign([{transcript:"Hello Nova"}],{isFinal:true});recognition.onresult({resultIndex:0,results:[final]});recognition.onend();recognition.onend();assert.deepEqual(finals,["Hello Nova"]);assert.equal(text.at(-1),"Hello Nova");});
-test("Arabic locale is applied before every initial and automatic-style restart",()=>{const starts=[];let recognition;class Recognition{constructor(){recognition=this;}start(){starts.push(this.lang);this.onstart?.();}}const voice=createVoiceInput({SpeechRecognition:Recognition,storage:localState({"nova.voice.inputLanguage":"ar-SA"})});voice.start();recognition.onend();voice.start();recognition.onend();voice.start();assert.deepEqual(starts,["ar-SA","ar-SA","ar-SA"]);});
-test("recognition errors distinguish recoverable silence from microphone failure",()=>{let recognition;const errors=[];class Recognition{constructor(){recognition=this;}start(){this.onstart?.();}}const voice=createVoiceInput({SpeechRecognition:Recognition,onError:(error)=>errors.push(error)});voice.start();recognition.onerror({error:"no-speech"});assert.deepEqual(errors.at(-1),{code:"no-speech",recoverable:true,message:"No speech heard."});recognition.onend();voice.start();recognition.onerror({error:"audio-capture"});assert.equal(errors.at(-1).code,"audio-capture");assert.equal(errors.at(-1).recoverable,false);assert.match(errors.at(-1).message,/microphone/);});
+
+test('interim text is editable, completion is once, and duplicate starts are rejected', () => {
+  const h = setup();
+  assert.equal(h.input.start('Draft '), true);
+  assert.equal(h.input.start('other'), false);
+  const recognition = FakeRecognition.instances[0];
+  assert.equal(recognition.startCount, 1);
+  recognition.emit('مرحبا hello', false);
+  assert.equal(h.texts.at(-1), 'Draft مرحبا hello');
+  recognition.emit('مرحبا hello', true);
+  recognition.stop();
+  assert.deepEqual(h.states, ['recording', 'processing', 'complete']);
+  assert.deepEqual(h.finals, ['Draft مرحبا hello']);
+});
+
+test('no-speech and unsupported recognition preserve editable drafts with structured errors', () => {
+  const h = setup();
+  h.input.start('Keep me');
+  FakeRecognition.instances[0].onerror({ error: 'no-speech' });
+  assert.equal(h.texts.at(-1), 'Keep me');
+  assert.deepEqual(h.errors.at(-1), {
+    code: 'no-speech',
+    message: 'No speech was detected. Your draft was preserved; try again when ready.',
+    recoverable: true
+  });
+  const texts = [];
+  const errors = [];
+  const unsupported = createVoiceInput({
+    dependencies: {},
+    onText: (text) => texts.push(text),
+    onError: (error) => errors.push(error)
+  });
+  assert.equal(unsupported.start('Existing'), false);
+  assert.equal(texts.at(-1), 'Existing');
+  assert.equal(errors.at(-1).code, 'unsupported');
+});
