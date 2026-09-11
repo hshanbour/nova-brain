@@ -62,6 +62,7 @@ async function fixture({
   verifyRemote,
   compareRemoteEvidence,
   verifyDeployment,
+  resolvePathState,
   currentCommit = SHA,
 } = {}) {
   let now = new Date("2026-01-01T00:00:00Z");
@@ -113,6 +114,7 @@ async function fixture({
     verifyRemote,
     compareRemoteEvidence,
     verifyDeployment,
+    resolvePathState,
   });
   return {
     storage,
@@ -924,6 +926,45 @@ test("replan requires every candidate in durable discovery evidence", async () =
     f.service.replanDiscoveryOnly(f.task.id, {
       ...f.input,
       candidatePaths: ["assets/console.js", "test/self-development.test.js"],
+    }),
+    "replan_scope_not_discovered",
+  );
+});
+test("replan accepts inventory-truncated candidates only when the exact bound commit proves they exist", async () => {
+  const f = await completedDiscoveryFixture();
+  f.service = createSelfDevelopmentService({
+    runtime: f.runtime,
+    storage: f.storage,
+    ownerId: OWNER,
+    currentCommit: SHA,
+    resolvePathState: async (path, commitSha) => ({
+      existsInCommit:
+        commitSha === SHA && path === "test/console-client.test.js",
+    }),
+  });
+  const result = await f.service.replanDiscoveryOnly(f.task.id, {
+    ...f.input,
+    candidatePaths: [discoveredPath, "test/console-client.test.js"],
+  });
+  assert.equal(result.task.status, "queued");
+  assert.deepEqual(
+    result.task.metadata.steps.slice(4, 6).map((step) => step.input.arguments.path),
+    [discoveredPath, "test/console-client.test.js"],
+  );
+});
+test("replan still rejects an inventory-truncated candidate absent from the exact bound commit", async () => {
+  const f = await completedDiscoveryFixture();
+  f.service = createSelfDevelopmentService({
+    runtime: f.runtime,
+    storage: f.storage,
+    ownerId: OWNER,
+    currentCommit: SHA,
+    resolvePathState: async () => ({ existsInCommit: false }),
+  });
+  await rejects(
+    f.service.replanDiscoveryOnly(f.task.id, {
+      ...f.input,
+      candidatePaths: [discoveredPath, "test/console-client.test.js"],
     }),
     "replan_scope_not_discovered",
   );

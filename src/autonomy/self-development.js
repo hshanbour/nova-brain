@@ -802,12 +802,21 @@ export function createSelfDevelopmentService({
         ),
     );
     for (const path of candidates) {
-      if (!inventory.has(path))
-        throw new SelfDevelopmentError(
-          "replan_scope_not_discovered",
-          "Every candidate path must be present in durable repository discovery evidence.",
-          400,
-        );
+      if (!inventory.has(path)) {
+        if (typeof resolvePathState !== "function")
+          throw new SelfDevelopmentError(
+            "replan_scope_not_discovered",
+            "Every candidate path must be present in durable repository discovery evidence.",
+            400,
+          );
+        const pathState = await resolvePathState(path, current.currentCommit);
+        if (!pathState?.existsInCommit)
+          throw new SelfDevelopmentError(
+            "replan_scope_not_discovered",
+            "Every candidate path must be present in durable repository discovery evidence or the exact bound commit.",
+            400,
+          );
+      }
       if (REPLAN_PROTECTED.test(path))
         throw new SelfDevelopmentError(
           "replan_protected_scope",
