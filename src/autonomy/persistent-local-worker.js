@@ -3,7 +3,7 @@ import {createToolRegistry} from "../tools/tool-registry.js";
 import {registerHandsTools} from "../tools/hands-runtime.js";
 import {canonicalSchemaDiagnostic,localSchemaDiagnostic} from "./schema-diagnostics.js";
 
-const ALLOWED=new Set(["repo_apply_patch","test_run","test_run_full","repo_diff","repo_review_commit","git_commit"]);
+const ALLOWED=new Set(["repo_apply_patch","test_run","test_run_full","repo_diff","repo_review_commit","git_commit","git_integrate_reviewed_commit"]);
 const SHA=/^[a-f0-9]{40}$/;
 function exactApprovedDelivery(task,job,{repository,branch}){
   const binding=job?.approvedDelivery;

@@ -11,6 +11,7 @@ const LOCAL_STEPS=Object.freeze({
   inspect_diff:{capability:"repo_read_remote",tool:"repo_diff"},
   review_commit:{capability:"repo_read_remote",tool:"repo_review_commit"},
   commit:{capability:"repo_mutate_local",tool:"git_commit",lock:true},
+  integrate_commit:{capability:"repo_mutate_local",tool:"git_integrate_reviewed_commit",lock:true},
   push:{capability:"github_write",tool:"git_push",lock:true},
 });
 const SAFE_STATUSES=new Set(["queued","retrying","waiting_for_worker"]);
@@ -84,7 +85,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     if(new Date(handoff.expiresAt)<=clock()){await recover(task,handoff,"local_worker_handoff_expired");throw new HandoffError("handoff_expired","Handoff expired and was safely requeued.");}
     const result=redact(failed?input.error:input.result);if(!result||typeof result!=="object"||Array.isArray(result)||JSON.stringify(result).length>200000)throw new HandoffError("invalid_handoff_result","Structured bounded result is required.",400);
     if(!failed&&result.ok!==true)throw new HandoffError("invalid_handoff_result","Successful result must report ok=true.",400);
-    if(!failed&&handoff.stepType==="commit"&&!/^[a-f0-9]{40}$/.test(result.commitSha||""))throw new HandoffError("invalid_handoff_result","Commit result requires an exact SHA.",400);
+    if(!failed&&["commit","integrate_commit"].includes(handoff.stepType)&&!/^[a-f0-9]{40}$/.test(result.commitSha||""))throw new HandoffError("invalid_handoff_result","Commit result requires an exact SHA.",400);
     if(!failed&&["run_focused_tests","run_full_tests","inspect_diff","review_commit"].includes(handoff.stepType)&&result.exitCode!==0)throw new HandoffError("invalid_handoff_result","Successful local command result requires exitCode 0.",400);
     if(!failed&&handoff.stepType==="review_commit"&&(!result.reviewedChangeSet?.reviewHash||result.commitSha!==task.currentCommit))throw new HandoffError("invalid_handoff_result","Reviewed commit result must bind the exact task commit.",400);
     if(!failed&&handoff.stepType==="apply_patch"){const allowed=new Set((handoff.arguments.files||[]).map(item=>item.path));if(!Array.isArray(result.files)||result.files.some(path=>!allowed.has(path)))throw new HandoffError("invalid_handoff_result","Patch result files do not match the server plan.",400);}

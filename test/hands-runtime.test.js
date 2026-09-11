@@ -225,6 +225,64 @@ test("commit review rejects unreviewed files and accepts the exact immutable com
   }
 });
 
+test("exact integration preserves both parents and only the immutable reviewed change-set", async () => {
+  const f = await fixture();
+  const origin = await mkdtemp(join(tmpdir(), "nova-integration-origin-"));
+  try {
+    const base = (await run("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
+    await writeFile(join(f.root, "alpha.js"), "export const alpha = 2;\n");
+    await run("git", ["add", "alpha.js"], { cwd: f.root });
+    await run("git", ["commit", "-m", "reviewed composer"], { cwd: f.root });
+    const reviewed = (await run("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
+    await run("git", ["init", "--bare"], { cwd: origin });
+    await run("git", ["remote", "set-url", "origin", origin], { cwd: f.root });
+    await run("git", ["branch", "infra", base], { cwd: f.root });
+    await run("git", ["checkout", "infra"], { cwd: f.root });
+    await writeFile(join(f.root, "beta.md"), "infrastructure\n");
+    await run("git", ["add", "beta.md"], { cwd: f.root });
+    await run("git", ["commit", "-m", "infrastructure"], { cwd: f.root });
+    const infrastructure = (await run("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
+    await run("git", ["push", "origin", `${infrastructure}:refs/heads/${BRANCH}`], { cwd: f.root });
+    await run("git", ["checkout", BRANCH], { cwd: f.root });
+    const priorReview = await f.registry.execute("repo_review_commit", { commitSha: reviewed, paths: ["alpha.js"] });
+    const integrated = await f.registry.execute("git_integrate_reviewed_commit", {
+      branch: BRANCH,
+      firstParentSha: infrastructure,
+      secondParentSha: reviewed,
+      mergeBaseSha: base,
+      message: "Integrate immutable reviewed composer change",
+      paths: ["alpha.js"],
+      reviewedChangeSet: priorReview.reviewedChangeSet,
+    });
+    assert.deepEqual((await run("git", ["show", "-s", "--format=%P", integrated.commitSha], { cwd: f.root })).stdout.trim().split(" "), [infrastructure, reviewed]);
+    assert.equal((await run("git", ["show", `${integrated.commitSha}:alpha.js`], { cwd: f.root })).stdout, "export const alpha = 2;\n");
+    assert.equal((await run("git", ["show", `${integrated.commitSha}:beta.md`], { cwd: f.root })).stdout, "infrastructure\n");
+    const review = await f.registry.execute("repo_review_commit", { commitSha: integrated.commitSha, firstParentSha: infrastructure, secondParentSha: reviewed, paths: ["alpha.js"] });
+    assert.equal(review.reviewedChangeSet.firstParentSha, infrastructure);
+    assert.equal(review.reviewedChangeSet.secondParentSha, reviewed);
+    await assert.rejects(() => f.registry.execute("git_integrate_reviewed_commit", { branch: BRANCH, firstParentSha: base, secondParentSha: reviewed, mergeBaseSha: base, message: "stale", paths: ["alpha.js"], reviewedChangeSet: priorReview.reviewedChangeSet }), error => error.code === "remote_tip_changed");
+    await assert.rejects(() => f.registry.execute("git_integrate_reviewed_commit", { branch: BRANCH, firstParentSha: infrastructure, secondParentSha: base, mergeBaseSha: base, message: "wrong second parent", paths: ["alpha.js"], reviewedChangeSet: priorReview.reviewedChangeSet }), error => error.code === "reviewed_binding_invalid");
+  } finally {
+    await f.close();
+    await rm(origin, { recursive: true, force: true });
+  }
+});
+
+test("git push preserves bounded non-fast-forward diagnostics", async () => {
+  const registry = createToolRegistry();
+  registerHandsTools(registry, {
+    root: process.cwd(),
+    environment: { NOVA_BRAIN_DEVELOPMENT_BRANCH: BRANCH },
+    commandRunner: async () => {
+      const error = new Error("rejected");
+      error.code = 1;
+      error.stderr = "! [rejected] reviewed -> feature (non-fast-forward)";
+      throw error;
+    },
+  });
+  await assert.rejects(() => registry.execute("git_push", { branch: BRANCH, commitSha: "a".repeat(40) }), error => error.code === "push_failed" && error.safeDiagnostics.classification === "non_fast_forward" && error.safeDiagnostics.exitCode === 1 && /non-fast-forward/.test(error.safeDiagnostics.stderr));
+});
+
 test("controlled Git subprocesses trust only the exact configured repository path", async () => {
   const calls = [],
     root = process.cwd(),

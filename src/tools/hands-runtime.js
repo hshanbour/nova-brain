@@ -35,6 +35,21 @@ const schema = (properties = {}, required = []) => ({
 const text = { type: "string" };
 const integer = { type: "number" };
 const bool = { type: "boolean" };
+const SHA = /^[a-f0-9]{40}$/;
+const boundedGitFailure = (result) => ({
+  exitCode: result.exitCode,
+  spawnErrorCode: result.spawnErrorCode || null,
+  signal: result.signal || null,
+  classification: /non-fast-forward/i.test(`${result.stdout}\n${result.stderr}`)
+    ? "non_fast_forward"
+    : /rejected/i.test(`${result.stdout}\n${result.stderr}`)
+      ? "rejected"
+      : result.spawnErrorCode
+        ? "git_unavailable"
+        : "git_failed",
+  stdout: String(result.stdout || "").slice(-4_000),
+  stderr: String(result.stderr || "").slice(-4_000),
+});
 function safe(root, input = ".") {
   if (typeof input !== "string" || !input.trim())
     fail("invalid_input", "A repository path is required.");
@@ -654,14 +669,11 @@ export function registerHandsTools(
       name: "repo_review_commit",
       description:
         "Review one exact unpushed commit against an explicit bounded file allowlist.",
-      inputSchema: schema({ commitSha: text, paths: { type: "array" } }, [
-        "commitSha",
-        "paths",
-      ]),
-      async execute({ commitSha, paths }, context) {
+      inputSchema: schema({ commitSha: text, paths: { type: "array" }, firstParentSha: text, secondParentSha: text }, ["commitSha", "paths"]),
+      async execute({ commitSha, paths, firstParentSha, secondParentSha }, context) {
         const started = Date.now();
         if (
-          !/^[a-f0-9]{40}$/.test(commitSha) ||
+          !SHA.test(commitSha) ||
           !Array.isArray(paths) ||
           !paths.length
         )
@@ -675,10 +687,17 @@ export function registerHandsTools(
         ).stdout.trim();
         if (head !== commitSha)
           fail("commit_mismatch", "The exact local commit is unavailable.");
+        if ((firstParentSha || secondParentSha) && (!SHA.test(firstParentSha || "") || !SHA.test(secondParentSha || "")))
+          fail("invalid_input", "Both exact integration parent SHAs are required.");
+        if (firstParentSha) {
+          const parents = (await gitCommand(root, ["show", "-s", "--format=%P", commitSha], { runner: commandRunner })).stdout.trim().split(/\s+/);
+          if (parents.length !== 2 || parents[0] !== firstParentSha || parents[1] !== secondParentSha)
+            fail("integration_parent_mismatch", "Integration commit parents do not match the exact reviewed binding.", { parents });
+        }
         const files = (
           await gitCommand(
             root,
-            ["diff-tree", "--no-commit-id", "--name-only", "-r", commitSha],
+            ["diff", "--name-only", firstParentSha || `${commitSha}^`, commitSha],
             { runner: commandRunner },
           )
         ).stdout
@@ -693,7 +712,7 @@ export function registerHandsTools(
           );
         const numstat = await gitCommand(
           root,
-          ["diff", "--numstat", `${commitSha}^`, commitSha, "--", ...allowed],
+          ["diff", "--numstat", firstParentSha || `${commitSha}^`, commitSha, "--", ...allowed],
           { runner: commandRunner },
         );
         if (
@@ -707,7 +726,7 @@ export function registerHandsTools(
           );
         const shown = await gitCommand(
           root,
-          ["show", "--format=", "--find-renames", commitSha, "--", ...allowed],
+          ["diff", "--find-renames", firstParentSha || `${commitSha}^`, commitSha, "--", ...allowed],
           { runner: commandRunner },
         );
         if (shown.exitCode)
@@ -725,7 +744,7 @@ export function registerHandsTools(
             contentHash: blob.exitCode ? null : blob.stdout.trim(),
           });
         }
-        const manifest = { allowedPaths: allowed, entries, commitSha },
+        const manifest = { allowedPaths: allowed, entries, commitSha, ...(firstParentSha ? { firstParentSha, secondParentSha } : {}) },
           reviewHash = createHash("sha256")
             .update(JSON.stringify(manifest))
             .digest("hex");
@@ -743,6 +762,67 @@ export function registerHandsTools(
           context,
           started,
         );
+      },
+    }),
+  );
+  registry.register(
+    def({
+      name: "git_integrate_reviewed_commit",
+      description: "Create one exact two-parent integration commit from a remote feature tip and an immutable reviewed commit.",
+      capability: "write",
+      riskLevel: RISK_LEVELS.LOW_RISK_WRITE,
+      branchBound: true,
+      autonomous: true,
+      available: !remote,
+      configurationStatus: remote ? "local_runtime_required" : "ready",
+      inputSchema: schema({ branch: text, firstParentSha: text, secondParentSha: text, mergeBaseSha: text, message: text, paths: { type: "array" }, reviewedChangeSet: { type: "object" } }, ["branch", "firstParentSha", "secondParentSha", "mergeBaseSha", "message", "paths", "reviewedChangeSet"]),
+      async execute({ branch: requested, firstParentSha, secondParentSha, mergeBaseSha, message, paths, reviewedChangeSet }, context) {
+        const started = Date.now();
+        if (requested !== approved() || ["main", "master"].includes(requested)) fail("branch_not_allowed", "Integration branch is not approved.");
+        if (![firstParentSha, secondParentSha, mergeBaseSha].every(value => SHA.test(value || "")) || !Array.isArray(paths) || !paths.length)
+          fail("invalid_input", "Exact parents, merge base, and reviewed paths are required.");
+        const allowed = [...new Set(paths)].sort();
+        for (const path of allowed) safe(root, path);
+        const reviewedManifest = reviewedChangeSet && { allowedPaths: reviewedChangeSet.allowedPaths, entries: reviewedChangeSet.entries, commitSha: reviewedChangeSet.commitSha };
+        const reviewedHash = reviewedManifest && createHash("sha256").update(JSON.stringify(reviewedManifest)).digest("hex");
+        const reviewedEntryPaths = Array.isArray(reviewedManifest?.entries) ? reviewedManifest.entries.map(entry => entry.path).sort() : [];
+        if (!reviewedManifest || reviewedChangeSet.reviewHash !== reviewedHash || reviewedManifest.commitSha !== secondParentSha || JSON.stringify(reviewedManifest.allowedPaths) !== JSON.stringify(allowed) || JSON.stringify(reviewedEntryPaths) !== JSON.stringify(allowed))
+          fail("reviewed_binding_invalid", "Second parent must match the exact prior immutable review binding.");
+        for (const entry of reviewedManifest.entries || []) {
+          const blob = await gitCommand(root, ["rev-parse", `${secondParentSha}:${entry.path}`], { runner: commandRunner });
+          if (blob.exitCode || entry.status !== "committed" || entry.contentHash !== blob.stdout.trim()) fail("reviewed_binding_invalid", "Reviewed content binding no longer matches the second parent.", { path: entry.path });
+        }
+        const branchHead = (await gitCommand(root, ["branch", "--show-current"], { runner: commandRunner })).stdout.trim();
+        const localHead = (await gitCommand(root, ["rev-parse", "HEAD"], { runner: commandRunner })).stdout.trim();
+        if (branchHead !== requested || localHead !== secondParentSha) fail("reviewed_commit_mismatch", "Workspace must remain at the exact reviewed commit.");
+        let result = await gitCommand(root, ["fetch", "origin", requested], { runner: commandRunner });
+        if (result.exitCode) fail("integration_fetch_failed", "Remote feature tip could not be verified.", boundedGitFailure(result));
+        const remoteTip = (await gitCommand(root, ["rev-parse", `refs/remotes/origin/${requested}`], { runner: commandRunner })).stdout.trim();
+        if (remoteTip !== firstParentSha) fail("remote_tip_changed", "Remote feature tip changed before integration.", { expected: firstParentSha, actual: remoteTip });
+        const actualBase = (await gitCommand(root, ["merge-base", firstParentSha, secondParentSha], { runner: commandRunner })).stdout.trim();
+        if (actualBase !== mergeBaseSha) fail("merge_base_mismatch", "Integration merge base changed.", { expected: mergeBaseSha, actual: actualBase });
+        const reviewedFiles = (await gitCommand(root, ["diff", "--name-only", mergeBaseSha, secondParentSha], { runner: commandRunner })).stdout.split(/\r?\n/).filter(Boolean).sort();
+        if (JSON.stringify(reviewedFiles) !== JSON.stringify(allowed)) fail("reviewed_change_set_mismatch", "Reviewed commit change-set is outside the exact integration scope.", { files: reviewedFiles });
+        result = await gitCommand(root, ["merge-tree", "--write-tree", firstParentSha, secondParentSha], { runner: commandRunner });
+        if (result.exitCode) fail("integration_conflict", "Exact integration tree has conflicts.", boundedGitFailure(result));
+        const treeSha = result.stdout.split(/\r?\n/).find(line => SHA.test(line.trim()))?.trim();
+        if (!treeSha) fail("integration_tree_invalid", "Git did not produce an exact integration tree.");
+        const integratedFiles = (await gitCommand(root, ["diff", "--name-only", firstParentSha, treeSha], { runner: commandRunner })).stdout.split(/\r?\n/).filter(Boolean).sort();
+        if (JSON.stringify(integratedFiles) !== JSON.stringify(allowed)) fail("integration_scope_violation", "Integration tree contains unrelated changes.", { files: integratedFiles });
+        for (const path of allowed) {
+          const [integrated, reviewed] = await Promise.all([
+            gitCommand(root, ["rev-parse", `${treeSha}:${path}`], { runner: commandRunner }),
+            gitCommand(root, ["rev-parse", `${secondParentSha}:${path}`], { runner: commandRunner }),
+          ]);
+          if (integrated.exitCode || reviewed.exitCode || integrated.stdout.trim() !== reviewed.stdout.trim()) fail("integration_content_mismatch", "Integrated content does not equal the immutable reviewed content.", { path });
+        }
+        const parentTimes = await Promise.all([firstParentSha, secondParentSha].map(sha => gitCommand(root, ["show", "-s", "--format=%ct", sha], { runner: commandRunner })));
+        const timestamp = Math.max(...parentTimes.map(item => Number(item.stdout.trim()))) + 1;
+        const env = { ...environment, GIT_AUTHOR_NAME: "Nova Integration", GIT_AUTHOR_EMAIL: "nova-integration@example.invalid", GIT_COMMITTER_NAME: "Nova Integration", GIT_COMMITTER_EMAIL: "nova-integration@example.invalid", GIT_AUTHOR_DATE: `@${timestamp} +0000`, GIT_COMMITTER_DATE: `@${timestamp} +0000` };
+        result = await gitCommand(root, ["commit-tree", treeSha, "-p", firstParentSha, "-p", secondParentSha, "-m", message], { runner: commandRunner, environment: env });
+        if (result.exitCode) fail("integration_commit_failed", "Deterministic integration commit could not be created.", boundedGitFailure(result));
+        const commitSha = result.stdout.trim();
+        return audit("git_integrate_reviewed_commit", { ok: true, commitSha, branch: requested, firstParentSha, secondParentSha, mergeBaseSha, treeSha, files: allowed }, context, started);
       },
     }),
   );
@@ -1132,7 +1212,7 @@ export function registerHandsTools(
           ["push", "origin", `${commitSha}:refs/heads/${requested}`],
           { runner: commandRunner },
         );
-        if (result.exitCode) fail("push_failed", "Public push failed.");
+        if (result.exitCode) fail("push_failed", "Public push failed.", boundedGitFailure(result));
         return audit(
           "git_push",
           { ok: true, branch: requested, commitSha },

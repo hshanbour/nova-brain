@@ -1,5 +1,5 @@
 const ACTIVE=new Set(["queued","retrying","waiting","waiting_for_worker"]);
-const LOCAL=new Set(["apply_patch","run_focused_tests","run_full_tests","inspect_diff","review_commit","commit"]);
+const LOCAL=new Set(["apply_patch","run_focused_tests","run_full_tests","inspect_diff","review_commit","commit","integrate_commit"]);
 const ordinal=step=>Number.parseInt(step?.stepId,10);
 const HISTORICAL_DELIVERY_RECOVERY="historical_approved_delivery_max_steps_recovery";
 const HISTORICAL_DELIVERY_RUNTIME_RECOVERY="historical_approved_delivery_runtime_recovery";
