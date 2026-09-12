@@ -144,12 +144,13 @@ test("planner and Hands share the canonical versioned patch bridge contract", ()
   assert.deepEqual(Object.keys(patch.inputSchema.properties).sort(),["branch","currentCommit","files","planProvenance"]);
 });
 test("canonical composer-style plan validates before Hands-compatible mutation", async () => {
-  const output=valid();output.files=[{path:"assets/voice-input.js",operation:"replace",content:"new adapter",reason:"bounded composer dictation",intendedChanges:["preserve editable transcription"]},{path:"test/voice-input.test.js",operation:"replace",content:"new focused tests",reason:"focused evidence",intendedChanges:["cover dictation"]}];output.focusedTests=[{path:"test/voice-input.test.js",kind:"existing"}];output.acceptanceMapping=[{criterion:"Composer dictation stays editable",files:["assets/voice-input.js","test/voice-input.test.js"]}];
+  const output=valid();output.files=[{path:"assets/voice-input.js",operation:"replace",content:"export function createVoiceInput() { return { supported: true }; }\n",reason:"bounded composer dictation",intendedChanges:["preserve editable transcription"]},{path:"test/voice-input.test.js",operation:"replace",content:"import test from 'node:test';\ntest('dictation', () => {});\n",reason:"focused evidence",intendedChanges:["cover dictation"]}];output.focusedTests=[{path:"test/voice-input.test.js",kind:"existing"}];output.acceptanceMapping=[{criterion:"Composer dictation stays editable",files:["assets/voice-input.js","test/voice-input.test.js"]}];
   const f=await fixture([output],{discovered:["assets/voice-input.js","test/voice-input.test.js"],reads:[["assets/voice-input.js","old adapter"],["test/voice-input.test.js","old focused tests"]]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:["assets/voice-input.js","test/voice-input.test.js"],currentCommit:SHA});
   assert.deepEqual(result.implementationPlan.focusedTests,[{path:"test/voice-input.test.js",kind:"existing"}]);
   assert.deepEqual(result.implementationPlan.files.map(({path,operation})=>({path,operation})),[{path:"assets/voice-input.js",operation:"replace"},{path:"test/voice-input.test.js",operation:"replace"}]);
   assert.equal(result.implementationPlan.files.every((file)=>typeof file.expectedContent==="string"),true);
 });
+test("instructional replacement prose is rejected and regenerated before mutation",async()=>{const prose=valid();prose.files=[{path:"assets/voice-input.js",operation:"replace",content:"Replace the adapter with valid JavaScript and preserve editable transcription.",reason:"repair",intendedChanges:["repair adapter"]}];prose.focusedTests=[{path:"test/voice-input.test.js",kind:"existing"}];prose.acceptanceMapping=[{criterion:"Works",files:["assets/voice-input.js"]}];const corrected=structuredClone(prose);corrected.files[0].content="export const supported = true;\n";const f=await fixture([prose,corrected],{discovered:["assets/voice-input.js","test/voice-input.test.js"],reads:[["assets/voice-input.js","export const supported = false;\n"],["test/voice-input.test.js","import test from 'node:test';\n"]]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:["assets/voice-input.js","test/voice-input.test.js"],currentCommit:SHA});assert.equal(f.calls,2);assert.match(f.prompts[1].message,/file_0_replacement_script_not_source/);assert.equal(result.implementationPlan.files[0].content,"export const supported = true;\n");});
 test("repair planning includes a relevant previously read failing test as exact evidence",async()=>{
   const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];
   const f=await fixture([output],{discovered:[DOC,TEST,EXTRA],reads:[[DOC,"old doc"],[TEST,"old test"],[EXTRA,"exact failing test"]]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{fingerprint:"f".repeat(64),failedFiles:["test/hands-runtime.test.js",EXTRA]}}),prompt=JSON.parse(f.prompts[0].message.split("\n")[1]);
@@ -244,6 +245,7 @@ test("missing fields, unknown paths, and protected or unread evidence fail close
   );
   const outside = valid();
   outside.files[0].path = "src/unrelated.js";
+  outside.files[0].content = "export const unrelated = true;\n";
   await assert.rejects(
     () =>
       fixture([outside]).then((f) =>
@@ -524,7 +526,7 @@ test("a planned new focused test is create-bound, content-bound, and not evidenc
 test("undiscovered existing path is not mistaken for a safe create target", async () => {
   const path = "test/planner-new.test.js";
   const output = valid();
-  output.files.push({path,operation:"create",content:"unsafe overwrite",reason:"coverage",intendedChanges:["cover"]});
+  output.files.push({path,operation:"create",content:"export const coverage = true;\n",reason:"coverage",intendedChanges:["cover"]});
   output.focusedTests = [{path,kind:"planned_new"}];
   const f = await fixture([output], {discovered:[DOC,TEST], existing:[DOC,TEST,path]});
   await assert.rejects(() => f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}), error => error.code === "operation_conflict" && error.safeDiagnostics.discovered === false && error.safeDiagnostics.requiredAction === "read_before_modify");

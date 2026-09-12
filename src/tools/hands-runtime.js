@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { resolve, relative, sep, dirname, basename, join, delimiter } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import {tmpdir} from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { RISK_LEVELS } from "../policy/action-policy.js";
 import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA } from "../autonomy/self-development-implementation-contract.js";
@@ -10,6 +11,7 @@ import { resolveRepositoryContext } from "./repository-context.js";
 import { createGitExecutor } from "./git-execution.js";
 import {canonicalContentHash,IMPLEMENTATION_PLAN_PROVENANCE_VERSION} from "../autonomy/self-development-plan-lifecycle.js";
 import {parseTestFailure} from "./test-failure-evidence.js";
+import {implementationContentHash,implementationContentIssue,isJavaScriptImplementationPath} from "../autonomy/implementation-content.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -855,10 +857,13 @@ export function registerHandsTools(
             item.content.length > 250_000
           )
             fail("invalid_input", "Invalid replacement content.");
+          const contentIssue=implementationContentIssue(item.path,item.content);
+          if(contentIssue)fail("implementation_content_invalid","Replacement content is not a complete file payload.",{path:item.path,validationCode:contentIssue,contentHash:implementationContentHash(item.content),mutationApplied:false});
         }
       },
       async execute({ files, currentCommit, planProvenance }, context) {
         const started = Date.now();
+        for(const item of files){if(!isJavaScriptImplementationPath(item.path))continue;const syntaxPath=join(tmpdir(),`.nova-${randomUUID()}${item.path.toLowerCase().endsWith(".cjs")?".cjs":".mjs"}`);try{await writeFile(syntaxPath,item.content,"utf8");await exec(process.execPath,["--check",syntaxPath],{maxBuffer:64_000,windowsHide:true});}catch(error){fail("implementation_content_invalid","Replacement JavaScript failed syntax validation.",{path:item.path,validationCode:"javascript_syntax_invalid",contentHash:implementationContentHash(item.content),exitCode:Number.isInteger(error?.code)?error.code:1,mutationApplied:false});}finally{await rm(syntaxPath,{force:true}).catch(()=>{});}}
         if (currentCommit) {
           if (!/^[a-f0-9]{40}$/.test(currentCommit))
             fail("invalid_input", "Invalid bound commit.");

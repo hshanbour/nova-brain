@@ -224,6 +224,7 @@ test("commit review rejects unreviewed files and accepts the exact immutable com
     await f.close();
   }
 });
+test("Hands rejects instructional or syntactically invalid JavaScript before product mutation",async()=>{const f=await fixture();try{const before=await readFile(join(f.root,"alpha.js"),"utf8");for(const content of["Replace the module with a valid implementation.","export const = broken;\n"]){await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,files:[{path:"alpha.js",operation:"replace",expectedContent:before,content}]}),error=>error.code==="implementation_content_invalid"&&error.safeDiagnostics.mutationApplied===false);assert.equal(await readFile(join(f.root,"alpha.js"),"utf8"),before);}const result=await f.registry.execute("repo_apply_patch",{branch:BRANCH,files:[{path:"alpha.js",operation:"replace",expectedContent:before,content:"export const alpha = 2;\n"}]});assert.deepEqual(result.files,["alpha.js"]);}finally{await f.close();}});
 
 test("exact integration preserves both parents and only the immutable reviewed change-set", async () => {
   const f = await fixture();
@@ -340,7 +341,7 @@ test("multi-file replacement validates every precondition before changing any fi
         f.registry.execute("repo_apply_patch", {
           branch: BRANCH,
           files: [
-            { path: "alpha.js", expectedContent: "stale", content: "bad" },
+            { path: "alpha.js", expectedContent: "stale", content: "export const alpha = 3;\n" },
             { path: "beta.md", content: "bad" },
           ],
         }),
@@ -361,23 +362,23 @@ test("task-bound patch requires the exact clean local base revision", async () =
   const f=await fixture();
   try{
     const {stdout}=await run("git",["rev-parse","HEAD"],{cwd:f.root}),sha=stdout.trim();
-    await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:"f".repeat(40),files:[{path:"alpha.js",operation:"replace",expectedContent:"export const alpha = 1;\n",content:"changed\n"}]}),error=>error.code==="commit_mismatch");
+    await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:"f".repeat(40),files:[{path:"alpha.js",operation:"replace",expectedContent:"export const alpha = 1;\n",content:"export const alpha = 2;\n"}]}),error=>error.code==="commit_mismatch");
     await writeFile(join(f.root,"unrelated.txt"),"dirty","utf8");
-    await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:sha,files:[{path:"alpha.js",operation:"replace",expectedContent:"export const alpha = 1;\n",content:"changed\n"}]}),error=>error.code==="working_tree_dirty");
+    await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:sha,files:[{path:"alpha.js",operation:"replace",expectedContent:"export const alpha = 1;\n",content:"export const alpha = 2;\n"}]}),error=>error.code==="working_tree_dirty");
     assert.equal(await readFile(join(f.root,"alpha.js"),"utf8"),"export const alpha = 1;\n");
   }finally{await f.close();}
 });
 
-test("task-bound patch accepts an exact active-plan task-owned dirty subset",async()=>{const f=await fixture();try{const {stdout}=await run("git",["rev-parse","HEAD"],{cwd:f.root}),sha=stdout.trim(),runId="selfdev_dirty_recovery",expectedContent="task-owned current\n",content="repaired\n",betaExpected="alpha docs\n";await writeFile(join(f.root,"alpha.js"),expectedContent,"utf8");const files=[{path:"alpha.js",operation:"replace",expectedContent,content},{path:"beta.md",operation:"replace",expectedContent:betaExpected,content:"repaired docs\n"}],planProvenance={version:"2",generationId:"rebound-generation",taskId:runId,currentCommit:sha,mutationPreconditions:files.map(file=>({path:file.path,operation:file.operation,expectedContentHash:canonicalContentHash(file.expectedContent)}))};const result=await f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:sha,planProvenance,files},{runId});assert.deepEqual(result.files,["alpha.js","beta.md"]);assert.equal(await readFile(join(f.root,"alpha.js"),"utf8"),content);assert.equal(await readFile(join(f.root,"beta.md"),"utf8"),"repaired docs\n");}finally{await f.close();}});
+test("task-bound patch accepts an exact active-plan task-owned dirty subset",async()=>{const f=await fixture();try{const {stdout}=await run("git",["rev-parse","HEAD"],{cwd:f.root}),sha=stdout.trim(),runId="selfdev_dirty_recovery",expectedContent="task-owned current\n",content="export const alpha = 2;\n",betaExpected="alpha docs\n";await writeFile(join(f.root,"alpha.js"),expectedContent,"utf8");const files=[{path:"alpha.js",operation:"replace",expectedContent,content},{path:"beta.md",operation:"replace",expectedContent:betaExpected,content:"repaired docs\n"}],planProvenance={version:"2",generationId:"rebound-generation",taskId:runId,currentCommit:sha,mutationPreconditions:files.map(file=>({path:file.path,operation:file.operation,expectedContentHash:canonicalContentHash(file.expectedContent)}))};const result=await f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:sha,planProvenance,files},{runId});assert.deepEqual(result.files,["alpha.js","beta.md"]);assert.equal(await readFile(join(f.root,"alpha.js"),"utf8"),content);assert.equal(await readFile(join(f.root,"beta.md"),"utf8"),"repaired docs\n");}finally{await f.close();}});
 
-test("task-owned dirty recovery rejects any unrelated dirty file",async()=>{const f=await fixture();try{const {stdout}=await run("git",["rev-parse","HEAD"],{cwd:f.root}),sha=stdout.trim(),runId="selfdev_dirty_reject",expectedContent="task-owned current\n";await writeFile(join(f.root,"alpha.js"),expectedContent,"utf8");await writeFile(join(f.root,"unrelated.txt"),"unrelated\n","utf8");const planProvenance={version:"2",generationId:"rebound-generation",taskId:runId,currentCommit:sha,mutationPreconditions:[{path:"alpha.js",operation:"replace",expectedContentHash:canonicalContentHash(expectedContent)}]};await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:sha,planProvenance,files:[{path:"alpha.js",operation:"replace",expectedContent,content:"repaired\n"}]},{runId}),error=>error.code==="working_tree_dirty"&&error.safeDiagnostics.taskOwnedDirtyProven===false);assert.equal(await readFile(join(f.root,"alpha.js"),"utf8"),expectedContent);}finally{await f.close();}});
+test("task-owned dirty recovery rejects any unrelated dirty file",async()=>{const f=await fixture();try{const {stdout}=await run("git",["rev-parse","HEAD"],{cwd:f.root}),sha=stdout.trim(),runId="selfdev_dirty_reject",expectedContent="task-owned current\n";await writeFile(join(f.root,"alpha.js"),expectedContent,"utf8");await writeFile(join(f.root,"unrelated.txt"),"unrelated\n","utf8");const planProvenance={version:"2",generationId:"rebound-generation",taskId:runId,currentCommit:sha,mutationPreconditions:[{path:"alpha.js",operation:"replace",expectedContentHash:canonicalContentHash(expectedContent)}]};await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit:sha,planProvenance,files:[{path:"alpha.js",operation:"replace",expectedContent,content:"export const alpha = 2;\n"}]},{runId}),error=>error.code==="working_tree_dirty"&&error.safeDiagnostics.taskOwnedDirtyProven===false);assert.equal(await readFile(join(f.root,"alpha.js"),"utf8"),expectedContent);}finally{await f.close();}});
 
 test("Hands independently rejects create over tracked or untracked existing files", async () => {
   const f = await fixture();
   try {
-    await assert.rejects(() => f.registry.execute("repo_apply_patch", {branch:BRANCH,files:[{path:"alpha.js",operation:"create",content:"overwrite"}]}), error => error.code === "operation_conflict");
+    await assert.rejects(() => f.registry.execute("repo_apply_patch", {branch:BRANCH,files:[{path:"alpha.js",operation:"create",content:"export const overwrite = true;\n"}]}), error => error.code === "operation_conflict");
     await writeFile(join(f.root,"new.test.js"),"untracked\n");
-    await assert.rejects(() => f.registry.execute("repo_apply_patch", {branch:BRANCH,files:[{path:"new.test.js",operation:"create",content:"overwrite"}]}), error => error.code === "operation_conflict");
+    await assert.rejects(() => f.registry.execute("repo_apply_patch", {branch:BRANCH,files:[{path:"new.test.js",operation:"create",content:"export const overwrite = true;\n"}]}), error => error.code === "operation_conflict");
     assert.equal(await readFile(join(f.root,"new.test.js"),"utf8"),"untracked\n");
   } finally { await f.close(); }
 });
