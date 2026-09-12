@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {createHmac} from "node:crypto";
 import {createInMemoryStorage} from "../src/storage/in-memory-storage.js";
-import {authorizeLocalWorker,createLocalWorkerHandoff} from "../src/autonomy/local-worker-handoff.js";
+import {authorizeLocalWorker,createLocalWorkerHandoff,verifyLocalWorkerWorkspaceProof} from "../src/autonomy/local-worker-handoff.js";
 import {createLocalWorkerClient} from "../src/autonomy/local-worker-client.js";
 import {bindImplementationPlan} from "../src/autonomy/self-development-plan-lifecycle.js";
 
@@ -11,6 +12,7 @@ async function fixture({plan=plans.patch,status="queued",deploymentEnvironment="
 const claim=(service,overrides={})=>service.claim({workerId:"worker-one",capabilities:["repo_mutate_local","test_local","repo_read_remote"],expectedBranch:BRANCH,expectedCommit:SHA,taskId:TASK,idempotencyKey:"claim-one",...overrides});
 
 test("local Worker authentication is scoped and timing-safe",()=>{assert.deepEqual(authorizeLocalWorker({headers:{authorization:`Bearer ${TOKEN}`}},TOKEN),{actorType:"scoped_local_worker"});for(const header of [undefined,"Bearer wrong"])assert.throws(()=>authorizeLocalWorker({headers:{authorization:header}},TOKEN),error=>error.code==="unauthorized");assert.throws(()=>authorizeLocalWorker({headers:{}},null),error=>error.code==="handoff_not_configured");});
+test("signed workspace proof rejects root or byte drift",()=>{const proof={branch:BRANCH,changedFiles:[{hash:"b".repeat(40),hashAlgorithm:"git_sha1",path:"assets/voice-input.js"}],clean:false,gitTopLevel:"C:/bound",head:SHA,liveTip:SHA,repository:"hshanbour/nova-brain",root:"C:/bound"},signature=createHmac("sha256",TOKEN).update(JSON.stringify(proof)).digest("hex");assert.deepEqual(verifyLocalWorkerWorkspaceProof(proof,signature,TOKEN).workspaceProof,proof);for(const changed of [{...proof,root:"C:/other"},{...proof,changedFiles:[{...proof.changedFiles[0],hash:"c".repeat(40)}]}])assert.throws(()=>verifyLocalWorkerWorkspaceProof(changed,signature,TOKEN),error=>error.code==="workspace_attestation_unauthorized");});
 
 test("local client requires separate Vercel and Nova credentials",()=>{for(const input of [{baseUrl:"https://preview.example",novaToken:TOKEN},{baseUrl:"https://preview.example",novaToken:TOKEN,vercelBypassToken:TOKEN}])assert.throws(()=>createLocalWorkerClient(input));});
 

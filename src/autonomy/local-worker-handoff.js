@@ -1,4 +1,4 @@
-import {createHash,randomUUID,timingSafeEqual} from "node:crypto";
+import {createHash,createHmac,randomUUID,timingSafeEqual} from "node:crypto";
 import {createActiveContinuation,taskRuntimeWindow} from "./self-development-plan-lifecycle.js";
 import {assertActiveImplementationPlan,canonicalContentHash} from "./self-development-plan-lifecycle.js";
 import {canonicalSchemaDiagnostic} from "./schema-diagnostics.js";
@@ -39,6 +39,12 @@ const taskBoundPatchArguments=(task,args,steps)=>{if(args.branch!==undefined&&ar
 
 export class HandoffError extends Error{constructor(code,message,statusCode=409){super(message);this.name="HandoffError";this.code=code;this.statusCode=statusCode;}}
 export function authorizeLocalWorker(request,token){const header=request?.headers?.authorization||request?.headers?.Authorization;if(!token)throw new HandoffError("handoff_not_configured","Local Worker handoff is unavailable.",503);if(typeof header!=="string"||!header.startsWith("Bearer "))throw new HandoffError("unauthorized","Local Worker authorization is required.",401);const supplied=Buffer.from(header.slice(7)),expected=Buffer.from(token);if(supplied.length!==expected.length||!timingSafeEqual(supplied,expected))throw new HandoffError("unauthorized","Local Worker authorization is required.",401);return{actorType:"scoped_local_worker"};}
+export function verifyLocalWorkerWorkspaceProof(proof,signature,token){
+  if(!proof||typeof proof!=="object"||Array.isArray(proof)||typeof signature!=="string"||!/^[a-f0-9]{64}$/.test(signature)||!token)throw new HandoffError("workspace_attestation_unauthorized","A signed local-worker workspace proof is required.",403);
+  const expected=createHmac("sha256",token).update(JSON.stringify(stable(proof))).digest("hex"),supplied=Buffer.from(signature),wanted=Buffer.from(expected);
+  if(supplied.length!==wanted.length||!timingSafeEqual(supplied,wanted))throw new HandoffError("workspace_attestation_unauthorized","The local-worker workspace proof signature is invalid.",403);
+  return Object.freeze({actorType:"scoped_local_worker",workspaceProof:proof});
+}
 
 export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/nova-brain-mvp-foundation",clock=()=>new Date(),leaseMs=120000,deploymentEnvironment="preview"}={}){
   if(!storage||!ownerId)throw new Error("Local Worker handoff requires storage and ownerId.");

@@ -44,6 +44,7 @@ import {
 } from "../autonomy/task-migration.js";
 import {
   authorizeLocalWorker,
+  verifyLocalWorkerWorkspaceProof,
   HandoffError,
 } from "../autonomy/local-worker-handoff.js";
 import { WorkerError } from "../autonomy/worker-runtime.js";
@@ -1047,6 +1048,7 @@ export function createApi({
         );
         const selfDevelopmentHandsContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-commit-mismatch$/);
         const selfDevelopmentHandsDirtyRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-working-tree-dirty$/);
+        const selfDevelopmentWorkspaceAttestation = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/attest-workspace$/);
         const selfDevelopmentRepositoryContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-repository-context$/);
         const selfDevelopmentPlanLifecycleRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-plan-lifecycle$/);
         const selfDevelopmentFullTestRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-full-test-failure$/);
@@ -1072,6 +1074,9 @@ export function createApi({
         }
         if(selfDevelopment&&selfDevelopmentHandsDirtyRecovery&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverHandsWorkingTreeDirty(decodeURIComponent(selfDevelopmentHandsDirtyRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
+        }
+        if(selfDevelopment&&selfDevelopmentWorkspaceAttestation&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);sendJson(response,200,await selfDevelopment.attestHandsWorkspace(decodeURIComponent(selfDevelopmentWorkspaceAttestation[1]),input,actor));return;
         }
         if (selfDevelopment && selfDevelopmentStaleBaseRecovery && request.method === "POST") {
           await ready();authorizeLocalWorker(request,config.localWorkerToken);
