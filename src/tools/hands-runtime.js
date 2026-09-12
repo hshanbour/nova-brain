@@ -861,8 +861,9 @@ export function registerHandsTools(
           if(contentIssue)fail("implementation_content_invalid","Replacement content is not a complete file payload.",{path:item.path,validationCode:contentIssue,contentHash:implementationContentHash(item.content),mutationApplied:false});
         }
       },
-      async execute({ files, currentCommit, planProvenance }, context) {
+      async execute({ files, currentCommit, planProvenance, branch }, context) {
         const started = Date.now();
+        const authorizedTaskOwnedDirtyPaths=new Set();
         for(const item of files){if(!isJavaScriptImplementationPath(item.path))continue;const syntaxPath=join(tmpdir(),`.nova-${randomUUID()}${item.path.toLowerCase().endsWith(".cjs")?".cjs":".mjs"}`);try{await writeFile(syntaxPath,item.content,"utf8");await exec(process.execPath,["--check",syntaxPath],{maxBuffer:64_000,windowsHide:true});}catch(error){fail("implementation_content_invalid","Replacement JavaScript failed syntax validation.",{path:item.path,validationCode:"javascript_syntax_invalid",contentHash:implementationContentHash(item.content),exitCode:Number.isInteger(error?.code)?error.code:1,mutationApplied:false});}finally{await rm(syntaxPath,{force:true}).catch(()=>{});}}
         if (currentCommit) {
           if (!/^[a-f0-9]{40}$/.test(currentCommit))
@@ -876,13 +877,15 @@ export function registerHandsTools(
           if (!repositoryContext.clean) {
             const statusResult=await (localGit?localGit(root,["status","--porcelain=v1"]):gitCommand(root,["status","--porcelain=v1"],{runner:commandRunner,environment}));
             const dirtyPaths=statusResult.exitCode===0?statusResult.stdout.split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replaceAll("\\","/")).sort():[];
-            const plannedPaths=files.map(item=>item.path).sort(),preconditions=new Map((planProvenance?.mutationPreconditions||[]).map(item=>[item.path,item]));
+            const plannedPaths=files.map(item=>item.path).sort(),preconditions=new Map((planProvenance?.mutationPreconditions||[]).map(item=>[item.path,item])),lineage=planProvenance?.taskOwnedDirtyLineage,lineageEntries=new Map((lineage?.entries||[]).map(item=>[item.path,item]));
             const exactPlan=planProvenance?.version===IMPLEMENTATION_PLAN_PROVENANCE_VERSION&&planProvenance.taskId===context?.runId&&planProvenance.currentCommit===currentCommit&&preconditions.size===files.length;
             const exactPaths=dirtyPaths.length>0&&dirtyPaths.length<=plannedPaths.length&&dirtyPaths.every(path=>plannedPaths.includes(path));
-            const exactContents=exactPlan&&files.every(item=>item.operation==="replace"&&preconditions.get(item.path)?.operation==="replace"&&preconditions.get(item.path)?.expectedContentHash===canonicalContentHash(item.expectedContent));
+            const exactLineage=lineage?.version===1&&lineage.taskId===context?.runId&&lineage.repository===repository&&lineage.branch===branch&&lineage.currentCommit===currentCommit&&/^\d+:(plan_implementation|plan_repair)$/.test(lineage.sourcePlanStepId||"")&&/^\d+:apply_patch$/.test(lineage.sourceApplyStepId||"");
+            const exactContents=exactPlan&&exactLineage&&dirtyPaths.every(path=>/^[a-f0-9]{64}$/.test(lineageEntries.get(path)?.contentHash||""));
             let currentContentsMatch=exactContents;
-            if(currentContentsMatch)for(const item of files){try{if(canonicalContentHash(await readFile(safe(root,item.path),"utf8"))!==canonicalContentHash(item.expectedContent)){currentContentsMatch=false;break;}}catch{currentContentsMatch=false;break;}}
+            if(currentContentsMatch)for(const path of dirtyPaths){try{if(canonicalContentHash(await readFile(safe(root,path),"utf8"))!==lineageEntries.get(path).contentHash){currentContentsMatch=false;break;}}catch{currentContentsMatch=false;break;}}
             if(!exactPaths||!currentContentsMatch)fail("working_tree_dirty", "Local checkout must be clean or exactly match the active task-owned patch preconditions.",{dirtyFileCount:dirtyPaths.length,plannedFileCount:plannedPaths.length,dirtyPaths,plannedPaths,exactPlan,exactPaths,currentContentsMatch,taskOwnedDirtyProven:false});
+            for(const path of dirtyPaths)authorizedTaskOwnedDirtyPaths.add(path);
           }
         }
         const originals = [];
@@ -917,11 +920,12 @@ export function registerHandsTools(
               `Create target already exists: ${item.path}.`,
               { path: item.path, requiredAction: "read_before_modify" },
             );
+          const lineageHash=authorizedTaskOwnedDirtyPaths.has(item.path)?planProvenance?.taskOwnedDirtyLineage?.entries?.find(entry=>entry.path===item.path)?.contentHash:null;
           if (
             operation === "replace" &&
             (current === null ||
               !("expectedContent" in item) ||
-              canonicalContentHash(item.expectedContent) !== canonicalContentHash(current))
+              (canonicalContentHash(item.expectedContent) !== canonicalContentHash(current)&&lineageHash!==canonicalContentHash(current)))
           )
             fail(
               "patch_conflict",
