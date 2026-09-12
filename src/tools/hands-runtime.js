@@ -863,7 +863,7 @@ export function registerHandsTools(
       },
       async execute({ files, currentCommit, planProvenance, branch }, context) {
         const started = Date.now();
-        const authorizedTaskOwnedDirtyPaths=new Set();
+        const authorizedTaskOwnedDirtyPaths=new Set();let authorizedTaskOwnedDirtyLineage=null;
         for(const item of files){if(!isJavaScriptImplementationPath(item.path))continue;const syntaxPath=join(tmpdir(),`.nova-${randomUUID()}${item.path.toLowerCase().endsWith(".cjs")?".cjs":".mjs"}`);try{await writeFile(syntaxPath,item.content,"utf8");await exec(process.execPath,["--check",syntaxPath],{maxBuffer:64_000,windowsHide:true});}catch(error){fail("implementation_content_invalid","Replacement JavaScript failed syntax validation.",{path:item.path,validationCode:"javascript_syntax_invalid",contentHash:implementationContentHash(item.content),exitCode:Number.isInteger(error?.code)?error.code:1,mutationApplied:false});}finally{await rm(syntaxPath,{force:true}).catch(()=>{});}}
         if (currentCommit) {
           if (!/^[a-f0-9]{40}$/.test(currentCommit))
@@ -879,13 +879,14 @@ export function registerHandsTools(
             const dirtyPaths=statusResult.exitCode===0?statusResult.stdout.split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replaceAll("\\","/")).sort():[];
             const plannedPaths=files.map(item=>item.path).sort(),preconditions=new Map((planProvenance?.mutationPreconditions||[]).map(item=>[item.path,item])),lineage=planProvenance?.taskOwnedDirtyLineage,lineageEntries=new Map((lineage?.entries||[]).map(item=>[item.path,item]));
             const exactPlan=planProvenance?.version===IMPLEMENTATION_PLAN_PROVENANCE_VERSION&&planProvenance.taskId===context?.runId&&planProvenance.currentCommit===currentCommit&&preconditions.size===files.length;
-            const exactPaths=dirtyPaths.length>0&&dirtyPaths.length<=plannedPaths.length&&dirtyPaths.every(path=>plannedPaths.includes(path));
-            const exactLineage=lineage?.version===1&&lineage.taskId===context?.runId&&lineage.repository===repository&&lineage.branch===branch&&lineage.currentCommit===currentCommit&&/^\d+:(plan_implementation|plan_repair)$/.test(lineage.sourcePlanStepId||"")&&/^\d+:apply_patch$/.test(lineage.sourceApplyStepId||"");
+            const subsetRepair=plannedPaths.length<dirtyPaths.length;
+            const exactPaths=dirtyPaths.length>0&&dirtyPaths.length===lineageEntries.size&&dirtyPaths.every(path=>lineageEntries.has(path))&&plannedPaths.length>0&&(!subsetRepair||plannedPaths.every(path=>lineageEntries.has(path)));
+            const exactLineage=lineage?.version===1&&lineage.taskId===context?.runId&&lineage.repository===repository&&lineage.branch===branch&&lineage.currentCommit===currentCommit&&/^\d+:(plan_implementation|plan_repair)$/.test(lineage.sourcePlanStepId||"")&&/^\d+:apply_patch$/.test(lineage.sourceApplyStepId||"")&&(!subsetRepair||/^\d+:(plan_implementation|plan_repair)$/.test(lineage.activePlanStepId||""))&&lineageEntries.size===lineage.entries.length;
             const exactContents=exactPlan&&exactLineage&&dirtyPaths.every(path=>/^[a-f0-9]{64}$/.test(lineageEntries.get(path)?.contentHash||""));
             let currentContentsMatch=exactContents;
             if(currentContentsMatch)for(const path of dirtyPaths){try{if(canonicalContentHash(await readFile(safe(root,path),"utf8"))!==lineageEntries.get(path).contentHash){currentContentsMatch=false;break;}}catch{currentContentsMatch=false;break;}}
             if(!exactPaths||!currentContentsMatch)fail("working_tree_dirty", "Local checkout must be clean or exactly match the active task-owned patch preconditions.",{dirtyFileCount:dirtyPaths.length,plannedFileCount:plannedPaths.length,dirtyPaths,plannedPaths,exactPlan,exactPaths,currentContentsMatch,taskOwnedDirtyProven:false});
-            for(const path of dirtyPaths)authorizedTaskOwnedDirtyPaths.add(path);
+            for(const path of dirtyPaths)authorizedTaskOwnedDirtyPaths.add(path);authorizedTaskOwnedDirtyLineage=lineage;
           }
         }
         const originals = [];
@@ -960,12 +961,15 @@ export function registerHandsTools(
           }
           throw error;
         }
+        let taskOwnedDirtyLineage;
+        if(authorizedTaskOwnedDirtyLineage){const entries=[];for(const entry of authorizedTaskOwnedDirtyLineage.entries){const content=await readFile(safe(root,entry.path),"utf8");entries.push({path:entry.path,contentHash:canonicalContentHash(content)});}taskOwnedDirtyLineage={version:1,taskId:context.runId,repository,branch,currentCommit,sourcePlanStepId:authorizedTaskOwnedDirtyLineage.activePlanStepId||authorizedTaskOwnedDirtyLineage.sourcePlanStepId,sourceApplyStepId:context.stepId,entries:entries.sort((a,b)=>a.path.localeCompare(b.path))};}
         return audit(
           "repo_apply_patch",
           {
             ok: true,
             files: files.map((x) => x.path),
             changedFiles: files.length,
+            ...(taskOwnedDirtyLineage?{taskOwnedDirtyLineage}:{}),
           },
           context,
           started,
