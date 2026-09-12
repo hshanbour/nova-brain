@@ -165,6 +165,22 @@ test("repair planning includes a relevant previously read failing test as exact 
   const f=await fixture([output],{discovered:[DOC,TEST,EXTRA],reads:[[DOC,"old doc"],[TEST,"old test"],[EXTRA,"exact failing test"]]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{fingerprint:"f".repeat(64),failedFiles:["test/hands-runtime.test.js",EXTRA]}}),prompt=JSON.parse(f.prompts[0].message.split("\n")[1]);
   assert.deepEqual(prompt.candidateFiles.map(item=>item.path),[DOC,TEST,EXTRA]);assert.equal(prompt.candidateFiles.at(-1).content,"exact failing test");assert.ok(result.implementationPlan.evidencePaths.includes(EXTRA));
 });
+test("authoritative full-test failure expands to an existing tracked test outside discovery inventory",async()=>{
+  const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];
+  const f=await fixture([output],{discovered:[DOC,TEST],reads:[[DOC,"old doc"],[TEST,"old test"]],existing:[DOC,TEST,EXTRA]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{version:1,fingerprint:"f".repeat(64),identity:{command:"npm:test"},failedFiles:[EXTRA]}});
+  assert.equal(result.evidenceExpansion.category,"full_test_failure_evidence");assert.deepEqual(result.evidenceExpansion.paths,[EXTRA]);assert.equal(f.calls,1);
+});
+test("authoritative focused-test failure retains bounded tracked-path expansion",async()=>{
+  const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];
+  const f=await fixture([output],{discovered:[DOC,TEST],reads:[[DOC,"old doc"],[TEST,"old test"]],existing:[DOC,TEST,EXTRA]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{version:1,fingerprint:"f".repeat(64),identity:{command:"node:test:focused"},failedFiles:[EXTRA]}});
+  assert.equal(result.evidenceExpansion.category,"focused_test_failure_evidence");assert.deepEqual(result.evidenceExpansion.paths,[EXTRA]);
+});
+test("failure-evidence expansion rejects nonexistent untracked and unrelated existing tests",async()=>{
+  for(const {failed,existing} of [{failed:[EXTRA],existing:[DOC,TEST]},{failed:["test/another.test.js"],existing:[DOC,TEST,EXTRA]}]){const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];const f=await fixture([output],{discovered:[DOC,TEST],reads:[[DOC,"old doc"],[TEST,"old test"]],existing});await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{version:1,fingerprint:"f".repeat(64),identity:{command:"npm:test"},failedFiles:failed}}),error=>error.code==="implementation_scope_violation"&&error.safeDiagnostics.proposedPath===EXTRA);}
+});
+test("Windows separators in authoritative failure evidence normalize to the tracked repository path",async()=>{
+  const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];const f=await fixture([output],{discovered:[DOC,TEST],reads:[[DOC,"old doc"],[TEST,"old test"]],existing:[DOC,TEST,EXTRA]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{version:1,fingerprint:"f".repeat(64),identity:{command:"npm:test"},failedFiles:[EXTRA.replaceAll("/","\\")]}});assert.deepEqual(result.evidenceExpansion.paths,[EXTRA]);
+});
 test("schema-imperfect output receives safe feedback and corrects within the same evidence", async () => {
   const imperfect = {
       files: [DOC],
