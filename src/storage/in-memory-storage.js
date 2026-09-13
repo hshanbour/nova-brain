@@ -641,6 +641,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       expectedBranch,
       expectedCommit,
       expectedVersion,
+      claimMetadata,
     }) {
       const timestamp = clock();
       for (const task of autonomyTasks.values())
@@ -686,7 +687,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       eligible.leaseExpiresAt = new Date(
         timestamp.getTime() + leaseMs,
       ).toISOString();
-      eligible.metadata = { ...eligible.metadata, claimKey: idempotencyKey };
+      eligible.metadata = { ...eligible.metadata, ...copy(claimMetadata || {}), claimKey: idempotencyKey };
       eligible.stateVersion += 1;
       eligible.updatedAt = timestamp.toISOString();
       return copy(eligible);
