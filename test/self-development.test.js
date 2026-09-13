@@ -2020,3 +2020,32 @@ test("workspace attestation accepts only an exact immediately post-apply focused
     const sample=await setup(variant),state=await sample.f.storage.getAutonomyTask(sample.failed.id,OWNER);await assert.rejects(()=>variant.source?sample.f.service.attestHandsWorkspace(sample.failed.id,{expectedVersion:sample.failed.stateVersion,runtimeVersion,workerId:"persistent-worker",sourceApplyStepId:variant.source,workspaceProof:sample.proof,workspaceProofSignature:"signed"},{actorType:"scoped_local_worker",workspaceProof:sample.proof}):sample.attest(),error=>error.code===variant.expected);assert.equal((await sample.f.storage.getAutonomyTask(sample.failed.id,OWNER)).stateVersion,state.stateVersion);
   }
 });
+
+test("current rejected focused-test evidence shape reopens only the exact consumed-extension continuation",async()=>{
+  let sequence=0;
+  const setup=async({diagnosticsPatch={},taskPatch={},metadataPatch={},exactVersion=false}={})=>{
+    const f=await fixture(),id=`runner-rejected-evidence-${++sequence}`,files=[{path:"assets/voice-input.js",operation:"replace",expectedContent:"old\n",content:"new\n"}],plain={files,evidencePaths:["assets/voice-input.js"],planHash:"repair-plan"},templates=Array.from({length:71},(_,index)=>({type:"inspect_repo",input:{arguments:{}},idempotencyIdentity:`history-${index+1}`}));
+    templates[69]={type:"plan_repair",input:{arguments:{}},idempotencyIdentity:"failed-evidence-plan"};templates[70]={type:"apply_patch",input:{arguments:{}},idempotencyIdentity:"repair-apply"};
+    await f.storage.createAutonomyTask({id,ownerId:OWNER,projectId:"nova-brain",title:"Runner",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:SHA,currentCommit:SHA,maxSteps:150,maxRuntimeMinutes:60,metadata:{steps:templates,selfDevelopment:{repository:"hshanbour/nova-brain",userGoal:"Implement",acceptanceCriteria:["safe"],repairLimit:3},implementationPlanGenerations:[]}});
+    let task=await f.storage.getAutonomyTask(id,OWNER),plan={...plain,provenance:bindImplementationPlan({task,plan:plain,evidence:[{path:"assets/voice-input.js",content:"old\n"}]})},diagnostics={version:1,identity:{runner:"node_test",command:"npm:test"},durationMs:100,exitCode:1,errorMessage:"Assertion failed",stdoutExcerpt:"test failure",stderrExcerpt:"",failedFiles:["test/workspace-navigation.test.js"],failedTitles:["workspace failure"],counts:{tests:681,failed:4,passed:677,skipped:0},fingerprint:"current-full-failure"};
+    const extension={recoveryClass:"owner_approved_single_repair_extension",fromStateVersion:90,approvalId:"owner-extension",failedStepId:"58:run_focused_tests",failureFingerprint:"focused-failure",planGenerationId:plan.provenance.generationId,previousRepairIteration:3,globalRepairLimit:3,maxAdditionalAttempts:1,recoveredAt:"2026-09-12T00:00:00.000Z"};
+    task=await f.storage.updateAutonomyTask(id,OWNER,{repairIteration:4,metadata:{...planLifecycleMetadata(task,plan),steps:templates,fullTestRepairHistory:[{iteration:4,fingerprint:diagnostics.fingerprint,failedStepId:"66:run_full_tests"}],testRunnerInfrastructureRecoveryHistory:[{recoveryClass:"test_runner_git_path_reclassification",fromStateVersion:1}],escalatedRepairHistory:[extension],...metadataPatch}});
+    await f.storage.recordAutonomyStep({taskId:id,stepId:"65:run_focused_tests",stepType:"run_focused_tests",capability:"test_local",operationFingerprint:"focused",status:"completed",result:{ok:true}});
+    await f.storage.recordAutonomyStep({taskId:id,stepId:"66:run_full_tests",stepType:"run_full_tests",capability:"test_local",operationFingerprint:"full",status:"failed",errorCode:"test_failed",result:{code:"test_failed",diagnostics}});
+    const planDiagnostics={validationIssues:["focused_test_evidence_rejected"],rejectionCode:"focused_test_evidence_rejected",classification:"nonexistent_invalid",proposedPath:"test/workspace-navigation.test.js",expansionRound:1,plannerAttempt:1,...diagnosticsPatch};
+    await f.storage.recordAutonomyStep({taskId:id,stepId:"70:plan_repair",stepType:"plan_repair",capability:"reasoning",operationFingerprint:"plan",status:"failed",errorCode:"implementation_scope_violation",result:{message:"Focused test is not eligible for bounded evidence expansion.",diagnostics:planDiagnostics}});
+    if(exactVersion)while(task.stateVersion<119)task=await f.storage.updateAutonomyTask(id,OWNER,{retryCount:task.retryCount},task.stateVersion);
+    task=await f.storage.updateAutonomyTask(id,OWNER,{status:"failed",currentStep:69,errorCode:"implementation_scope_violation",...taskPatch},task.stateVersion);
+    return{f,task,templates,extension};
+  };
+  const exact=await setup({exactVersion:true}),recovered=await exact.f.service.recoverTestRunnerInfrastructure(exact.task.id,{expectedVersion:120});
+  assert.equal(recovered.task.stateVersion,121);assert.equal(recovered.recovery.recoveryClass,"post_runner_repair_evidence_rebind");assert.equal(recovered.task.status,"queued");assert.deepEqual(recovered.task.metadata.steps.slice(exact.templates.length).map(step=>step.type),["plan_repair","apply_patch"]);assert.deepEqual(recovered.task.metadata.escalatedRepairHistory,[exact.extension]);
+  for(const variant of [
+    {name:"unrelated",diagnosticsPatch:{rejectionCode:"unrelated_scope_violation"}},
+    {name:"missing-evidence",diagnosticsPatch:{proposedPath:"test/not-in-full-failure.test.js"}},
+    {name:"repository",metadataPatch:{selfDevelopment:{repository:"other/repository",userGoal:"Implement",acceptanceCriteria:["safe"],repairLimit:3}}},
+    {name:"branch",taskPatch:{branch:"feat/other"}},
+    {name:"commit-lineage",metadataPatch:{activeImplementationPlanGeneration:"wrong-generation"}},
+    {name:"repair-lineage",taskPatch:{repairIteration:3}},
+  ]){const sample=await setup(variant),before=await sample.f.storage.getAutonomyTask(sample.task.id,OWNER);await assert.rejects(()=>sample.f.service.recoverTestRunnerInfrastructure(sample.task.id,{expectedVersion:sample.task.stateVersion}),error=>error.code==="test_runner_recovery_precondition_failed");const after=await sample.f.storage.getAutonomyTask(sample.task.id,OWNER);assert.equal(after.stateVersion,before.stateVersion);assert.deepEqual(after.metadata.steps,before.metadata.steps);assert.deepEqual(after.metadata.escalatedRepairHistory,before.metadata.escalatedRepairHistory);}
+});
