@@ -830,6 +830,24 @@ export function registerHandsTools(
   );
   registry.register(
     def({
+      name: "repo_read_task_owned_local",
+      description: "Read one complete, hash-bound task-owned file from the controlled local workspace.",
+      inputSchema: schema({path:text,expectedContentHash:text,binding:{type:"object"}},["path","expectedContentHash","binding"]),
+      async execute({path,expectedContentHash,binding},context){
+        const started=Date.now(),repositoryContext=context?.repositoryContext,canonical=value=>String(value||"").replaceAll("\\","/").replace(/\/$/,"").toLowerCase(),valid=repositoryContext?.source==="persistent_worker_handoff"&&context?.runId===binding?.taskId&&binding?.version===1&&binding.repository===repository&&binding.branch===branch&&binding.currentCommit===repositoryContext.expectedHead&&canonical(binding.workspaceRoot)===canonical(root)&&canonical(repositoryContext.root)===canonical(root)&&typeof binding.sourcePlanStepId==="string"&&/^\d+:plan_(implementation|repair)$/.test(binding.sourcePlanStepId)&&typeof binding.sourceApplyStepId==="string"&&/^\d+:apply_patch$/.test(binding.sourceApplyStepId)&&/^[a-f0-9]{64}$/.test(binding.sourceApplyFingerprint||"")&&typeof binding.continuationGenerationId==="string"&&binding.continuationGenerationId===context?.continuationGenerationId&&/^[a-f0-9]{64}$/.test(expectedContentHash||"");
+        if(!valid)fail("task_owned_local_read_unproven","The task-owned local read binding is invalid.");
+        const target=safe(root,path),content=await readFile(target,"utf8").catch(()=>fail("task_owned_local_read_unavailable","The bound task-owned local file is unavailable."));
+        if(content.length>200000)fail("task_owned_local_read_too_large","The bound task-owned local file exceeds the complete-read limit.");
+        const contentHash=canonicalContentHash(content);
+        if(contentHash!==expectedContentHash)fail("task_owned_local_read_drift","The bound task-owned local file changed after attestation.");
+        const status=await gitCommand(root,["status","--porcelain=v1","--",path],{runner:commandRunner,environment,gitExecutable});
+        if(status.exitCode!==0||!String(status.stdout||"").trim())fail("task_owned_local_read_unproven","The bound path is not current task-owned workspace output.");
+        return audit("repo_read_task_owned_local",{ok:true,path,content,contentHash,truncated:false,source:"task_owned_local_workspace"},context,started);
+      },
+    }),
+  );
+  registry.register(
+    def({
       name: "repo_apply_patch",
       description:
         "Atomically create or replace multiple validated files without committing or pushing.",

@@ -54,7 +54,7 @@ export function createAutoDispatchService({storage,ownerId,approvedBranch="feat/
       const approval=await storage.getApproval(item.approvalState.approvalId,ownerId),steps=await storage.listAutonomySteps(item.id);if(isExactApprovedDelivery({task:item,approval,steps,approvedBranch,approvedRepository})){task=item;approvedDelivery=true;break;}
     }
     if(!task)return{dispatched:false};
-    const step=task.metadata?.steps?.[task.currentStep],stepType=approvedDelivery?"push":step?.type,mode=approvedDelivery||task.status==="waiting_for_worker"||LOCAL.has(stepType)?"local_handoff":"task_tick";
+    const step=task.metadata?.steps?.[task.currentStep],stepType=approvedDelivery?"push":step?.type,taskOwnedLocalRead=stepType==="read_files"&&step?.input?.tool==="repo_read_task_owned_local",mode=approvedDelivery||task.status==="waiting_for_worker"||LOCAL.has(stepType)||taskOwnedLocalRead?"local_handoff":"task_tick";
     return{dispatched:true,task:{id:task.id,status:task.status,branch:task.branch,expectedCommit:task.currentCommit,stateVersion:task.stateVersion,mode,stepType:stepType||null}};
   }
   return Object.freeze({next});

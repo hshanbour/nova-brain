@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
@@ -23,6 +23,7 @@ const run = promisify(execFile);
 const BRANCH = "feat/nova-brain-mvp-foundation";
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "nova-hands-"));
+  await mkdir(join(root, "test"));
   await writeFile(join(root, "alpha.js"), "export const alpha = 1;\n", "utf8");
   await writeFile(join(root, "beta.md"), "alpha docs\n", "utf8");
   await run("git", ["init", "-b", BRANCH], { cwd: root });
@@ -224,6 +225,8 @@ test("commit review rejects unreviewed files and accepts the exact immutable com
     await f.close();
   }
 });
+
+test("task-owned local read returns complete hash-bound untracked content and rejects drift",async()=>{const f=await fixture();try{const path="test/task-owned.integration.test.js",content="export const owned = true;\n";await writeFile(join(f.root,path),content,"utf8");const {stdout}=await run("git",["rev-parse","HEAD"],{cwd:f.root}),sha=stdout.trim(),generation="g".repeat(64),fingerprint="f".repeat(64),binding={version:1,taskId:"selfdev-local-read",repository:"hshanbour/nova-brain",branch:BRANCH,currentCommit:sha,workspaceRoot:f.root,sourcePlanStepId:"79:plan_repair",sourceApplyStepId:"80:apply_patch",sourceApplyFingerprint:fingerprint,continuationGenerationId:generation},context={runId:binding.taskId,continuationGenerationId:generation,repositoryContext:{version:1,source:"persistent_worker_handoff",repository:binding.repository,root:f.root,branch:BRANCH,expectedHead:sha}},expectedContentHash=canonicalContentHash(content),result=await f.registry.execute("repo_read_task_owned_local",{path,expectedContentHash,binding},context);assert.deepEqual({path:result.path,content:result.content,contentHash:result.contentHash,truncated:result.truncated,source:result.source},{path,content,contentHash:expectedContentHash,truncated:false,source:"task_owned_local_workspace"});await writeFile(join(f.root,path),`${content}// drift\n`,"utf8");await assert.rejects(()=>f.registry.execute("repo_read_task_owned_local",{path,expectedContentHash,binding},context),error=>error.code==="task_owned_local_read_drift");await assert.rejects(()=>f.registry.execute("repo_read_task_owned_local",{path:"test/arbitrary.js",expectedContentHash,binding},context),error=>["task_owned_local_read_unavailable","task_owned_local_read_drift"].includes(error.code));}finally{await f.close();}});
 test("Hands rejects instructional or syntactically invalid JavaScript before product mutation",async()=>{const f=await fixture();try{const before=await readFile(join(f.root,"alpha.js"),"utf8");for(const content of["Replace the module with a valid implementation.","export const = broken;\n"]){await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,files:[{path:"alpha.js",operation:"replace",expectedContent:before,content}]}),error=>error.code==="implementation_content_invalid"&&error.safeDiagnostics.mutationApplied===false);assert.equal(await readFile(join(f.root,"alpha.js"),"utf8"),before);}const result=await f.registry.execute("repo_apply_patch",{branch:BRANCH,files:[{path:"alpha.js",operation:"replace",expectedContent:before,content:"export const alpha = 2;\n"}]});assert.deepEqual(result.files,["alpha.js"]);}finally{await f.close();}});
 
 test("exact integration preserves both parents and only the immutable reviewed change-set", async () => {
