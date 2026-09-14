@@ -28,7 +28,7 @@ export const executionProofSignature=proof=>createHmac("sha256",PLANNING_TOKEN).
 
 // Real worker/Hands pipelines operate ONLY on this synthetic temporary repo and
 // an in-memory task. No live credentials, endpoint or Nova workspace is used.
-export async function createExecutionScopeFixture(t,{failingFocusedTest=false,restoreFirstTrackedToBaseline=false,byteIdenticalReplacements=false,sevenFocusedTests=false,fullSuite=false,failingFullSuite=false}={}){
+export async function createExecutionScopeFixture(t,{failingFocusedTest=false,restoreFirstTrackedToBaseline=false,byteIdenticalReplacements=false,sevenFocusedTests=false,fullSuite=false,failingFullSuite=false,dependencyFixture=false}={}){
   const root=await mkdtemp(join(tmpdir(),"nova-execution-scope-e2e-"));
   t.after(async()=>{assert.equal(dirname(resolve(root)),resolve(tmpdir()));assert.ok(root.includes("nova-execution-scope-e2e-"));await rm(root,{recursive:true,force:true});});
   const git=async(...args)=>(await run("git",args,{cwd:root,windowsHide:true})).stdout.trim();
@@ -37,7 +37,8 @@ export async function createExecutionScopeFixture(t,{failingFocusedTest=false,re
   if(sevenFocusedTests)for(const [index,path] of EXECUTION_TEST_PATHS.slice(0,3).entries())for(const contents of [beforeContents,afterContents])contents.set(path,contents.get(path)+`test("synthetic second focused ${index}",()=>assert.equal(2,2));\n`);
   if(byteIdenticalReplacements)for(const [path,content] of beforeContents)afterContents.set(path,content);
   if(restoreFirstTrackedToBaseline)afterContents.set(PLANNING_PATHS[0],firstTrackedBaseline);
-  await writeFile(join(root,"package.json"),JSON.stringify({name:"synthetic-execution-fixture",private:true,type:"module",...(fullSuite?{scripts:{test:"node --test"}}:{})}));
+  await writeFile(join(root,"package.json"),JSON.stringify({name:"synthetic-execution-fixture",private:true,type:"module",...(fullSuite?{scripts:{test:"node --test"}}:{}),...(dependencyFixture?{dependencies:{"@neondatabase/serverless":"^1.1.0"}}:{})}));
+  if(dependencyFixture){await writeFile(join(root,".gitignore"),"node_modules/\n");await writeFile(join(root,"package-lock.json"),JSON.stringify({name:"synthetic-execution-fixture",lockfileVersion:3,packages:{"":{dependencies:{"@neondatabase/serverless":"^1.1.0"}},"node_modules/@neondatabase/serverless":{version:"1.1.0"}}}));}
   for(const path of PLANNING_PATHS){await mkdir(dirname(join(root,path)),{recursive:true});if(path!==PLANNING_PATHS[5])await writeFile(join(root,path),path===PLANNING_PATHS[0]?firstTrackedBaseline:baseline);}
   if(fullSuite)await writeFile(join(root,"test/full-suite-only.test.js"),`import test from "node:test";\nimport assert from "node:assert/strict";\ntest("synthetic full-suite-only acceptance",()=>assert.equal(${failingFullSuite?"1,2":"1,1"}));\n`);
   await git("init","-b","feat/nova-brain-mvp-foundation");await git("config","core.autocrlf","false");await git("config","user.name","Synthetic Execution Verification");await git("config","user.email","fixture@example.invalid");await git("remote","add","origin","https://github.com/hshanbour/nova-brain.git");await git("add",".");await git("commit","-m","synthetic execution successor fixture");
@@ -45,7 +46,7 @@ export async function createExecutionScopeFixture(t,{failingFocusedTest=false,re
   const status=await git("status","--porcelain=v1","--untracked-files=all"),time=Math.max(Date.now(),Date.parse("2026-09-14T18:00:00.000Z")),clock=()=>new Date(time);
   const seed=await seedPlanningRecoveryFixture({root,head,contents:beforeContents,clock}),{storage,ownerId,taskId,repository,branch}=seed;
   const current=()=>storage.getAutonomyTask(taskId,ownerId),steps=()=>storage.listAutonomySteps(taskId),requests=[],executions=[],prompts=[];
-  const hands=createToolRegistry(),commands=[];
+  const hands=createToolRegistry(),commands=[],commandHooks={before:null};
   const commandRunner=async(file,args,options)=>{
     commands.push({file,args:[...args]});
     if(args.includes("ls-remote")){
@@ -53,6 +54,7 @@ export async function createExecutionScopeFixture(t,{failingFocusedTest=false,re
       return{stdout:`${head}\trefs/heads/${branch}\n`,stderr:""};
     }
     assert.equal(args.some(arg=>["push","fetch","pull","clone"].includes(arg)),false,"No synthetic test may use a live Git operation");
+    if(commandHooks.before){const intercepted=await commandHooks.before(file,args,options);if(intercepted!==undefined)return intercepted;}
     const childEnvironment={...process.env,...options.env};delete childEnvironment.NODE_TEST_CONTEXT;
     return run(file,args,{...options,env:childEnvironment,windowsHide:true});
   };
@@ -104,5 +106,5 @@ export async function createExecutionScopeFixture(t,{failingFocusedTest=false,re
     const context={runId:taskId,stepId:job.stepId,workerId,runtimeVersion,projectId:"nova-brain",continuationGenerationId:task.continuationGenerationId,executionScope:job.executionScope,repositoryContext:{version:1,repository,root,branch,expectedHead:head,source:"persistent_worker_handoff"}};
     return{claim,claimInput,job,context,complete:result=>handoff.complete(job.handoffId,{taskId,workerId,idempotencyKey:claimInput.idempotencyKey,result})};
   };
-  return{...seed,root,head,current,steps,storage,clock,options,service,runtimeVersion,input,actor,plan,planningBoundary,planningWorker,planningService,requests,executions,prompts,commands,hooks,worker,createWorker,handoff,dispatch,hands,taskWorker,authorize,recover,beforeContents,afterContents,verifyBytes,post,path,remoteOverrides,claimExecution,git,client,commandRunner};
+  return{...seed,root,head,current,steps,storage,clock,options,service,runtimeVersion,input,actor,plan,planningBoundary,planningWorker,planningService,requests,executions,prompts,commands,hooks,worker,createWorker,handoff,dispatch,hands,taskWorker,authorize,recover,beforeContents,afterContents,verifyBytes,post,path,remoteOverrides,claimExecution,git,client,commandRunner,commandHooks};
 }

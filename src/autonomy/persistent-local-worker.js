@@ -15,7 +15,7 @@ function exactExecutionScope(task,job,{repository,branch,root,runtimeVersion,wor
 }
 function exactFullTestScope(task,job,{repository,branch,root,runtimeVersion,workerId}){
   const scope=job?.fullTestScope,canonical=value=>String(value||"").replaceAll("\\","/").replace(/\/$/,"").toLowerCase();
-  return !scope?task.fullTestScopeRequired!==true:Boolean(!job.executionScope&&scope.taskId===task.id&&scope.repository===repository&&scope.branch===branch&&scope.currentCommit===task.expectedCommit&&scope.runtimeVersion===runtimeVersion&&scope.workerId===workerId&&canonical(scope.workspaceRoot)===canonical(root)&&scope.continuationGenerationId===task.continuationGenerationId&&job.stepId===scope.fullTestStepId&&job.tool==="test_run_full"&&job.stepType==="run_full_tests");
+  return !scope?task.fullTestScopeRequired!==true:Boolean(!job.executionScope&&(!task.fullTestScopeRecoveryClass||scope.recoveryClass===task.fullTestScopeRecoveryClass)&&scope.taskId===task.id&&scope.repository===repository&&scope.branch===branch&&scope.currentCommit===task.expectedCommit&&scope.runtimeVersion===runtimeVersion&&scope.workerId===workerId&&canonical(scope.workspaceRoot)===canonical(root)&&scope.continuationGenerationId===task.continuationGenerationId&&job.stepId===scope.fullTestStepId&&job.tool==="test_run_full"&&job.stepType==="run_full_tests");
 }
 export function createPersistentLocalWorker({client,root,branch="feat/nova-brain-mvp-foundation",repository="hshanbour/nova-brain",runtimeVersion,environment=process.env,workerId=`persistent-local-${randomUUID()}`,registry}={}){
   if(!client)throw new Error("Protected local Worker client is required.");

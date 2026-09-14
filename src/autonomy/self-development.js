@@ -3,7 +3,7 @@ import {createActiveContinuation,assertActiveImplementationPlan,canonicalContent
 import {recoverFailedLocalRead} from "./failed-local-read-recovery.js";
 import {describePlanningScopeRecovery,recoverPlanningScope,PLANNING_SCOPE_RECOVERY_TOOL} from "./planning-scope-recovery.js";
 import {describeExecutionScopeRecovery,recoverExecutionScope,EXECUTION_SCOPE_RECOVERY_TOOL} from "./execution-scope-recovery.js";
-import {describeFullTestScopeRecovery,recoverFullTestScope,FULL_TEST_SCOPE_RECOVERY_TOOL} from "./full-test-scope-recovery.js";
+import {describeFullTestScopeRecovery,recoverFullTestScope,FULL_TEST_SCOPE_RECOVERY_TOOL,describeFailedFullTestRetry,recoverFailedFullTestRetry,FAILED_FULL_TEST_RETRY_TOOL} from "./full-test-scope-recovery.js";
 import {recoveryHash} from "./failed-local-read-recovery.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
@@ -2754,7 +2754,18 @@ export function createSelfDevelopmentService({
     return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
   }
   const recoverFullTestScopeSuccessor=(taskId,input,actor)=>fullTestScopeCall(()=>recoverFullTestScope(planningScopeOptions(taskId,input,actor)));
+  async function requestFailedFullTestRetry(taskId,input,actor){
+    const {task,approvalArguments}=await fullTestScopeCall(()=>describeFailedFullTestRetry(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===FAILED_FULL_TEST_RETRY_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:FAILED_FULL_TEST_RETRY_TOOL,reason:"Separate owner approval is required for one full-suite retry after local dependency provisioning, bound to this exact failed result and unchanged workspace. No product mutation, replanning, focused rerun, repair attempt, extension, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_failed_full_test_retry_approval_requested",status:"waiting",summary:"One dependency-preflighted full-test retry awaits an owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverFailedFullTestRetrySuccessor=(taskId,input,actor)=>fullTestScopeCall(()=>recoverFailedFullTestRetry(planningScopeOptions(taskId,input,actor)));
   return Object.freeze({
+    requestFailedFullTestRetry,
+    recoverFailedFullTestRetry:recoverFailedFullTestRetrySuccessor,
     requestFullTestScopeRecovery,
     recoverFullTestScope:recoverFullTestScopeSuccessor,
     requestExecutionScopeRecovery,

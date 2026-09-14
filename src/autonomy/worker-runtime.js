@@ -4,7 +4,7 @@ import {activeContinuationExceeded,assertActiveImplementationPlan,planLifecycleM
 import {isExactApprovedDelivery} from "./auto-dispatch.js";
 import {PLANNING_SCOPE_RECOVERY_CLASS,validatePlanningScopeReadEvidence} from "./planning-scope-recovery.js";
 import {EXECUTION_SCOPE_RECOVERY_CLASS,validateExecutionScopeEvidence} from "./execution-scope-recovery.js";
-import {FULL_TEST_SCOPE_RECOVERY_CLASS,validateFullTestScopeEvidence} from "./full-test-scope-recovery.js";
+import {fullTestScopeDescriptor,validateFullTestScopeEvidence} from "./full-test-scope-recovery.js";
 
 export const AUTONOMY_STATUSES = Object.freeze([
   "queued",
@@ -315,7 +315,7 @@ export function createWorkerRuntime({
     const plan = await next(task),
       type = plan.next_step,
       capability = STEP_CAPABILITIES[type] || plan.required_capability;
-    if(task.metadata?.activeContinuation?.recoveryClass===FULL_TEST_SCOPE_RECOVERY_CLASS||task.metadata?.fullTestScopeRecoveryHistory?.length){
+    if(fullTestScopeDescriptor(task)){
       validateFullTestScopeEvidence(task,await storage.listAutonomySteps(task.id),clock);
       if(type!=="run_full_tests")return stop(task,"blocked","full_test_scope_step_forbidden");
       await storage.updateAutonomyTask(task.id,ownerId,{status:"waiting_for_worker",metadata:{...task.metadata,requiredCapability:"test_local"}});

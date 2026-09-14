@@ -14,8 +14,8 @@ const blobHash=content=>createHash("sha1").update(`blob ${Buffer.byteLength(cont
 // The v215 fixture is produced by real planning, non-mutating validation, an
 // approved byte-identical apply, and seven real focused tests. All state and
 // processes belong to an isolated temporary repository/in-memory database.
-export async function createFullTestScopeFixture(t,{failingFullSuite=false}={}){
-  const base=await createExecutionScopeFixture(t,{byteIdenticalReplacements:true,sevenFocusedTests:true,fullSuite:true,failingFullSuite});
+export async function createFullTestScopeFixture(t,{failingFullSuite=false,dependencyFixture=false}={}){
+  const base=await createExecutionScopeFixture(t,{byteIdenticalReplacements:true,sevenFocusedTests:true,fullSuite:true,failingFullSuite,dependencyFixture});
   const {taskId,ownerId,repository,branch,root,head,storage,clock,current,steps}=base;
   await base.authorize();await base.recover();await base.worker.runOnce();await base.worker.runOnce();
   const executionBoundary=await current(),priorSteps=await steps(),focused=priorSteps.find(step=>step.stepId==="150:run_focused_tests"),apply=priorSteps.find(step=>step.stepId==="149:apply_patch");

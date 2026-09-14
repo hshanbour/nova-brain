@@ -14,7 +14,7 @@ import {parseTestFailure} from "./test-failure-evidence.js";
 import {implementationContentHash,implementationContentIssue,isJavaScriptImplementationPath} from "../autonomy/implementation-content.js";
 import {recoveryHash,recoveryRoot} from "../autonomy/failed-local-read-recovery.js";
 import {EXECUTION_SCOPE_RECOVERY_CLASS,executionScopePayload,validateExecutionScopeContext} from "../autonomy/execution-scope-recovery.js";
-import {FULL_TEST_SCOPE_RECOVERY_CLASS,fullTestScopePayload,validateFullTestScopeContext} from "../autonomy/full-test-scope-recovery.js";
+import {FULL_TEST_SCOPE_RECOVERY_CLASS,FAILED_FULL_TEST_RETRY_CLASS,fullTestScopeDescriptor,fullTestScopePayload,validateFullTestScopeContext} from "../autonomy/full-test-scope-recovery.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -179,8 +179,10 @@ export function registerHandsTools(
   const rejectFullTest=predicate=>fail("full_test_scope_recovery_precondition_failed","The exact owner-approved full-test binding could not be proven.",{predicate,mutationApplied:false});
   async function fullTestContext(tool,input,context){
     const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null,scope=context?.fullTestScope;
-    if(!scope){if(durable?.metadata?.fullTestScopeRecoveryHistory?.length)rejectFullTest("full_test_context_required");return null;}
-    if(tool!=="test_run_full"||context.executionScope||scope.version!==1||scope.recoveryClass!==FULL_TEST_SCOPE_RECOVERY_CLASS||!exactScope(input,{})||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||scope.fullTestStepId!==context.stepId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.planHash,scope.planGenerationId,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxFullTestRuns!==1||scope.maxProductMutations!==0||scope.maxAdditionalAttempts!==0||scope.runtimeMinutes!==5||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectFullTest("full_test_context_binding");
+    if(!scope){if(fullTestScopeDescriptor(durable))rejectFullTest("full_test_context_required");return null;}
+    if(tool!=="test_run_full"||context.executionScope||scope.version!==1||![FULL_TEST_SCOPE_RECOVERY_CLASS,FAILED_FULL_TEST_RETRY_CLASS].includes(scope.recoveryClass)||!exactScope(input,{})||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||scope.fullTestStepId!==context.stepId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.planHash,scope.planGenerationId,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxFullTestRuns!==1||scope.maxProductMutations!==0||scope.maxAdditionalAttempts!==0||scope.runtimeMinutes!==5||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectFullTest("full_test_context_binding");
+    const retry=scope.recoveryClass===FAILED_FULL_TEST_RETRY_CLASS;
+    if(retry?(scope.maxFullTestRetries!==1||!/^\d+:run_full_tests$/.test(scope.failedSourceStepId||"")||!/^[a-f0-9]{64}$/.test(scope.failedFailureFingerprint||"")||!exactScope(scope.dependencyPreflight,{package:"@neondatabase/serverless",cwd:scope.workspaceRoot,required:true,consumesOnFailure:true})):scope.dependencyPreflight!==undefined)rejectFullTest("full_test_dependency_binding");
     const carried=context.repositoryContext;
     if(carried.version!==1||carried.repository!==repository||carried.branch!==branch||recoveryRoot(carried.root)!==recoveryRoot(root))rejectFullTest("full_test_repository_context");
     if(durable){
@@ -192,8 +194,8 @@ export function registerHandsTools(
     const key=`full-test:${scope.continuationGenerationId}:${scope.fullTestStepId}`;
     if(executedScopeSteps.has(key))rejectFullTest("full_test_local_replay");
     await verifyFullTestWorkspace(scope);
-    if(Date.parse(scope.runtimeDeadline)-Date.now()<125000)rejectFullTest("full_test_runtime_insufficient");
-    return{scope,key};
+    if(Date.parse(scope.runtimeDeadline)-Date.now()<(retry?135000:125000))rejectFullTest("full_test_runtime_insufficient");
+    return{scope,key,retry};
   }
   async function verifyFullTestWorkspace(scope,{afterRun=false}={}){
     const reject=(predicate,observation=false)=>{
@@ -218,7 +220,7 @@ export function registerHandsTools(
   }
   async function executionContext(tool,input,context){
     const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null;
-    if(context?.fullTestScope||durable?.metadata?.fullTestScopeRecoveryHistory?.length)rejectFullTest("full_test_tool_forbidden");
+    if(context?.fullTestScope||fullTestScopeDescriptor(durable))rejectFullTest("full_test_tool_forbidden");
     const scope=context?.executionScope;
     if(!scope){
       if(durable?.metadata?.executionScopeRecoveryHistory?.length)rejectExecution("execution_context_required");
@@ -1197,10 +1199,22 @@ export function registerHandsTools(
           }
           if(execution){if(executedScopeSteps.has(execution.key))rejectExecution("execution_local_replay");executedScopeSteps.add(execution.key);}
           if(fullTest){if(executedScopeSteps.has(fullTest.key))rejectFullTest("full_test_local_replay");executedScopeSteps.add(fullTest.key);}
+          const testEnvironment=full&&gitExecutable?(()=>{const child={...process.env,...environment};for(const key of Object.keys(child))if(key.toLowerCase()==="path")delete child[key];const inherited=environment.PATH||environment.Path||process.env.PATH||process.env.Path||"";child[process.platform==="win32"?"Path":"PATH"]=[dirname(gitExecutable),inherited].filter(Boolean).join(delimiter);return child;})():undefined;
+          let dependencyPreflight=null;
+          if(fullTest?.retry){
+            // The atomic claim and local reservation precede this preflight:
+            // failure consumes this one use rather than permitting silent retry.
+            let preflight;
+            try{preflight=await command(root,process.execPath,["--input-type=module","--eval","import {access} from 'node:fs/promises';import {fileURLToPath} from 'node:url';await access(fileURLToPath(import.meta.resolve('@neondatabase/serverless')));"],{timeoutMs:10000,runner:commandRunner,environment:testEnvironment});}catch(error){preflight={exitCode:1,spawnErrorCode:error.code||"dependency_resolution_failed"};}
+            await verifyFullTestWorkspace(fullTest.scope,{afterRun:true});
+            if(preflight.exitCode!==0)fail("dependency_provisioning_required","Provision @neondatabase/serverless in the exact product worker cwd before requesting another bounded retry.",{operation:"worker_cwd_dependency_resolution",dependency:"@neondatabase/serverless",workspaceRoot:fullTest.scope.workspaceRoot,resolved:false,npmInvoked:false,consumesOnFailure:true,mutationApplied:false,exitCode:preflight.exitCode,errorCode:preflight.spawnErrorCode||"dependency_resolution_failed"});
+            dependencyPreflight={package:"@neondatabase/serverless",cwd:fullTest.scope.workspaceRoot,resolved:true};
+            if(Date.parse(fullTest.scope.runtimeDeadline)-Date.now()<125000)rejectFullTest("full_test_runtime_insufficient");
+          }
           const result = await command(root, file, args, {
             timeoutMs,
             runner: commandRunner,
-            environment: full&&gitExecutable?(()=>{const child={...process.env,...environment};for(const key of Object.keys(child))if(key.toLowerCase()==="path")delete child[key];const inherited=environment.PATH||environment.Path||process.env.PATH||process.env.Path||"";child[process.platform==="win32"?"Path":"PATH"]=[dirname(gitExecutable),inherited].filter(Boolean).join(delimiter);return child;})():undefined,
+            environment:testEnvironment,
           });
           const completeOutput = `${result.stdout}\n${result.stderr}`.trim(),
             outputLimit = 20_000,
@@ -1215,6 +1229,7 @@ export function registerHandsTools(
             outputTruncated: completeOutput.length > outputLimit,
             ...(execution?{executionScopeEvidence:{generationId:execution.scope.continuationGenerationId,planHash:execution.scope.planHash,entries:execution.scope.afterEntries}}:{}),
             ...(fullTest?{fullTestScopeEvidence:{generationId:fullTest.scope.continuationGenerationId,planHash:fullTest.scope.planHash,entries:fullTest.scope.entries}}:{}),
+            ...(dependencyPreflight?{dependencyPreflight}:{}),
           };
           if (result.spawnErrorCode)
             value.error = {
@@ -1230,7 +1245,7 @@ export function registerHandsTools(
             value.error = {
               code: "test_failed",
               message: "Allowlisted tests failed.",
-              evidence: {...parseTestFailure({root,runner:"node_test",command:full?"npm:test":"node:test:focused",exitCode:result.exitCode,signal:result.signal,stdout:result.stdout,stderr:result.stderr,durationMs:result.durationMs}),...(fullTest?{fullTestScopeEvidence:value.fullTestScopeEvidence}:{})},
+              evidence: {...parseTestFailure({root,runner:"node_test",command:full?"npm:test":"node:test:focused",exitCode:result.exitCode,signal:result.signal,stdout:result.stdout,stderr:result.stderr,durationMs:result.durationMs}),...(fullTest?{fullTestScopeEvidence:value.fullTestScopeEvidence}:{}),...(dependencyPreflight?{dependencyPreflight}:{})},
             };
           return audit(name, value, context, started);
         },
