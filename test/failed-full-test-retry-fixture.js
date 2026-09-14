@@ -22,8 +22,8 @@ const isNpm=args=>args.some(arg=>arg.endsWith("npm-cli.js"))&&args.includes("tes
 // boundary; actual Hands parsing and worker completion durably create v219.
 // The retry executes the real fixture npm suite and real cwd-local resolution of
 // an inert synthetic dependency package, without network or product access.
-export async function createFailedFullTestRetryFixture(t,{failingRetry=false,dependencyAvailable=true}={}){
-  const base=await createFullTestScopeFixture(t,{failingFullSuite:failingRetry,dependencyFixture:true});
+export async function createFailedFullTestRetryFixture(t,{failingRetry=false,dependencyAvailable=true,fullSuiteTestSource}={}){
+  const base=await createFullTestScopeFixture(t,{failingFullSuite:failingRetry,dependencyFixture:true,fullSuiteTestSource});
   const {taskId,ownerId,root,repository,branch,head,storage,current,steps}=base;
   let historicalRuns=0;
   base.commandHooks.before=async(file,args)=>{

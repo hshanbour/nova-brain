@@ -28,7 +28,7 @@ export const executionProofSignature=proof=>createHmac("sha256",PLANNING_TOKEN).
 
 // Real worker/Hands pipelines operate ONLY on this synthetic temporary repo and
 // an in-memory task. No live credentials, endpoint or Nova workspace is used.
-export async function createExecutionScopeFixture(t,{failingFocusedTest=false,restoreFirstTrackedToBaseline=false,byteIdenticalReplacements=false,sevenFocusedTests=false,fullSuite=false,failingFullSuite=false,dependencyFixture=false}={}){
+export async function createExecutionScopeFixture(t,{failingFocusedTest=false,restoreFirstTrackedToBaseline=false,byteIdenticalReplacements=false,sevenFocusedTests=false,fullSuite=false,failingFullSuite=false,dependencyFixture=false,fullSuiteTestSource}={}){
   const root=await mkdtemp(join(tmpdir(),"nova-execution-scope-e2e-"));
   t.after(async()=>{assert.equal(dirname(resolve(root)),resolve(tmpdir()));assert.ok(root.includes("nova-execution-scope-e2e-"));await rm(root,{recursive:true,force:true});});
   const git=async(...args)=>(await run("git",args,{cwd:root,windowsHide:true})).stdout.trim();
@@ -40,7 +40,7 @@ export async function createExecutionScopeFixture(t,{failingFocusedTest=false,re
   await writeFile(join(root,"package.json"),JSON.stringify({name:"synthetic-execution-fixture",private:true,type:"module",...(fullSuite?{scripts:{test:"node --test"}}:{}),...(dependencyFixture?{dependencies:{"@neondatabase/serverless":"^1.1.0"}}:{})}));
   if(dependencyFixture){await writeFile(join(root,".gitignore"),"node_modules/\n");await writeFile(join(root,"package-lock.json"),JSON.stringify({name:"synthetic-execution-fixture",lockfileVersion:3,packages:{"":{dependencies:{"@neondatabase/serverless":"^1.1.0"}},"node_modules/@neondatabase/serverless":{version:"1.1.0"}}}));}
   for(const path of PLANNING_PATHS){await mkdir(dirname(join(root,path)),{recursive:true});if(path!==PLANNING_PATHS[5])await writeFile(join(root,path),path===PLANNING_PATHS[0]?firstTrackedBaseline:baseline);}
-  if(fullSuite)await writeFile(join(root,"test/full-suite-only.test.js"),`import test from "node:test";\nimport assert from "node:assert/strict";\ntest("synthetic full-suite-only acceptance",()=>assert.equal(${failingFullSuite?"1,2":"1,1"}));\n`);
+  if(fullSuite)await writeFile(join(root,"test/full-suite-only.test.js"),fullSuiteTestSource??`import test from "node:test";\nimport assert from "node:assert/strict";\ntest("synthetic full-suite-only acceptance",()=>assert.equal(${failingFullSuite?"1,2":"1,1"}));\n`);
   await git("init","-b","feat/nova-brain-mvp-foundation");await git("config","core.autocrlf","false");await git("config","user.name","Synthetic Execution Verification");await git("config","user.email","fixture@example.invalid");await git("remote","add","origin","https://github.com/hshanbour/nova-brain.git");await git("add",".");await git("commit","-m","synthetic execution successor fixture");
   const head=await git("rev-parse","HEAD");for(const [path,content] of beforeContents)await writeFile(join(root,path),content);
   const status=await git("status","--porcelain=v1","--untracked-files=all"),time=Math.max(Date.now(),Date.parse("2026-09-14T18:00:00.000Z")),clock=()=>new Date(time);

@@ -1,3 +1,5 @@
+import {reviewRemediationDescriptor} from "./review-remediation-scope.js";
+
 const ACTIVE=new Set(["queued","retrying","waiting","waiting_for_worker"]);
 const LOCAL=new Set(["apply_patch","validate_patch","run_focused_tests","run_full_tests","inspect_diff","review_commit","commit","integrate_commit"]);
 const ordinal=step=>Number.parseInt(step?.stepId,10);
@@ -55,7 +57,7 @@ export function createAutoDispatchService({storage,ownerId,approvedBranch="feat/
     }
     if(!task)return{dispatched:false};
     const step=task.metadata?.steps?.[task.currentStep],stepType=approvedDelivery?"push":step?.type,taskOwnedLocalRead=stepType==="read_files"&&step?.input?.tool==="repo_read_task_owned_local",mode=approvedDelivery||task.status==="waiting_for_worker"||LOCAL.has(stepType)||taskOwnedLocalRead?"local_handoff":"task_tick";
-    return{dispatched:true,task:{id:task.id,status:task.status,branch:task.branch,expectedCommit:task.currentCommit,stateVersion:task.stateVersion,mode,stepType:stepType||null,continuationGenerationId:task.metadata?.activeContinuation?.generationId||null,...(task.metadata?.failedFullTestRetryHistory?.length||task.metadata?.fullTestScopeRecoveryHistory?.length?{fullTestScopeRequired:true,fullTestScopeRecoveryClass:task.metadata?.activeContinuation?.recoveryClass}:task.metadata?.executionScopeRecoveryHistory?.length?{executionScopeRequired:true}:{})}};
+    return{dispatched:true,task:{id:task.id,status:task.status,branch:task.branch,expectedCommit:task.currentCommit,stateVersion:task.stateVersion,mode,stepType:stepType||null,continuationGenerationId:task.metadata?.activeContinuation?.generationId||null,...(reviewRemediationDescriptor(task)?{reviewRemediationScopeRequired:true}:task.metadata?.failedFullTestRetryHistory?.length||task.metadata?.fullTestScopeRecoveryHistory?.length?{fullTestScopeRequired:true,fullTestScopeRecoveryClass:task.metadata?.activeContinuation?.recoveryClass}:task.metadata?.executionScopeRecoveryHistory?.length?{executionScopeRequired:true}:{})}};
   }
   return Object.freeze({next});
 }

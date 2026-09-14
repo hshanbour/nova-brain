@@ -15,6 +15,7 @@ import {implementationContentHash,implementationContentIssue,isJavaScriptImpleme
 import {recoveryHash,recoveryRoot} from "../autonomy/failed-local-read-recovery.js";
 import {EXECUTION_SCOPE_RECOVERY_CLASS,executionScopePayload,validateExecutionScopeContext} from "../autonomy/execution-scope-recovery.js";
 import {FULL_TEST_SCOPE_RECOVERY_CLASS,FAILED_FULL_TEST_RETRY_CLASS,fullTestScopeDescriptor,fullTestScopePayload,validateFullTestScopeContext} from "../autonomy/full-test-scope-recovery.js";
+import {REVIEW_REMEDIATION_CLASS,reviewRemediationDescriptor,reviewRemediationScopePayload,validateReviewRemediationContext} from "../autonomy/review-remediation-scope.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -138,6 +139,7 @@ const def = (tool) => ({
   configurationStatus: "ready",
   ...tool,
   execute:async(input,context)=>{
+    if(context?.reviewRemediationScope&&!["repo_read_task_owned_local","repo_validate_patch","repo_apply_patch","test_run","test_run_full"].includes(tool.name))fail("review_remediation_precondition_failed","Review-remediation authority cannot execute another Hands tool.",{predicate:"remediation_tool_forbidden",mutationApplied:false});
     if(context?.fullTestScope&&tool.name!=="test_run_full")fail("full_test_scope_recovery_precondition_failed","Full-test-only authority cannot execute another Hands tool.",{predicate:"full_test_tool_forbidden",mutationApplied:false});
     return tool.execute(input,context);
   },
@@ -177,6 +179,49 @@ export function registerHandsTools(
   const exactScope=(left,right)=>recoveryHash(left)===recoveryHash(right);
   const rejectExecution=(predicate,mutationApplied=false)=>fail("execution_scope_recovery_precondition_failed","The exact owner-approved execution binding could not be proven.",{predicate,mutationApplied});
   const rejectFullTest=predicate=>fail("full_test_scope_recovery_precondition_failed","The exact owner-approved full-test binding could not be proven.",{predicate,mutationApplied:false});
+  const rejectRemediation=(predicate,details={})=>fail("review_remediation_precondition_failed","The exact owner-approved remediation binding could not be proven.",{predicate,mutationApplied:false,...details});
+  async function remediationContext(tool,input,context){
+    const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null,scope=context?.reviewRemediationScope;
+    if(!scope){if(reviewRemediationDescriptor(durable))rejectRemediation("remediation_context_required");return null;}
+    if(context.executionScope||context.fullTestScope||scope.version!==1||scope.recoveryClass!==REVIEW_REMEDIATION_CLASS||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.reviewHash,scope.sourcePlanHash,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxProductMutations!==1||scope.maxApplyAttempts!==1||scope.maxFocusedTestRuns!==1||scope.maxFullTestRuns!==1||scope.maxAdditionalAttempts!==0||scope.runtimeMinutes!==15||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectRemediation("remediation_context_binding");
+    const carried=context.repositoryContext;
+    if(carried.version!==1||carried.repository!==repository||carried.branch!==branch||carried.source!=="persistent_worker_handoff"||recoveryRoot(carried.root)!==recoveryRoot(root))rejectRemediation("remediation_repository_context");
+    const paths=scope.requiredPaths,phaseIds=[...(scope.readStepIds||[]),scope.planStepId,scope.validateStepId,scope.applyStepId,scope.focusedStepId,scope.fullTestStepId],types=[...Array(8).fill("read_files"),"plan_repair","validate_patch","apply_patch","run_focused_tests","run_full_tests"],start=Number.parseInt(phaseIds[0],10);
+    if(!Array.isArray(paths)||paths.length!==8||new Set(paths).size!==8||paths.some(path=>typeof path!=="string"||!path||safe(root,path)!==resolve(root,path))||phaseIds.length!==13||phaseIds.some((id,index)=>id!==`${start+index}:${types[index]}`))rejectRemediation("remediation_exact_scope");
+    for(const entries of [scope.beforeEntries,...(scope.afterEntries?[scope.afterEntries]:[])])if(!Array.isArray(entries)||entries.length!==8||new Set(entries.map(item=>item.path)).size!==8||entries.some(item=>!paths.includes(item.path)||item.hashAlgorithm!=="git_sha1"||!SHA.test(item.hash||"")||item.rawHash!==item.hash||!/^[a-f0-9]{64}$/.test(item.contentHash||"")))rejectRemediation("remediation_complete_lineage");
+    const readIndex=scope.readStepIds.indexOf(context.stepId),stepId=tool==="repo_read_task_owned_local"&&readIndex>=0?scope.readStepIds[readIndex]:tool==="repo_validate_patch"?scope.validateStepId:tool==="repo_apply_patch"?scope.applyStepId:tool==="test_run"?scope.focusedStepId:tool==="test_run_full"?scope.fullTestStepId:null;
+    if(!stepId||stepId!==context.stepId)rejectRemediation("remediation_phase_binding");
+    if(durable){if(!storage.listAutonomySteps)rejectRemediation("remediation_steps_required");const{record}=validateReviewRemediationContext(durable,await storage.listAutonomySteps(context.runId),{runtimeVersion:context.runtimeVersion,generationId:context.continuationGenerationId,repository,branch,root,workerId:context.workerId});if(!exactScope(scope,reviewRemediationScopePayload(record)))rejectRemediation("remediation_durable_payload");}
+    const after=tool==="test_run"||tool==="test_run_full",entries=after?scope.afterEntries:scope.beforeEntries;
+    if(readIndex>=0){const entry=scope.beforeEntries.find(item=>item.path===paths[readIndex]),binding=input.binding;if(input.path!==entry.path||input.expectedContentHash!==entry.contentHash||binding?.version!==1||binding.taskId!==scope.taskId||binding.repository!==scope.repository||binding.branch!==scope.branch||binding.currentCommit!==scope.currentCommit||recoveryRoot(binding.workspaceRoot)!==recoveryRoot(scope.workspaceRoot)||binding.runtimeVersion!==scope.runtimeVersion||binding.continuationGenerationId!==scope.continuationGenerationId||binding.sourcePlanStepId!==scope.sourcePlanStepId||binding.sourceApplyStepId!==scope.sourceApplyStepId||binding.sourceApplyFingerprint!==scope.sourceApplyFingerprint)rejectRemediation("remediation_read_binding");}
+    else{
+      if(![scope.planHash,scope.planGenerationId,scope.filesHash,scope.fullPlanHash,scope.coverageHash].every(value=>/^[a-f0-9]{64}$/.test(value||""))||!scope.afterEntries||!Array.isArray(scope.focusedTests)||!scope.focusedTests.length||new Set(scope.focusedTests).size!==scope.focusedTests.length||scope.focusedTests.some(path=>!paths.includes(path)||!/^test\/.+\.test\.js$/.test(path)))rejectRemediation("remediation_accepted_plan_required");
+      if(["repo_validate_patch","repo_apply_patch"].includes(tool)){
+        if(input.branch!==branch||input.currentCommit!==scope.currentCommit||!Array.isArray(input.files)||!input.files.length||input.files.some(item=>!paths.includes(item.path))||recoveryHash(input.files)!==scope.filesHash||input.planProvenance?.generationId!==scope.planGenerationId||input.planProvenance?.reviewRemediation!==true||input.planProvenance?.reviewHash!==scope.reviewHash||input.planProvenance?.continuationGenerationId!==scope.continuationGenerationId)rejectRemediation("remediation_exact_replacements");
+        for(const file of input.files){const entry=scope.afterEntries.find(item=>item.path===file.path),bytes=Buffer.from(file.content,"utf8");if(createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex")!==entry.hash||canonicalContentHash(file.content)!==entry.contentHash)rejectRemediation("remediation_replacement_hash");}
+      }else if(!exactScope(input,tool==="test_run"?{files:scope.focusedTests}:{}))rejectRemediation("remediation_exact_tests");
+    }
+    const key=`review-remediation:${scope.continuationGenerationId}:${stepId}`;
+    if(executedScopeSteps.has(key))rejectRemediation("remediation_local_replay");
+    await verifyRemediationWorkspace(scope,entries,{before:!after});
+    if(after&&Date.parse(scope.runtimeDeadline)-Date.now()<125000)rejectRemediation("remediation_test_runtime_insufficient");
+    return{scope,key,entries};
+  }
+  async function verifyRemediationWorkspace(scope,entries,{before=false,afterRun=false}={}){
+    const reject=predicate=>rejectRemediation(predicate,afterRun?{verificationPhase:"post_run",mutationApplied:null,workspaceDriftObserved:true}:{});
+    try{
+      if(recoveryRoot(await realpath(root))!==recoveryRoot(scope.workspaceRoot))reject("remediation_canonical_workspace");
+      const run=args=>localGit?localGit(root,args):gitCommand(root,args,{runner:commandRunner,environment,gitExecutable});
+      const bound=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:branch,expectedHead:scope.currentCommit,requireClean:true,source:"owner_approved_review_remediation",git:(_root,args)=>run(args)});
+      if(bound.actualHead!==scope.currentCommit)reject("remediation_product_head");
+      const status=await run(["status","--porcelain=v1","--untracked-files=all"]),lines=status.stdout.split(/\r?\n/).filter(Boolean),dirty=lines.map(line=>line.slice(3).replaceAll("\\","/")).sort();
+      if(status.exitCode!==0||lines.some(line=>!line.startsWith(" M ")&&!line.startsWith("?? "))||(before?!exactScope(dirty,[...scope.requiredPaths].sort()):dirty.some(path=>!scope.requiredPaths.includes(path))))reject("remediation_complete_dirty_set");
+      const tip=await run(["ls-remote","--heads","origin",`refs/heads/${branch}`]);if(tip.exitCode!==0||tip.stdout.trim()!==`${scope.currentCommit}\trefs/heads/${branch}`)reject("remediation_live_product_tip");
+      for(const entry of entries){const path=safe(root,entry.path),info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||recoveryRoot(await realpath(path))!==recoveryRoot(path))reject("remediation_regular_file");const bytes=await readFile(path),rawHash=createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");if(rawHash!==entry.hash||canonicalContentHash(bytes.toString("utf8"))!==entry.contentHash)reject("remediation_current_bytes");}
+      if(Date.parse(scope.runtimeDeadline)<=Date.now())reject("remediation_runtime_window");
+    }catch(error){if(error.code==="review_remediation_precondition_failed")throw error;reject("remediation_workspace_unavailable");}
+  }
+  const remediationEvidence=(remediation,entries=remediation.entries)=>({generationId:remediation.scope.continuationGenerationId,reviewHash:remediation.scope.reviewHash,planHash:remediation.scope.planHash||null,entries});
   async function fullTestContext(tool,input,context){
     const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null,scope=context?.fullTestScope;
     if(!scope){if(fullTestScopeDescriptor(durable))rejectFullTest("full_test_context_required");return null;}
@@ -941,6 +986,7 @@ export function registerHandsTools(
       description: "Read one complete, hash-bound task-owned file from the controlled local workspace.",
       inputSchema: schema({path:text,expectedContentHash:text,binding:{type:"object"}},["path","expectedContentHash","binding"]),
       async execute({path,expectedContentHash,binding},context){
+        const remediation=await remediationContext("repo_read_task_owned_local",{path,expectedContentHash,binding},context);
         const started=Date.now(),repositoryContext=context?.repositoryContext,canonical=value=>String(value||"").replaceAll("\\","/").replace(/\/$/,"").toLowerCase(),valid=repositoryContext?.source==="persistent_worker_handoff"&&context?.runId===binding?.taskId&&binding?.version===1&&binding.repository===repository&&binding.branch===branch&&binding.currentCommit===repositoryContext.expectedHead&&canonical(binding.workspaceRoot)===canonical(root)&&canonical(repositoryContext.root)===canonical(root)&&typeof binding.sourcePlanStepId==="string"&&/^\d+:plan_(implementation|repair)$/.test(binding.sourcePlanStepId)&&typeof binding.sourceApplyStepId==="string"&&/^\d+:apply_patch$/.test(binding.sourceApplyStepId)&&/^[a-f0-9]{64}$/.test(binding.sourceApplyFingerprint||"")&&typeof binding.continuationGenerationId==="string"&&binding.continuationGenerationId===context?.continuationGenerationId&&/^[a-f0-9]{64}$/.test(expectedContentHash||"");
         if(!valid)fail("task_owned_local_read_unproven","The task-owned local read binding is invalid.");
         const target=safe(root,path),content=await readFile(target,"utf8").catch(()=>fail("task_owned_local_read_unavailable","The bound task-owned local file is unavailable."));
@@ -949,6 +995,22 @@ export function registerHandsTools(
         if(contentHash!==expectedContentHash)fail("task_owned_local_read_drift","The bound task-owned local file changed after attestation.");
         const status=await gitCommand(root,["status","--porcelain=v1","--",path],{runner:commandRunner,environment,gitExecutable});
         if(status.exitCode!==0||!String(status.stdout||"").trim())fail("task_owned_local_read_unproven","The bound path is not current task-owned workspace output.");
+        if(remediation){
+          executedScopeSteps.add(remediation.key);
+          const run=args=>localGit?localGit(root,args):gitCommand(root,args,{runner:commandRunner,environment,gitExecutable});
+          const listed=await run(["ls-tree","--name-only",binding.currentCommit,"--",path]);
+          if(listed.exitCode!==0||!["",path].includes(listed.stdout.trim()))rejectRemediation("remediation_baseline_path");
+          let baselineContent=null;
+          if(listed.stdout.trim()){
+            const baseline=await run(["show",`${binding.currentCommit}:${path}`]);
+            if(baseline.exitCode!==0||baseline.stdout.length>=100000)rejectRemediation("remediation_baseline_complete_read");
+            baselineContent=baseline.stdout;
+          }
+          await verifyRemediationWorkspace(remediation.scope,remediation.scope.beforeEntries,{before:true,afterRun:true});
+          const result={ok:true,path,content,contentHash,truncated:false,source:"task_owned_local_workspace",baselineContent,baselineCommit:binding.currentCommit,baselineContentHash:baselineContent===null?null:canonicalContentHash(baselineContent),reviewRemediationEvidence:remediationEvidence(remediation)};
+          if(JSON.stringify(result).length>190000)rejectRemediation("remediation_complete_read_result_size");
+          return audit("repo_read_task_owned_local",result,context,started);
+        }
         return audit("repo_read_task_owned_local",{ok:true,path,content,contentHash,truncated:false,source:"task_owned_local_workspace"},context,started);
       },
     }),
@@ -991,11 +1053,12 @@ export function registerHandsTools(
       },
       async execute({ files, currentCommit, planProvenance, branch }, context) {
         const started = Date.now();
-        const execution=preflightOnly?null:await executionContext("repo_apply_patch",{files,currentCommit,planProvenance,branch},context);
+        const remediation=await remediationContext(preflightOnly?"repo_validate_patch":"repo_apply_patch",{files,currentCommit,planProvenance,branch},context);
+        const execution=preflightOnly||remediation?null:await executionContext("repo_apply_patch",{files,currentCommit,planProvenance,branch},context);
         const durableTask=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null;
-        if(!preflightOnly&&!execution&&durableTask?.metadata?.planningScopeRecoveryHistory?.length)
+        if(!preflightOnly&&!execution&&!remediation&&durableTask?.metadata?.planningScopeRecoveryHistory?.length)
           fail("planning_scope_mutation_forbidden", "The durable task is bound to planning-only authority.", {mutationApplied:false});
-        if (!preflightOnly && !execution && planProvenance?.planningOnly === true)
+        if (!preflightOnly && !execution && !remediation && planProvenance?.planningOnly === true)
           fail("planning_scope_mutation_forbidden", "This generation authorizes pre-mutation validation only.", {mutationApplied:false});
         if (preflightOnly && (!currentCommit || !planProvenance))
           fail("implementation_plan_provenance_missing", "Preflight requires the exact task-bound implementation plan.", {mutationApplied:false});
@@ -1081,13 +1144,18 @@ export function registerHandsTools(
             );
           originals.push({ path: item.path, current });
         }
-        if (preflightOnly) return audit("repo_validate_patch", {
+        if (preflightOnly){
+          if(remediation){executedScopeSteps.add(remediation.key);await verifyRemediationWorkspace(remediation.scope,remediation.scope.beforeEntries,{before:true,afterRun:true});}
+          return audit("repo_validate_patch", {
           ok:true, preMutationValidated:true, mutationApplied:false,
           files:files.map(item=>item.path), currentCommit,
           planGenerationId:planProvenance.generationId,
+          ...(remediation?{reviewRemediationEvidence:remediationEvidence(remediation)}:{}),
         }, context, started);
+        }
         const temps = [];
         if(execution){await verifyExecutionWorkspace(execution.scope,execution.scope.beforeEntries);if(executedScopeSteps.has(execution.key))rejectExecution("execution_local_replay");executedScopeSteps.add(execution.key);}
+        if(remediation){await verifyRemediationWorkspace(remediation.scope,remediation.scope.beforeEntries,{before:true});if(executedScopeSteps.has(remediation.key))rejectRemediation("remediation_local_replay");executedScopeSteps.add(remediation.key);}
         try {
           for (const item of files) {
             const target = safe(root, item.path);
@@ -1116,6 +1184,7 @@ export function registerHandsTools(
         let taskOwnedDirtyLineage;
         if(authorizedTaskOwnedDirtyLineage){const entries=[];for(const entry of authorizedTaskOwnedDirtyLineage.entries){const content=await readFile(safe(root,entry.path),"utf8");entries.push({path:entry.path,contentHash:canonicalContentHash(content)});}taskOwnedDirtyLineage={version:1,taskId:context.runId,repository,branch,currentCommit,sourcePlanStepId:authorizedTaskOwnedDirtyLineage.activePlanStepId||authorizedTaskOwnedDirtyLineage.sourcePlanStepId,sourceApplyStepId:context.stepId,entries:entries.sort((a,b)=>a.path.localeCompare(b.path))};}
         if(execution)await verifyExecutionWorkspace(execution.scope,execution.scope.afterEntries);
+        if(remediation)await verifyRemediationWorkspace(remediation.scope,remediation.scope.afterEntries,{afterRun:true});
         return audit(
           "repo_apply_patch",
           {
@@ -1124,6 +1193,7 @@ export function registerHandsTools(
             changedFiles: files.length,
             ...(taskOwnedDirtyLineage?{taskOwnedDirtyLineage}:{}),
             ...(execution?{executionScopeEvidence:{generationId:execution.scope.continuationGenerationId,planHash:execution.scope.planHash,entries:execution.scope.afterEntries}}:{}),
+            ...(remediation?{reviewRemediationEvidence:remediationEvidence(remediation,remediation.scope.afterEntries)}:{}),
           },
           context,
           started,
@@ -1153,7 +1223,7 @@ export function registerHandsTools(
             ),
         async execute(input, context) {
           const started = Date.now();
-          const fullTest=await fullTestContext(full?"test_run_full":"test_run",input,context),execution=fullTest?null:await executionContext(full?"test_run_full":"test_run",input,context);
+          const remediation=await remediationContext(full?"test_run_full":"test_run",input,context),fullTest=remediation?null:await fullTestContext(full?"test_run_full":"test_run",input,context),execution=remediation||fullTest?null:await executionContext(full?"test_run_full":"test_run",input,context);
           const timeoutMs = Math.max(
             1000,
             Math.min(180_000, input.timeoutMs || 120_000),
@@ -1199,6 +1269,7 @@ export function registerHandsTools(
           }
           if(execution){if(executedScopeSteps.has(execution.key))rejectExecution("execution_local_replay");executedScopeSteps.add(execution.key);}
           if(fullTest){if(executedScopeSteps.has(fullTest.key))rejectFullTest("full_test_local_replay");executedScopeSteps.add(fullTest.key);}
+          if(remediation){if(executedScopeSteps.has(remediation.key))rejectRemediation("remediation_local_replay");executedScopeSteps.add(remediation.key);}
           const testEnvironment=full&&gitExecutable?(()=>{const child={...process.env,...environment};for(const key of Object.keys(child))if(key.toLowerCase()==="path")delete child[key];const inherited=environment.PATH||environment.Path||process.env.PATH||process.env.Path||"";child[process.platform==="win32"?"Path":"PATH"]=[dirname(gitExecutable),inherited].filter(Boolean).join(delimiter);return child;})():undefined;
           let dependencyPreflight=null;
           if(fullTest?.retry){
@@ -1221,6 +1292,7 @@ export function registerHandsTools(
             output = completeOutput.slice(-outputLimit);
           if(execution)await verifyExecutionWorkspace(execution.scope,execution.scope.afterEntries);
           if(fullTest)await verifyFullTestWorkspace(fullTest.scope,{afterRun:true});
+          if(remediation)await verifyRemediationWorkspace(remediation.scope,remediation.scope.afterEntries,{afterRun:true});
           const value = {
             ok: result.exitCode === 0,
             exitCode: result.exitCode,
@@ -1229,6 +1301,7 @@ export function registerHandsTools(
             outputTruncated: completeOutput.length > outputLimit,
             ...(execution?{executionScopeEvidence:{generationId:execution.scope.continuationGenerationId,planHash:execution.scope.planHash,entries:execution.scope.afterEntries}}:{}),
             ...(fullTest?{fullTestScopeEvidence:{generationId:fullTest.scope.continuationGenerationId,planHash:fullTest.scope.planHash,entries:fullTest.scope.entries}}:{}),
+            ...(remediation?{reviewRemediationEvidence:remediationEvidence(remediation,remediation.scope.afterEntries)}:{}),
             ...(dependencyPreflight?{dependencyPreflight}:{}),
           };
           if (result.spawnErrorCode)
@@ -1245,7 +1318,7 @@ export function registerHandsTools(
             value.error = {
               code: "test_failed",
               message: "Allowlisted tests failed.",
-              evidence: {...parseTestFailure({root,runner:"node_test",command:full?"npm:test":"node:test:focused",exitCode:result.exitCode,signal:result.signal,stdout:result.stdout,stderr:result.stderr,durationMs:result.durationMs}),...(fullTest?{fullTestScopeEvidence:value.fullTestScopeEvidence}:{}),...(dependencyPreflight?{dependencyPreflight}:{})},
+              evidence: {...parseTestFailure({root,runner:"node_test",command:full?"npm:test":"node:test:focused",exitCode:result.exitCode,signal:result.signal,stdout:result.stdout,stderr:result.stderr,durationMs:result.durationMs}),...(remediation?{reviewRemediationEvidence:value.reviewRemediationEvidence}:{}),...(fullTest?{fullTestScopeEvidence:value.fullTestScopeEvidence}:{}),...(dependencyPreflight?{dependencyPreflight}:{})},
             };
           return audit(name, value, context, started);
         },

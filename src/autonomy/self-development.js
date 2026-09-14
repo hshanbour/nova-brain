@@ -4,6 +4,7 @@ import {recoverFailedLocalRead} from "./failed-local-read-recovery.js";
 import {describePlanningScopeRecovery,recoverPlanningScope,PLANNING_SCOPE_RECOVERY_TOOL} from "./planning-scope-recovery.js";
 import {describeExecutionScopeRecovery,recoverExecutionScope,EXECUTION_SCOPE_RECOVERY_TOOL} from "./execution-scope-recovery.js";
 import {describeFullTestScopeRecovery,recoverFullTestScope,FULL_TEST_SCOPE_RECOVERY_TOOL,describeFailedFullTestRetry,recoverFailedFullTestRetry,FAILED_FULL_TEST_RETRY_TOOL} from "./full-test-scope-recovery.js";
+import {describeReviewRemediation,recoverReviewRemediation,REVIEW_REMEDIATION_TOOL} from "./review-remediation-scope.js";
 import {recoveryHash} from "./failed-local-read-recovery.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
@@ -2763,7 +2764,19 @@ export function createSelfDevelopmentService({
     return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
   }
   const recoverFailedFullTestRetrySuccessor=(taskId,input,actor)=>fullTestScopeCall(()=>recoverFailedFullTestRetry(planningScopeOptions(taskId,input,actor)));
+  const reviewRemediationCall=async operation=>{try{return await operation();}catch(error){if(error.code!=="review_remediation_precondition_failed")throw error;throw Object.assign(new SelfDevelopmentError(error.code,error.message,error.statusCode||409),{safeDiagnostics:error.safeDiagnostics});}};
+  async function requestReviewRemediationApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeReviewRemediation(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===REVIEW_REMEDIATION_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:REVIEW_REMEDIATION_TOOL,reason:"Separate owner approval is required for one review-remediation cycle bound to structured review findings and the exact eight-file workspace. Only Nova may plan and apply one bounded remediation, run focused/full tests, and return to a non-executing review boundary. No additional repair extension, retry, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_review_remediation_approval_requested",status:"waiting",summary:"One exact review-remediation successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverReviewRemediationSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverReviewRemediation(planningScopeOptions(taskId,input,actor)));
   return Object.freeze({
+    requestReviewRemediationApproval,
+    recoverReviewRemediation:recoverReviewRemediationSuccessor,
     requestFailedFullTestRetry,
     recoverFailedFullTestRetry:recoverFailedFullTestRetrySuccessor,
     requestFullTestScopeRecovery,
