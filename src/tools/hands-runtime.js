@@ -1,4 +1,4 @@
-import { readFile, readdir, writeFile, rename, rm } from "node:fs/promises";
+import { readFile, readdir, writeFile, rename, rm, lstat, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, relative, sep, dirname, basename, join, delimiter } from "node:path";
 import { execFile } from "node:child_process";
@@ -12,6 +12,8 @@ import { createGitExecutor } from "./git-execution.js";
 import {canonicalContentHash,IMPLEMENTATION_PLAN_PROVENANCE_VERSION} from "../autonomy/self-development-plan-lifecycle.js";
 import {parseTestFailure} from "./test-failure-evidence.js";
 import {implementationContentHash,implementationContentIssue,isJavaScriptImplementationPath} from "../autonomy/implementation-content.js";
+import {recoveryHash,recoveryRoot} from "../autonomy/failed-local-read-recovery.js";
+import {EXECUTION_SCOPE_RECOVERY_CLASS,executionScopePayload,validateExecutionScopeContext} from "../autonomy/execution-scope-recovery.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -163,6 +165,63 @@ export function registerHandsTools(
       );
     return branch;
   };
+  // Execution authority is carried only in the authenticated handoff context,
+  // never in planner/tool arguments. Recheck the exact local bytes at each
+  // action; the server independently reserves the one-use step before dispatch.
+  const executedScopeSteps=new Set();
+  const exactScope=(left,right)=>recoveryHash(left)===recoveryHash(right);
+  const rejectExecution=(predicate,mutationApplied=false)=>fail("execution_scope_recovery_precondition_failed","The exact owner-approved execution binding could not be proven.",{predicate,mutationApplied});
+  async function executionContext(tool,input,context){
+    const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null;
+    const scope=context?.executionScope;
+    if(!scope){
+      if(durable?.metadata?.executionScopeRecoveryHistory?.length)rejectExecution("execution_context_required");
+      return null;
+    }
+    const stepId=tool==="repo_apply_patch"?scope.applyStepId:tool==="test_run"?scope.testStepId:null;
+    if(!stepId||scope.version!==1||scope.recoveryClass!==EXECUTION_SCOPE_RECOVERY_CLASS||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||stepId!==context.stepId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.planHash,scope.planGenerationId,scope.filesHash,scope.fullPlanHash,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxProductMutations!==1||scope.maxApplyAttempts!==1||scope.maxFocusedTestRuns!==1||scope.maxAdditionalAttempts!==0||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectExecution("execution_context_binding");
+    const carried=context.repositoryContext;
+    if(carried.version!==1||carried.repository!==repository||carried.branch!==branch||recoveryRoot(carried.root)!==recoveryRoot(root))rejectExecution("execution_repository_context");
+    if(durable){
+      if(!storage.listAutonomySteps)rejectExecution("execution_durable_steps_required");
+      const steps=await storage.listAutonomySteps(context.runId);
+      const {record}=validateExecutionScopeContext(durable,steps,{runtimeVersion:context.runtimeVersion,generationId:context.continuationGenerationId,repository,branch,root,workerId:context.workerId});
+      if(!exactScope(scope,executionScopePayload(record)))rejectExecution("execution_durable_payload");
+    }
+    const paths=scope.requiredPaths;
+    if(!Array.isArray(paths)||!paths.length||paths.length>8||new Set(paths).size!==paths.length||!Array.isArray(scope.focusedTests)||!scope.focusedTests.length||new Set(scope.focusedTests).size!==scope.focusedTests.length||scope.focusedTests.some(path=>!paths.includes(path)||!/^test\/[a-z0-9._/-]+\.test\.js$/i.test(path)))rejectExecution("execution_exact_scope");
+    for(const entries of [scope.beforeEntries,scope.afterEntries])if(!Array.isArray(entries)||entries.length!==paths.length||new Set(entries.map(item=>item.path)).size!==paths.length||entries.some(item=>!paths.includes(item.path)||item.hashAlgorithm!=="git_sha1"||!SHA.test(item.hash||"")||item.rawHash!==item.hash||!/^[a-f0-9]{64}$/.test(item.contentHash||"")))rejectExecution("execution_exact_evidence");
+    if(tool==="repo_apply_patch"){
+      if(input.branch!==branch||input.currentCommit!==scope.currentCommit||!exactScope(input.files?.map(item=>item.path).sort(),[...paths].sort())||recoveryHash(input.files)!==scope.filesHash||input.planProvenance?.generationId!==scope.planGenerationId||input.planProvenance?.planningOnly!==true)rejectExecution("execution_exact_replacements");
+      for(const file of input.files){const after=scope.afterEntries.find(item=>item.path===file.path),bytes=Buffer.from(file.content,"utf8"),hash=createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");if(hash!==after.hash||canonicalContentHash(file.content)!==after.contentHash)rejectExecution("execution_replacement_hash");}
+    }else if(!exactScope(input,{files:scope.focusedTests}))rejectExecution("execution_exact_focused_tests");
+    const key=`${scope.continuationGenerationId}:${stepId}`;
+    if(executedScopeSteps.has(key))rejectExecution("execution_local_replay");
+    await verifyExecutionWorkspace(scope,tool==="repo_apply_patch"?scope.beforeEntries:scope.afterEntries);
+    return{scope,key};
+  }
+  async function verifyExecutionWorkspace(scope,entries){
+    const reject=predicate=>rejectExecution(predicate,entries===scope.afterEntries);
+    if(recoveryRoot(await realpath(root))!==recoveryRoot(scope.workspaceRoot))reject("execution_canonical_workspace");
+    let bound;
+    try{bound=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:branch,expectedHead:scope.currentCommit,requireClean:true,source:"owner_approved_execution",git:(exactRoot,args)=>localGit?localGit(exactRoot,args):gitCommand(exactRoot,args,{runner:commandRunner,environment})});}catch{reject("execution_workspace_identity");}
+    if(bound.actualHead!==scope.currentCommit)reject("execution_product_head");
+    const run=args=>localGit?localGit(root,args):gitCommand(root,args,{runner:commandRunner,environment});
+    const status=await run(["status","--porcelain=v1","--untracked-files=all"]),lines=status.stdout.split(/\r?\n/).filter(Boolean),dirty=lines.map(line=>line.slice(3).replaceAll("\\","/")).sort();
+    const before=entries===scope.beforeEntries;
+    // An exact approved replacement may restore a tracked file to HEAD. Its
+    // bytes remain proven below, while no new dirty or staged path is allowed.
+    if(status.exitCode!==0||lines.some(line=>!line.startsWith(" M ")&&!line.startsWith("?? "))||(before?!exactScope(dirty,[...scope.requiredPaths].sort()):dirty.some(path=>!scope.requiredPaths.includes(path))))reject("execution_complete_dirty_set");
+    const remoteTip=await run(["ls-remote","--heads","origin",`refs/heads/${branch}`]);
+    if(remoteTip.exitCode!==0||remoteTip.stdout.trim()!==`${scope.currentCommit}\trefs/heads/${branch}`)reject("execution_live_product_tip");
+    for(const entry of entries){
+      const path=safe(root,entry.path),info=await lstat(path);
+      if(!info.isFile()||info.isSymbolicLink()||recoveryRoot(await realpath(path))!==recoveryRoot(path))reject("execution_regular_file");
+      const bytes=await readFile(path),hash=createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");
+      if(hash!==entry.hash||canonicalContentHash(bytes.toString("utf8"))!==entry.contentHash)reject("execution_current_bytes");
+    }
+    if(Date.parse(scope.runtimeDeadline)<=Date.now())reject("execution_runtime_window");
+  }
   const audit = async (tool, result, context = {}, started = Date.now()) => {
     if (storage && ownerId)
       await storage.appendActivity({
@@ -884,10 +943,11 @@ export function registerHandsTools(
       },
       async execute({ files, currentCommit, planProvenance, branch }, context) {
         const started = Date.now();
+        const execution=preflightOnly?null:await executionContext("repo_apply_patch",{files,currentCommit,planProvenance,branch},context);
         const durableTask=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null;
-        if(!preflightOnly&&durableTask?.metadata?.planningScopeRecoveryHistory?.length)
+        if(!preflightOnly&&!execution&&durableTask?.metadata?.planningScopeRecoveryHistory?.length)
           fail("planning_scope_mutation_forbidden", "The durable task is bound to planning-only authority.", {mutationApplied:false});
-        if (!preflightOnly && planProvenance?.planningOnly === true)
+        if (!preflightOnly && !execution && planProvenance?.planningOnly === true)
           fail("planning_scope_mutation_forbidden", "This generation authorizes pre-mutation validation only.", {mutationApplied:false});
         if (preflightOnly && (!currentCommit || !planProvenance))
           fail("implementation_plan_provenance_missing", "Preflight requires the exact task-bound implementation plan.", {mutationApplied:false});
@@ -979,6 +1039,7 @@ export function registerHandsTools(
           planGenerationId:planProvenance.generationId,
         }, context, started);
         const temps = [];
+        if(execution){await verifyExecutionWorkspace(execution.scope,execution.scope.beforeEntries);if(executedScopeSteps.has(execution.key))rejectExecution("execution_local_replay");executedScopeSteps.add(execution.key);}
         try {
           for (const item of files) {
             const target = safe(root, item.path);
@@ -1006,6 +1067,7 @@ export function registerHandsTools(
         }
         let taskOwnedDirtyLineage;
         if(authorizedTaskOwnedDirtyLineage){const entries=[];for(const entry of authorizedTaskOwnedDirtyLineage.entries){const content=await readFile(safe(root,entry.path),"utf8");entries.push({path:entry.path,contentHash:canonicalContentHash(content)});}taskOwnedDirtyLineage={version:1,taskId:context.runId,repository,branch,currentCommit,sourcePlanStepId:authorizedTaskOwnedDirtyLineage.activePlanStepId||authorizedTaskOwnedDirtyLineage.sourcePlanStepId,sourceApplyStepId:context.stepId,entries:entries.sort((a,b)=>a.path.localeCompare(b.path))};}
+        if(execution)await verifyExecutionWorkspace(execution.scope,execution.scope.afterEntries);
         return audit(
           "repo_apply_patch",
           {
@@ -1013,6 +1075,7 @@ export function registerHandsTools(
             files: files.map((x) => x.path),
             changedFiles: files.length,
             ...(taskOwnedDirtyLineage?{taskOwnedDirtyLineage}:{}),
+            ...(execution?{executionScopeEvidence:{generationId:execution.scope.continuationGenerationId,planHash:execution.scope.planHash,entries:execution.scope.afterEntries}}:{}),
           },
           context,
           started,
@@ -1042,6 +1105,7 @@ export function registerHandsTools(
             ),
         async execute(input, context) {
           const started = Date.now();
+          const execution=await executionContext(full?"test_run_full":"test_run",input,context);
           const timeoutMs = Math.max(
             1000,
             Math.min(180_000, input.timeoutMs || 120_000),
@@ -1085,6 +1149,7 @@ export function registerHandsTools(
               ...input.files,
             ];
           }
+          if(execution){if(executedScopeSteps.has(execution.key))rejectExecution("execution_local_replay");executedScopeSteps.add(execution.key);}
           const result = await command(root, file, args, {
             timeoutMs,
             runner: commandRunner,
@@ -1093,12 +1158,14 @@ export function registerHandsTools(
           const completeOutput = `${result.stdout}\n${result.stderr}`.trim(),
             outputLimit = 20_000,
             output = completeOutput.slice(-outputLimit);
+          if(execution)await verifyExecutionWorkspace(execution.scope,execution.scope.afterEntries);
           const value = {
             ok: result.exitCode === 0,
             exitCode: result.exitCode,
             durationMs: result.durationMs,
             output,
             outputTruncated: completeOutput.length > outputLimit,
+            ...(execution?{executionScopeEvidence:{generationId:execution.scope.continuationGenerationId,planHash:execution.scope.planHash,entries:execution.scope.afterEntries}}:{}),
           };
           if (result.spawnErrorCode)
             value.error = {

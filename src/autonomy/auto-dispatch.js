@@ -55,7 +55,7 @@ export function createAutoDispatchService({storage,ownerId,approvedBranch="feat/
     }
     if(!task)return{dispatched:false};
     const step=task.metadata?.steps?.[task.currentStep],stepType=approvedDelivery?"push":step?.type,taskOwnedLocalRead=stepType==="read_files"&&step?.input?.tool==="repo_read_task_owned_local",mode=approvedDelivery||task.status==="waiting_for_worker"||LOCAL.has(stepType)||taskOwnedLocalRead?"local_handoff":"task_tick";
-    return{dispatched:true,task:{id:task.id,status:task.status,branch:task.branch,expectedCommit:task.currentCommit,stateVersion:task.stateVersion,mode,stepType:stepType||null,continuationGenerationId:task.metadata?.activeContinuation?.generationId||null}};
+    return{dispatched:true,task:{id:task.id,status:task.status,branch:task.branch,expectedCommit:task.currentCommit,stateVersion:task.stateVersion,mode,stepType:stepType||null,continuationGenerationId:task.metadata?.activeContinuation?.generationId||null,...(task.metadata?.executionScopeRecoveryHistory?.length?{executionScopeRequired:true}:{})}};
   }
   return Object.freeze({next});
 }

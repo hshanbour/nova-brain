@@ -3,6 +3,7 @@ import { ApprovalRequiredError } from "../policy/action-policy.js";
 import {activeContinuationExceeded,assertActiveImplementationPlan,planLifecycleMetadata,taskRuntimeWindow} from "./self-development-plan-lifecycle.js";
 import {isExactApprovedDelivery} from "./auto-dispatch.js";
 import {PLANNING_SCOPE_RECOVERY_CLASS,validatePlanningScopeReadEvidence} from "./planning-scope-recovery.js";
+import {EXECUTION_SCOPE_RECOVERY_CLASS,validateExecutionScopeEvidence} from "./execution-scope-recovery.js";
 
 export const AUTONOMY_STATUSES = Object.freeze([
   "queued",
@@ -313,6 +314,13 @@ export function createWorkerRuntime({
     const plan = await next(task),
       type = plan.next_step,
       capability = STEP_CAPABILITIES[type] || plan.required_capability;
+    if(task.metadata?.activeContinuation?.recoveryClass===EXECUTION_SCOPE_RECOVERY_CLASS||task.metadata?.executionScopeRecoveryHistory?.length){
+      validateExecutionScopeEvidence(task,await storage.listAutonomySteps(task.id),clock);
+      if(type!=="apply_patch"&&type!=="run_focused_tests")return stop(task,"blocked","execution_scope_step_forbidden");
+      // A server worker may route this authority, never execute or retry its product tools.
+      await storage.updateAutonomyTask(task.id,ownerId,{status:"waiting_for_worker",metadata:{...task.metadata,requiredCapability:capability}});
+      return{claimed:true,status:"waiting_for_worker",capability};
+    }
     if(task.metadata?.activeContinuation?.recoveryClass===PLANNING_SCOPE_RECOVERY_CLASS||task.metadata?.planningScopeRecoveryHistory?.length){
       const proof=validatePlanningScopeReadEvidence(task,await storage.listAutonomySteps(task.id),clock);
       if(type!=="plan_repair"&&type!=="validate_patch")return stop(task,"blocked","planning_scope_mutation_forbidden");
