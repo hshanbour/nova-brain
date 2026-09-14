@@ -1049,6 +1049,12 @@ export function createApi({
         const selfDevelopmentHandsContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-commit-mismatch$/);
         const selfDevelopmentHandsDirtyRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-working-tree-dirty$/);
         const selfDevelopmentWorkspaceAttestation = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/attest-workspace$/);
+        const failedLocalReadRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-failed-local-read$/);
+        if(selfDevelopment&&failedLocalReadRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          sendJson(response,200,await selfDevelopment.recoverFailedTaskOwnedLocalRead(decodeURIComponent(failedLocalReadRecovery[1]),input,actor));return;
+        }
         const selfDevelopmentRepositoryContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-repository-context$/);
         const selfDevelopmentPlanLifecycleRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-plan-lifecycle$/);
         const selfDevelopmentFullTestRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-full-test-failure$/);

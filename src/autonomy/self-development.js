@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {createActiveContinuation,assertActiveImplementationPlan,canonicalContentHash,planLifecycleMetadata,rebindEquivalentImplementationPlan} from "./self-development-plan-lifecycle.js";
+import {recoverFailedLocalRead} from "./failed-local-read-recovery.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -1207,6 +1208,9 @@ export function createSelfDevelopmentService({
       },
     });
     return { task: updated, recoveredStepId: failed.stepId };
+  }
+  async function recoverFailedTaskOwnedLocalRead(taskId,input,actor){
+    return recoverFailedLocalRead({taskId,input,actor,runtime,storage,ownerId,repository,approvedBranch,runtimeVersion,verifyRemote,clock});
   }
   async function recoverImplementationSchema(taskId, input) {
     if (!input || Object.keys(input).some((key) => key !== "expectedVersion") || !Number.isInteger(input.expectedVersion))
@@ -2731,6 +2735,7 @@ export function createSelfDevelopmentService({
     recoverApprovedContractDeliveryRuntime,
     replanDiscoveryOnly,
     recoverImplementationPlan,
+    recoverFailedTaskOwnedLocalRead,
     recoverImplementationSchema,
     recoverFocusedTestSchema,
     recoverStaleBasePatchConflict,
