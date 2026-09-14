@@ -2,6 +2,7 @@ import {randomUUID} from "node:crypto";
 import {createToolRegistry} from "../tools/tool-registry.js";
 import {registerHandsTools} from "../tools/hands-runtime.js";
 import {canonicalSchemaDiagnostic,localSchemaDiagnostic} from "./schema-diagnostics.js";
+import {REVIEW_REMEDIATION_CLASS,REJECTED_REVIEW_PLAN_CONTINUATION_CLASS} from "./review-remediation-scope.js";
 
 const ALLOWED=new Set(["repo_read_task_owned_local","repo_apply_patch","repo_validate_patch","test_run","test_run_full","repo_diff","repo_review_commit","git_commit","git_integrate_reviewed_commit"]);
 const SHA=/^[a-f0-9]{40}$/;
@@ -20,6 +21,8 @@ function exactFullTestScope(task,job,{repository,branch,root,runtimeVersion,work
 function exactReviewRemediationScope(task,job,{repository,branch,root,runtimeVersion,workerId}){
   const scope=job?.reviewRemediationScope,canonical=value=>String(value||"").replaceAll("\\","/").replace(/\/$/,"").toLowerCase();
   if(!scope)return task.reviewRemediationScopeRequired!==true;
+  const expectedClass=task.reviewRemediationRecoveryClass||REVIEW_REMEDIATION_CLASS,actualClass=scope.recoveryClass||REVIEW_REMEDIATION_CLASS;
+  if(![REVIEW_REMEDIATION_CLASS,REJECTED_REVIEW_PLAN_CONTINUATION_CLASS].includes(expectedClass)||actualClass!==expectedClass)return false;
   const steps=new Map([...(scope.readStepIds||[]).map(id=>[id,["read_files","repo_read_task_owned_local"]]),[scope.validateStepId,["validate_patch","repo_validate_patch"]],[scope.applyStepId,["apply_patch","repo_apply_patch"]],[scope.focusedStepId,["run_focused_tests","test_run"]],[scope.fullTestStepId,["run_full_tests","test_run_full"]]]),expected=steps.get(job.stepId);
   return Boolean(task.reviewRemediationScopeRequired===true&&!job.executionScope&&!job.fullTestScope&&!job.approvedDelivery&&scope.taskId===task.id&&scope.repository===repository&&scope.branch===branch&&scope.currentCommit===task.expectedCommit&&scope.runtimeVersion===runtimeVersion&&scope.workerId===workerId&&canonical(scope.workspaceRoot)===canonical(root)&&scope.continuationGenerationId===task.continuationGenerationId&&expected&&expected[0]===job.stepType&&expected[1]===job.tool);
 }

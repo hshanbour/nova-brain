@@ -7,7 +7,7 @@ import {FAILED_LOCAL_READ_RECOVERY_CLASS,validateRecoveredLocalReadContext} from
 import {PLANNING_SCOPE_RECOVERY_CLASS,validatePlanningScopeContext} from "./planning-scope-recovery.js";
 import {EXECUTION_SCOPE_RECOVERY_CLASS,EXECUTION_SCOPE_RECOVERY_TOOL,validateExecutionScopeContext,executionScopePayload} from "./execution-scope-recovery.js";
 import {fullTestScopeDescriptor,validateFullTestScopeContext,fullTestScopePayload} from "./full-test-scope-recovery.js";
-import {reviewRemediationDescriptor,validateReviewRemediationContext,reviewRemediationScopePayload,validateReviewRemediationTestResult,REVIEW_REMEDIATION_TOOL} from "./review-remediation-scope.js";
+import {reviewRemediationDescriptor,validateReviewRemediationContext,reviewRemediationScopePayload,validateReviewRemediationTestResult} from "./review-remediation-scope.js";
 
 const LOCAL_STEPS=Object.freeze({
   read_files:{capability:"repo_read_remote",tool:"repo_read_task_owned_local"},
@@ -171,12 +171,12 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     return{claimed:true,idempotent:false,handoff:response(updated,handoff)};
   }
   async function reviewRemediationApproval(task,record){
-    const approval=await storage.getApproval(record.approvalId,ownerId);
-    if(approval?.status!=="approved"||approval.tool!==REVIEW_REMEDIATION_TOOL||approval.runId!==task.id||approval.ownerId!==ownerId||approval.projectId!==task.projectId||hash(approval.arguments)!==hash(record.approvalArguments))throw new HandoffError("review_remediation_approval_required","The exact review-remediation owner approval must remain approved.",403);
+    const descriptor=reviewRemediationDescriptor(task),approval=await storage.getApproval(record.approvalId,ownerId);
+    if(!descriptor||record.recoveryClass!==descriptor.recoveryClass||approval?.status!=="approved"||approval.tool!==descriptor.tool||approval.runId!==task.id||approval.ownerId!==ownerId||approval.projectId!==task.projectId||hash(approval.arguments)!==hash(record.approvalArguments))throw new HandoffError("review_remediation_approval_required","The exact review-remediation owner approval must remain approved.",403);
   }
   async function claimReviewRemediation(before,input,workerId,idempotencyKey,capabilities){
-    const active=before.metadata?.localHandoff;
-    const deadline=Date.parse(before.metadata.reviewRemediationHistory?.at(-1)?.activeContinuation?.runtimeDeadline),expired=Number.isFinite(deadline)&&deadline<=clock().getTime();
+    const active=before.metadata?.localHandoff,descriptor=reviewRemediationDescriptor(before);
+    const deadline=Date.parse(before.metadata[descriptor.historyKey]?.at(-1)?.activeContinuation?.runtimeDeadline),expired=Number.isFinite(deadline)&&deadline<=clock().getTime();
     const steps=await storage.listAutonomySteps(before.id),{record,history,firstBind}=validateReviewRemediationContext(before,steps,{runtimeVersion:input.runtimeVersion,generationId:input.continuationGenerationId,repository:input.repository,root:input.repositoryRoot,branch:input.expectedBranch,workerId,allowFirstBind:true},expired?()=>new Date(deadline-1):clock);
     await reviewRemediationApproval(before,record);
     if(active&&(active.workerId!==workerId||active.idempotencyKey!==idempotencyKey))return{claimed:false};
@@ -200,7 +200,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     const bound={...record,...(firstBind?{workerBindingState:"bound",workerId,boundAt:nowIso(clock)}:{}),claimedStepIds:[...record.claimedStepIds,stepId]};
     const scopedLeaseMs=Math.min(300000,new Date(record.activeContinuation.runtimeDeadline).getTime()-clock().getTime());
     const handoff={id:randomUUID(),workerId,idempotencyKey,stepId,stepType:planned.type,tool:definition.tool,arguments:redact(args),reviewRemediationScope:reviewRemediationScopePayload(bound),branch:before.branch,expectedCommit:before.currentCommit,expiresAt:new Date(clock().getTime()+scopedLeaseMs).toISOString(),fingerprint:hash([before.id,before.currentStep,planned.type,redact(planned.input),before.currentCommit,record.activeContinuation.generationId])};
-    const task=await storage.claimAutonomyTask({ownerId,workerId:`local:${workerId}`,capabilities,leaseMs:scopedLeaseMs,idempotencyKey,taskId:before.id,expectedBranch:input.expectedBranch,expectedCommit:input.expectedCommit,expectedVersion:before.stateVersion,claimMetadata:{reviewRemediationHistory:[...history.slice(0,-1),bound]}});
+    const task=await storage.claimAutonomyTask({ownerId,workerId:`local:${workerId}`,capabilities,leaseMs:scopedLeaseMs,idempotencyKey,taskId:before.id,expectedBranch:input.expectedBranch,expectedCommit:input.expectedCommit,expectedVersion:before.stateVersion,claimMetadata:{[descriptor.historyKey]:[...history.slice(0,-1),bound]}});
     if(!task)return{claimed:false};
     if(definition.lock&&!await storage.acquireAutonomyLock({lockKey:`${task.projectId||"repo"}:${task.branch}`,taskId:task.id,leaseToken:task.leaseToken,expiresAt:task.leaseExpiresAt})){await stopReviewRemediation(task,handoff,{code:"branch_locked",message:"The bound repository branch is locked."});return{claimed:false,code:"branch_locked"};}
     await storage.recordAutonomyStep({taskId:task.id,stepId,stepType:planned.type,capability:definition.capability,operationFingerprint:handoff.fingerprint,input:redact({tool:definition.tool,arguments:args}),status:"running"});
@@ -210,7 +210,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     return{claimed:true,idempotent:false,handoff:response(updated,handoff)};
   }
   async function finishReviewRemediation(task,handoff,result,{failed=false,errorCode}={}){
-    const latest=task.metadata.reviewRemediationHistory.at(-1),{record}=validateReviewRemediationContext(task,await storage.listAutonomySteps(task.id),{runtimeVersion:latest.runtimeVersion,generationId:task.metadata.activeContinuation.generationId,repository:latest.repository,root:latest.workspaceRoot,branch:task.branch,workerId:handoff.workerId},clock);
+    const descriptor=reviewRemediationDescriptor(task),latest=task.metadata[descriptor.historyKey].at(-1),{record}=validateReviewRemediationContext(task,await storage.listAutonomySteps(task.id),{runtimeVersion:latest.runtimeVersion,generationId:task.metadata.activeContinuation.generationId,repository:latest.repository,root:latest.workspaceRoot,branch:task.branch,workerId:handoff.workerId},clock);
     await reviewRemediationApproval(task,record);
     if(!handoff.reviewRemediationScope||handoff.executionScope||handoff.fullTestScope||hash(handoff.reviewRemediationScope)!==hash(reviewRemediationScopePayload(record)))throw new HandoffError("review_remediation_context_changed","The result must retain the exact approved remediation authority.");
     const evidence=failed?result.diagnostics?.reviewRemediationEvidence:result.reviewRemediationEvidence,after=["apply_patch","run_focused_tests","run_full_tests"].includes(handoff.stepType),entries=after?record.afterEntries:record.beforeEntries;
@@ -225,10 +225,10 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     return persistReviewRemediationResult(task,handoff,result,{failed,errorCode});
   }
   async function persistReviewRemediationResult(task,handoff,result,{failed=false,errorCode}={}){
-    const history=task.metadata.reviewRemediationHistory,record=history.at(-1),terminal=failed||handoff.stepType==="run_full_tests",now=nowIso(clock),boundary=terminal?{kind:failed?"product_repair_decision":"review_ready",executionAuthorized:false,reviewHash:record.reviewHash,planHash:record.planHash||null,planGenerationId:record.planGenerationId||null,stepId:handoff.stepId,errorCode:failed?errorCode||"worker_failed":null,findingsResolved:false,mutationApplied:failed?(typeof result.diagnostics?.mutationApplied==="boolean"?result.diagnostics.mutationApplied:null):false}:null;
+    const descriptor=reviewRemediationDescriptor(task),history=task.metadata[descriptor.historyKey],record=history.at(-1),terminal=failed||handoff.stepType==="run_full_tests",now=nowIso(clock),boundary=terminal?{kind:failed?"product_repair_decision":"review_ready",executionAuthorized:false,reviewHash:record.reviewHash,planHash:record.planHash||null,planGenerationId:record.planGenerationId||null,stepId:handoff.stepId,errorCode:failed?errorCode||"worker_failed":null,findingsResolved:false,mutationApplied:failed?(typeof result.diagnostics?.mutationApplied==="boolean"?result.diagnostics.mutationApplied:null):false}:null;
     const completed=[...(task.checkpoint?.completedSteps||[]),...(!failed?[handoff.stepId]:[])],next=task.metadata.steps[task.currentStep+1];
     const updatedRecord={...record,...(!failed&&handoff.stepType==="validate_patch"?{validated:true,validatedAt:now}:{}),...(!failed&&handoff.stepType==="apply_patch"?{applyCompleted:true,applyCompletedAt:now,applyResultHash:hash(result)}:{}),...(!failed&&handoff.stepType==="run_focused_tests"?{focusedCompleted:true,focusedResultHash:hash(result)}:{}),...(terminal?{consumed:true,completedAt:now,result:failed?"failed":"full_tests_completed",boundary}:{})};
-    const metadata={...task.metadata,localHandoff:null,completedHandoffs:[...(task.metadata.completedHandoffs||[]),...(handoff.id?[handoff.id]:[])],requiredCapability:terminal?null:next?.type==="plan_repair"?"reasoning":LOCAL_STEPS[next?.type]?.capability||null,reviewRemediationHistory:[...history.slice(0,-1),updatedRecord],...(boundary?{reviewRemediationBoundary:boundary}:{})};
+    const metadata={...task.metadata,localHandoff:null,completedHandoffs:[...(task.metadata.completedHandoffs||[]),...(handoff.id?[handoff.id]:[])],requiredCapability:terminal?null:next?.type==="plan_repair"?"reasoning":LOCAL_STEPS[next?.type]?.capability||null,[descriptor.historyKey]:[...history.slice(0,-1),updatedRecord],...(boundary?{[descriptor.boundaryKey]:boundary}:{})};
     const updated=await storage.updateAutonomyTask(task.id,ownerId,{status:terminal?"blocked":"queued",currentStep:failed?task.currentStep:task.currentStep+1,currentPhase:handoff.stepType,nextRunAt:terminal?null:now,errorCode:failed?errorCode||"worker_failed":null,blockedReason:terminal?(failed?"Review remediation stopped; a new owner decision is required. No retry or repair extension is authorized.":"Remediation tests passed; a fresh product review is required. Findings are not automatically resolved."):null,checkpoint:{...task.checkpoint,completedSteps:completed,pendingStep:null,latestResult:result},metadata,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},task.stateVersion);
     if(!updated)throw new HandoffError("version_conflict","Task changed before its one-time remediation result was persisted.");
     await storage.updateAutonomyStep(task.id,handoff.stepId,{status:failed?"failed":"completed",result,errorCode:failed?errorCode||"worker_failed":null,completedAt:now});

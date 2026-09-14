@@ -15,7 +15,7 @@ import {implementationContentHash,implementationContentIssue,isJavaScriptImpleme
 import {recoveryHash,recoveryRoot} from "../autonomy/failed-local-read-recovery.js";
 import {EXECUTION_SCOPE_RECOVERY_CLASS,executionScopePayload,validateExecutionScopeContext} from "../autonomy/execution-scope-recovery.js";
 import {FULL_TEST_SCOPE_RECOVERY_CLASS,FAILED_FULL_TEST_RETRY_CLASS,fullTestScopeDescriptor,fullTestScopePayload,validateFullTestScopeContext} from "../autonomy/full-test-scope-recovery.js";
-import {REVIEW_REMEDIATION_CLASS,reviewRemediationDescriptor,reviewRemediationScopePayload,validateReviewRemediationContext} from "../autonomy/review-remediation-scope.js";
+import {REVIEW_REMEDIATION_CLASS,REJECTED_REVIEW_PLAN_CONTINUATION_CLASS,reviewRemediationDescriptor,reviewRemediationScopePayload,validateReviewRemediationContext} from "../autonomy/review-remediation-scope.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -183,7 +183,7 @@ export function registerHandsTools(
   async function remediationContext(tool,input,context){
     const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null,scope=context?.reviewRemediationScope;
     if(!scope){if(reviewRemediationDescriptor(durable))rejectRemediation("remediation_context_required");return null;}
-    if(context.executionScope||context.fullTestScope||scope.version!==1||scope.recoveryClass!==REVIEW_REMEDIATION_CLASS||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.reviewHash,scope.sourcePlanHash,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxProductMutations!==1||scope.maxApplyAttempts!==1||scope.maxFocusedTestRuns!==1||scope.maxFullTestRuns!==1||scope.maxAdditionalAttempts!==0||scope.runtimeMinutes!==15||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectRemediation("remediation_context_binding");
+    if(context.executionScope||context.fullTestScope||scope.version!==1||![REVIEW_REMEDIATION_CLASS,REJECTED_REVIEW_PLAN_CONTINUATION_CLASS].includes(scope.recoveryClass)||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.reviewHash,scope.sourcePlanHash,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxProductMutations!==1||scope.maxApplyAttempts!==1||scope.maxFocusedTestRuns!==1||scope.maxFullTestRuns!==1||scope.maxAdditionalAttempts!==0||scope.runtimeMinutes!==15||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectRemediation("remediation_context_binding");
     const carried=context.repositoryContext;
     if(carried.version!==1||carried.repository!==repository||carried.branch!==branch||carried.source!=="persistent_worker_handoff"||recoveryRoot(carried.root)!==recoveryRoot(root))rejectRemediation("remediation_repository_context");
     const paths=scope.requiredPaths,phaseIds=[...(scope.readStepIds||[]),scope.planStepId,scope.validateStepId,scope.applyStepId,scope.focusedStepId,scope.fullTestStepId],types=[...Array(8).fill("read_files"),"plan_repair","validate_patch","apply_patch","run_focused_tests","run_full_tests"],start=Number.parseInt(phaseIds[0],10);
@@ -212,7 +212,7 @@ export function registerHandsTools(
     try{
       if(recoveryRoot(await realpath(root))!==recoveryRoot(scope.workspaceRoot))reject("remediation_canonical_workspace");
       const run=args=>localGit?localGit(root,args):gitCommand(root,args,{runner:commandRunner,environment,gitExecutable});
-      const bound=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:branch,expectedHead:scope.currentCommit,requireClean:true,source:"owner_approved_review_remediation",git:(_root,args)=>run(args)});
+      const bound=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:branch,expectedHead:scope.currentCommit,requireClean:true,source:scope.recoveryClass,git:(_root,args)=>run(args)});
       if(bound.actualHead!==scope.currentCommit)reject("remediation_product_head");
       const status=await run(["status","--porcelain=v1","--untracked-files=all"]),lines=status.stdout.split(/\r?\n/).filter(Boolean),dirty=lines.map(line=>line.slice(3).replaceAll("\\","/")).sort();
       if(status.exitCode!==0||lines.some(line=>!line.startsWith(" M ")&&!line.startsWith("?? "))||(before?!exactScope(dirty,[...scope.requiredPaths].sort()):dirty.some(path=>!scope.requiredPaths.includes(path))))reject("remediation_complete_dirty_set");
@@ -1272,6 +1272,31 @@ export function registerHandsTools(
           if(remediation){if(executedScopeSteps.has(remediation.key))rejectRemediation("remediation_local_replay");executedScopeSteps.add(remediation.key);}
           const testEnvironment=full&&gitExecutable?(()=>{const child={...process.env,...environment};for(const key of Object.keys(child))if(key.toLowerCase()==="path")delete child[key];const inherited=environment.PATH||environment.Path||process.env.PATH||process.env.Path||"";child[process.platform==="win32"?"Path":"PATH"]=[dirname(gitExecutable),inherited].filter(Boolean).join(delimiter);return child;})():undefined;
           let dependencyPreflight=null;
+          if(full&&remediation?.scope.recoveryClass===REJECTED_REVIEW_PLAN_CONTINUATION_CLASS){
+            // This phase's single-use reservation is already durable. Resolve
+            // the existing locked direct dependencies without installing,
+            // evaluating packages, or changing the manifest/lock/workspace.
+            const source=`import {readFile,access} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+const manifest=JSON.parse(await readFile('package.json','utf8'));
+const lock=JSON.parse(await readFile('package-lock.json','utf8'));
+const names=Object.keys({...manifest.dependencies,...manifest.devDependencies}).sort(),packages=[];
+for(const name of names){
+  const expected=lock.packages?.['node_modules/'+name]?.version||lock.dependencies?.[name]?.version;
+  if(typeof expected!=='string'||!expected)throw new Error('Missing locked dependency');
+  const installed=JSON.parse(await readFile('node_modules/'+name+'/package.json','utf8'));
+  if(installed.version!==expected)throw new Error('Locked dependency version mismatch');
+  await access(fileURLToPath(import.meta.resolve(name)));
+  packages.push({name,version:expected});
+}
+process.stdout.write(JSON.stringify({resolved:true,packages}));`;
+            let preflight,resolution;
+            try{preflight=await command(root,process.execPath,["--input-type=module","--eval",source],{timeoutMs:10000,runner:commandRunner,environment:testEnvironment});if(preflight.exitCode===0)resolution=JSON.parse(preflight.stdout);}catch(error){preflight={exitCode:1,spawnErrorCode:error.code||"dependency_resolution_failed"};}
+            await verifyRemediationWorkspace(remediation.scope,remediation.scope.afterEntries,{afterRun:true});
+            if(preflight.exitCode!==0||resolution?.resolved!==true||!Array.isArray(resolution.packages))fail("dependency_provisioning_required","The existing locked dependencies must be available in the exact product worker cwd before full tests.",{operation:"worker_cwd_locked_dependency_resolution",workspaceRoot:remediation.scope.workspaceRoot,resolved:false,npmInvoked:false,consumesOnFailure:true,mutationApplied:false,exitCode:preflight.exitCode,errorCode:preflight.spawnErrorCode||"dependency_resolution_failed"});
+            dependencyPreflight={cwd:remediation.scope.workspaceRoot,resolved:true,packages:resolution.packages};
+            if(Date.parse(remediation.scope.runtimeDeadline)-Date.now()<125000)rejectRemediation("remediation_test_runtime_insufficient");
+          }
           if(fullTest?.retry){
             // The atomic claim and local reservation precede this preflight:
             // failure consumes this one use rather than permitting silent retry.

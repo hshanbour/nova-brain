@@ -5,7 +5,7 @@ import {isExactApprovedDelivery} from "./auto-dispatch.js";
 import {PLANNING_SCOPE_RECOVERY_CLASS,validatePlanningScopeReadEvidence} from "./planning-scope-recovery.js";
 import {EXECUTION_SCOPE_RECOVERY_CLASS,validateExecutionScopeEvidence} from "./execution-scope-recovery.js";
 import {fullTestScopeDescriptor,validateFullTestScopeEvidence} from "./full-test-scope-recovery.js";
-import {reviewRemediationDescriptor,validateReviewRemediationEvidence,acceptedReviewRemediationPlanBinding,REVIEW_REMEDIATION_TOOL} from "./review-remediation-scope.js";
+import {reviewRemediationDescriptor,validateReviewRemediationEvidence,acceptedReviewRemediationPlanBinding} from "./review-remediation-scope.js";
 
 export const AUTONOMY_STATUSES = Object.freeze([
   "queued",
@@ -564,9 +564,9 @@ export function createWorkerRuntime({
   }
   async function completeEvidenceExpansion(task,step,plan,result){const expansion=result.evidenceExpansion,paths=[...new Set(expansion.paths||[])],currentPlan=task.metadata.steps[task.currentStep],inserted=paths.map((path,index)=>({type:"read_files",capability:"repo_read_remote",input:{tool:"repo_read",arguments:{path,startLine:1,endLine:1000}},expectedOutput:`Complete contents of ${path}`,successCondition:"Focused test evidence is read before execution",retryClassification:"safe_read",approvalRequired:false,idempotencyIdentity:`self-development:evidence-expansion:${expansion.attempt}:${index}:${fingerprint(task,path)}`})),replan={...currentPlan,input:{...currentPlan.input,arguments:{...currentPlan.input.arguments,candidatePaths:expansion.candidatePaths}}},metadata={...task.metadata,steps:[...task.metadata.steps.slice(0,task.currentStep+1),...inserted,replan,...task.metadata.steps.slice(task.currentStep+1)],requiredCapability:"repo_read_remote",implementationEvidenceExpansionHistory:[...(task.metadata.implementationEvidenceExpansionHistory||[]),{code:expansion.code,category:expansion.category,attempt:expansion.attempt,plannerAttempt:expansion.plannerAttempt,pathHashes:expansion.pathHashes,...(expansion.rejectedTarget?{rejectedTarget:expansion.rejectedTarget}:{}),requestedAt:iso(clock)}]};await storage.updateAutonomyStep(task.id,step.stepId,{status:"completed",result:redact({ok:true,evidenceExpansion:{code:expansion.code,category:expansion.category,attempt:expansion.attempt,pathHashes:expansion.pathHashes}}),completedAt:iso(clock)});await storage.updateAutonomyTask(task.id,ownerId,{status:"queued",currentStep:task.currentStep+1,currentPhase:"evidence_expansion",nextRunAt:iso(clock),checkpoint:{...task.checkpoint,completedSteps:[...(task.checkpoint?.completedSteps||[]),step.stepId],pendingStep:null,latestResult:redact({evidenceExpansion:{code:expansion.code,attempt:expansion.attempt,pathHashes:expansion.pathHashes}})},metadata,blockedReason:null,errorCode:null});await activity(task,"self_development_evidence_expansion_scheduled","queued","Bounded focused-test evidence reads scheduled before replanning.",{stepId:step.stepId,category:expansion.category,attempt:expansion.attempt,plannerAttempt:expansion.plannerAttempt,pathHashes:expansion.pathHashes,fileCount:paths.length,...(expansion.rejectedTarget?{rejectedTarget:expansion.rejectedTarget}:{})});}
   async function stopReviewRemediation(task,errorCode,step,result){
-    const current=await storage.getAutonomyTask(task.id,ownerId),history=current.metadata?.reviewRemediationHistory||[],record=history.at(-1);
+    const current=await storage.getAutonomyTask(task.id,ownerId),descriptor=reviewRemediationDescriptor(current),history=current.metadata?.[descriptor.historyKey]||[],record=history.at(-1);
     const boundary={kind:errorCode.includes("authorization_required")?"authorization_required":"product_repair_decision",executionAuthorized:false,reviewHash:record.reviewHash,planHash:record.planHash||null,planGenerationId:record.planGenerationId||null,stepId:step?.stepId||`${current.currentStep+1}:${current.metadata.steps[current.currentStep]?.type}`,errorCode,findingsResolved:false};
-    const metadata={...current.metadata,requiredCapability:null,reviewRemediationBoundary:boundary,reviewRemediationHistory:[...history.slice(0,-1),{...record,consumed:true,completedAt:iso(clock),result:"failed",boundary}]};
+    const metadata={...current.metadata,requiredCapability:null,[descriptor.boundaryKey]:boundary,[descriptor.historyKey]:[...history.slice(0,-1),{...record,consumed:true,completedAt:iso(clock),result:"failed",boundary}]};
     const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"blocked",nextRunAt:null,errorCode,blockedReason:"Review remediation stopped; a new owner decision is required. No retry or repair extension is authorized.",metadata,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},current.stateVersion);
     if(!updated)throw new WorkerError("version_conflict","Review-remediation task changed before its failure boundary.",{retryable:false});
     if(step)await storage.updateAutonomyStep(task.id,step.stepId,{status:"failed",errorCode,result:redact(result||{}),completedAt:iso(clock)});
@@ -576,9 +576,9 @@ export function createWorkerRuntime({
   async function advanceReviewRemediation(task,plan){
     let step;
     try{
-      const steps=await storage.listAutonomySteps(task.id),{record,history}=validateReviewRemediationEvidence(task,steps,clock),type=plan.next_step;
+      const steps=await storage.listAutonomySteps(task.id),{record,history}=validateReviewRemediationEvidence(task,steps,clock),descriptor=reviewRemediationDescriptor(task),type=plan.next_step;
       const approval=await storage.getApproval(record.approvalId,ownerId);
-      if(approval?.status!=="approved"||approval.tool!==REVIEW_REMEDIATION_TOOL||approval.runId!==task.id||approval.ownerId!==ownerId||approval.projectId!==task.projectId||lifecycleHash(approval.arguments)!==lifecycleHash(record.approvalArguments))throw new WorkerError("review_remediation_approval_required","The exact review-remediation owner approval is required.",{retryable:false});
+      if(approval?.status!=="approved"||approval.tool!==descriptor.tool||approval.runId!==task.id||approval.ownerId!==ownerId||approval.projectId!==task.projectId||lifecycleHash(approval.arguments)!==lifecycleHash(record.approvalArguments))throw new WorkerError("review_remediation_approval_required","The exact review-remediation owner approval is required.",{retryable:false});
       if(type!=="plan_repair"){
         if(!["read_files","validate_patch","apply_patch","run_focused_tests","run_full_tests"].includes(type))throw new WorkerError("review_remediation_step_forbidden","This phase is outside the approved remediation generation.",{retryable:false});
         const capability=STEP_CAPABILITIES[type];
@@ -586,7 +586,7 @@ export function createWorkerRuntime({
         return{claimed:true,status:"waiting_for_worker",capability};
       }
       if(record.planningClaimed||steps.some(item=>item.stepId===record.planStepId))throw new WorkerError("review_remediation_replay_forbidden","The single remediation planning attempt was already reserved.",{retryable:false});
-      const reserved=await storage.updateAutonomyTask(task.id,ownerId,{metadata:{...task.metadata,reviewRemediationHistory:[...history.slice(0,-1),{...record,planningClaimed:true,planningClaimedAt:iso(clock)}]}},task.stateVersion);
+      const reserved=await storage.updateAutonomyTask(task.id,ownerId,{metadata:{...task.metadata,[descriptor.historyKey]:[...history.slice(0,-1),{...record,planningClaimed:true,planningClaimedAt:iso(clock)}]}},task.stateVersion);
       if(!reserved)throw new WorkerError("version_conflict","Task changed before remediation planning was reserved.",{retryable:false});
       task=reserved;
       step=await storage.recordAutonomyStep({taskId:task.id,stepId:record.planStepId,stepType:type,capability:"reasoning",operationFingerprint:fingerprint(task,{type,input:plan.required_inputs}),input:redact(plan.required_inputs),status:"running"});
@@ -594,8 +594,8 @@ export function createWorkerRuntime({
       if(tool!=="self_development_plan_implementation")throw new WorkerError("review_remediation_step_forbidden","Only Nova's bound remediation planner is authorized.",{retryable:false});
       const result=await toolRegistry.execute(tool,args,{runId:task.id,projectId:task.projectId,stepId:step.stepId});
       if(result?.evidenceExpansion||!result?.implementationPlan)throw new WorkerError("review_remediation_authorization_required","Remediation planning requires owner authorization for unavailable or expanded evidence.",{retryable:false});
-      const binding=acceptedReviewRemediationPlanBinding(task,result.implementationPlan,await storage.listAutonomySteps(task.id),clock),latestHistory=task.metadata.reviewRemediationHistory;
-      const metadata={...planLifecycleMetadata(task,redact(result.implementationPlan)),requiredCapability:"repo_read_remote",reviewRemediationHistory:[...latestHistory.slice(0,-1),{...latestHistory.at(-1),...binding,planningCompleted:true,planningCompletedAt:iso(clock)}]};
+      const binding=acceptedReviewRemediationPlanBinding(task,result.implementationPlan,await storage.listAutonomySteps(task.id),clock),latestHistory=task.metadata[descriptor.historyKey];
+      const metadata={...planLifecycleMetadata(task,redact(result.implementationPlan)),requiredCapability:"repo_read_remote",[descriptor.historyKey]:[...latestHistory.slice(0,-1),{...latestHistory.at(-1),...binding,planningCompleted:true,planningCompletedAt:iso(clock)}]};
       await storage.updateAutonomyStep(task.id,step.stepId,{status:"completed",result:redact(result),completedAt:iso(clock)});
       const updated=await storage.updateAutonomyTask(task.id,ownerId,{status:"queued",currentStep:task.currentStep+1,currentPhase:type,nextRunAt:iso(clock),checkpoint:{...task.checkpoint,completedSteps:[...(task.checkpoint?.completedSteps||[]),step.stepId],pendingStep:null,latestResult:redact(result)},metadata,blockedReason:null,errorCode:null},task.stateVersion);
       if(!updated)throw new WorkerError("version_conflict","Task changed before accepted remediation planning was persisted.",{retryable:false});
