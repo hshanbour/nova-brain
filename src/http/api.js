@@ -1050,6 +1050,13 @@ export function createApi({
         const selfDevelopmentHandsDirtyRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-working-tree-dirty$/);
         const selfDevelopmentWorkspaceAttestation = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/attest-workspace$/);
         const failedLocalReadRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-failed-local-read$/);
+        const planningScopeRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-planning-scope-recovery|recover-planning-scope)$/);
+        if(selfDevelopment&&planningScopeRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=planningScopeRecovery[2]==="request-planning-scope-recovery"?"requestPlanningScopeRecovery":"recoverPlanningScopeFailure";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(planningScopeRecovery[1]),input,actor));return;
+        }
         if(selfDevelopment&&failedLocalReadRecovery&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);
           const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
@@ -1519,7 +1526,7 @@ export function createApi({
             workerRuntime && approval.runId
               ? await workerRuntime.get(approval.runId)
               : null;
-          if(approval.tool==="self_development_escalated_repair"){
+          if(["self_development_escalated_repair","self_development_planning_scope_recovery"].includes(approval.tool)){
             execution={authorized:decision==="approved",approvalId:approval.id};
           } else if (autonomyTask) {
             execution =

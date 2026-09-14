@@ -846,13 +846,16 @@ export function registerHandsTools(
       },
     }),
   );
-  registry.register(
+  // Preflight and mutation deliberately share every source/lineage/syntax check.
+  // The read-only variant returns before creating any product-directory temp file.
+  for (const preflightOnly of [false, true]) registry.register(
     def({
-      name: "repo_apply_patch",
-      description:
-        "Atomically create or replace multiple validated files without committing or pushing.",
-      capability: "write",
-      riskLevel: RISK_LEVELS.LOW_RISK_WRITE,
+      name: preflightOnly ? "repo_validate_patch" : "repo_apply_patch",
+      description: preflightOnly
+        ? "Validate exact patch syntax, current workspace bytes and task lineage without applying changes."
+        : "Atomically create or replace multiple validated files without committing or pushing.",
+      capability: preflightOnly ? "read" : "write",
+      riskLevel: preflightOnly ? RISK_LEVELS.READ_ONLY : RISK_LEVELS.LOW_RISK_WRITE,
       branchBound: true,
       autonomous: true,
       available: !remote,
@@ -881,6 +884,23 @@ export function registerHandsTools(
       },
       async execute({ files, currentCommit, planProvenance, branch }, context) {
         const started = Date.now();
+        const durableTask=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null;
+        if(!preflightOnly&&durableTask?.metadata?.planningScopeRecoveryHistory?.length)
+          fail("planning_scope_mutation_forbidden", "The durable task is bound to planning-only authority.", {mutationApplied:false});
+        if (!preflightOnly && planProvenance?.planningOnly === true)
+          fail("planning_scope_mutation_forbidden", "This generation authorizes pre-mutation validation only.", {mutationApplied:false});
+        if (preflightOnly && (!currentCommit || !planProvenance))
+          fail("implementation_plan_provenance_missing", "Preflight requires the exact task-bound implementation plan.", {mutationApplied:false});
+        const planningScope=planProvenance?.planningScope;
+        if(preflightOnly&&planProvenance?.planningOnly===true){
+          const canonical=value=>String(value||"").replaceAll("\\","/").replace(/\/+$/,"").toLowerCase();
+          if(!planningScope||planningScope.taskId!==context?.runId||planningScope.repository!==repository||planningScope.branch!==branch||planningScope.currentCommit!==currentCommit||canonical(planningScope.workspaceRoot)!==canonical(root)||planningScope.runtimeVersion!==context?.runtimeVersion||planningScope.workerId!==context?.workerId||planningScope.continuationGenerationId!==context?.continuationGenerationId||!Number.isFinite(Date.parse(planningScope.deadline))||Date.parse(planningScope.deadline)<=Date.now()||!Array.isArray(planningScope.requiredPaths)||!Array.isArray(planningScope.readProofs)||planningScope.readProofs.length!==planningScope.requiredPaths.length||new Set(planningScope.readProofs.map(item=>item.path)).size!==planningScope.requiredPaths.length||files.some(item=>!planningScope.requiredPaths.includes(item.path)))fail("planning_scope_precondition_failed","Local planning context does not match the exact owner-bound preflight.",{mutationApplied:false});
+          for(const proof of planningScope.readProofs){
+            const bytes=await readFile(safe(root,proof.path));
+            const rawHash=createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");
+            if(!planningScope.requiredPaths.includes(proof.path)||rawHash!==proof.rawHash||canonicalContentHash(bytes.toString("utf8"))!==proof.contentHash)fail("planning_scope_precondition_failed","Current product bytes drifted after owner-authorized planning.",{path:proof.path,mutationApplied:false});
+          }
+        }
         const authorizedTaskOwnedDirtyPaths=new Set();let authorizedTaskOwnedDirtyLineage=null;
         for(const item of files){if(!isJavaScriptImplementationPath(item.path))continue;const syntaxPath=join(tmpdir(),`.nova-${randomUUID()}${item.path.toLowerCase().endsWith(".cjs")?".cjs":".mjs"}`);try{await writeFile(syntaxPath,item.content,"utf8");await exec(process.execPath,["--check",syntaxPath],{maxBuffer:64_000,windowsHide:true});}catch(error){fail("implementation_content_invalid","Replacement JavaScript failed syntax validation.",{path:item.path,validationCode:"javascript_syntax_invalid",contentHash:implementationContentHash(item.content),exitCode:Number.isInteger(error?.code)?error.code:1,mutationApplied:false});}finally{await rm(syntaxPath,{force:true}).catch(()=>{});}}
         if (currentCommit) {
@@ -953,6 +973,11 @@ export function registerHandsTools(
             );
           originals.push({ path: item.path, current });
         }
+        if (preflightOnly) return audit("repo_validate_patch", {
+          ok:true, preMutationValidated:true, mutationApplied:false,
+          files:files.map(item=>item.path), currentCommit,
+          planGenerationId:planProvenance.generationId,
+        }, context, started);
         const temps = [];
         try {
           for (const item of files) {

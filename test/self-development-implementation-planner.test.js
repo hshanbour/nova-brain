@@ -11,6 +11,7 @@ import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA, SELF_DEVELOPMENT_IMPLEMENTAT
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { registerHandsTools } from "../src/tools/hands-runtime.js";
 import {canonicalContentHash} from "../src/autonomy/self-development-plan-lifecycle.js";
+import {focusedTestEvidenceRelevance} from "../src/autonomy/focused-test-evidence-relevance.js";
 
 const OWNER = "owner",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -638,4 +639,78 @@ test("missing intended test uses bounded discovery and retains safe rejected-pat
   assert.equal(result.evidenceExpansion.attempt, 1);
   assert.equal(result.evidenceExpansion.plannerAttempt, 1);
   assert.ok(result.evidenceExpansion.paths.length <= 3);
+});
+
+test("microphone planner does not offer discovered tests rejected by the canonical relevance contract", async () => {
+  const source="assets/voice-input.js",focused="test/voice-input.test.js",unrelated="test/console-client.test.js",other="test/workspace-navigation.test.js",output=valid();
+  output.files=[{path:source,operation:"replace",content:"export const supported = true;\n",reason:"dictation",intendedChanges:["preserve draft"]}];
+  output.focusedTests=[{path:focused,kind:"existing"}];
+  output.acceptanceMapping=[{criterion:"Microphone dictation remains editable",files:[source]}];
+  const f=await fixture([output],{discovered:[source,focused,unrelated,other],reads:[[source,"export const supported = false;\n"],[focused,"import test from 'node:test';\n"]]}),task=await f.storage.getAutonomyTask("selfdev-plan",OWNER);
+  await f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...task.metadata,selfDevelopment:{userGoal:"Complete the composer microphone and editable dictation",acceptanceCriteria:["Microphone dictation remains editable"]}}});
+  const before=await f.storage.getAutonomyTask(task.id,OWNER),result=await f.planner.generate({taskId:task.id,candidatePaths:[source,focused],currentCommit:SHA}),prompt=JSON.parse(f.prompts[0].message.split("\n")[1]);
+  assert.deepEqual(prompt.availableEvidenceExpansionTests,[]);
+  assert.deepEqual(result.implementationPlan.evidencePaths,[source,focused]);
+  assert.equal(focusedTestEvidenceRelevance(unrelated,{candidatePaths:[source,focused],userGoal:before.metadata.selfDevelopment.userGoal,discoveredPaths:new Set([source,focused,unrelated,other])}).classification,"unrelated");
+  assert.deepEqual(await f.storage.getAutonomyTask(task.id,OWNER),before);
+  output.focusedTests=[{path:unrelated,kind:"existing"}];
+  await assert.rejects(()=>f.planner.generate({taskId:task.id,candidatePaths:[source,focused],currentCommit:SHA}),error=>error.code==="implementation_scope_violation"&&error.safeDiagnostics.classification==="unrelated"&&error.safeDiagnostics.proposedPath===unrelated&&error.safeDiagnostics.mutationApplied===false);
+});
+
+test("canonical relevance offers legitimate evidence and validation accepts exactly that discovery candidate", async () => {
+  const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];
+  const f=await fixture([output],{discovered:[DOC,TEST,EXTRA,"test/unrelated.test.js","test/voice-control.test.js"]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),prompt=JSON.parse(f.prompts[0].message.split("\n")[1]);
+  assert.deepEqual(prompt.availableEvidenceExpansionTests,[EXTRA]);
+  assert.deepEqual(result.evidenceExpansion.paths,[EXTRA]);
+  assert.equal(result.evidenceExpansion.category,"existing_file");
+  assert.equal(focusedTestEvidenceRelevance("test/console-client.test.js",{candidatePaths:["assets/api-client.js",TEST],userGoal:"Repair API client response handling",discoveredPaths:new Set(["test/console-client.test.js"])}).eligible,true,"eligibility is contextual, not a filename deny-list");
+});
+
+test("rejected structured plans retain bounded references and fingerprints without source or model prose", async () => {
+  const output=valid(),marker="private-model-prose-must-not-be-stored",unrelated="test/unrelated.test.js";
+  output.files[0].content=marker;output.files[0].reason=marker;output.files[0].intendedChanges=[marker];output.summary=marker;
+  output.focusedTests=[{path:unrelated,kind:"existing"}];
+  output.acceptanceMapping=[{criterion:marker,files:[DOC,unrelated]}];
+  const f=await fixture([output],{discovered:[DOC,TEST,unrelated]});
+  let failure;await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>{failure=error;return error.code==="implementation_scope_violation";});
+  const diagnostic=failure.safeDiagnostics,proof=diagnostic.rejectedPlanEvidence;
+  assert.equal(proof.version,1);assert.equal(proof.taskId,"selfdev-plan");assert.equal(proof.currentCommit,SHA);
+  assert.deepEqual(proof.requestedMutationPaths.map(({path,operation})=>({path,operation})),[{path:DOC,operation:"replace"}]);
+  assert.deepEqual(proof.requestedFocusedTests.map(({path,kind})=>({path,kind})),[{path:unrelated,kind:"existing"}]);
+  assert.deepEqual(proof.acceptanceMapping[0].files,[{mutationIndex:0},{focusedTestIndex:0}]);
+  assert.equal(proof.acceptanceMapping[0].criterionIndex,-1);
+  assert.match(proof.planFingerprint,/^[a-f0-9]{64}$/);assert.match(proof.evidenceFingerprint,/^[a-f0-9]{64}$/);assert.match(diagnostic.outputShapeHash,/^[a-f0-9]{64}$/);
+  assert.equal(proof.validation.classification,"unrelated");assert.equal(proof.mutationApplied,false);
+  assert.equal(JSON.stringify(diagnostic).includes(marker),false);
+  assert.ok(JSON.stringify(diagnostic).length<10000);
+});
+
+test("Worker durably records rejected plan references before any Hands mutation", async () => {
+  const output=valid(),unrelated="test/unrelated.test.js";output.focusedTests=[{path:unrelated,kind:"existing"}];
+  const f=await fixture([output],{discovered:[DOC,TEST,unrelated]}),task=await f.storage.getAutonomyTask("selfdev-plan",OWNER),calls=[];
+  await f.storage.updateAutonomyTask(task.id,OWNER,{status:"queued",metadata:{...task.metadata,steps:[{type:"plan_repair",capability:"reasoning",input:{tool:"self_development_plan_implementation",arguments:{taskId:task.id,candidatePaths:[DOC,TEST],currentCommit:SHA}},idempotencyIdentity:"invalid-repair-plan"},{type:"apply_patch",capability:"repo_mutate_local",input:{tool:"repo_apply_patch",arguments:{files:"$IMPLEMENTATION_FILES"}},idempotencyIdentity:"must-not-mutate"}]}});
+  const runtime=createWorkerRuntime({storage:f.storage,ownerId:OWNER,approvedBranch:BRANCH,capabilities:["reasoning","repo_mutate_local"],toolRegistry:{async execute(name,args){calls.push(name);assert.equal(name,"self_development_plan_implementation");return f.planner.generate(args);}}});
+  await runtime.tickTask(task.id);
+  const failed=(await f.storage.listAutonomySteps(task.id)).find(step=>step.stepType==="plan_repair"&&step.status==="failed");
+  assert.equal(failed.errorCode,"implementation_scope_violation");
+  assert.equal(failed.result.diagnostics.rejectedPlanEvidence.requestedFocusedTests[0].path,unrelated);
+  assert.equal(failed.result.diagnostics.rejectedPlanEvidence.requestedMutationPaths[0].path,DOC);
+  assert.equal(failed.result.diagnostics.mutationApplied,false);
+  assert.deepEqual(calls,["self_development_plan_implementation"]);
+  assert.equal((await runtime.get(task.id)).metadata.selfDevelopmentImplementationPlan,undefined);
+});
+
+test("rejected-plan audit evidence remains bounded even when model arrays exceed schema limits", async () => {
+  const output=valid(),marker="Bearer do-not-retain-model-secrets";
+  output.focusedTests=Array.from({length:40},(_,i)=>({path:`test/unrelated-${i}.test.js`,kind:"existing"}));
+  output.acceptanceMapping=Array.from({length:40},()=>({criterion:marker,files:Array.from({length:20},()=>DOC)}));
+  const f=await fixture([output]);
+  await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>{
+    const proof=error.safeDiagnostics.rejectedPlanEvidence;
+    assert.equal(proof.requestedFocusedTests.length,12);assert.equal(proof.omittedFocusedTestCount,28);
+    assert.equal(proof.acceptanceMapping.length,30);assert.equal(proof.omittedMappingCount,10);
+    assert.equal(proof.acceptanceMapping[0].files.length,8);assert.equal(proof.acceptanceMapping[0].omittedFileCount,12);
+    assert.equal(JSON.stringify(proof).includes(marker),false);assert.ok(JSON.stringify(proof).length<20000);
+    return error.code==="implementation_scope_violation"&&error.safeDiagnostics.mutationApplied===false;
+  });
 });

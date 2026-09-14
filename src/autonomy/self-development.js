@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import {createActiveContinuation,assertActiveImplementationPlan,canonicalContentHash,planLifecycleMetadata,rebindEquivalentImplementationPlan} from "./self-development-plan-lifecycle.js";
 import {recoverFailedLocalRead} from "./failed-local-read-recovery.js";
+import {describePlanningScopeRecovery,recoverPlanningScope,PLANNING_SCOPE_RECOVERY_TOOL} from "./planning-scope-recovery.js";
+import {recoveryHash} from "./failed-local-read-recovery.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -2719,7 +2721,20 @@ export function createSelfDevelopmentService({
     const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",nextRunAt:now,errorCode:null,blockedReason:null,approvalState,metadata},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during approval-contract runtime recovery.");
     await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"approval_contract_delivery_runtime_recovered",status:"queued",summary:"The exact approved integration delivery received one bounded runtime window.",metadata:{taskId:current.id,...record}});return{task:updated,recovery:record,idempotent:false};
   }
+  const planningScopeOptions=(taskId,input,actor)=>({taskId,input,actor,runtime,storage,ownerId,repository,approvedBranch,runtimeVersion,verifyRemote,clock});
+  const planningScopeCall=async operation=>{try{return await operation();}catch(error){if(error.code!=="planning_scope_recovery_precondition_failed")throw error;throw Object.assign(new SelfDevelopmentError(error.code,error.message,error.statusCode||409),{safeDiagnostics:error.safeDiagnostics});}};
+  async function requestPlanningScopeRecovery(taskId,input,actor){
+    const {task,approvalArguments}=await planningScopeCall(()=>describePlanningScopeRecovery(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===PLANNING_SCOPE_RECOVERY_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:PLANNING_SCOPE_RECOVERY_TOOL,reason:"Owner approval is required for one planning-only successor using exact current evidence. No product mutation or additional repair attempt is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_planning_scope_approval_requested",status:"waiting",summary:"Exact current-read planning continuation awaits a separate owner decision.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverPlanningScopeFailure=(taskId,input,actor)=>planningScopeCall(()=>recoverPlanningScope(planningScopeOptions(taskId,input,actor)));
   return Object.freeze({
+    requestPlanningScopeRecovery,
+    recoverPlanningScopeFailure,
     structure,
     plan,
     create,

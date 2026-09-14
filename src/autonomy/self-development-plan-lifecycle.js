@@ -25,10 +25,11 @@ export function planLifecycleMetadata(task,plan){
   return{...task.metadata,selfDevelopmentImplementationPlan:plan,activeImplementationPlanGeneration:provenance.generationId,implementationPlanGenerations:[...history,{...provenance,planHash:plan.planHash}]};
 }
 
-export function assertActiveImplementationPlan(task,files){
+export function assertActiveImplementationPlan(task,files,{allowPlanningOnly=false}={}){
   const plan=task.metadata?.selfDevelopmentImplementationPlan,provenance=plan?.provenance,history=task.metadata?.implementationPlanGenerations||[],active=history.filter(item=>item.authority==="active");
   const fail=(code,message)=>{throw Object.assign(new Error(message),{code,retryable:false,safeDiagnostics:{taskId:task.id,taskCurrentCommit:task.currentCommit,planGenerationId:provenance?.generationId||null,planCurrentCommit:provenance?.currentCommit||null,evidenceGenerationId:provenance?.evidenceGenerationId||null}});};
   if(!provenance||provenance.version!==IMPLEMENTATION_PLAN_PROVENANCE_VERSION)fail("implementation_plan_provenance_missing","A mutation-authoritative implementation plan generation is required.");
+  if(provenance.planningOnly===true&&!allowPlanningOnly)fail("planning_scope_mutation_forbidden","A planning-only generation cannot authorize product mutation.");
   if(provenance.taskId!==task.id||provenance.currentCommit!==task.currentCommit)fail("implementation_plan_stale","The implementation plan is not bound to the exact task commit.");
   if(task.metadata?.activeImplementationPlanGeneration!==provenance.generationId||active.length!==1||active[0].generationId!==provenance.generationId)fail("implementation_plan_superseded","The implementation plan is not the unique active generation.");
   if(!Array.isArray(files)||!Array.isArray(provenance.mutationPreconditions))fail("implementation_plan_precondition_mismatch","Implementation files do not match the active plan preconditions.");

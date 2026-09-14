@@ -4,10 +4,12 @@ import {assertActiveImplementationPlan,canonicalContentHash} from "./self-develo
 import {canonicalSchemaDiagnostic} from "./schema-diagnostics.js";
 import {isExactApprovedDelivery} from "./auto-dispatch.js";
 import {FAILED_LOCAL_READ_RECOVERY_CLASS,validateRecoveredLocalReadContext} from "./failed-local-read-recovery.js";
+import {PLANNING_SCOPE_RECOVERY_CLASS,validatePlanningScopeContext} from "./planning-scope-recovery.js";
 
 const LOCAL_STEPS=Object.freeze({
   read_files:{capability:"repo_read_remote",tool:"repo_read_task_owned_local"},
   apply_patch:{capability:"repo_mutate_local",tool:"repo_apply_patch",lock:true},
+  validate_patch:{capability:"repo_read_remote",tool:"repo_validate_patch",lock:true},
   run_focused_tests:{capability:"test_local",tool:"test_run"},
   run_full_tests:{capability:"test_local",tool:"test_run_full"},
   inspect_diff:{capability:"repo_read_remote",tool:"repo_diff"},
@@ -37,7 +39,7 @@ const taskOwnedDirtyLineage=(task,steps,files)=>{
   if(entries.length===0||entries.length!==new Set(entries.map(entry=>entry.path)).size||targetPaths.length===0||targetPaths.some(path=>!entries.some(entry=>entry.path===path)))return null;
   return Object.freeze({version:1,taskId:task.id,repository:task.metadata?.selfDevelopment?.repository,branch:task.branch,currentCommit:task.currentCommit,sourcePlanStepId:durableExact?durable.sourcePlanStepId:planStep.stepId,sourceApplyStepId:apply.stepId,activePlanStepId:activePlanStep?.stepId||null,entries});
 };
-const taskBoundPatchArguments=(task,args,steps)=>{if(args.branch!==undefined&&args.branch!==task.branch)throw new HandoffError("branch_mismatch","Patch branch does not match the exact task branch.");if(args.currentCommit!==undefined&&args.currentCommit!==task.currentCommit)throw new HandoffError("commit_mismatch","Patch commit does not match the exact task commit.");const planProvenance=assertActiveImplementationPlan(task,args.files),lineage=taskOwnedDirtyLineage(task,steps,args.files);return{branch:task.branch,currentCommit:task.currentCommit,files:args.files,planProvenance:{...planProvenance,...(lineage?{taskOwnedDirtyLineage:lineage}:{})}};};
+const taskBoundPatchArguments=(task,args,steps,{allowPlanningOnly=false}={})=>{if(args.branch!==undefined&&args.branch!==task.branch)throw new HandoffError("branch_mismatch","Patch branch does not match the exact task branch.");if(args.currentCommit!==undefined&&args.currentCommit!==task.currentCommit)throw new HandoffError("commit_mismatch","Patch commit does not match the exact task commit.");const planProvenance=assertActiveImplementationPlan(task,args.files,{allowPlanningOnly}),lineage=taskOwnedDirtyLineage(task,steps,args.files);return{branch:task.branch,currentCommit:task.currentCommit,files:args.files,planProvenance:{...planProvenance,...(lineage?{taskOwnedDirtyLineage:lineage}:{})}};};
 const canonicalRoot=value=>String(value||"").replaceAll("\\","/").replace(/\/$/,"").toLowerCase();
 const taskOwnedLocalReadArguments=(task,planned,steps,workerId,{allowFirstBind=false,clock=()=>new Date(),claimContext}={})=>{
   if(task.metadata?.activeContinuation?.recoveryClass===FAILED_LOCAL_READ_RECOVERY_CLASS||task.metadata?.failedLocalReadRecoveryHistory?.at(-1)?.activeContinuation?.generationId===task.metadata?.activeContinuation?.generationId){
@@ -79,6 +81,12 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     if(before.currentCommit!==input.expectedCommit)throw new HandoffError("commit_mismatch","Task commit does not match.");
     const recoveredRead=before.metadata?.steps?.[before.currentStep]?.input?.tool==="repo_read_task_owned_local"&&(before.metadata?.activeContinuation?.recoveryClass===FAILED_LOCAL_READ_RECOVERY_CLASS||before.metadata?.failedLocalReadRecoveryHistory?.at(-1)?.activeContinuation?.generationId===before.metadata?.activeContinuation?.generationId);
     const claimContext={runtimeVersion:input.runtimeVersion,generationId:input.continuationGenerationId,repository:input.repository,root:input.repositoryRoot,branch:input.expectedBranch};
+    const planningOnly=before.metadata?.activeContinuation?.recoveryClass===PLANNING_SCOPE_RECOVERY_CLASS||Boolean(before.metadata?.planningScopeRecoveryHistory?.length);
+    let planningProof=null;
+    if(planningOnly){
+      planningProof=validatePlanningScopeContext(before,await storage.listAutonomySteps(before.id),{...claimContext,workerId,allowFirstBind:true},clock);
+      if(before.metadata?.steps?.[before.currentStep]?.type!=="validate_patch")throw new HandoffError("planning_scope_mutation_forbidden","This continuation permits only a read-only patch preflight handoff.");
+    }
     // Validate even an idempotent active-handoff request before returning it.
     if(recoveredRead)validateRecoveredLocalReadContext(before,await storage.listAutonomySteps(before.id),{...claimContext,workerId,allowFirstBind:true},clock);
     const active=before.metadata?.localHandoff;
@@ -96,6 +104,14 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     const capabilityAvailable=definition&&(exactApprovedDelivery?capabilities.includes("approved_delivery_git_push"):capabilities.includes(definition.capability));
     if(!capabilityAvailable)return{claimed:false};
     let args=resolvePlan(planned.input?.arguments||{},before),claimMetadata=null;
+    if(planned.type==="validate_patch"){
+      if(!planningProof)throw new HandoffError("planning_scope_precondition_failed","Patch preflight requires the exact planning continuation.");
+      const {record,history,firstBind}=planningProof;
+      args=taskBoundPatchArguments(before,args,await storage.listAutonomySteps(before.id),{allowPlanningOnly:true});
+      if(args.planProvenance.planningOnly!==true||args.files.some(file=>!record.requiredPaths.includes(file.path))||!args.planProvenance.taskOwnedDirtyLineage)throw new HandoffError("planning_scope_precondition_failed","Preflight scope or complete dirty lineage is invalid.");
+      args.planProvenance.planningScope={taskId:before.id,repository:record.repository,branch:record.branch,workspaceRoot:record.workspaceRoot,currentCommit:record.currentCommit,runtimeVersion:record.runtimeVersion,workerId,continuationGenerationId:record.activeContinuation.generationId,deadline:record.activeContinuation.runtimeDeadline,requiredPaths:record.requiredPaths,readProofs:record.readProofs};
+      if(firstBind)claimMetadata={planningScopeRecoveryHistory:[...history.slice(0,-1),{...record,workerBindingState:"bound",workerId,boundAt:nowIso(clock)}]};
+    }
     if(planned.input?.tool!==definition.tool)throw new HandoffError("invalid_step_payload","Server plan contains an invalid local tool.");
     if(before.taskType==="self_development"&&planned.type==="read_files"&&planned.input?.tool==="repo_read_task_owned_local"){const localRead=taskOwnedLocalReadArguments(before,planned,await storage.listAutonomySteps(before.id),workerId,{allowFirstBind:true,clock,claimContext});args=localRead.arguments;claimMetadata=localRead.claimMetadata;}
     if(before.taskType==="self_development"&&planned.type==="apply_patch")args=taskBoundPatchArguments(before,args,await storage.listAutonomySteps(before.id));
@@ -130,7 +146,23 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     if(!failed&&handoff.stepType==="review_commit"&&(!result.reviewedChangeSet?.reviewHash||result.commitSha!==task.currentCommit))throw new HandoffError("invalid_handoff_result","Reviewed commit result must bind the exact task commit.",400);
     if(!failed&&handoff.tool==="repo_read_task_owned_local"&&(result.path!==handoff.arguments.path||result.contentHash!==handoff.arguments.expectedContentHash||typeof result.content!=="string"||result.truncated!==false))throw new HandoffError("invalid_handoff_result","Local read result does not match its task-owned binding.",400);
     if(!failed&&handoff.stepType==="apply_patch"){const allowed=new Set((handoff.arguments.files||[]).map(item=>item.path));if(!Array.isArray(result.files)||result.files.some(path=>!allowed.has(path)))throw new HandoffError("invalid_handoff_result","Patch result files do not match the server plan.",400);}
+    if(handoff.stepType==="validate_patch"){
+      const record=task.metadata?.planningScopeRecoveryHistory?.at(-1);
+      validatePlanningScopeContext(task,await storage.listAutonomySteps(task.id),{runtimeVersion:record?.runtimeVersion,generationId:task.metadata?.activeContinuation?.generationId,repository:record?.repository,root:record?.workspaceRoot,branch:task.branch,workerId},clock);
+      if(!failed&&(result.preMutationValidated!==true||result.mutationApplied!==false||result.currentCommit!==task.currentCommit||result.planGenerationId!==handoff.arguments.planProvenance.generationId||hash(result.files)!==hash(handoff.arguments.files.map(file=>file.path))))throw new HandoffError("invalid_handoff_result","Read-only patch validation did not prove the exact accepted plan without mutation.",400);
+    }
     const completed=[...(task.checkpoint?.completedSteps||[]),handoff.stepId],completedHandoffs=[...(task.metadata?.completedHandoffs||[]),handoff.id].slice(-20),metadata={...task.metadata,localHandoff:null,completedHandoffs,requiredCapability:null};
+    if(!failed&&handoff.stepType==="validate_patch"){
+      const history=metadata.planningScopeRecoveryHistory,record=history.at(-1),focusedTests=(metadata.selfDevelopmentImplementationPlan?.focusedTests||[]).map(item=>item.path);
+      if(!focusedTests.length||focusedTests.some(path=>!record.requiredPaths.includes(path)))throw new HandoffError("planning_scope_precondition_failed","Focused scheduling would exceed the unchanged implementation scope.");
+      const boundary={kind:"focused_test_scheduling_ready",tool:"test_run",arguments:{files:focusedTests},executionAuthorized:false,mutationApplied:false,planGenerationId:result.planGenerationId,validatedStepId:handoff.stepId};
+      metadata.planningScopeRecoveryHistory=[...history.slice(0,-1),{...record,consumed:true,completedAt:nowIso(clock),boundary}];metadata.planningScopeBoundary=boundary;
+      const updated=await storage.updateAutonomyTask(task.id,ownerId,{status:"blocked",currentStep:task.currentStep+1,currentPhase:"validate_patch",nextRunAt:null,errorCode:null,blockedReason:"Planning complete: exact patch preconditions validated without mutation; focused tests prepared but not executed.",checkpoint:{...task.checkpoint,completedSteps:completed,pendingStep:null,latestResult:result},metadata,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},task.stateVersion);
+      if(!updated)throw new HandoffError("version_conflict","Task changed before the planning boundary was persisted.");
+      await storage.updateAutonomyStep(task.id,handoff.stepId,{status:"completed",result,errorCode:null,completedAt:nowIso(clock)});await storage.releaseAutonomyLocks(task.id,task.leaseToken);
+      await activity(updated,"self_development_planning_scope_ready","blocked","Planning-only continuation reached the exact pre-mutation and focused-test scheduling boundary.",{handoffId,stepId:handoff.stepId,boundary});
+      return{idempotent:false,status:"blocked",task:publicTask(updated)};
+    }
     if(failed){
       const failureEvidence=input.error?.code==="schema_mismatch"?canonicalSchemaDiagnostic({...result.diagnostics,taskId:task.id,handoffId:handoff.id,stepId:handoff.stepId,stepType:handoff.stepType,tool:handoff.tool}):result.diagnostics;if(input.error?.code==="schema_mismatch")result.diagnostics=failureEvidence;
       const structuredFullFailure=task.taskType==="self_development"&&handoff.stepType==="run_full_tests"&&input.error?.code==="test_failed"&&failureEvidence?.version===1&&typeof failureEvidence.fingerprint==="string";

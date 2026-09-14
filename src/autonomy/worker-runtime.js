@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { ApprovalRequiredError } from "../policy/action-policy.js";
 import {activeContinuationExceeded,assertActiveImplementationPlan,planLifecycleMetadata,taskRuntimeWindow} from "./self-development-plan-lifecycle.js";
 import {isExactApprovedDelivery} from "./auto-dispatch.js";
+import {PLANNING_SCOPE_RECOVERY_CLASS,validatePlanningScopeReadEvidence} from "./planning-scope-recovery.js";
 
 export const AUTONOMY_STATUSES = Object.freeze([
   "queued",
@@ -27,6 +28,7 @@ export const STEP_CAPABILITIES = Object.freeze({
   plan_implementation: "reasoning",
   plan_repair: "reasoning",
   apply_patch: "repo_mutate_local",
+  validate_patch: "repo_read_remote",
   run_focused_tests: "test_local",
   run_full_tests: "test_local",
   inspect_diff: "repo_read_remote",
@@ -206,13 +208,16 @@ export function createWorkerRuntime({
     if (
       action === "resume" &&
       ["waiting", "blocked", "waiting_for_worker"].includes(task.status)
-    )
+    ) {
+      if(task.metadata?.planningScopeRecoveryHistory?.length)
+        throw new WorkerError("planning_scope_resume_forbidden","Planning continuation cannot be resumed or promoted to mutation by generic task controls.",{retryable:false});
       return storage.updateAutonomyTask(id, ownerId, {
         status: "queued",
         nextRunAt: iso(clock),
         blockedReason: null,
         errorCode: null,
       });
+    }
     throw new WorkerError(
       "invalid_task_transition",
       "Task control action is invalid for its state.",
@@ -308,6 +313,16 @@ export function createWorkerRuntime({
     const plan = await next(task),
       type = plan.next_step,
       capability = STEP_CAPABILITIES[type] || plan.required_capability;
+    if(task.metadata?.activeContinuation?.recoveryClass===PLANNING_SCOPE_RECOVERY_CLASS||task.metadata?.planningScopeRecoveryHistory?.length){
+      const proof=validatePlanningScopeReadEvidence(task,await storage.listAutonomySteps(task.id),clock);
+      if(type!=="plan_repair"&&type!=="validate_patch")return stop(task,"blocked","planning_scope_mutation_forbidden");
+      // Only the authenticated local handoff may validate actual workspace bytes.
+      if(type==="validate_patch"){
+        await storage.updateAutonomyTask(task.id,ownerId,{status:"waiting_for_worker",metadata:{...task.metadata,requiredCapability:"repo_read_remote"}});
+        return{claimed:true,status:"waiting_for_worker",capability:"repo_read_remote"};
+      }
+      if(task.currentStep!==proof.record.activeContinuation.startStep)return stop(task,"failed","planning_scope_replay_forbidden");
+    }
     const approvedDelivery = type === "push" && task.approvalState?.approved === true && (!task.metadata?.steps?.[task.currentStep]||(task.metadata.steps[task.currentStep].type==="push"&&Boolean(task.metadata?.approvedDeliveryRuntime)));
     if (!approvedDelivery && activeContinuationExceeded(task))
       return stop(task, "failed", "max_steps_reached");
