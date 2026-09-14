@@ -14,6 +14,7 @@ import {parseTestFailure} from "./test-failure-evidence.js";
 import {implementationContentHash,implementationContentIssue,isJavaScriptImplementationPath} from "../autonomy/implementation-content.js";
 import {recoveryHash,recoveryRoot} from "../autonomy/failed-local-read-recovery.js";
 import {EXECUTION_SCOPE_RECOVERY_CLASS,executionScopePayload,validateExecutionScopeContext} from "../autonomy/execution-scope-recovery.js";
+import {FULL_TEST_SCOPE_RECOVERY_CLASS,fullTestScopePayload,validateFullTestScopeContext} from "../autonomy/full-test-scope-recovery.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -136,6 +137,10 @@ const def = (tool) => ({
   available: true,
   configurationStatus: "ready",
   ...tool,
+  execute:async(input,context)=>{
+    if(context?.fullTestScope&&tool.name!=="test_run_full")fail("full_test_scope_recovery_precondition_failed","Full-test-only authority cannot execute another Hands tool.",{predicate:"full_test_tool_forbidden",mutationApplied:false});
+    return tool.execute(input,context);
+  },
 });
 
 export function registerHandsTools(
@@ -171,8 +176,49 @@ export function registerHandsTools(
   const executedScopeSteps=new Set();
   const exactScope=(left,right)=>recoveryHash(left)===recoveryHash(right);
   const rejectExecution=(predicate,mutationApplied=false)=>fail("execution_scope_recovery_precondition_failed","The exact owner-approved execution binding could not be proven.",{predicate,mutationApplied});
+  const rejectFullTest=predicate=>fail("full_test_scope_recovery_precondition_failed","The exact owner-approved full-test binding could not be proven.",{predicate,mutationApplied:false});
+  async function fullTestContext(tool,input,context){
+    const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null,scope=context?.fullTestScope;
+    if(!scope){if(durable?.metadata?.fullTestScopeRecoveryHistory?.length)rejectFullTest("full_test_context_required");return null;}
+    if(tool!=="test_run_full"||context.executionScope||scope.version!==1||scope.recoveryClass!==FULL_TEST_SCOPE_RECOVERY_CLASS||!exactScope(input,{})||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||scope.fullTestStepId!==context.stepId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.planHash,scope.planGenerationId,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxFullTestRuns!==1||scope.maxProductMutations!==0||scope.maxAdditionalAttempts!==0||scope.runtimeMinutes!==5||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectFullTest("full_test_context_binding");
+    const carried=context.repositoryContext;
+    if(carried.version!==1||carried.repository!==repository||carried.branch!==branch||recoveryRoot(carried.root)!==recoveryRoot(root))rejectFullTest("full_test_repository_context");
+    if(durable){
+      if(!storage.listAutonomySteps)rejectFullTest("full_test_durable_steps_required");
+      const {record}=validateFullTestScopeContext(durable,await storage.listAutonomySteps(context.runId),{runtimeVersion:context.runtimeVersion,generationId:context.continuationGenerationId,repository,branch,root,workerId:context.workerId});
+      if(!exactScope(scope,fullTestScopePayload(record)))rejectFullTest("full_test_durable_payload");
+    }
+    if(!Array.isArray(scope.requiredPaths)||scope.requiredPaths.length<1||scope.requiredPaths.length>8||new Set(scope.requiredPaths).size!==scope.requiredPaths.length||!Array.isArray(scope.entries)||scope.entries.length!==scope.requiredPaths.length||new Set(scope.entries.map(item=>item.path)).size!==scope.requiredPaths.length||scope.entries.some(item=>!scope.requiredPaths.includes(item.path)||item.hashAlgorithm!=="git_sha1"||!SHA.test(item.hash||"")||item.rawHash!==item.hash||!/^[a-f0-9]{64}$/.test(item.contentHash||"")))rejectFullTest("full_test_complete_lineage");
+    const key=`full-test:${scope.continuationGenerationId}:${scope.fullTestStepId}`;
+    if(executedScopeSteps.has(key))rejectFullTest("full_test_local_replay");
+    await verifyFullTestWorkspace(scope);
+    if(Date.parse(scope.runtimeDeadline)-Date.now()<125000)rejectFullTest("full_test_runtime_insufficient");
+    return{scope,key};
+  }
+  async function verifyFullTestWorkspace(scope,{afterRun=false}={}){
+    const reject=(predicate,observation=false)=>{
+      if(!afterRun)rejectFullTest(predicate);
+      fail("full_test_scope_recovery_precondition_failed","Post-run workspace verification rejected the full-test result.",{predicate,verificationPhase:"post_run",mutationApplied:observation,workspaceDriftObserved:observation});
+    };
+    try{
+      if(recoveryRoot(await realpath(root))!==recoveryRoot(scope.workspaceRoot))reject("full_test_canonical_workspace",true);
+      const run=args=>localGit?localGit(root,args):gitCommand(root,args,{runner:commandRunner,environment});
+      let bound;try{bound=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:branch,expectedHead:scope.currentCommit,requireClean:true,source:"owner_approved_full_test",git:(_root,args)=>run(args)});}catch{reject("full_test_workspace_identity",null);}
+      if(bound.actualHead!==scope.currentCommit)reject("full_test_product_head",true);
+      const status=await run(["status","--porcelain=v1","--untracked-files=all"]),lines=status.stdout.split(/\r?\n/).filter(Boolean),dirty=lines.map(line=>line.slice(3).replaceAll("\\","/")).sort();
+      if(status.exitCode!==0)reject("full_test_complete_dirty_set",null);
+      if(lines.some(line=>!line.startsWith(" M ")&&!line.startsWith("?? "))||!exactScope(dirty,[...scope.requiredPaths].sort()))reject("full_test_complete_dirty_set",true);
+      const remoteTip=await run(["ls-remote","--heads","origin",`refs/heads/${branch}`]);if(remoteTip.exitCode!==0||remoteTip.stdout.trim()!==`${scope.currentCommit}\trefs/heads/${branch}`)reject("full_test_live_product_tip",null);
+      for(const entry of scope.entries){const path=safe(root,entry.path),info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||recoveryRoot(await realpath(path))!==recoveryRoot(path))reject("full_test_regular_file",true);const bytes=await readFile(path),hash=createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");if(hash!==entry.hash||canonicalContentHash(bytes.toString("utf8"))!==entry.contentHash)reject("full_test_current_bytes",true);}
+      if(Date.parse(scope.runtimeDeadline)<=Date.now())reject("full_test_runtime_window");
+    }catch(error){
+      if(!afterRun||error.safeDiagnostics?.verificationPhase==="post_run")throw error;
+      reject("full_test_post_run_unverifiable",null);
+    }
+  }
   async function executionContext(tool,input,context){
     const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null;
+    if(context?.fullTestScope||durable?.metadata?.fullTestScopeRecoveryHistory?.length)rejectFullTest("full_test_tool_forbidden");
     const scope=context?.executionScope;
     if(!scope){
       if(durable?.metadata?.executionScopeRecoveryHistory?.length)rejectExecution("execution_context_required");
@@ -1105,7 +1151,7 @@ export function registerHandsTools(
             ),
         async execute(input, context) {
           const started = Date.now();
-          const execution=await executionContext(full?"test_run_full":"test_run",input,context);
+          const fullTest=await fullTestContext(full?"test_run_full":"test_run",input,context),execution=fullTest?null:await executionContext(full?"test_run_full":"test_run",input,context);
           const timeoutMs = Math.max(
             1000,
             Math.min(180_000, input.timeoutMs || 120_000),
@@ -1150,6 +1196,7 @@ export function registerHandsTools(
             ];
           }
           if(execution){if(executedScopeSteps.has(execution.key))rejectExecution("execution_local_replay");executedScopeSteps.add(execution.key);}
+          if(fullTest){if(executedScopeSteps.has(fullTest.key))rejectFullTest("full_test_local_replay");executedScopeSteps.add(fullTest.key);}
           const result = await command(root, file, args, {
             timeoutMs,
             runner: commandRunner,
@@ -1159,6 +1206,7 @@ export function registerHandsTools(
             outputLimit = 20_000,
             output = completeOutput.slice(-outputLimit);
           if(execution)await verifyExecutionWorkspace(execution.scope,execution.scope.afterEntries);
+          if(fullTest)await verifyFullTestWorkspace(fullTest.scope,{afterRun:true});
           const value = {
             ok: result.exitCode === 0,
             exitCode: result.exitCode,
@@ -1166,6 +1214,7 @@ export function registerHandsTools(
             output,
             outputTruncated: completeOutput.length > outputLimit,
             ...(execution?{executionScopeEvidence:{generationId:execution.scope.continuationGenerationId,planHash:execution.scope.planHash,entries:execution.scope.afterEntries}}:{}),
+            ...(fullTest?{fullTestScopeEvidence:{generationId:fullTest.scope.continuationGenerationId,planHash:fullTest.scope.planHash,entries:fullTest.scope.entries}}:{}),
           };
           if (result.spawnErrorCode)
             value.error = {
@@ -1181,7 +1230,7 @@ export function registerHandsTools(
             value.error = {
               code: "test_failed",
               message: "Allowlisted tests failed.",
-              evidence: parseTestFailure({root,runner:"node_test",command:full?"npm:test":"node:test:focused",exitCode:result.exitCode,signal:result.signal,stdout:result.stdout,stderr:result.stderr,durationMs:result.durationMs}),
+              evidence: {...parseTestFailure({root,runner:"node_test",command:full?"npm:test":"node:test:focused",exitCode:result.exitCode,signal:result.signal,stdout:result.stdout,stderr:result.stderr,durationMs:result.durationMs}),...(fullTest?{fullTestScopeEvidence:value.fullTestScopeEvidence}:{})},
             };
           return audit(name, value, context, started);
         },

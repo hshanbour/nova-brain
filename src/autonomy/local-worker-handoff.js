@@ -6,6 +6,7 @@ import {isExactApprovedDelivery} from "./auto-dispatch.js";
 import {FAILED_LOCAL_READ_RECOVERY_CLASS,validateRecoveredLocalReadContext} from "./failed-local-read-recovery.js";
 import {PLANNING_SCOPE_RECOVERY_CLASS,validatePlanningScopeContext} from "./planning-scope-recovery.js";
 import {EXECUTION_SCOPE_RECOVERY_CLASS,EXECUTION_SCOPE_RECOVERY_TOOL,validateExecutionScopeContext,executionScopePayload} from "./execution-scope-recovery.js";
+import {FULL_TEST_SCOPE_RECOVERY_CLASS,FULL_TEST_SCOPE_RECOVERY_TOOL,validateFullTestScopeContext,fullTestScopePayload} from "./full-test-scope-recovery.js";
 
 const LOCAL_STEPS=Object.freeze({
   read_files:{capability:"repo_read_remote",tool:"repo_read_task_owned_local"},
@@ -70,8 +71,9 @@ export function verifyLocalWorkerWorkspaceProof(proof,signature,token){
 export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/nova-brain-mvp-foundation",clock=()=>new Date(),leaseMs=120000,deploymentEnvironment="preview"}={}){
   if(!storage||!ownerId)throw new Error("Local Worker handoff requires storage and ownerId.");
   const activity=(task,action,status,summary,metadata={})=>storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action,status,summary,metadata:redact({taskId:task.id,...metadata})});
-  const response=(task,handoff)=>({handoffId:handoff.id,taskId:task.id,stepId:handoff.stepId,stepType:handoff.stepType,repository:"hshanbour/nova-brain",branch:task.branch,expectedCommit:task.currentCommit,tool:handoff.tool,arguments:redact(handoff.arguments),...(handoff.approvedDelivery?{approvedDelivery:handoff.approvedDelivery}:{}),...(handoff.executionScope?{executionScope:handoff.executionScope}:{}),idempotencyKey:handoff.idempotencyKey,deadline:handoff.expiresAt});
+  const response=(task,handoff)=>({handoffId:handoff.id,taskId:task.id,stepId:handoff.stepId,stepType:handoff.stepType,repository:"hshanbour/nova-brain",branch:task.branch,expectedCommit:task.currentCommit,tool:handoff.tool,arguments:redact(handoff.arguments),...(handoff.approvedDelivery?{approvedDelivery:handoff.approvedDelivery}:{}),...(handoff.executionScope?{executionScope:handoff.executionScope}:{}),...(handoff.fullTestScope?{fullTestScope:handoff.fullTestScope}:{}),idempotencyKey:handoff.idempotencyKey,deadline:handoff.expiresAt});
   const executionApproval=async(task,record)=>{const approval=await storage.getApproval(record.approvalId,ownerId);if(approval?.status!=="approved"||approval.tool!==EXECUTION_SCOPE_RECOVERY_TOOL||approval.runId!==task.id||approval.ownerId!==ownerId||approval.projectId!==task.projectId||hash(approval.arguments)!==hash(record.approvalArguments))throw new HandoffError("execution_scope_approval_required","The exact owner-approved execution contract must remain approved.",403);};
+  const fullTestApproval=async(task,record)=>{const approval=await storage.getApproval(record.approvalId,ownerId);if(approval?.status!=="approved"||approval.tool!==FULL_TEST_SCOPE_RECOVERY_TOOL||approval.runId!==task.id||approval.ownerId!==ownerId||approval.projectId!==task.projectId||hash(approval.arguments)!==hash(record.approvalArguments))throw new HandoffError("full_test_scope_approval_required","The exact owner-approved full-test contract must remain approved.",403);};
   async function claim(input){
     if(deploymentEnvironment==="production")throw new HandoffError("production_target_forbidden","Local Worker handoff is forbidden in Production.",403);
     const taskId=boundedString(input?.taskId,"taskId"),workerId=boundedString(input?.workerId,"workerId"),idempotencyKey=boundedString(input?.idempotencyKey,"idempotencyKey");
@@ -83,9 +85,15 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     if(before.currentCommit!==input.expectedCommit)throw new HandoffError("commit_mismatch","Task commit does not match.");
     const recoveredRead=before.metadata?.steps?.[before.currentStep]?.input?.tool==="repo_read_task_owned_local"&&(before.metadata?.activeContinuation?.recoveryClass===FAILED_LOCAL_READ_RECOVERY_CLASS||before.metadata?.failedLocalReadRecoveryHistory?.at(-1)?.activeContinuation?.generationId===before.metadata?.activeContinuation?.generationId);
     const claimContext={runtimeVersion:input.runtimeVersion,generationId:input.continuationGenerationId,repository:input.repository,root:input.repositoryRoot,branch:input.expectedBranch};
-    const executionOnly=before.metadata?.activeContinuation?.recoveryClass===EXECUTION_SCOPE_RECOVERY_CLASS||Boolean(before.metadata?.executionScopeRecoveryHistory?.length);
-    const planningOnly=!executionOnly&&(before.metadata?.activeContinuation?.recoveryClass===PLANNING_SCOPE_RECOVERY_CLASS||Boolean(before.metadata?.planningScopeRecoveryHistory?.length));
-    let planningProof=null,executionProof=null;
+    const fullTestOnly=before.metadata?.activeContinuation?.recoveryClass===FULL_TEST_SCOPE_RECOVERY_CLASS||Boolean(before.metadata?.fullTestScopeRecoveryHistory?.length);
+    const executionOnly=!fullTestOnly&&(before.metadata?.activeContinuation?.recoveryClass===EXECUTION_SCOPE_RECOVERY_CLASS||Boolean(before.metadata?.executionScopeRecoveryHistory?.length));
+    const planningOnly=!fullTestOnly&&!executionOnly&&(before.metadata?.activeContinuation?.recoveryClass===PLANNING_SCOPE_RECOVERY_CLASS||Boolean(before.metadata?.planningScopeRecoveryHistory?.length));
+    let planningProof=null,executionProof=null,fullTestProof=null;
+    if(fullTestOnly){
+      fullTestProof=validateFullTestScopeContext(before,await storage.listAutonomySteps(before.id),{...claimContext,workerId,allowFirstBind:true},clock);
+      await fullTestApproval(before,fullTestProof.record);
+      if(before.metadata?.steps?.[before.currentStep]?.type!=="run_full_tests")throw new HandoffError("full_test_scope_step_forbidden","Only the exact approved full-test step may be handed off.");
+    }
     if(executionOnly){
       executionProof=validateExecutionScopeContext(before,await storage.listAutonomySteps(before.id),{...claimContext,workerId,allowFirstBind:true},clock);
       await executionApproval(before,executionProof.record);
@@ -103,6 +111,10 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
       return{claimed:false};
     }
     if(!SAFE_STATUSES.has(before.status)&&!(active&&new Date(active.expiresAt)<=clock()))return{claimed:false};
+    if(fullTestProof){
+      const stepId=`${before.currentStep+1}:run_full_tests`;
+      if(active||(fullTestProof.record.claimedStepIds||[]).includes(stepId)||(await storage.listAutonomySteps(before.id)).some(step=>step.stepId===stepId))throw new HandoffError("full_test_scope_replay_forbidden","The single-use full-test step was already claimed and may not be retried.");
+    }
     if(executionProof){
       const stepId=`${before.currentStep+1}:${before.metadata.steps[before.currentStep].type}`;
       if(active||(executionProof.record.claimedStepIds||[]).includes(stepId)||(await storage.listAutonomySteps(before.id)).some(step=>step.stepId===stepId))throw new HandoffError("execution_scope_replay_forbidden","The single-use execution step was already claimed; it may not be retried or rebound.");
@@ -115,7 +127,13 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     const definition=LOCAL_STEPS[planned?.type];
     const capabilityAvailable=definition&&(exactApprovedDelivery?capabilities.includes("approved_delivery_git_push"):capabilities.includes(definition.capability));
     if(!capabilityAvailable)return{claimed:false};
-    let args=resolvePlan(planned.input?.arguments||{},before),claimMetadata=null,executionScope=null;
+    let args=resolvePlan(planned.input?.arguments||{},before),claimMetadata=null,executionScope=null,fullTestScope=null;
+    if(fullTestProof){
+      const {record,history,firstBind}=fullTestProof,boundRecord={...record,...(firstBind?{workerBindingState:"bound",workerId,boundAt:nowIso(clock)}:{}),claimedStepIds:[record.fullTestStepId],fullTestClaimedAt:nowIso(clock)};
+      if(hash(args)!==hash({}))throw new HandoffError("full_test_scope_arguments_changed","Only the unfiltered default full-test command is approved.");
+      fullTestScope=fullTestScopePayload(boundRecord);
+      claimMetadata={fullTestScopeRecoveryHistory:[...history.slice(0,-1),boundRecord]};
+    }
     if(executionProof){
       const {record,history,firstBind}=executionProof,stepId=`${before.currentStep+1}:${planned.type}`,boundRecord={...record,...(firstBind?{workerBindingState:"bound",workerId,boundAt:nowIso(clock)}:{}),claimedStepIds:[...(record.claimedStepIds||[]),stepId],...(planned.type==="apply_patch"?{applyClaimedAt:nowIso(clock)}:{focusedClaimedAt:nowIso(clock)})};
       executionScope={...executionScopePayload(boundRecord),workerId};
@@ -136,9 +154,10 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     if(before.taskType==="self_development"&&planned.type==="commit"){const reviewed=(await storage.listAutonomySteps(before.id)).filter(step=>step.stepType==="inspect_diff"&&step.status==="completed").at(-1)?.result?.reviewedChangeSet;if(!reviewed?.reviewHash)throw new HandoffError("review_required","Self-development commits require a durable reviewed change-set.");args={...args,reviewedChangeSet:reviewed};}
     let approvedDelivery=null;
     if(planned.type==="push"){const approval=await storage.getApproval(before.approvalState?.approvalId,ownerId),steps=await storage.listAutonomySteps(before.id);if(!isExactApprovedDelivery({task:before,approval,steps,approvedBranch}))throw new HandoffError("approved_delivery_invalid","Only the exact immutable approved delivery may be handed off.",409);const pushes=steps.filter(step=>step.stepType==="push"),successfulPush=pushes.some(step=>step.status==="completed"),review=steps.filter(step=>step.stepType==="review_commit"&&step.status==="completed").at(-1);approvedDelivery=Object.freeze({contractVersion:1,taskType:before.taskType,taskId:before.id,approvalId:approval.id,approved:approval.status==="approved",revoked:approval.status==="revoked",reviewedCommit:review?.result?.commitSha,repository:before.metadata?.selfDevelopment?.repository,branch:before.branch,logicalStepId:`${before.currentStep+1}:push`,localHandoff:true,reviewHistoryImmutable:true,postReviewMutation:false,deliveryConsumed:before.metadata?.approvedDeliveryRuntime?.consumed===true,gitPushSucceeded:successfulPush,secondLogicalPush:pushes.length>1,repositoryProvenanceValid:before.metadata?.selfDevelopment?.repository==="hshanbour/nova-brain"});}
-    const handoff={id:randomUUID(),workerId,idempotencyKey,stepId:`${before.currentStep+1}:${planned.type}`,stepType:planned.type,tool:definition.tool,arguments:redact(args),...(approvedDelivery?{approvedDelivery}:{}),...(executionScope?{executionScope}:{}),branch:before.branch,expectedCommit:before.currentCommit,expiresAt:new Date(Math.min(clock().getTime()+Math.max(30000,Math.min(300000,leaseMs)),executionProof?new Date(executionProof.record.activeContinuation.runtimeDeadline).getTime():Infinity)).toISOString(),fingerprint:hash([before.id,before.currentStep,planned.type,redact(planned.input),before.currentCommit])};
+    const scopedLeaseMs=fullTestProof?Math.min(300000,new Date(fullTestProof.record.activeContinuation.runtimeDeadline).getTime()-clock().getTime()):leaseMs;
+    const handoff={id:randomUUID(),workerId,idempotencyKey,stepId:`${before.currentStep+1}:${planned.type}`,stepType:planned.type,tool:definition.tool,arguments:redact(args),...(approvedDelivery?{approvedDelivery}:{}),...(executionScope?{executionScope}:{}),...(fullTestScope?{fullTestScope}:{}),branch:before.branch,expectedCommit:before.currentCommit,expiresAt:new Date(Math.min(clock().getTime()+Math.max(30000,Math.min(300000,scopedLeaseMs)),executionProof?new Date(executionProof.record.activeContinuation.runtimeDeadline).getTime():fullTestProof?new Date(fullTestProof.record.activeContinuation.runtimeDeadline).getTime():Infinity)).toISOString(),fingerprint:hash([before.id,before.currentStep,planned.type,redact(planned.input),before.currentCommit])};
     const claimCapabilities=exactApprovedDelivery?[...capabilities,"github_write"]:capabilities;
-    const task=await storage.claimAutonomyTask({ownerId,workerId:`local:${workerId}`,capabilities:claimCapabilities,leaseMs,idempotencyKey,taskId,expectedBranch:input.expectedBranch,expectedCommit:input.expectedCommit,expectedVersion:before.stateVersion,claimMetadata});if(!task)return{claimed:false};
+    const task=await storage.claimAutonomyTask({ownerId,workerId:`local:${workerId}`,capabilities:claimCapabilities,leaseMs:scopedLeaseMs,idempotencyKey,taskId,expectedBranch:input.expectedBranch,expectedCommit:input.expectedCommit,expectedVersion:before.stateVersion,claimMetadata});if(!task)return{claimed:false};
     if(definition.lock&&!await storage.acquireAutonomyLock({lockKey:`${task.projectId||"repo"}:${task.branch}`,taskId:task.id,leaseToken:task.leaseToken,expiresAt:task.leaseExpiresAt})){await storage.releaseAutonomyLease(task.id,ownerId,task.leaseToken);return{claimed:false,code:"branch_locked"};}
     const priorStep=(await storage.listAutonomySteps(task.id)).find(step=>step.stepId===handoff.stepId);
     if(priorStep?.status==="failed")await storage.updateAutonomyStep(task.id,handoff.stepId,{status:"running",attempt:(priorStep.attempt||1)+1,result:null,errorCode:null,startedAt:nowIso(clock),completedAt:null});
@@ -156,7 +175,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     const handoff=task.metadata?.localHandoff;if(!handoff||handoff.id!==handoffId||handoff.workerId!==workerId||handoff.idempotencyKey!==idempotencyKey)throw new HandoffError("handoff_mismatch","Handoff does not match the active task.",403);
     if(task.stateVersion!==handoff.expectedVersion)throw new HandoffError("version_conflict","Task changed while the local step was running.");
     if(task.branch!==handoff.branch||task.currentCommit!==handoff.expectedCommit)throw new HandoffError("task_binding_changed","Task branch or commit changed while the local step was running.");
-    if(new Date(handoff.expiresAt)<=clock()){await recover(task,handoff,"local_worker_handoff_expired");throw new HandoffError("handoff_expired",handoff.executionScope?"The single-use execution handoff expired and was stopped without retry.":"Handoff expired and was safely requeued.");}
+    if(new Date(handoff.expiresAt)<=clock()){await recover(task,handoff,"local_worker_handoff_expired");throw new HandoffError("handoff_expired",handoff.executionScope||handoff.fullTestScope?"The single-use handoff expired and was stopped without retry.":"Handoff expired and was safely requeued.");}
     const result=redact(failed?input.error:input.result);if(!result||typeof result!=="object"||Array.isArray(result)||JSON.stringify(result).length>200000)throw new HandoffError("invalid_handoff_result","Structured bounded result is required.",400);
     if(!failed&&result.ok!==true)throw new HandoffError("invalid_handoff_result","Successful result must report ok=true.",400);
     if(!failed&&["commit","integrate_commit"].includes(handoff.stepType)&&!/^[a-f0-9]{40}$/.test(result.commitSha||""))throw new HandoffError("invalid_handoff_result","Commit result requires an exact SHA.",400);
@@ -164,8 +183,16 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     if(!failed&&handoff.stepType==="review_commit"&&(!result.reviewedChangeSet?.reviewHash||result.commitSha!==task.currentCommit))throw new HandoffError("invalid_handoff_result","Reviewed commit result must bind the exact task commit.",400);
     if(!failed&&handoff.tool==="repo_read_task_owned_local"&&(result.path!==handoff.arguments.path||result.contentHash!==handoff.arguments.expectedContentHash||typeof result.content!=="string"||result.truncated!==false))throw new HandoffError("invalid_handoff_result","Local read result does not match its task-owned binding.",400);
     if(!failed&&handoff.stepType==="apply_patch"){const allowed=new Set((handoff.arguments.files||[]).map(item=>item.path));if(!Array.isArray(result.files)||result.files.some(path=>!allowed.has(path)))throw new HandoffError("invalid_handoff_result","Patch result files do not match the server plan.",400);}
-    let executionProof=null;
-    if(task.metadata?.executionScopeRecoveryHistory?.length){
+    let executionProof=null,fullTestProof=null;
+    if(task.metadata?.fullTestScopeRecoveryHistory?.length){
+      const record=task.metadata.fullTestScopeRecoveryHistory.at(-1);
+      fullTestProof=validateFullTestScopeContext(task,await storage.listAutonomySteps(task.id),{runtimeVersion:record.runtimeVersion,generationId:task.metadata?.activeContinuation?.generationId,repository:record.repository,root:record.workspaceRoot,branch:task.branch,workerId},clock);
+      await fullTestApproval(task,record);
+      if(handoff.executionScope||!handoff.fullTestScope||hash(handoff.fullTestScope)!==hash(fullTestScopePayload(record))||handoff.stepType!=="run_full_tests")throw new HandoffError("full_test_scope_context_changed","The full-test result must retain the exact owner-approved single-use binding.");
+      const evidence=failed?result.diagnostics?.fullTestScopeEvidence:result.fullTestScopeEvidence;
+      if((!failed||input.error?.code==="test_failed")&&(evidence?.generationId!==record.activeContinuation.generationId||evidence?.planHash!==record.planHash||hash(evidence?.entries)!==hash(record.entries)))throw new HandoffError("full_test_scope_result_invalid","The full-test result must prove all current product bytes remained unchanged.");
+    }
+    else if(task.metadata?.executionScopeRecoveryHistory?.length){
       const record=task.metadata.executionScopeRecoveryHistory.at(-1);
       executionProof=validateExecutionScopeContext(task,await storage.listAutonomySteps(task.id),{runtimeVersion:record.runtimeVersion,generationId:task.metadata?.activeContinuation?.generationId,repository:record.repository,root:record.workspaceRoot,branch:task.branch,workerId},clock);
       await executionApproval(task,record);
@@ -181,7 +208,16 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
       validatePlanningScopeContext(task,await storage.listAutonomySteps(task.id),{runtimeVersion:record?.runtimeVersion,generationId:task.metadata?.activeContinuation?.generationId,repository:record?.repository,root:record?.workspaceRoot,branch:task.branch,workerId},clock);
       if(!failed&&(result.preMutationValidated!==true||result.mutationApplied!==false||result.currentCommit!==task.currentCommit||result.planGenerationId!==handoff.arguments.planProvenance.generationId||hash(result.files)!==hash(handoff.arguments.files.map(file=>file.path))))throw new HandoffError("invalid_handoff_result","Read-only patch validation did not prove the exact accepted plan without mutation.",400);
     }
-    const completed=[...(task.checkpoint?.completedSteps||[]),handoff.stepId],handoffHistory=[...(task.metadata?.completedHandoffs||[]),handoff.id],completedHandoffs=executionProof?handoffHistory:handoffHistory.slice(-20),metadata={...task.metadata,localHandoff:null,completedHandoffs,requiredCapability:null};
+    const completed=[...(task.checkpoint?.completedSteps||[]),handoff.stepId],handoffHistory=[...(task.metadata?.completedHandoffs||[]),handoff.id],completedHandoffs=executionProof||fullTestProof?handoffHistory:handoffHistory.slice(-20),metadata={...task.metadata,localHandoff:null,completedHandoffs,requiredCapability:null};
+    if(fullTestProof){
+      const {record,history}=fullTestProof,diagnostics=result.diagnostics,productFailure=failed&&input.error?.code==="test_failed"&&diagnostics?.version===1&&diagnostics.identity?.command==="npm:test"&&Number.isInteger(diagnostics.counts?.failed)&&diagnostics.counts.failed>0&&!diagnostics.signal,status=!failed||productFailure?"blocked":"failed",errorCode=failed?(input.error?.code||"worker_failed"):null,postRunObservation=failed&&diagnostics?.verificationPhase==="post_run",boundary={kind:failed?(productFailure?"product_repair_decision":"full_test_infrastructure_failure"):"review_ready",executionAuthorized:false,mutationApplied:!failed||productFailure?false:typeof diagnostics?.mutationApplied==="boolean"?diagnostics.mutationApplied:null,...(postRunObservation?{verificationPhase:"post_run",workspaceDriftObserved:typeof diagnostics.workspaceDriftObserved==="boolean"?diagnostics.workspaceDriftObserved:null}:{}),planHash:record.planHash,planGenerationId:record.planGenerationId,stepId:handoff.stepId,errorCode};
+      metadata.fullTestScopeRecoveryHistory=[...history.slice(0,-1),{...record,consumed:true,completedAt:nowIso(clock),result:failed?(productFailure?"test_failed":"infrastructure_failed"):"full_tests_completed",resultHash:hash(result),boundary}];metadata.fullTestScopeBoundary=boundary;
+      const updated=await storage.updateAutonomyTask(task.id,ownerId,{status,currentStep:task.currentStep+1,currentPhase:"run_full_tests",nextRunAt:null,errorCode,blockedReason:failed?(productFailure?"Full-suite product failures recorded; product repair requires a new owner decision.":"The single-use full-test successor stopped at an infrastructure failure; no retry is authorized."):"Full tests passed; review is ready but has not been authorized or executed.",checkpoint:{...task.checkpoint,completedSteps:failed?(task.checkpoint?.completedSteps||[]):completed,pendingStep:null,latestResult:result},metadata,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},task.stateVersion);
+      if(!updated)throw new HandoffError("version_conflict","Task changed before its one-time full-test result could be recorded.");
+      await storage.updateAutonomyStep(task.id,handoff.stepId,{status:failed?"failed":"completed",result,errorCode,completedAt:nowIso(clock)});await storage.releaseAutonomyLocks(task.id,task.leaseToken);
+      await activity(updated,"self_development_full_test_scope_stopped",status,"The full-test-only successor stopped without any repair, review or delivery execution.",{handoffId,stepId:handoff.stepId,errorCode,boundary});
+      return{idempotent:false,status,task:publicTask(updated)};
+    }
     if(executionProof){
       const {record,history}=executionProof,isApply=handoff.stepType==="apply_patch",terminal=failed||!isApply,status=failed?"failed":isApply?"queued":"blocked",errorCode=failed?(input.error?.code||"worker_failed"):null,boundary=terminal?{kind:failed?"execution_failed":"focused_tests_completed",executionAuthorized:false,planHash:record.planHash,planGenerationId:record.planGenerationId,stepId:handoff.stepId,focusedTests:record.focusedTests,errorCode}:null;
       metadata.executionScopeRecoveryHistory=[...history.slice(0,-1),{...record,...(isApply&&!failed?{applyCompleted:true,applyCompletedAt:nowIso(clock),applyResultHash:hash(result)}:{}),...(terminal?{consumed:true,completedAt:nowIso(clock),result:failed?"failed":"focused_tests_completed",boundary}:{})}];
@@ -236,6 +272,13 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     return{idempotent:false,status,task:publicTask(updated)};
   }
   async function recover(task,handoff,action){
+    if(handoff.fullTestScope){
+      const history=task.metadata?.fullTestScopeRecoveryHistory||[],record=history.at(-1);
+      if(!record||record.workerId!==handoff.workerId||record.fullTestStepId!==handoff.stepId)throw new HandoffError("full_test_scope_context_changed","Expired full-test context no longer matches its durable authority.");
+      const boundary={kind:"full_test_infrastructure_failure",executionAuthorized:false,mutationApplied:null,workspaceDriftObserved:null,verificationPhase:"post_run_unavailable",planHash:record.planHash,stepId:handoff.stepId,errorCode:"full_test_scope_handoff_expired"},updated=await storage.updateAutonomyTask(task.id,ownerId,{status:"failed",nextRunAt:null,errorCode:boundary.errorCode,blockedReason:"The one-time full-test handoff expired; automatic retry is forbidden.",metadata:{...task.metadata,localHandoff:null,fullTestScopeBoundary:boundary,fullTestScopeRecoveryHistory:[...history.slice(0,-1),{...record,consumed:true,completedAt:nowIso(clock),result:"infrastructure_failed",boundary}]},leaseOwner:null,leaseToken:null,leaseExpiresAt:null},task.stateVersion);
+      if(!updated)throw new HandoffError("version_conflict","Task changed before the expired full-test execution was stopped.");
+      await storage.updateAutonomyStep(task.id,handoff.stepId,{status:"failed",errorCode:boundary.errorCode,result:{code:boundary.errorCode},completedAt:nowIso(clock)});await storage.releaseAutonomyLocks(task.id,task.leaseToken);await activity(updated,action,"failed","Expired full-test successor stopped without another attempt.",{handoffId:handoff.id,stepId:handoff.stepId});return updated;
+    }
     if(handoff.executionScope){
       const history=task.metadata?.executionScopeRecoveryHistory||[],record=history.at(-1);
       if(!record||record.workerId!==handoff.workerId||![record.applyStepId,record.testStepId].includes(handoff.stepId))throw new HandoffError("execution_scope_context_changed","Expired execution context no longer matches its durable single-use record.");

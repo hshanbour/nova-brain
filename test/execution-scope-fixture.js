@@ -28,15 +28,18 @@ export const executionProofSignature=proof=>createHmac("sha256",PLANNING_TOKEN).
 
 // Real worker/Hands pipelines operate ONLY on this synthetic temporary repo and
 // an in-memory task. No live credentials, endpoint or Nova workspace is used.
-export async function createExecutionScopeFixture(t,{failingFocusedTest=false,restoreFirstTrackedToBaseline=false}={}){
+export async function createExecutionScopeFixture(t,{failingFocusedTest=false,restoreFirstTrackedToBaseline=false,byteIdenticalReplacements=false,sevenFocusedTests=false,fullSuite=false,failingFullSuite=false}={}){
   const root=await mkdtemp(join(tmpdir(),"nova-execution-scope-e2e-"));
   t.after(async()=>{assert.equal(dirname(resolve(root)),resolve(tmpdir()));assert.ok(root.includes("nova-execution-scope-e2e-"));await rm(root,{recursive:true,force:true});});
   const git=async(...args)=>(await run("git",args,{cwd:root,windowsHide:true})).stdout.trim();
   const source=(path,index,after=false)=>path.endsWith(".css")?`.fixture-${index} { color: ${after?"blue":"green"}; }\n`:path.endsWith(".html")?`<!doctype html><main>${after?"After":"Before"} synthetic acceptance</main>\n`:path.startsWith("test/")?`import test from "node:test";\nimport assert from "node:assert/strict";\ntest("synthetic ${after?"applied":"current"} focused ${index}",()=>assert.equal(${after&&failingFocusedTest&&path===EXECUTION_TEST_PATHS[0]?"1, 2":"1, 1"}));\n`:`export const ${after?"applied":"current"}Synthetic${index} = ${index};\n`;
   const beforeContents=new Map(PLANNING_PATHS.map((path,index)=>[path,source(path,index)])),afterContents=new Map(PLANNING_PATHS.map((path,index)=>[path,source(path,index,true)])),baseline="/* synthetic committed baseline */\n",firstTrackedBaseline=".fixture-committed { color: red; }\n";
+  if(sevenFocusedTests)for(const [index,path] of EXECUTION_TEST_PATHS.slice(0,3).entries())for(const contents of [beforeContents,afterContents])contents.set(path,contents.get(path)+`test("synthetic second focused ${index}",()=>assert.equal(2,2));\n`);
+  if(byteIdenticalReplacements)for(const [path,content] of beforeContents)afterContents.set(path,content);
   if(restoreFirstTrackedToBaseline)afterContents.set(PLANNING_PATHS[0],firstTrackedBaseline);
-  await writeFile(join(root,"package.json"),JSON.stringify({name:"synthetic-execution-fixture",private:true,type:"module"}));
+  await writeFile(join(root,"package.json"),JSON.stringify({name:"synthetic-execution-fixture",private:true,type:"module",...(fullSuite?{scripts:{test:"node --test"}}:{})}));
   for(const path of PLANNING_PATHS){await mkdir(dirname(join(root,path)),{recursive:true});if(path!==PLANNING_PATHS[5])await writeFile(join(root,path),path===PLANNING_PATHS[0]?firstTrackedBaseline:baseline);}
+  if(fullSuite)await writeFile(join(root,"test/full-suite-only.test.js"),`import test from "node:test";\nimport assert from "node:assert/strict";\ntest("synthetic full-suite-only acceptance",()=>assert.equal(${failingFullSuite?"1,2":"1,1"}));\n`);
   await git("init","-b","feat/nova-brain-mvp-foundation");await git("config","core.autocrlf","false");await git("config","user.name","Synthetic Execution Verification");await git("config","user.email","fixture@example.invalid");await git("remote","add","origin","https://github.com/hshanbour/nova-brain.git");await git("add",".");await git("commit","-m","synthetic execution successor fixture");
   const head=await git("rev-parse","HEAD");for(const [path,content] of beforeContents)await writeFile(join(root,path),content);
   const status=await git("status","--porcelain=v1","--untracked-files=all"),time=Math.max(Date.now(),Date.parse("2026-09-14T18:00:00.000Z")),clock=()=>new Date(time);
@@ -101,5 +104,5 @@ export async function createExecutionScopeFixture(t,{failingFocusedTest=false,re
     const context={runId:taskId,stepId:job.stepId,workerId,runtimeVersion,projectId:"nova-brain",continuationGenerationId:task.continuationGenerationId,executionScope:job.executionScope,repositoryContext:{version:1,repository,root,branch,expectedHead:head,source:"persistent_worker_handoff"}};
     return{claim,claimInput,job,context,complete:result=>handoff.complete(job.handoffId,{taskId,workerId,idempotencyKey:claimInput.idempotencyKey,result})};
   };
-  return{...seed,root,head,current,steps,storage,clock,options,service,runtimeVersion,input,actor,plan,planningBoundary,planningWorker,planningService,requests,executions,prompts,commands,hooks,worker,createWorker,handoff,dispatch,hands,taskWorker,authorize,recover,beforeContents,afterContents,verifyBytes,post,path,remoteOverrides,claimExecution,git};
+  return{...seed,root,head,current,steps,storage,clock,options,service,runtimeVersion,input,actor,plan,planningBoundary,planningWorker,planningService,requests,executions,prompts,commands,hooks,worker,createWorker,handoff,dispatch,hands,taskWorker,authorize,recover,beforeContents,afterContents,verifyBytes,post,path,remoteOverrides,claimExecution,git,client,commandRunner};
 }

@@ -1052,6 +1052,13 @@ export function createApi({
         const failedLocalReadRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-failed-local-read$/);
         const planningScopeRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-planning-scope-recovery|recover-planning-scope)$/);
         const executionScopeRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-execution-scope-recovery|recover-execution-scope)$/);
+        const fullTestScopeRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-full-test-scope-recovery|recover-full-test-scope)$/);
+        if(selfDevelopment&&fullTestScopeRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=fullTestScopeRecovery[2]==="request-full-test-scope-recovery"?"requestFullTestScopeRecovery":"recoverFullTestScope";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(fullTestScopeRecovery[1]),input,actor));return;
+        }
         if(selfDevelopment&&executionScopeRecovery&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);
           const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
@@ -1533,7 +1540,7 @@ export function createApi({
             workerRuntime && approval.runId
               ? await workerRuntime.get(approval.runId)
               : null;
-          if(["self_development_escalated_repair","self_development_planning_scope_recovery","self_development_execution_scope_recovery"].includes(approval.tool)){
+          if(["self_development_escalated_repair","self_development_planning_scope_recovery","self_development_execution_scope_recovery","self_development_full_test_scope_recovery"].includes(approval.tool)){
             execution={authorized:decision==="approved",approvalId:approval.id};
           } else if (autonomyTask) {
             execution =
