@@ -5,6 +5,7 @@ import {createEvidenceBoundReviewReplanFixture} from "./evidence-bound-review-re
 import {executionProofSignature} from "./execution-scope-fixture.js";
 import {createApi} from "../src/http/api.js";
 import {describeImplementationContentReviewReplan,describeSourceLiteralReviewReplan,describeObservableLinkageReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_CLASS,SOURCE_LITERAL_REVIEW_REPLAN_CLASS,OBSERVABLE_LINKAGE_REVIEW_REPLAN_CLASS} from "../src/autonomy/review-remediation-scope.js";
+import {recoveryHash} from "../src/autonomy/failed-local-read-recovery.js";
 
 const freshWorker="persistent-local-abcdef01-2345-4abc-8def-0123456789ab";
 
@@ -55,6 +56,9 @@ async function v391Fixture(t,{fourthOutput}={}){
   await f.service.recoverSourceLiteralReviewReplan(f.taskId,f.input,f.actor);
   const predecessorWorker=f.createWorker("persistent-local-abcdef05-2345-4abc-8def-0123456789ab");for(let index=0;index<9;index++)assert.equal((await predecessorWorker.runOnce()).worked,true);
   const blocked=await f.current(),failed=(await f.steps()).at(-1);assert.equal(blocked.stateVersion,391);assert.equal(blocked.status,"blocked");assert.equal(blocked.errorCode,"review_remediation_precondition_failed");assert.equal(failed.result.diagnostics.predicate,"observable_behavioral_test_linkage");assert.equal(failed.result.diagnostics.coverageDiagnostics.firstFailure.subclause,"observable_code_reference");assert.equal(failed.result.diagnostics.mutationApplied,false);
+  const historical=blocked.metadata.sourceLiteralReviewReplanHistory[0],historicalSteps=blocked.metadata.steps.slice(historical.activeContinuation.startStep,historical.activeContinuation.startStep+13),historicalContract=historicalSteps[8].input.arguments.failureEvidence.requiredReviewCoverageContract;
+  assert.deepEqual(historicalContract,{sourceExcerpt:"exact non-placeholder literal substring of the proposed replacement source for testPath",testName:"same named test declaration contained in sourceExcerpt",stimulus:"literal stimulus code contained in sourceExcerpt and preceding assertion",assertion:"literal behavioral assertion contained in sourceExcerpt",staleOrPlaceholderEvidenceForbidden:true});
+  assert.equal(recoveryHash(historicalSteps),historical.successorStepsHash);
   const reference=failed.result.rejectedReviewEvidence,evidence=await f.storage.getRejectedReviewEvidence(reference.id,f.ownerId,f.taskId),item=evidence.envelope.coverage[0];
   assert.equal(item.observable,"not a code reference");assert.equal(item.sourceOrigin,"proposed_replacement");assert.equal(item.firstFailedSubclause,"observable_code_reference");
   const input=structuredClone(f.input);delete input.approvalId;input.expectedVersion=391;input.workspaceProof.expectedVersion=391;input.workspaceProofSignature=executionProofSignature(input.workspaceProof);
