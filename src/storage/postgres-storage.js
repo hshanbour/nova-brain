@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
 import { SCHEMA_STATEMENTS } from "./schema.js";
 import { rankRelevantMemories } from "../memory/relevance.js";
+import {validateRejectedReviewEvidenceEnvelope} from "../autonomy/rejected-review-evidence.js";
 
 const json = (value) => JSON.stringify(value ?? {});
 const date = (value) => (value instanceof Date ? value.toISOString() : value);
@@ -789,6 +790,22 @@ export function createPostgresStorage({ connectionString }) {
           )
         )[0],
       );
+    },
+    async createRejectedReviewEvidence({ownerId,taskId,envelope}) {
+      if(!validateRejectedReviewEvidenceEnvelope(envelope)||envelope.taskId!==taskId)throw new Error("Invalid private rejection evidence binding.");
+      const params=[randomUUID(),ownerId,taskId,envelope.executionId,envelope.attempt,envelope.continuationGenerationId,json(envelope)];
+      const inserted=await run(`INSERT INTO nova_rejected_review_evidence (id,owner_id,task_id,execution_id,attempt,continuation_generation_id,envelope)
+        SELECT $1,$2,$3,$4,$5,$6,$7::jsonb WHERE EXISTS (SELECT 1 FROM nova_autonomy_tasks WHERE id=$3 AND owner_id=$2)
+        ON CONFLICT (owner_id,task_id,execution_id,attempt,continuation_generation_id) DO NOTHING RETURNING *`,params);
+      const row=inserted[0]||(await run(`SELECT e.* FROM nova_rejected_review_evidence e JOIN nova_autonomy_tasks t ON t.id=e.task_id AND t.owner_id=e.owner_id
+        WHERE e.owner_id=$1 AND e.task_id=$2 AND e.execution_id=$3 AND e.attempt=$4 AND e.continuation_generation_id=$5`,params.slice(1,6)))[0];
+      if(!row)throw new Error("Invalid private rejection evidence owner/task.");
+      return{id:row.id,ownerId:row.owner_id,taskId:row.task_id,createdAt:date(row.created_at),envelope:row.envelope};
+    },
+    async getRejectedReviewEvidence(id,ownerId,taskId) {
+      const row=(await run(`SELECT e.* FROM nova_rejected_review_evidence e JOIN nova_autonomy_tasks t ON t.id=e.task_id AND t.owner_id=e.owner_id
+        WHERE e.id=$1 AND e.owner_id=$2 AND e.task_id=$3`,[id,ownerId,taskId]))[0];
+      return row?{id:row.id,ownerId:row.owner_id,taskId:row.task_id,createdAt:date(row.created_at),envelope:row.envelope}:null;
     },
     async listAutonomyTasks(ownerId, { status, limit = 50 } = {}) {
       return (

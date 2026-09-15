@@ -1057,6 +1057,31 @@ export function createApi({
         const reviewRemediation=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-review-remediation|recover-review-remediation)$/);
         const rejectedReviewPlanContinuation=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-rejected-review-plan-continuation|recover-rejected-review-plan-continuation)$/);
         const sourceBoundReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-source-bound-review-replan|recover-source-bound-review-replan)$/);
+        const evidenceBoundReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-evidence-bound-review-replan|recover-evidence-bound-review-replan)$/);
+        if(selfDevelopment&&evidenceBoundReviewReplan&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=evidenceBoundReviewReplan[2]==="request-evidence-bound-review-replan"?"requestEvidenceBoundReviewReplanApproval":"recoverEvidenceBoundReviewReplan";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(evidenceBoundReviewReplan[1]),input,actor));return;
+        }
+        const rejectedReviewEvidence=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/rejected-plan-evidence\/([a-f0-9-]{36})$/);
+        if(rejectedReviewEvidence&&request.method==="GET"){
+          // This private diagnostic is unavailable to ordinary task readers and
+          // local workers. The configured administrator acts for this owner only.
+          authorizeWorkerAdmin(request,config.workerAdminToken);await ready();
+          const taskId=decodeURIComponent(rejectedReviewEvidence[1]);
+          const task=await storage.getAutonomyTask(taskId,ownerId);
+          const evidence=task&&await storage.getRejectedReviewEvidence(rejectedReviewEvidence[2],ownerId,taskId);
+          if(!evidence){sendJson(response,404,{code:"rejected_review_evidence_not_found"});return;}
+          response.statusCode=200;
+          response.setHeader("Content-Type","application/json; charset=utf-8");
+          response.setHeader("X-Content-Type-Options","nosniff");
+          response.setHeader("Cache-Control","no-store");
+          response.setHeader("Referrer-Policy","no-referrer");
+          // JSON only; escape HTML-sensitive characters even if embedded by a
+          // diagnostic client. Clients must render strings as text, never HTML.
+          response.end(JSON.stringify({evidence}).replace(/[<>&\u2028\u2029]/g,char=>`\\u${char.charCodeAt(0).toString(16).padStart(4,"0")}`));return;
+        }
         if(selfDevelopment&&sourceBoundReviewReplan&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);
           const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
@@ -1568,7 +1593,7 @@ export function createApi({
             workerRuntime && approval.runId
               ? await workerRuntime.get(approval.runId)
               : null;
-          if(["self_development_escalated_repair","self_development_planning_scope_recovery","self_development_execution_scope_recovery","self_development_full_test_scope_recovery","self_development_failed_full_test_retry","self_development_review_remediation","self_development_rejected_review_plan_continuation","self_development_source_bound_review_replan"].includes(approval.tool)){
+          if(["self_development_escalated_repair","self_development_planning_scope_recovery","self_development_execution_scope_recovery","self_development_full_test_scope_recovery","self_development_failed_full_test_retry","self_development_review_remediation","self_development_rejected_review_plan_continuation","self_development_source_bound_review_replan","self_development_evidence_bound_review_replan"].includes(approval.tool)){
             execution={authorized:decision==="approved",approvalId:approval.id};
           } else if (autonomyTask) {
             execution =

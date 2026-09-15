@@ -601,7 +601,20 @@ export function createWorkerRuntime({
       if(!updated)throw new WorkerError("version_conflict","Task changed before accepted remediation planning was persisted.",{retryable:false});
       return{claimed:true,status:"queued",stepType:type,result:redact(result)};
     }catch(error){
-      return stopReviewRemediation(task,error.code||"unexpected_error",step,{message:String(error.message).slice(0,300),...(error.safeDiagnostics?{diagnostics:error.safeDiagnostics}:{})});
+      const envelope=takeRejectedReviewEvidence(error);
+      let privateReference;
+      if(envelope&&step){
+        try{
+          if(envelope.taskId!==task.id||envelope.stateVersion!==task.stateVersion||envelope.executionId!==step.stepId||envelope.attempt!==step.attempt||envelope.continuationGenerationId!==task.metadata?.activeContinuation?.generationId)throw new Error("Private evidence context mismatch.");
+          const evidence=await storage.createRejectedReviewEvidence({ownerId,taskId:task.id,envelope});
+          privateReference={id:evidence.id,persisted:true};
+        }catch{
+          // Evidence-store failure never grants a retry or turns rejection into
+          // success. Do not expose storage errors or the envelope in task logs.
+          privateReference={persisted:false,code:"private_rejection_evidence_unavailable"};
+        }
+      }
+      return stopReviewRemediation(task,error.code||"unexpected_error",step,{message:String(error.message).slice(0,300),...(error.safeDiagnostics?{diagnostics:error.safeDiagnostics}:{}),...(privateReference?{rejectedReviewEvidence:privateReference}:{})});
     }
   }
   async function complete(task, step, result, status, nextRunAt) {
@@ -823,3 +836,4 @@ function resolveTaskReferences(value, task) {
   if(value === "$IMPLEMENTATION_PATHS")return task.metadata?.selfDevelopmentImplementationPlan?.files?.map(file=>file.path);
   return value;
 }
+import {takeRejectedReviewEvidence} from "./rejected-review-evidence.js";

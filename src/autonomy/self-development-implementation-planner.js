@@ -5,6 +5,7 @@ import {implementationContentIssue} from "./implementation-content.js";
 import {FAILED_LOCAL_READ_RECOVERY_CLASS,validateRecoveredReadEvidence} from "./failed-local-read-recovery.js";
 import {PLANNING_SCOPE_RECOVERY_CLASS,validatePlanningScopeReadEvidence} from "./planning-scope-recovery.js";
 import {reviewRemediationDescriptor,validateReviewRemediationReadEvidence,validateReviewRemediationPlanCoverage} from "./review-remediation-scope.js";
+import {attachRejectedReviewEvidence} from "./rejected-review-evidence.js";
 import {focusedTestEvidenceRelevance,evidencePathTokens as pathTokens,FOCUSED_TEST_PATH as TEST_PATH,IMPLEMENTATION_PROTECTED_PATH as PROTECTED} from "./focused-test-evidence-relevance.js";
 export {SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION} from "./self-development-implementation-contract.js";
 
@@ -80,6 +81,9 @@ export const REVIEW_REMEDIATION_INPUT_DISTINCTIONS=Object.freeze({
   focusedTestPath:{source:"focusedTests[].path",meaning:"A freshly read candidate test selected for execution. Selection alone neither modifies the test nor proves that its behavioral assertions are sufficient."},
   acceptanceMapping:{source:"acceptanceMapping",meaning:"A claim relating a criterion to generated patch files only; every files reference must appear in this response's files[].path. It is distinct from the source finding and from executable test coverage."},
   reviewCoverage:{source:"reviewCoverage",meaning:"Exactly one record for each approved constraintId, using its exact findingIds and a selected focused test's actual named test, literal sourceExcerpt, stimulus, observable and assertion. The runtime derives sourceHash; do not invent or supply it."},
+  namedTest:{source:"reviewCoverage[].testName",meaning:"The exact name of an actual named test declaration in the proposed replacement test source, or the freshly read source when that test is not changed. It is not a description of an intended future test."},
+  sourceExcerpt:{source:"reviewCoverage[].sourceExcerpt",meaning:"A bounded literal contiguous source range containing the selected named test declaration and the behavioral evidence attributed to that same test. A matching snippet elsewhere in the file is insufficient; both its declaration and its stimulus/assertion must belong to this test range."},
+  behavioralEvidence:{source:"reviewCoverage[].stimulus / observable / assertion",meaning:"Actual stimulus and assertion code in that same named test source range, connected through the observable behavior. Do not mix evidence from different tests or claim an unresolved behavior is repaired solely through an unrelated test path. Nova must decide and implement the actual remedy; these fields explain verifiable behavior, not how to bypass validation."},
   nonMutatedUnresolvedSource:"A behavioral constraint cannot be claimed as remediated solely by referencing a non-mutated unresolved source path unless the current evidence proves that source behavior is already correct. Decide remediation from actual behavior; do not add no-op replacements or invent mappings merely to satisfy validation. Passing validation or tests does not resolve the independent review findings.",
 });
 
@@ -102,7 +106,25 @@ export function createSelfDevelopmentImplementationPlanner({modelProvider,storag
     const prompt={taskId:task.id,currentCommit,userGoal:request.userGoal,acceptanceCriteria:request.acceptanceCriteria,candidateFiles:evidence,availableEvidenceExpansionTests,...(planningOnly?{planningOnly:true,allowedOperations:["replace"],scopeExpansionAllowed:false}:{}),...(reviewRemediation?{reviewRemediation:true,structuredReview:reviewReads.record.review,inputDistinctions:REVIEW_REMEDIATION_INPUT_DISTINCTIONS,workspaceEvidence:{continuationGenerationId:reviewReads.record.activeContinuation.generationId,sourcePlanStepId:reviewReads.record.sourcePlanStepId,sourceApplyStepId:reviewReads.record.sourceApplyStepId,sourceApplyFingerprint:reviewReads.record.sourceApplyFingerprint,entries:reviewReads.record.beforeEntries},scopeExpansionAllowed:false,allowedOperations:["replace"],committedBaselineFiles:[...(reviewReads.baselines||new Map())].map(([path,content])=>({path,content})),coverageRequirements:"Return exactly one coverage entry for each approved constraintId, using its exact findingIds; duplicate or missing constraint IDs are invalid. For every approved acceptance constraint, identify a named focused test, a literal source excerpt and assertion, and literal stimulus and observable code references. Do not invent hashes: the runtime derives exact source hashes from the generated/current test file. Exercise the behavior: token-only checks and unwired counters are insufficient. Existing console behavior must be preserved; the final reviewer, not a passing test count, resolves findings."}:{}),...(failureEvidence?{repairFailureEvidence:failureEvidence}:{})},seen=new Set();let feedback=[];
     for(let attempt=0;attempt<(reviewRemediation?1:3);attempt++){
       const generated=await modelProvider.generate({message:`Create the bounded implementation plan.\n${JSON.stringify(prompt)}${feedback.length?`\nCorrect only these schema issues from the prior output: ${feedback.join(", ")}.`:""}`,conversationHistory:[],context:{},tools:[],responseFormat:{name:"nova_self_development_implementation_plan",schema:reviewRemediation?REVIEW_REMEDIATION_PLAN_SCHEMA:SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA,strict:true},systemContext:reviewRemediation?REVIEW_REMEDIATION_SYSTEM_CONTEXT:PLANNER_SYSTEM_CONTEXT});
-      let shape=null;if(generated?.type!=="final")feedback=["final_structured_result_required"];else{const parsed=parse(generated.message);shape=parsed.shapeHash;if(parsed.issues)feedback=parsed.issues;else{const value=canonicalize(parsed.value),issues=schemaIssues(value,reviewRemediation);if(!issues.length){try{return await build(value,{task,steps,candidates,reads,readStepIds,request,evidence,plannerAttempt:attempt+1,requiredRepairPaths:exactPartialRecovery?partialRecovery.requiredPaths:null,failureEvidence,planningOnly,reviewRemediation:reviewReads?.record});}catch(error){if(error.safeDiagnostics)error.safeDiagnostics={...error.safeDiagnostics,outputShapeHash:shape,mutationApplied:false,rejectedPlanEvidence:rejectedPlanEvidence(value,{task,candidates,evidence,readStepIds,plannerAttempt:attempt+1,diagnostics:error.safeDiagnostics})};throw error;}}feedback=issues;}}
+      let shape=null;
+      const retainPrivate=(error,value)=>reviewRemediation?attachRejectedReviewEvidence(error,{task,executionId:reviewReads.record.planStepId,attempt:steps.find(step=>step.stepId===reviewReads.record.planStepId)?.attempt||1,plan:value,review:reviewReads.record.review,requiredPaths:reviewReads.record.requiredPaths,reads,diagnostics:error.safeDiagnostics}):error;
+      if(generated?.type!=="final")feedback=["final_structured_result_required"];
+      else{
+        const parsed=parse(generated.message);shape=parsed.shapeHash;
+        if(parsed.issues)feedback=parsed.issues;
+        else{
+          const value=canonicalize(parsed.value),issues=schemaIssues(value,reviewRemediation);
+          if(!issues.length){
+            try{return await build(value,{task,steps,candidates,reads,readStepIds,request,evidence,plannerAttempt:attempt+1,requiredRepairPaths:exactPartialRecovery?partialRecovery.requiredPaths:null,failureEvidence,planningOnly,reviewRemediation:reviewReads?.record});}
+            catch(error){
+              if(error.safeDiagnostics)error.safeDiagnostics={...error.safeDiagnostics,outputShapeHash:shape,mutationApplied:false,rejectedPlanEvidence:rejectedPlanEvidence(value,{task,candidates,evidence,readStepIds,plannerAttempt:attempt+1,diagnostics:error.safeDiagnostics})};
+              throw retainPrivate(error,value);
+            }
+          }
+          feedback=issues;
+          if(reviewRemediation)throw retainPrivate(invalid(feedback,shape,attempt+1),value);
+        }
+      }
       if(shape&&seen.has(shape))throw invalid(feedback,shape,attempt+1);if(shape)seen.add(shape);if(reviewRemediation||attempt===2)throw invalid(feedback,shape,attempt+1);
     }
   }
