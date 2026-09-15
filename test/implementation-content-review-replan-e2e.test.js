@@ -4,7 +4,7 @@ import {Readable} from "node:stream";
 import {createEvidenceBoundReviewReplanFixture} from "./evidence-bound-review-replan-fixture.js";
 import {executionProofSignature} from "./execution-scope-fixture.js";
 import {createApi} from "../src/http/api.js";
-import {describeImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_CLASS} from "../src/autonomy/review-remediation-scope.js";
+import {describeImplementationContentReviewReplan,describeSourceLiteralReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_CLASS,SOURCE_LITERAL_REVIEW_REPLAN_CLASS} from "../src/autonomy/review-remediation-scope.js";
 
 const freshWorker="persistent-local-abcdef01-2345-4abc-8def-0123456789ab";
 
@@ -22,6 +22,25 @@ async function fixture(t,{secondOutput}={}){
   const input=structuredClone(f.input);input.expectedVersion=335;input.workspaceProof.expectedVersion=335;input.workspaceProofSignature=executionProofSignature(input.workspaceProof);delete input.approvalId;
   const actor={...f.actor,workspaceProof:input.workspaceProof},options={...f.options,input,actor};
   return{...f,input,actor,options,blocked,failed,generation:()=>generation};
+}
+
+async function v363Fixture(t,{thirdOutput}={}){
+  let afterEmpty=0;
+  const f=await fixture(t,{secondOutput:value=>{
+    afterEmpty++;
+    if(afterEmpty===1){value.reviewCoverage[0].sourceExcerpt="STALE_OR_FABRICATED_EXCERPT_NOT_IN_PROPOSED_SOURCE";return value;}
+    return thirdOutput?thirdOutput(value):value;
+  }});
+  const requested=await f.service.requestImplementationContentReviewReplanApproval(f.taskId,f.input,f.actor);
+  await f.storage.decideApproval(requested.approval.id,f.ownerId,"approved");f.input.approvalId=requested.approval.id;
+  await f.service.recoverImplementationContentReviewReplan(f.taskId,f.input,f.actor);
+  const predecessorWorker=f.createWorker("persistent-local-abcdef02-2345-4abc-8def-0123456789ab");for(let index=0;index<9;index++)assert.equal((await predecessorWorker.runOnce()).worked,true);
+  const blocked=await f.current(),failed=(await f.steps()).at(-1);assert.equal(blocked.stateVersion,363);assert.equal(blocked.status,"blocked");assert.equal(blocked.errorCode,"review_remediation_precondition_failed");assert.equal(failed.result.diagnostics.coverageDiagnostics.firstFailure.subclause,"source_contains_excerpt");assert.equal(failed.result.diagnostics.mutationApplied,false);
+  const reference=failed.result.rejectedReviewEvidence,evidence=await f.storage.getRejectedReviewEvidence(reference.id,f.ownerId,f.taskId),item=evidence.envelope.coverage[0];
+  assert.equal(item.sourceOrigin,"proposed_replacement");assert.equal(item.expectedSourceHash,item.suppliedSourceHash);assert.equal(item.sourceExcerpt,"STALE_OR_FABRICATED_EXCERPT_NOT_IN_PROPOSED_SOURCE");assert.equal(item.firstFailedSubclause,"source_contains_excerpt");
+  const input=structuredClone(f.input);delete input.approvalId;input.expectedVersion=363;input.workspaceProof.expectedVersion=363;input.workspaceProofSignature=executionProofSignature(input.workspaceProof);
+  const actor={...f.actor,workspaceProof:input.workspaceProof},options={...f.options,input,actor};
+  return{...f,input,actor,options,blocked,failed,evidence,afterEmpty:()=>afterEmpty};
 }
 
 test("v335 empty replacement rejection permits one distinct owner-approved complete-content replan through fresh review_ready",async t=>{
@@ -66,4 +85,38 @@ test("approval decision routing preserves the generic resume path for unrelated 
   const req=Readable.from([JSON.stringify({decision:"approved"})]);req.method="POST";req.url=`/api/approvals/${approval.id}/decision`;req.headers={"content-type":"application/json"};let text="";const res={setHeader(){},end(value=""){text+=value;}};
   await api.handle(req,res);const body=JSON.parse(text);
   assert.equal(res.statusCode,200);assert.equal(resumeCalls,1);assert.deepEqual(body.execution,{route:"generic",taskId:f.taskId,approvalId:approval.id});
+});
+
+test("v363 source-literal rejection permits one distinct owner-approved replan through fresh review_ready",async t=>{
+  const f=await v363Fixture(t),before=structuredClone(f.blocked),described=await describeSourceLiteralReviewReplan(f.options);
+  assert.equal(described.approvalArguments.expectedVersion,363);assert.equal(described.sourceProof.privateEvidenceId,f.failed.result.rejectedReviewEvidence.id);assert.equal(described.sourceProof.rejectedPlanFingerprint,f.evidence.envelope.planFingerprint);
+  assert.equal((await f.post(f.path("request-source-literal-review-replan"),f.input,"wrong-worker-token")).status,401);
+  const requestResponse=await f.post(f.path("request-source-literal-review-replan"),f.input),requested=requestResponse.body;assert.equal(requestResponse.status,200);assert.equal(requested.approval.tool,"self_development_source_literal_review_replan");
+  const decision=await f.post(`/api/approvals/${requested.approval.id}/decision`,{decision:"approved"});assert.equal(decision.status,200);assert.deepEqual(decision.body.execution,{authorized:true,approvalId:requested.approval.id});f.input.approvalId=requested.approval.id;
+  const recovered=await f.service.recoverSourceLiteralReviewReplan(f.taskId,f.input,f.actor),record=recovered.recovery;assert.equal(record.recoveryClass,SOURCE_LITERAL_REVIEW_REPLAN_CLASS);assert.equal(record.fromStateVersion,363);assert.equal(record.repairIteration,3);assert.equal(record.maxAdditionalAttempts,0);assert.equal(record.sourceLiteralReplan,true);
+  const contract=recovered.task.metadata.steps[record.activeContinuation.startStep+8].input.arguments.failureEvidence;assert.equal(contract.code,"review_coverage_source_literal_invalid");assert.equal(contract.requiredImplementationContentContract.completeReplacement,true);assert.match(contract.requiredReviewCoverageContract.sourceExcerpt,/exact non-placeholder literal substring/);assert.equal(contract.requiredReviewCoverageContract.staleOrPlaceholderEvidenceForbidden,true);
+  const worker=f.createWorker("persistent-local-abcdef03-2345-4abc-8def-0123456789ab");for(let index=0;index<13;index++)assert.equal((await worker.runOnce()).worked,true);
+  const final=await f.current(),history=final.metadata.sourceLiteralReviewReplanHistory[0],boundary=final.metadata.sourceLiteralReviewReplanBoundary;assert.equal(final.status,"blocked");assert.equal(final.repairIteration,3);assert.equal(history.consumed,true);assert.equal(history.result,"full_tests_completed");assert.equal(boundary.kind,"review_ready");assert.equal(boundary.executionAuthorized,false);assert.equal(f.afterEmpty(),2);
+  assert.equal(f.executions.filter(item=>item.name==="repo_apply_patch").length,1);assert.equal(f.executions.filter(item=>item.name==="test_run").length,1);assert.equal(f.executions.filter(item=>item.name==="test_run_full").length,1);assert.deepEqual(final.metadata.escalatedRepairHistory,before.metadata.escalatedRepairHistory);assert.deepEqual(await worker.runOnce(),{worked:false});await assert.rejects(()=>f.service.recoverSourceLiteralReviewReplan(f.taskId,f.input,f.actor));await assert.rejects(()=>f.service.recoverImplementationContentReviewReplan(f.taskId,f.input,f.actor));
+});
+
+for(const[name,change]of[
+  ["non-substring",value=>{value.reviewCoverage[0].sourceExcerpt="NOT_PRESENT_IN_REPLACEMENT";}],
+  ["stale excerpt",value=>{value.reviewCoverage[0].sourceExcerpt="legacy bytes absent after replacement";}],
+  ["placeholder excerpt",value=>{value.reviewCoverage[0].sourceExcerpt="TODO: supply named behavioral test evidence";}],
+])test(`v363 successor rejects ${name} evidence before mutation`,async t=>{
+  const f=await v363Fixture(t,{thirdOutput:value=>{change(value);return value;}}),requested=await f.service.requestSourceLiteralReviewReplanApproval(f.taskId,f.input,f.actor);await f.storage.decideApproval(requested.approval.id,f.ownerId,"approved");f.input.approvalId=requested.approval.id;await f.service.recoverSourceLiteralReviewReplan(f.taskId,f.input,f.actor);
+  const worker=f.createWorker("persistent-local-abcdef04-2345-4abc-8def-0123456789ab");for(let index=0;index<9;index++)assert.equal((await worker.runOnce()).worked,true);const final=await f.current();assert.equal(final.status,"blocked");assert.equal(final.errorCode,"review_remediation_precondition_failed");assert.equal(f.executions.filter(item=>item.name==="repo_apply_patch").length,0);assert.deepEqual(await worker.runOnce(),{worked:false});
+});
+
+test("v363 successor refuses ninth path, workspace hash drift, predecessor reuse, and repair counter drift",async t=>{
+  const f=await v363Fixture(t),task=await f.current(),steps=await f.steps();
+  for(const alter of[
+    options=>options.input.workspaceProof.workspace.changedFiles[0].hash="0".repeat(40),
+    options=>options.input.workspaceProof.workspace.changedFiles.push({path:"test/ninth.test.js",hashAlgorithm:"git_sha1",hash:"0".repeat(40),rawHash:"0".repeat(40),contentHash:"0".repeat(64)}),
+    options=>options.task.metadata.implementationContentReviewReplanHistory[0].consumed=false,
+    options=>options.task.repairIteration=4,
+    options=>options.steps.find(step=>step.stepId===f.failed.stepId).result.diagnostics.coverageDiagnostics.constraints[0].expectedSourceHash="0".repeat(64),
+  ]){const options={...f.options,task:structuredClone(task),steps:structuredClone(steps),input:structuredClone(f.input),actor:structuredClone(f.actor)};options.actor.workspaceProof=options.input.workspaceProof;alter(options);await assert.rejects(()=>describeSourceLiteralReviewReplan(options));}
+  assert.deepEqual(await f.current(),task);assert.deepEqual(await f.steps(),steps);
 });

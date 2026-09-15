@@ -6,7 +6,7 @@ import {describeExecutionScopeRecovery,recoverExecutionScope,EXECUTION_SCOPE_REC
 import {describeFullTestScopeRecovery,recoverFullTestScope,FULL_TEST_SCOPE_RECOVERY_TOOL,describeFailedFullTestRetry,recoverFailedFullTestRetry,FAILED_FULL_TEST_RETRY_TOOL} from "./full-test-scope-recovery.js";
 import {describeReviewRemediation,recoverReviewRemediation,REVIEW_REMEDIATION_TOOL,describeRejectedReviewPlanContinuation,recoverRejectedReviewPlanContinuation,REJECTED_REVIEW_PLAN_CONTINUATION_TOOL,describeSourceBoundReviewReplan,recoverSourceBoundReviewReplan,SOURCE_BOUND_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
 import {recoveryHash} from "./failed-local-read-recovery.js";
-import {describeEvidenceBoundReviewReplan,recoverEvidenceBoundReviewReplan,EVIDENCE_BOUND_REVIEW_REPLAN_TOOL,describeImplementationContentReviewReplan,recoverImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
+import {describeEvidenceBoundReviewReplan,recoverEvidenceBoundReviewReplan,EVIDENCE_BOUND_REVIEW_REPLAN_TOOL,describeImplementationContentReviewReplan,recoverImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL,describeSourceLiteralReviewReplan,recoverSourceLiteralReviewReplan,SOURCE_LITERAL_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -2811,7 +2811,18 @@ export function createSelfDevelopmentService({
     return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
   }
   const recoverImplementationContentReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverImplementationContentReviewReplan(planningScopeOptions(taskId,input,actor)));
+  async function requestSourceLiteralReviewReplanApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeSourceLiteralReviewReplan(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===SOURCE_LITERAL_REVIEW_REPLAN_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:SOURCE_LITERAL_REVIEW_REPLAN_TOOL,reason:"Separate owner approval is required for one source-literal review replan after the exact proposed-source excerpt rejection. Nova alone may reread the unchanged eight-file scope, plan once with literal source-bound coverage evidence, validate, apply once, run focused tests and one full suite, then stop for fresh independent review. No repair extension, counter reset, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_source_literal_review_replan_approval_requested",status:"waiting",summary:"One exact source-literal review successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverSourceLiteralReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverSourceLiteralReviewReplan(planningScopeOptions(taskId,input,actor)));
   return Object.freeze({
+    requestSourceLiteralReviewReplanApproval,
+    recoverSourceLiteralReviewReplan:recoverSourceLiteralReviewReplanSuccessor,
     requestImplementationContentReviewReplanApproval,
     recoverImplementationContentReviewReplan:recoverImplementationContentReviewReplanSuccessor,
     requestEvidenceBoundReviewReplanApproval,
