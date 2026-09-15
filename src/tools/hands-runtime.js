@@ -1,6 +1,6 @@
 import { readFile, readdir, writeFile, rename, rm, lstat, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { resolve, relative, sep, dirname, basename, join, delimiter } from "node:path";
+import { resolve, relative, sep, dirname, basename, join, delimiter, isAbsolute } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {tmpdir} from "node:os";
@@ -56,16 +56,19 @@ const boundedGitFailure = (result) => ({
   stdout: String(result.stdout || "").slice(-4_000),
   stderr: String(result.stderr || "").slice(-4_000),
 });
-function safe(root, input = ".") {
+export function resolveRepositoryPath(root, input = ".") {
   if (typeof input !== "string" || !input.trim())
     fail("invalid_input", "A repository path is required.");
-  const target = resolve(root, input);
-  if (target !== root && !target.startsWith(`${root}${sep}`))
+  const canonicalRoot = resolve(root);
+  const target = resolve(canonicalRoot, input);
+  const within = relative(canonicalRoot, target);
+  if (within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within))
     fail("path_traversal", "Path is outside the approved repository.");
-  if (protectedName.test(relative(root, target)))
+  if (protectedName.test(within))
     fail("protected_path", "Protected repository path.");
   return target;
 }
+const safe = resolveRepositoryPath;
 async function tree(root, dir = root, out = []) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     if ([".git", "node_modules", ".vercel"].includes(entry.name)) continue;

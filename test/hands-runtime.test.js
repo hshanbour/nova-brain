@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
-import { registerHandsTools, HandsError } from "../src/tools/hands-runtime.js";
+import { registerHandsTools, HandsError, resolveRepositoryPath } from "../src/tools/hands-runtime.js";
 import {
   createActionPolicy,
   ApprovalRequiredError,
@@ -21,6 +21,14 @@ import {
 
 const run = promisify(execFile);
 const BRANCH = "feat/nova-brain-mvp-foundation";
+
+test("repository path containment canonicalizes equivalent Windows roots and rejects escape",{skip:process.platform!=="win32"},()=>{
+  const root="C:\\Users\\hamod\\Documents\\Nova Brain";
+  const variants=[root,root.replaceAll("\\","/"),`${root}\\.`,root.toLowerCase()];
+  for(const variant of variants)assert.equal(resolveRepositoryPath(variant,"test/voice-input.test.js").toLowerCase(),`${root}\\test\\voice-input.test.js`.toLowerCase());
+  assert.throws(()=>resolveRepositoryPath(root,"../outside.js"),error=>error instanceof HandsError&&error.code==="path_traversal");
+  assert.throws(()=>resolveRepositoryPath(root,"D:/outside.js"),error=>error instanceof HandsError&&error.code==="path_traversal");
+});
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "nova-hands-"));
   await mkdir(join(root, "test"));

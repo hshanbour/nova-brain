@@ -6,7 +6,7 @@ import {describeExecutionScopeRecovery,recoverExecutionScope,EXECUTION_SCOPE_REC
 import {describeFullTestScopeRecovery,recoverFullTestScope,FULL_TEST_SCOPE_RECOVERY_TOOL,describeFailedFullTestRetry,recoverFailedFullTestRetry,FAILED_FULL_TEST_RETRY_TOOL} from "./full-test-scope-recovery.js";
 import {describeReviewRemediation,recoverReviewRemediation,REVIEW_REMEDIATION_TOOL,describeRejectedReviewPlanContinuation,recoverRejectedReviewPlanContinuation,REJECTED_REVIEW_PLAN_CONTINUATION_TOOL,describeSourceBoundReviewReplan,recoverSourceBoundReviewReplan,SOURCE_BOUND_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
 import {recoveryHash} from "./failed-local-read-recovery.js";
-import {describeEvidenceBoundReviewReplan,recoverEvidenceBoundReviewReplan,EVIDENCE_BOUND_REVIEW_REPLAN_TOOL,describeImplementationContentReviewReplan,recoverImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL,describeSourceLiteralReviewReplan,recoverSourceLiteralReviewReplan,SOURCE_LITERAL_REVIEW_REPLAN_TOOL,describeObservableLinkageReviewReplan,recoverObservableLinkageReviewReplan,OBSERVABLE_LINKAGE_REVIEW_REPLAN_TOOL,describeSemanticEvidenceReviewReplan,recoverSemanticEvidenceReviewReplan,SEMANTIC_EVIDENCE_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
+import {describeEvidenceBoundReviewReplan,recoverEvidenceBoundReviewReplan,EVIDENCE_BOUND_REVIEW_REPLAN_TOOL,describeImplementationContentReviewReplan,recoverImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL,describeSourceLiteralReviewReplan,recoverSourceLiteralReviewReplan,SOURCE_LITERAL_REVIEW_REPLAN_TOOL,describeObservableLinkageReviewReplan,recoverObservableLinkageReviewReplan,OBSERVABLE_LINKAGE_REVIEW_REPLAN_TOOL,describeSemanticEvidenceReviewReplan,recoverSemanticEvidenceReviewReplan,SEMANTIC_EVIDENCE_REVIEW_REPLAN_TOOL,describeFailedSemanticReadRecovery,recoverFailedSemanticReadRecovery,FAILED_SEMANTIC_READ_RECOVERY_TOOL} from "./review-remediation-scope.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -2838,7 +2838,18 @@ export function createSelfDevelopmentService({
     return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
   }
   const recoverSemanticEvidenceReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverSemanticEvidenceReviewReplan(planningScopeOptions(taskId,input,actor)));
+  async function requestFailedSemanticReadRecoveryApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeFailedSemanticReadRecovery(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===FAILED_SEMANTIC_READ_RECOVERY_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:FAILED_SEMANTIC_READ_RECOVERY_TOOL,reason:"Separate owner approval is required for one failed semantic-review read recovery after canonical Windows repository-root validation incorrectly rejected an in-repository path. Nova alone may reread the unchanged eight-file scope and plan once under the existing semantic-evidence contract; one validated apply, focused test run and full suite may follow before fresh independent review. No repair extension, counter reset, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_failed_semantic_read_recovery_approval_requested",status:"waiting",summary:"One exact failed-read review successor awaits an owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverFailedSemanticReadRecoverySuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverFailedSemanticReadRecovery(planningScopeOptions(taskId,input,actor)));
   return Object.freeze({
+    requestFailedSemanticReadRecoveryApproval,
+    recoverFailedSemanticReadRecovery:recoverFailedSemanticReadRecoverySuccessor,
     requestSemanticEvidenceReviewReplanApproval,
     recoverSemanticEvidenceReviewReplan:recoverSemanticEvidenceReviewReplanSuccessor,
     requestObservableLinkageReviewReplanApproval,

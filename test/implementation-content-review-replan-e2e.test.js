@@ -4,7 +4,7 @@ import {Readable} from "node:stream";
 import {createEvidenceBoundReviewReplanFixture} from "./evidence-bound-review-replan-fixture.js";
 import {executionProofSignature} from "./execution-scope-fixture.js";
 import {createApi} from "../src/http/api.js";
-import {describeImplementationContentReviewReplan,describeSourceLiteralReviewReplan,describeObservableLinkageReviewReplan,describeSemanticEvidenceReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_CLASS,SOURCE_LITERAL_REVIEW_REPLAN_CLASS,OBSERVABLE_LINKAGE_REVIEW_REPLAN_CLASS,SEMANTIC_EVIDENCE_REVIEW_REPLAN_CLASS} from "../src/autonomy/review-remediation-scope.js";
+import {describeImplementationContentReviewReplan,describeSourceLiteralReviewReplan,describeObservableLinkageReviewReplan,describeSemanticEvidenceReviewReplan,describeFailedSemanticReadRecovery,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_CLASS,SOURCE_LITERAL_REVIEW_REPLAN_CLASS,OBSERVABLE_LINKAGE_REVIEW_REPLAN_CLASS,SEMANTIC_EVIDENCE_REVIEW_REPLAN_CLASS,FAILED_SEMANTIC_READ_RECOVERY_CLASS} from "../src/autonomy/review-remediation-scope.js";
 import {recoveryHash} from "../src/autonomy/failed-local-read-recovery.js";
 
 const freshWorker="persistent-local-abcdef01-2345-4abc-8def-0123456789ab";
@@ -89,6 +89,20 @@ async function v419Fixture(t,{fifthOutput}={}){
   const input=structuredClone(f.input);delete input.approvalId;input.expectedVersion=419;input.workspaceProof.expectedVersion=419;input.workspaceProofSignature=executionProofSignature(input.workspaceProof);
   const actor={...f.actor,workspaceProof:input.workspaceProof},options={...f.options,input,actor};
   return{...f,input,actor,options,blocked,failed,evidence,afterObservable:()=>afterObservable};
+}
+
+async function v423Fixture(t){
+  const f=await v419Fixture(t),requested=await f.service.requestSemanticEvidenceReviewReplanApproval(f.taskId,f.input,f.actor);
+  await f.storage.decideApproval(requested.approval.id,f.ownerId,"approved");f.input.approvalId=requested.approval.id;
+  await f.service.recoverSemanticEvidenceReviewReplan(f.taskId,f.input,f.actor);
+  f.hooks.execution=()=>{throw Object.assign(new Error("Path is outside the approved repository."),{code:"path_traversal"});};
+  const failedWorker=f.createWorker("persistent-local-abcdef12-2345-4abc-8def-0123456789ab");
+  await assert.rejects(()=>failedWorker.runOnce(),error=>error.code==="path_traversal");f.hooks.execution=()=>{};
+  const blocked=await f.current(),failed=(await f.steps()).at(-1);
+  assert.equal(blocked.stateVersion,423);assert.equal(blocked.status,"blocked");assert.equal(blocked.currentPhase,"read_files");assert.equal(blocked.errorCode,"path_traversal");assert.equal(failed.stepType,"read_files");assert.equal(failed.result.code,"path_traversal");assert.equal(failed.result.message,"Path is outside the approved repository.");
+  const input=structuredClone(f.input);delete input.approvalId;input.expectedVersion=423;input.workspaceProof.expectedVersion=423;input.workspaceProofSignature=executionProofSignature(input.workspaceProof);
+  const actor={...f.actor,workspaceProof:input.workspaceProof},options={...f.options,input,actor};
+  return{...f,input,actor,options,blocked,failed};
 }
 
 test("v335 empty replacement rejection permits one distinct owner-approved complete-content replan through fresh review_ready",async t=>{
@@ -229,4 +243,31 @@ test("v419 successor rejects semantic identity, scope, drift, replay, and repair
     options=>options.task.repairIteration=4,
   ]){const options={...f.options,task:structuredClone(task),steps:structuredClone(steps),input:structuredClone(f.input),actor:structuredClone(f.actor)};options.actor.workspaceProof=options.input.workspaceProof;alter(options);await assert.rejects(()=>describeSemanticEvidenceReviewReplan(options));}
   assert.deepEqual(await f.current(),task);assert.deepEqual(await f.steps(),steps);
+});
+
+test("v423 path-traversal infrastructure failure permits one bounded semantic read recovery through fresh review_ready",async t=>{
+  const f=await v423Fixture(t),before=structuredClone(f.blocked),described=await describeFailedSemanticReadRecovery(f.options);
+  assert.equal(described.approvalArguments.expectedVersion,423);assert.equal(described.approvalArguments.maxSteps,13);assert.equal(described.approvalArguments.maxAdditionalAttempts,0);assert.equal(described.sourceProof.failedStepId,f.failed.stepId);
+  const requestResponse=await f.post(f.path("request-failed-semantic-read-recovery"),f.input),requested=requestResponse.body;
+  assert.equal(requestResponse.status,200);assert.equal(requested.approval.tool,"self_development_failed_semantic_read_recovery");
+  const decision=await f.post(`/api/approvals/${requested.approval.id}/decision`,{decision:"approved"});
+  assert.equal(decision.status,200);assert.deepEqual(decision.body.execution,{authorized:true,approvalId:requested.approval.id});f.input.approvalId=requested.approval.id;
+  const recovered=await f.service.recoverFailedSemanticReadRecovery(f.taskId,f.input,f.actor),record=recovered.recovery;
+  assert.equal(record.recoveryClass,FAILED_SEMANTIC_READ_RECOVERY_CLASS);assert.equal(record.fromStateVersion,423);assert.equal(record.repairIteration,3);assert.equal(record.maxAdditionalAttempts,0);assert.equal(record.semanticEvidenceReplan,true);
+  const worker=f.createWorker("persistent-local-abcdef13-2345-4abc-8def-0123456789ab");for(let index=0;index<13;index++)assert.equal((await worker.runOnce()).worked,true);
+  const final=await f.current(),history=final.metadata.failedSemanticReadRecoveryHistory[0],boundary=final.metadata.failedSemanticReadRecoveryBoundary;
+  assert.equal(final.status,"blocked");assert.equal(final.repairIteration,3);assert.equal(history.consumed,true);assert.equal(history.result,"full_tests_completed");assert.equal(boundary.kind,"review_ready");assert.equal(boundary.executionAuthorized,false);
+  assert.equal(f.executions.filter(item=>item.name==="repo_apply_patch").length,1);assert.equal(f.executions.filter(item=>item.name==="test_run").length,1);assert.equal(f.executions.filter(item=>item.name==="test_run_full").length,1);assert.deepEqual(final.metadata.escalatedRepairHistory,before.metadata.escalatedRepairHistory);assert.deepEqual(await worker.runOnce(),{worked:false});await assert.rejects(()=>f.service.recoverFailedSemanticReadRecovery(f.taskId,f.input,f.actor));
+});
+
+test("v423 recovery rejects workspace drift, scope expansion, predecessor reuse, and repair counter drift without mutation",async t=>{
+  const f=await v423Fixture(t),task=await f.current(),steps=await f.steps();
+  for(const alter of[
+    options=>options.input.workspaceProof.workspace.changedFiles[0].hash="0".repeat(40),
+    options=>options.input.workspaceProof.workspace.changedFiles.push({path:"test/ninth.test.js",hashAlgorithm:"git_sha1",hash:"0".repeat(40),rawHash:"0".repeat(40),contentHash:"0".repeat(64)}),
+    options=>options.task.metadata.semanticEvidenceReviewReplanHistory[0].consumed=false,
+    options=>options.task.repairIteration=4,
+    options=>options.steps.find(step=>step.stepId===f.failed.stepId).errorCode="worker_failed",
+  ]){const options={...f.options,task:structuredClone(task),steps:structuredClone(steps),input:structuredClone(f.input),actor:structuredClone(f.actor)};options.actor.workspaceProof=options.input.workspaceProof;alter(options);await assert.rejects(()=>describeFailedSemanticReadRecovery(options));}
+  assert.deepEqual(await f.current(),task);assert.deepEqual(await f.steps(),steps);assert.equal(f.executions.filter(item=>item.name==="repo_apply_patch").length,0);
 });
