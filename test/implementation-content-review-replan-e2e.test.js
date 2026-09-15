@@ -4,7 +4,7 @@ import {Readable} from "node:stream";
 import {createEvidenceBoundReviewReplanFixture} from "./evidence-bound-review-replan-fixture.js";
 import {executionProofSignature} from "./execution-scope-fixture.js";
 import {createApi} from "../src/http/api.js";
-import {describeImplementationContentReviewReplan,describeSourceLiteralReviewReplan,describeObservableLinkageReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_CLASS,SOURCE_LITERAL_REVIEW_REPLAN_CLASS,OBSERVABLE_LINKAGE_REVIEW_REPLAN_CLASS} from "../src/autonomy/review-remediation-scope.js";
+import {describeImplementationContentReviewReplan,describeSourceLiteralReviewReplan,describeObservableLinkageReviewReplan,describeSemanticEvidenceReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_CLASS,SOURCE_LITERAL_REVIEW_REPLAN_CLASS,OBSERVABLE_LINKAGE_REVIEW_REPLAN_CLASS,SEMANTIC_EVIDENCE_REVIEW_REPLAN_CLASS} from "../src/autonomy/review-remediation-scope.js";
 import {recoveryHash} from "../src/autonomy/failed-local-read-recovery.js";
 
 const freshWorker="persistent-local-abcdef01-2345-4abc-8def-0123456789ab";
@@ -64,6 +64,31 @@ async function v391Fixture(t,{fourthOutput}={}){
   const input=structuredClone(f.input);delete input.approvalId;input.expectedVersion=391;input.workspaceProof.expectedVersion=391;input.workspaceProofSignature=executionProofSignature(input.workspaceProof);
   const actor={...f.actor,workspaceProof:input.workspaceProof},options={...f.options,input,actor};
   return{...f,input,actor,options,blocked,failed,evidence,afterSourceLiteral:()=>afterSourceLiteral};
+}
+
+async function v419Fixture(t,{fifthOutput}={}){
+  let afterObservable=0;
+  const f=await v391Fixture(t,{fourthOutput:value=>{
+    afterObservable++;
+    if(afterObservable===1){
+      const item=value.reviewCoverage[0],invented="Console activates all seven workspaces and voice input without fake Soon states";
+      value.files=value.files.filter(file=>file.path!==item.testPath);
+      value.acceptanceMapping=value.acceptanceMapping.map(mapping=>({...mapping,files:mapping.files.filter(path=>path!==item.testPath)}));
+      item.testName=invented;item.sourceExcerpt=`test('${invented}', () => { const result = exercise(); assert.equal(result, true); });`;
+      return value;
+    }
+    return fifthOutput?fifthOutput(value):value;
+  }});
+  const requested=await f.service.requestObservableLinkageReviewReplanApproval(f.taskId,f.input,f.actor);
+  await f.storage.decideApproval(requested.approval.id,f.ownerId,"approved");f.input.approvalId=requested.approval.id;
+  await f.service.recoverObservableLinkageReviewReplan(f.taskId,f.input,f.actor);
+  const predecessorWorker=f.createWorker("persistent-local-abcdef09-2345-4abc-8def-0123456789ab");for(let index=0;index<9;index++)assert.equal((await predecessorWorker.runOnce()).worked,true);
+  const blocked=await f.current(),failed=(await f.steps()).at(-1);assert.equal(blocked.stateVersion,419);assert.equal(blocked.status,"blocked");assert.equal(blocked.errorCode,"review_remediation_precondition_failed");assert.equal(failed.result.diagnostics.predicate,"source_bound_behavioral_coverage");assert.equal(failed.result.diagnostics.coverageDiagnostics.firstFailure.subclause,"source_contains_excerpt");assert.equal(failed.result.diagnostics.mutationApplied,false);
+  const reference=failed.result.rejectedReviewEvidence,evidence=await f.storage.getRejectedReviewEvidence(reference.id,f.ownerId,f.taskId),item=evidence.envelope.coverage[0];
+  assert.equal(item.sourceOrigin,"fresh_read");assert.equal(item.firstFailedSubclause,"source_contains_excerpt");
+  const input=structuredClone(f.input);delete input.approvalId;input.expectedVersion=419;input.workspaceProof.expectedVersion=419;input.workspaceProofSignature=executionProofSignature(input.workspaceProof);
+  const actor={...f.actor,workspaceProof:input.workspaceProof},options={...f.options,input,actor};
+  return{...f,input,actor,options,blocked,failed,evidence,afterObservable:()=>afterObservable};
 }
 
 test("v335 empty replacement rejection permits one distinct owner-approved complete-content replan through fresh review_ready",async t=>{
@@ -176,5 +201,32 @@ test("v391 successor refuses workspace drift, predecessor reuse, and repair coun
     options=>options.task.repairIteration=4,
     options=>options.steps.find(step=>step.stepId===f.failed.stepId).result.diagnostics.coverageDiagnostics.constraints[0].expectedSourceHash="0".repeat(64),
   ]){const options={...f.options,task:structuredClone(task),steps:structuredClone(steps),input:structuredClone(f.input),actor:structuredClone(f.actor)};options.actor.workspaceProof=options.input.workspaceProof;alter(options);await assert.rejects(()=>describeObservableLinkageReviewReplan(options));}
+  assert.deepEqual(await f.current(),task);assert.deepEqual(await f.steps(),steps);
+});
+
+test("v419 semantic-evidence rejection permits one owner-approved replan through fresh review_ready",async t=>{
+  const f=await v419Fixture(t),before=structuredClone(f.blocked),described=await describeSemanticEvidenceReviewReplan(f.options);
+  assert.equal(described.approvalArguments.expectedVersion,419);assert.equal(described.sourceProof.privateEvidenceId,f.failed.result.rejectedReviewEvidence.id);assert.equal(described.sourceProof.rejectedPlanFingerprint,f.evidence.envelope.planFingerprint);
+  assert.equal((await f.post(f.path("request-semantic-evidence-review-replan"),f.input,"wrong-worker-token")).status,401);
+  const requestResponse=await f.post(f.path("request-semantic-evidence-review-replan"),f.input),requested=requestResponse.body;assert.equal(requestResponse.status,200);assert.equal(requested.approval.tool,"self_development_semantic_evidence_review_replan");
+  const decision=await f.post(`/api/approvals/${requested.approval.id}/decision`,{decision:"approved"});assert.equal(decision.status,200);assert.deepEqual(decision.body.execution,{authorized:true,approvalId:requested.approval.id});f.input.approvalId=requested.approval.id;
+  const recovered=await f.service.recoverSemanticEvidenceReviewReplan(f.taskId,f.input,f.actor),record=recovered.recovery;assert.equal(record.recoveryClass,SEMANTIC_EVIDENCE_REVIEW_REPLAN_CLASS);assert.equal(record.fromStateVersion,419);assert.equal(record.repairIteration,3);assert.equal(record.maxAdditionalAttempts,0);assert.equal(record.semanticEvidenceReplan,true);
+  const contract=recovered.task.metadata.steps[record.activeContinuation.startStep+8].input.arguments.failureEvidence;assert.equal(contract.code,"review_coverage_semantic_identity_invalid");assert.equal(contract.requiredImplementationContentContract.completeReplacement,true);assert.match(contract.requiredSemanticTestIdentityContract.existingTest,/exact hash-bound current source/);assert.match(contract.requiredSemanticTestIdentityContract.newTest,/authorized replacement containing the exact named behavioral test/);assert.equal(contract.requiredSemanticTestIdentityContract.hypotheticalOrPlaceholderTestsForbidden,true);
+  const worker=f.createWorker("persistent-local-abcdef10-2345-4abc-8def-0123456789ab");for(let index=0;index<13;index++)assert.equal((await worker.runOnce()).worked,true);
+  const final=await f.current(),history=final.metadata.semanticEvidenceReviewReplanHistory[0],boundary=final.metadata.semanticEvidenceReviewReplanBoundary;assert.equal(final.status,"blocked");assert.equal(final.repairIteration,3);assert.equal(history.consumed,true);assert.equal(history.result,"full_tests_completed");assert.equal(boundary.kind,"review_ready");assert.equal(boundary.executionAuthorized,false);assert.equal(f.afterObservable(),2);
+  assert.equal(f.executions.filter(item=>item.name==="repo_apply_patch").length,1);assert.equal(f.executions.filter(item=>item.name==="test_run").length,1);assert.equal(f.executions.filter(item=>item.name==="test_run_full").length,1);assert.deepEqual(final.metadata.escalatedRepairHistory,before.metadata.escalatedRepairHistory);assert.deepEqual(await worker.runOnce(),{worked:false});await assert.rejects(()=>f.service.recoverSemanticEvidenceReviewReplan(f.taskId,f.input,f.actor));await assert.rejects(()=>f.service.recoverObservableLinkageReviewReplan(f.taskId,f.input,f.actor));
+});
+
+test("v419 successor rejects semantic identity, scope, drift, replay, and repair counter changes",async t=>{
+  const invalid=await v419Fixture(t,{fifthOutput:value=>{const item=value.reviewCoverage[0],invented="hypothetical future test";value.files=value.files.filter(file=>file.path!==item.testPath);item.testName=invented;item.sourceExcerpt=`test('${invented}', () => { const result = exercise(); assert.equal(result, true); });`;return value;}}),requested=await invalid.service.requestSemanticEvidenceReviewReplanApproval(invalid.taskId,invalid.input,invalid.actor);await invalid.storage.decideApproval(requested.approval.id,invalid.ownerId,"approved");invalid.input.approvalId=requested.approval.id;await invalid.service.recoverSemanticEvidenceReviewReplan(invalid.taskId,invalid.input,invalid.actor);
+  const worker=invalid.createWorker("persistent-local-abcdef11-2345-4abc-8def-0123456789ab");for(let index=0;index<9;index++)assert.equal((await worker.runOnce()).worked,true);const rejected=await invalid.current(),last=(await invalid.steps()).at(-1);assert.equal(rejected.status,"blocked");assert.equal(last.result.diagnostics.coverageDiagnostics.firstFailure.predicate,"semantic_test_identity_binding");assert.equal(last.result.diagnostics.coverageDiagnostics.firstFailure.subclause,"test_name_not_placeholder");assert.equal(invalid.executions.filter(item=>item.name==="repo_apply_patch").length,0);assert.deepEqual(await worker.runOnce(),{worked:false});await assert.rejects(()=>invalid.service.recoverSemanticEvidenceReviewReplan(invalid.taskId,invalid.input,invalid.actor));
+
+  const f=await v419Fixture(t),task=await f.current(),steps=await f.steps();
+  for(const alter of[
+    options=>options.input.workspaceProof.workspace.changedFiles[0].hash="0".repeat(40),
+    options=>options.input.workspaceProof.workspace.changedFiles.push({path:"test/ninth.test.js",hashAlgorithm:"git_sha1",hash:"0".repeat(40),rawHash:"0".repeat(40),contentHash:"0".repeat(64)}),
+    options=>options.task.metadata.observableLinkageReviewReplanHistory[0].consumed=false,
+    options=>options.task.repairIteration=4,
+  ]){const options={...f.options,task:structuredClone(task),steps:structuredClone(steps),input:structuredClone(f.input),actor:structuredClone(f.actor)};options.actor.workspaceProof=options.input.workspaceProof;alter(options);await assert.rejects(()=>describeSemanticEvidenceReviewReplan(options));}
   assert.deepEqual(await f.current(),task);assert.deepEqual(await f.steps(),steps);
 });

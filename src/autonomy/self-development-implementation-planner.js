@@ -131,7 +131,7 @@ export function createSelfDevelopmentImplementationPlanner({modelProvider,storag
   function invalid(issues,shapeHash,attempts){const error=plannerError("implementation_plan_invalid","Nova implementation plan does not match the bounded schema.",issues);error.safeDiagnostics={validationCode:"implementation_plan_invalid",validationIssues:issues.slice(0,20),outputShapeHash:shapeHash,formatAttempts:attempts,schemaVersion:SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION};return error;}
   async function build(value,{task,steps,candidates,reads,readStepIds,request,evidence,plannerAttempt,requiredRepairPaths,failureEvidence,planningOnly=false,reviewRemediation=null}){
     if(reviewRemediation){
-      const coverageContext={stateVersion:task.stateVersion,continuationGenerationId:reviewRemediation.activeContinuation.generationId,planFingerprint:hash(value)};
+      const coverageContext={stateVersion:task.stateVersion,continuationGenerationId:reviewRemediation.activeContinuation.generationId,planFingerprint:hash(value),semanticEvidenceReplan:reviewRemediation.semanticEvidenceReplan===true};
       if(value.files.some(file=>file.operation!=="replace"||!reviewRemediation.requiredPaths.includes(safePath(file.path)))||value.focusedTests.some(test=>test.kind!=="existing"||!reviewRemediation.requiredPaths.includes(safePath(test.path))))throw plannerError("review_remediation_scope_authorization_required","Remediation requires separate owner authorization for any path outside the existing eight-file scope.",["review_scope_expansion_forbidden"],{mutationApplied:false});
       // The model supplies inspectable test references, never a guessed digest.
       // Hashes are derived from the exact source that will actually be validated.

@@ -39,6 +39,29 @@ test("valid coverage retains the exact legacy result and all caller evidence unc
   assert.deepEqual(f,before);
 });
 
+test("semantic evidence accepts exact existing tests and exact proposed replacement tests",()=>{
+  const existing=fixture();existing.options.context.semanticEvidenceReplan=true;
+  assert.doesNotThrow(()=>validateReviewCoverageBindings(existing.plan,existing.options));
+
+  const replacement=fixture(),path=replacement.plan.reviewCoverage[0].testPath,name="new bounded regression",source=`test('${name}', () => { const result = exercise(); assert.equal(result, true); });`;
+  replacement.options.context.semanticEvidenceReplan=true;
+  replacement.plan.files.push({path,operation:"replace",content:source});
+  for(const item of replacement.plan.reviewCoverage.filter(entry=>entry.testPath===path))Object.assign(item,{testName:name,sourceExcerpt:source,sourceHash:canonicalContentHash(source)});
+  assert.doesNotThrow(()=>validateReviewCoverageBindings(replacement.plan,replacement.options));
+});
+
+test("semantic evidence rejects nonexistent unchanged and placeholder test identities",()=>{
+  const nonexistent=fixture();nonexistent.options.context.semanticEvidenceReplan=true;nonexistent.plan.reviewCoverage[0].testName="missing exact test";
+  let diagnostics=rejected(nonexistent).safeDiagnostics.coverageDiagnostics;
+  assert.deepEqual(diagnostics.firstFailure,{predicate:"semantic_test_identity_binding",constraintId:"C1",subclause:"test_identity_exists_in_exact_source"});
+
+  const placeholder=fixture(),path=placeholder.plan.reviewCoverage[0].testPath,name="hypothetical future test",source=`test('${name}', () => { const result = exercise(); assert.equal(result, true); });`;
+  placeholder.options.context.semanticEvidenceReplan=true;placeholder.plan.files.push({path,operation:"replace",content:source});
+  for(const item of placeholder.plan.reviewCoverage.filter(entry=>entry.testPath===path))Object.assign(item,{testName:name,sourceExcerpt:source,sourceHash:canonicalContentHash(source)});
+  diagnostics=rejected(placeholder).safeDiagnostics.coverageDiagnostics;
+  assert.deepEqual(diagnostics.firstFailure,{predicate:"semantic_test_identity_binding",constraintId:"C1",subclause:"test_name_not_placeholder"});
+});
+
 const cases=[
   ["missing mutation","ninth_file_or_operation_forbidden","mutation_array",f=>delete f.plan.files],
   ["empty mutation","ninth_file_or_operation_forbidden","mutation_count",f=>f.plan.files=[]],

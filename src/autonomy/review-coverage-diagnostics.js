@@ -7,6 +7,8 @@ const text=(value,max=1000)=>typeof value==="string"&&value.trim().length>0&&val
 const keys=(value,allowed)=>value&&typeof value==="object"&&!Array.isArray(value)&&Object.keys(value).every(key=>allowed.includes(key));
 const coverageKeys=["constraintId","findingIds","testPath","testName","sourceExcerpt","sourceHash","stimulus","observable","assertion"];
 const digest=value=>HASH.test(value||"")?value:null;
+const namedTestPattern=name=>new RegExp("\\b(?:test|it)\\s*\\(\\s*(['\"`])"+name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\1");
+const placeholderTestName=name=>/\b(?:todo|placeholder|hypothetical|future\s+test|test\s+name)\b/i.test(name);
 
 // Only authority-owned identifiers and paths may be emitted verbatim. Unknown
 // model references, excerpts, assertions, reasons and test names never are.
@@ -85,6 +87,13 @@ export function validateReviewCoverageBindings(plan,{review,requiredPaths,reads,
   ]);
   for(const[index,constraint]of review.acceptanceConstraints.entries()){
     const item=coverage.find(mapping=>mapping?.constraintId===constraint.id),source=item&&contents.get(item.testPath),record=diagnostics.constraints[index];
+    const exactName=text(item?.testName,300)?namedTestPattern(item.testName):null,currentSource=item&&reads.get(item.testPath),replacement=plan.files.find(file=>file?.path===item?.testPath),currentHasName=typeof currentSource==="string"&&exactName?.test(currentSource),replacementHasName=typeof replacement?.content==="string"&&exactName?.test(replacement.content);
+    if(context.semanticEvidenceReplan===true)check("semantic_test_identity_binding",[
+      ["test_name_not_placeholder",()=>text(item?.testName,300)&&!placeholderTestName(item.testName)],
+      ["test_identity_exists_in_exact_source",()=>typeof source==="string"&&exactName?.test(source)],
+      ["unchanged_source_identity_is_current",()=>Boolean(replacement)||currentHasName],
+      ["new_identity_requires_test_replacement",()=>currentHasName||Boolean(replacement&&replacementHasName)],
+    ],record);
     check("source_bound_behavioral_coverage",[
       ["coverage_record_allowed_fields",()=>keys(item,coverageKeys)],
       ["finding_ids_match",()=>same(item.findingIds,constraint.findingIds)],
@@ -101,7 +110,7 @@ export function validateReviewCoverageBindings(plan,{review,requiredPaths,reads,
       ["excerpt_contains_assertion",()=>item.sourceExcerpt.includes(item.assertion)],
       ["assertion_is_assertion",()=>/\b(?:assert\s*[.(]|expect\s*\()/.test(item.assertion)],
     ],record);
-    const escaped=item.testName.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),namedTest=new RegExp("\\b(?:test|it)\\s*\\(\\s*(['\"`])"+escaped+"\\1"),observable=/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]\r\n]+\])*$/;
+    const namedTest=namedTestPattern(item.testName),observable=/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]\r\n]+\])*$/;
     check("observable_behavioral_test_linkage",[
       ["named_test_declaration",()=>namedTest.test(item.sourceExcerpt)],
       ["observable_code_reference",()=>observable.test(item.observable)],
