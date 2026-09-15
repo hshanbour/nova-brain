@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {Readable} from "node:stream";
 import {createEvidenceBoundReviewReplanFixture} from "./evidence-bound-review-replan-fixture.js";
 import {executionProofSignature} from "./execution-scope-fixture.js";
+import {createApi} from "../src/http/api.js";
 import {describeImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_CLASS} from "../src/autonomy/review-remediation-scope.js";
 
 const freshWorker="persistent-local-abcdef01-2345-4abc-8def-0123456789ab";
@@ -26,7 +28,8 @@ test("v335 empty replacement rejection permits one distinct owner-approved compl
   const f=await fixture(t),before=structuredClone(f.blocked),described=await describeImplementationContentReviewReplan(f.options);
   assert.equal(described.approvalArguments.expectedVersion,335);assert.equal(described.approvalArguments.maxSteps,13);assert.equal(described.approvalArguments.maxApplyAttempts,1);assert.equal(described.approvalArguments.maxAdditionalAttempts,0);
   assert.equal((await f.post(f.path("request-implementation-content-review-replan"),f.input,"wrong-worker-token")).status,401);
-  const response=await f.post(f.path("request-implementation-content-review-replan"),f.input),requested=response.body;assert.equal(response.status,200);await f.storage.decideApproval(requested.approval.id,f.ownerId,"approved");f.input.approvalId=requested.approval.id;
+  const response=await f.post(f.path("request-implementation-content-review-replan"),f.input),requested=response.body;assert.equal(response.status,200);
+  const decision=await f.post(`/api/approvals/${requested.approval.id}/decision`,{decision:"approved"});assert.equal(decision.status,200);assert.deepEqual(decision.body.execution,{authorized:true,approvalId:requested.approval.id});f.input.approvalId=requested.approval.id;
   const recovered=await f.service.recoverImplementationContentReviewReplan(f.taskId,f.input,f.actor),record=recovered.recovery;
   assert.equal(record.recoveryClass,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_CLASS);assert.equal(record.fromStateVersion,335);assert.equal(record.repairIteration,3);assert.equal(record.implementationContentReplan,true);assert.equal(record.maxAdditionalAttempts,0);assert.equal(record.activeContinuation.maxSteps,13);assert.equal(record.activeContinuation.runtimeMinutes,15);
   const planStep=recovered.task.metadata.steps[record.activeContinuation.startStep+8];assert.equal(planStep.input.arguments.failureEvidence.code,"implementation_content_invalid");assert.deepEqual(planStep.input.arguments.failureEvidence.requiredImplementationContentContract,{operation:"replace",contentType:"string",completeReplacement:true,minLength:1,maxLength:250000,instructionsOrPlaceholdersForbidden:true});
@@ -54,4 +57,13 @@ test("v335 successor remains fail-closed for scope, workspace hash, predecessor,
     options=>options.steps.find(step=>step.stepId==="200:plan_repair").result.diagnostics.validationIssues[0]="file_0_reason_invalid",
   ]){const options={...f.options,task:structuredClone(task),steps:structuredClone(steps),input:structuredClone(f.input),actor:structuredClone(f.actor)};options.actor.workspaceProof=options.input.workspaceProof;alter(options);await assert.rejects(()=>describeImplementationContentReviewReplan(options));}
   assert.deepEqual(await f.current(),task);assert.deepEqual(await f.steps(),steps);
+});
+
+test("approval decision routing preserves the generic resume path for unrelated tools",async t=>{
+  const f=await fixture(t),approval=await f.storage.createApproval({id:"synthetic-unrelated-routing-approval",ownerId:f.ownerId,projectId:"nova-brain",runId:f.taskId,tool:"unrelated_existing_tool",reason:"Synthetic routing compatibility",riskLevel:"SENSITIVE",arguments:{}});
+  let resumeCalls=0;
+  const api=createApi({agent:{tools:{list(){return[];},async execute(){assert.fail("Task-bound unrelated approvals must use the existing worker resume path");}}},config:{allowedOrigins:[],maxBodyBytes:256*1024},storage:f.storage,initialize:async()=>{},ownerId:f.ownerId,selfDevelopment:f.service,workerRuntime:{get:f.current,async resumeApproval(taskId,approved){resumeCalls++;return{route:"generic",taskId,approvalId:approved.id};},async control(){assert.fail("Approved unrelated tools must not use task control");}},logger:{info(){},error(){}}});
+  const req=Readable.from([JSON.stringify({decision:"approved"})]);req.method="POST";req.url=`/api/approvals/${approval.id}/decision`;req.headers={"content-type":"application/json"};let text="";const res={setHeader(){},end(value=""){text+=value;}};
+  await api.handle(req,res);const body=JSON.parse(text);
+  assert.equal(res.statusCode,200);assert.equal(resumeCalls,1);assert.deepEqual(body.execution,{route:"generic",taskId:f.taskId,approvalId:approval.id});
 });
