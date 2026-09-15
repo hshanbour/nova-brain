@@ -1060,6 +1060,13 @@ export function createApi({
         const evidenceBoundReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-evidence-bound-review-replan|recover-evidence-bound-review-replan)$/);
         const implementationContentReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-implementation-content-review-replan|recover-implementation-content-review-replan)$/);
         const sourceLiteralReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-source-literal-review-replan|recover-source-literal-review-replan)$/);
+        const observableLinkageReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-observable-linkage-review-replan|recover-observable-linkage-review-replan)$/);
+        if(selfDevelopment&&observableLinkageReviewReplan&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=observableLinkageReviewReplan[2]==="request-observable-linkage-review-replan"?"requestObservableLinkageReviewReplanApproval":"recoverObservableLinkageReviewReplan";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(observableLinkageReviewReplan[1]),input,actor));return;
+        }
         if(selfDevelopment&&sourceLiteralReviewReplan&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);
           const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
@@ -1607,7 +1614,7 @@ export function createApi({
             workerRuntime && approval.runId
               ? await workerRuntime.get(approval.runId)
               : null;
-          if(["self_development_escalated_repair","self_development_planning_scope_recovery","self_development_execution_scope_recovery","self_development_full_test_scope_recovery","self_development_failed_full_test_retry","self_development_review_remediation","self_development_rejected_review_plan_continuation","self_development_source_bound_review_replan","self_development_evidence_bound_review_replan","self_development_implementation_content_review_replan","self_development_source_literal_review_replan"].includes(approval.tool)){
+          if(["self_development_escalated_repair","self_development_planning_scope_recovery","self_development_execution_scope_recovery","self_development_full_test_scope_recovery","self_development_failed_full_test_retry","self_development_review_remediation","self_development_rejected_review_plan_continuation","self_development_source_bound_review_replan","self_development_evidence_bound_review_replan","self_development_implementation_content_review_replan","self_development_source_literal_review_replan","self_development_observable_linkage_review_replan"].includes(approval.tool)){
             execution={authorized:decision==="approved",approvalId:approval.id};
           } else if (autonomyTask) {
             execution =
