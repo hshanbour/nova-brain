@@ -15,7 +15,7 @@ import {implementationContentHash,implementationContentIssue,isJavaScriptImpleme
 import {recoveryHash,recoveryRoot} from "../autonomy/failed-local-read-recovery.js";
 import {EXECUTION_SCOPE_RECOVERY_CLASS,executionScopePayload,validateExecutionScopeContext} from "../autonomy/execution-scope-recovery.js";
 import {FULL_TEST_SCOPE_RECOVERY_CLASS,FAILED_FULL_TEST_RETRY_CLASS,fullTestScopeDescriptor,fullTestScopePayload,validateFullTestScopeContext} from "../autonomy/full-test-scope-recovery.js";
-import {REVIEW_REMEDIATION_CLASS,REJECTED_REVIEW_PLAN_CONTINUATION_CLASS,reviewRemediationDescriptor,reviewRemediationScopePayload,validateReviewRemediationContext} from "../autonomy/review-remediation-scope.js";
+import {reviewRemediationDescriptorForClass,reviewRemediationDescriptor,reviewRemediationScopePayload,validateReviewRemediationContext} from "../autonomy/review-remediation-scope.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -183,7 +183,7 @@ export function registerHandsTools(
   async function remediationContext(tool,input,context){
     const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null,scope=context?.reviewRemediationScope;
     if(!scope){if(reviewRemediationDescriptor(durable))rejectRemediation("remediation_context_required");return null;}
-    if(context.executionScope||context.fullTestScope||scope.version!==1||![REVIEW_REMEDIATION_CLASS,REJECTED_REVIEW_PLAN_CONTINUATION_CLASS].includes(scope.recoveryClass)||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.reviewHash,scope.sourcePlanHash,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxProductMutations!==1||scope.maxApplyAttempts!==1||scope.maxFocusedTestRuns!==1||scope.maxFullTestRuns!==1||scope.maxAdditionalAttempts!==0||scope.runtimeMinutes!==15||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectRemediation("remediation_context_binding");
+    if(context.executionScope||context.fullTestScope||scope.version!==1||!reviewRemediationDescriptorForClass(scope.recoveryClass)||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.reviewHash,scope.sourcePlanHash,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxProductMutations!==1||scope.maxApplyAttempts!==1||scope.maxFocusedTestRuns!==1||scope.maxFullTestRuns!==1||scope.maxAdditionalAttempts!==0||scope.runtimeMinutes!==15||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectRemediation("remediation_context_binding");
     const carried=context.repositoryContext;
     if(carried.version!==1||carried.repository!==repository||carried.branch!==branch||carried.source!=="persistent_worker_handoff"||recoveryRoot(carried.root)!==recoveryRoot(root))rejectRemediation("remediation_repository_context");
     const paths=scope.requiredPaths,phaseIds=[...(scope.readStepIds||[]),scope.planStepId,scope.validateStepId,scope.applyStepId,scope.focusedStepId,scope.fullTestStepId],types=[...Array(8).fill("read_files"),"plan_repair","validate_patch","apply_patch","run_focused_tests","run_full_tests"],start=Number.parseInt(phaseIds[0],10);
@@ -1272,7 +1272,7 @@ export function registerHandsTools(
           if(remediation){if(executedScopeSteps.has(remediation.key))rejectRemediation("remediation_local_replay");executedScopeSteps.add(remediation.key);}
           const testEnvironment=full&&gitExecutable?(()=>{const child={...process.env,...environment};for(const key of Object.keys(child))if(key.toLowerCase()==="path")delete child[key];const inherited=environment.PATH||environment.Path||process.env.PATH||process.env.Path||"";child[process.platform==="win32"?"Path":"PATH"]=[dirname(gitExecutable),inherited].filter(Boolean).join(delimiter);return child;})():undefined;
           let dependencyPreflight=null;
-          if(full&&remediation?.scope.recoveryClass===REJECTED_REVIEW_PLAN_CONTINUATION_CLASS){
+          if(full&&reviewRemediationDescriptorForClass(remediation?.scope.recoveryClass)?.dependencyPreflight===true){
             // This phase's single-use reservation is already durable. Resolve
             // the existing locked direct dependencies without installing,
             // evaluating packages, or changing the manifest/lock/workspace.

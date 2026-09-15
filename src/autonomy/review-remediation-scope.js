@@ -2,16 +2,22 @@ import {createHash} from "node:crypto";
 import {createActiveContinuation,canonicalContentHash,bindImplementationPlan,planLifecycleMetadata} from "./self-development-plan-lifecycle.js";
 import {recoveryHash,recoveryRoot} from "./failed-local-read-recovery.js";
 import {FAILED_FULL_TEST_RETRY_CLASS,FAILED_FULL_TEST_RETRY_TOOL,validateFullTestScopeEvidence} from "./full-test-scope-recovery.js";
+import {validateReviewCoverageBindings} from "./review-coverage-diagnostics.js";
 
 export const REVIEW_REMEDIATION_CLASS="owner_approved_review_remediation";
 export const REVIEW_REMEDIATION_TOOL="self_development_review_remediation";
 export const REJECTED_REVIEW_PLAN_CONTINUATION_CLASS="owner_approved_rejected_review_plan_continuation";
 export const REJECTED_REVIEW_PLAN_CONTINUATION_TOOL="self_development_rejected_review_plan_continuation";
+export const SOURCE_BOUND_REVIEW_REPLAN_CLASS="owner_approved_source_bound_review_replan";
+export const SOURCE_BOUND_REVIEW_REPLAN_TOOL="self_development_source_bound_review_replan";
 export const REVIEW_REMEDIATION_RUNTIME_MINUTES=15;
 export const REVIEW_REMEDIATION_MAX_STEPS=13;
 const DESCRIPTOR=Object.freeze({historyKey:"reviewRemediationHistory",boundaryKey:"reviewRemediationBoundary",recoveryClass:REVIEW_REMEDIATION_CLASS,tool:REVIEW_REMEDIATION_TOOL});
-const REJECTED_DESCRIPTOR=Object.freeze({historyKey:"rejectedReviewPlanContinuationHistory",boundaryKey:"rejectedReviewPlanContinuationBoundary",recoveryClass:REJECTED_REVIEW_PLAN_CONTINUATION_CLASS,tool:REJECTED_REVIEW_PLAN_CONTINUATION_TOOL});
-export const reviewRemediationDescriptor=task=>task?.metadata?.[REJECTED_DESCRIPTOR.historyKey]!==undefined||task?.metadata?.activeContinuation?.recoveryClass===REJECTED_DESCRIPTOR.recoveryClass?REJECTED_DESCRIPTOR:task?.metadata?.reviewRemediationHistory!==undefined||task?.metadata?.activeContinuation?.recoveryClass===REVIEW_REMEDIATION_CLASS?DESCRIPTOR:null;
+const REJECTED_DESCRIPTOR=Object.freeze({historyKey:"rejectedReviewPlanContinuationHistory",boundaryKey:"rejectedReviewPlanContinuationBoundary",recoveryClass:REJECTED_REVIEW_PLAN_CONTINUATION_CLASS,tool:REJECTED_REVIEW_PLAN_CONTINUATION_TOOL,dependencyPreflight:true});
+const SOURCE_BOUND_DESCRIPTOR=Object.freeze({historyKey:"sourceBoundReviewReplanHistory",boundaryKey:"sourceBoundReviewReplanBoundary",recoveryClass:SOURCE_BOUND_REVIEW_REPLAN_CLASS,tool:SOURCE_BOUND_REVIEW_REPLAN_TOOL,dependencyPreflight:true});
+const REMEDIATION_DESCRIPTORS=Object.freeze([SOURCE_BOUND_DESCRIPTOR,REJECTED_DESCRIPTOR,DESCRIPTOR]);
+export const reviewRemediationDescriptorForClass=recoveryClass=>REMEDIATION_DESCRIPTORS.find(descriptor=>descriptor.recoveryClass===recoveryClass)||null;
+export const reviewRemediationDescriptor=task=>REMEDIATION_DESCRIPTORS.find(descriptor=>task?.metadata?.[descriptor.historyKey]!==undefined||task?.metadata?.activeContinuation?.recoveryClass===descriptor.recoveryClass)||null;
 const SHA=/^[a-f0-9]{40}$/,HASH=/^[a-f0-9]{64}$/,ID=/^[a-z0-9][a-z0-9_-]{0,79}$/i,WORKER=/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const same=(a,b)=>recoveryHash(a)===recoveryHash(b),ordinal=step=>Number.parseInt(step?.stepId,10);
 const blobHash=content=>createHash("sha1").update(`blob ${Buffer.byteLength(content,"utf8")}\0`).update(content).digest("hex");
@@ -100,13 +106,14 @@ export async function recoverReviewRemediation(options){
 
 // Validate a rejected generation as immutable history, never revive its authority.
 // Its original read/runtime bindings are checked at the recorded execution time.
-function rejectedReviewSource(task,steps){
-  const history=task.metadata?.reviewRemediationHistory,predecessor=history?.[0],boundary=task.metadata?.reviewRemediationBoundary;
-  requireProof(history?.length===1&&predecessor?.recoveryClass===REVIEW_REMEDIATION_CLASS&&predecessor.authorizationConsumed===true&&predecessor.consumed===true&&predecessor.result==="failed"&&predecessor.planningClaimed===true&&!predecessor.planHash&&!predecessor.planGenerationId&&!predecessor.afterEntries,"consumed_rejected_review_predecessor");
+function rejectedReviewSource(task,steps,sourceDescriptor=DESCRIPTOR){
+  const history=task.metadata?.[sourceDescriptor.historyKey],predecessor=history?.[0],boundary=task.metadata?.[sourceDescriptor.boundaryKey];
+  const rejectionPredicate=sourceDescriptor===REJECTED_DESCRIPTOR?"source_bound_behavioral_coverage":"complete_behavioral_coverage";
+  requireProof(history?.length===1&&predecessor?.recoveryClass===sourceDescriptor.recoveryClass&&predecessor.authorizationConsumed===true&&predecessor.consumed===true&&predecessor.result==="failed"&&predecessor.planningClaimed===true&&!predecessor.planHash&&!predecessor.planGenerationId&&!predecessor.afterEntries,"consumed_rejected_review_predecessor");
   requireProof(predecessor.workerBindingState==="bound"&&WORKER.test(predecessor.workerId||"")&&Array.isArray(predecessor.rejectedPriorWorkerIds)&&!predecessor.rejectedPriorWorkerIds.includes(predecessor.workerId)&&same(predecessor.claimedStepIds,predecessor.readStepIds),"rejected_source_worker_and_read_reservations");
   const failed=steps.find(step=>step.stepId===predecessor.planStepId),diagnostics=failed?.result?.diagnostics,evidence=diagnostics?.rejectedPlanEvidence;
   requireProof(task.status==="blocked"&&task.currentPhase==="read_files"&&task.currentStep===predecessor.activeContinuation.startStep+8&&task.errorCode==="review_remediation_precondition_failed"&&task.repairIteration===3&&task.repairIteration===predecessor.repairIteration&&!task.leaseOwner&&!task.leaseToken&&!task.metadata.localHandoff&&!task.approvalState,"rejected_review_plan_boundary");
-  requireProof(failed?.taskId===task.id&&failed.stepType==="plan_repair"&&failed.status==="failed"&&failed.attempt===1&&HASH.test(failed.operationFingerprint||"")&&failed.errorCode===task.errorCode&&diagnostics?.predicate==="complete_behavioral_coverage"&&diagnostics.mutationApplied===false&&same(failed.input,task.metadata.steps[predecessor.activeContinuation.startStep+8]?.input)&&!steps.some(step=>ordinal(step)>ordinal(failed)),"exact_rejected_plan_execution");
+  requireProof(failed?.taskId===task.id&&failed.stepType==="plan_repair"&&failed.status==="failed"&&failed.attempt===1&&HASH.test(failed.operationFingerprint||"")&&failed.errorCode===task.errorCode&&diagnostics?.predicate===rejectionPredicate&&diagnostics.mutationApplied===false&&same(failed.input,task.metadata.steps[predecessor.activeContinuation.startStep+8]?.input)&&!steps.some(step=>ordinal(step)>ordinal(failed)),"exact_rejected_plan_execution");
   // Reproduce the original worker's operation identity from its retained input;
   // this legacy digest deliberately uses that producer's JSON representation.
   const operationFingerprint=createHash("sha256").update(JSON.stringify([task.id,task.currentStep,failed.stepType,failed.input,task.currentCommit])).digest("hex");
@@ -116,7 +123,7 @@ function rejectedReviewSource(task,steps){
   requireProof(same(boundary,expectedBoundary)&&same(predecessor.boundary,boundary)&&same(task.metadata.activeContinuation,predecessor.activeContinuation),"rejected_plan_decision_boundary");
   const executionTime=Date.parse(failed.startedAt),completed=Date.parse(failed.completedAt),stopped=Date.parse(predecessor.completedAt);
   requireProof(Number.isFinite(executionTime)&&completed>=executionTime&&stopped>=executionTime&&executionTime>=Date.parse(predecessor.activeContinuation.runtimeStartedAt)&&completed<=Date.parse(predecessor.activeContinuation.runtimeDeadline)&&stopped<=Date.parse(predecessor.activeContinuation.runtimeDeadline),"historical_rejection_runtime");
-  const projected=structuredClone(task);projected.status="running";projected.metadata.reviewRemediationHistory[0].consumed=false;
+  const projected=structuredClone(task);projected.status="running";projected.metadata[sourceDescriptor.historyKey][0].consumed=false;
   const historicalSteps=steps.filter(step=>step!==failed);
   let source;
   try{source=validateReviewRemediationReadEvidence(projected,historicalSteps,()=>new Date(executionTime));}catch(error){requireProof(false,`rejected_source_proof:${error.safeDiagnostics?.predicate||error.code}`);}
@@ -125,14 +132,24 @@ function rejectedReviewSource(task,steps){
 }
 
 export async function describeRejectedReviewPlanContinuation(options){
+  return describeRejectedRemediation(options,REJECTED_DESCRIPTOR,DESCRIPTOR);
+}
+
+// A distinct authority for a consumed rejected-plan continuation. This does
+// not accept arbitrary planner failures or revive either predecessor approval.
+export async function describeSourceBoundReviewReplan(options){
+  return describeRejectedRemediation(options,SOURCE_BOUND_DESCRIPTOR,REJECTED_DESCRIPTOR);
+}
+
+async function describeRejectedRemediation(options,descriptor,sourceDescriptor){
   const{taskId=options.task?.id,input,actor,storage,ownerId,repository,approvedBranch,runtimeVersion,verifyRemote}=options,task=options.task||await options.runtime.get(taskId),steps=options.steps||await options.runtime.steps(taskId);
   requireProof(keys(input,["expectedVersion","planHash","runtimeVersion","workspaceProof","workspaceProofSignature","review","approvalId"])&&Number.isInteger(input.expectedVersion)&&HASH.test(input.planHash||"")&&SHA.test(runtimeVersion||"")&&input.runtimeVersion===runtimeVersion,"request_identity");
   const proof=input.workspaceProof;
   requireProof(keys(proof,["taskId","expectedVersion","runtimeVersion","workspace"])&&actor?.actorType==="scoped_local_worker"&&same(actor.workspaceProof,proof)&&proof.taskId===taskId&&proof.expectedVersion===input.expectedVersion&&proof.runtimeVersion===runtimeVersion,"authenticated_workspace_proof");
-  requireProof(task?.id===taskId&&task.taskType==="self_development"&&task.stateVersion===input.expectedVersion&&!task.metadata?.[REJECTED_DESCRIPTOR.historyKey]?.length&&task.branch===approvedBranch&&task.metadata?.selfDevelopment?.repository===repository&&SHA.test(task.currentCommit||"")&&task.currentCommit===task.startingCommit,"single_use_rejected_plan_identity");
-  const{predecessor,failed,sourceProof}=rejectedReviewSource(task,steps);
+  requireProof(task?.id===taskId&&task.taskType==="self_development"&&task.stateVersion===input.expectedVersion&&!task.metadata?.[descriptor.historyKey]?.length&&task.branch===approvedBranch&&task.metadata?.selfDevelopment?.repository===repository&&SHA.test(task.currentCommit||"")&&task.currentCommit===task.startingCommit,"single_use_rejected_plan_identity");
+  const{predecessor,failed,sourceProof}=rejectedReviewSource(task,steps,sourceDescriptor);
   const oldApproval=await storage.getApproval(predecessor.approvalId,ownerId);
-  requireProof(oldApproval?.ownerId===ownerId&&oldApproval.projectId===task.projectId&&oldApproval.runId===task.id&&oldApproval.status==="approved"&&oldApproval.tool===REVIEW_REMEDIATION_TOOL&&same(oldApproval.arguments,predecessor.approvalArguments),"consumed_review_approval");
+  requireProof(oldApproval?.ownerId===ownerId&&oldApproval.projectId===task.projectId&&oldApproval.runId===task.id&&oldApproval.status==="approved"&&oldApproval.tool===sourceDescriptor.tool&&same(oldApproval.arguments,predecessor.approvalArguments),"consumed_review_approval");
   const entries=structuredClone(predecessor.beforeEntries),requiredPaths=structuredClone(predecessor.requiredPaths),review=structuredClone(predecessor.review),reviewHash=predecessor.reviewHash,sourcePlan=task.metadata.selfDevelopmentImplementationPlan;
   requireProof(input.planHash===predecessor.sourcePlanHash&&same(input.review,review)&&same(sourcePlan,predecessor.sourcePlanSnapshot),"immutable_rejected_review_binding");
   const workspace=proof.workspace;
@@ -141,12 +158,16 @@ export async function describeRejectedReviewPlanContinuation(options){
   const product=await verifyRemote({repository,branch:task.branch,requiredAncestors:[task.currentCommit]}),control=await verifyRemote({repository,branch:"stage13/control-plane-approved-delivery-runtime",requiredAncestors:[predecessor.runtimeVersion,runtimeVersion]});
   requireProof(product?.currentTip===task.currentCommit&&product.ancestors?.[task.currentCommit]===true,"live_product_tip");requireProof(control?.currentTip===runtimeVersion&&control.ancestors?.[runtimeVersion]===true&&control.ancestors?.[predecessor.runtimeVersion]===true,"runtime_transition");
   const sourceApply=steps.find(step=>step.stepId===predecessor.sourceApplyStepId),sourceFocused=steps.find(step=>step.stepId===predecessor.sourceFocusedStepId),sourceFull=steps.find(step=>step.stepId===predecessor.sourceFullStepId);
-  const approvalArguments={taskId,projectId:task.projectId,expectedVersion:task.stateVersion,repository,branch:task.branch,currentCommit:task.currentCommit,workspaceRoot:predecessor.workspaceRoot,runtimeVersion,sourcePlanHash:sourcePlan.planHash,sourcePlanGenerationId:sourcePlan.provenance.generationId,sourcePlanSnapshotHash:recoveryHash(sourcePlan),sourcePlanGenerationsHash:recoveryHash(task.metadata.implementationPlanGenerations),sourceApplyStepId:sourceApply.stepId,sourceApplyHash:recoveryHash(sourceApply),sourceFocusedStepId:sourceFocused.stepId,sourceFocusedHash:recoveryHash(sourceFocused),sourceFullStepId:sourceFull.stepId,sourceFullHash:recoveryHash(sourceFull),sourceFullCounts:predecessor.sourceFullCounts,sourceFocusedCounts:predecessor.sourceFocusedCounts,predecessorGenerationId:predecessor.activeContinuation.generationId,predecessorAuthorityHash:recoveryHash(predecessor),workspaceProofHash:recoveryHash(proof),beforeEvidenceHash:recoveryHash(entries),mutationScopeHash:recoveryHash(requiredPaths),reviewHash,review,reviewSourceVersion:predecessor.fromStateVersion,rejectedPlanSource:sourceProof,repairIteration:task.repairIteration,consumedHistoriesHash:recoveryHash(immutableHistories(task,REJECTED_DESCRIPTOR)),maxRecoveries:1,maxReviewRemediations:1,maxProductMutations:1,maxApplyAttempts:1,maxFocusedTestRuns:1,maxFullTestRuns:1,maxAdditionalAttempts:0,runtimeMinutes:15,maxSteps:13};
+  const approvalArguments={taskId,projectId:task.projectId,expectedVersion:task.stateVersion,repository,branch:task.branch,currentCommit:task.currentCommit,workspaceRoot:predecessor.workspaceRoot,runtimeVersion,sourcePlanHash:sourcePlan.planHash,sourcePlanGenerationId:sourcePlan.provenance.generationId,sourcePlanSnapshotHash:recoveryHash(sourcePlan),sourcePlanGenerationsHash:recoveryHash(task.metadata.implementationPlanGenerations),sourceApplyStepId:sourceApply.stepId,sourceApplyHash:recoveryHash(sourceApply),sourceFocusedStepId:sourceFocused.stepId,sourceFocusedHash:recoveryHash(sourceFocused),sourceFullStepId:sourceFull.stepId,sourceFullHash:recoveryHash(sourceFull),sourceFullCounts:predecessor.sourceFullCounts,sourceFocusedCounts:predecessor.sourceFocusedCounts,predecessorGenerationId:predecessor.activeContinuation.generationId,predecessorAuthorityHash:recoveryHash(predecessor),workspaceProofHash:recoveryHash(proof),beforeEvidenceHash:recoveryHash(entries),mutationScopeHash:recoveryHash(requiredPaths),reviewHash,review,reviewSourceVersion:predecessor.reviewSourceVersion??predecessor.fromStateVersion,rejectedPlanSource:sourceProof,repairIteration:task.repairIteration,consumedHistoriesHash:recoveryHash(immutableHistories(task,descriptor)),maxRecoveries:1,maxReviewRemediations:1,maxProductMutations:1,maxApplyAttempts:1,maxFocusedTestRuns:1,maxFullTestRuns:1,maxAdditionalAttempts:0,runtimeMinutes:15,maxSteps:13};
   return{task,steps,predecessor,failed,sourceProof,sourceApply,sourceFocused,sourceFull,sourcePlan,entries,requiredPaths,review,reviewHash,proof,fullCounts:predecessor.sourceFullCounts,approvalArguments};
 }
 
 export async function recoverRejectedReviewPlanContinuation(options){
   return recoverBoundRemediation(options,await describeRejectedReviewPlanContinuation(options),REJECTED_DESCRIPTOR);
+}
+
+export async function recoverSourceBoundReviewReplan(options){
+  return recoverBoundRemediation(options,await describeSourceBoundReviewReplan(options),SOURCE_BOUND_DESCRIPTOR);
 }
 
 async function recoverBoundRemediation(options,state,descriptor){
@@ -157,7 +178,7 @@ async function recoverBoundRemediation(options,state,descriptor){
   const nextSteps=remediationSteps({taskId:task.id,fromStateVersion:task.stateVersion,repository:approvalArguments.repository,branch:task.branch,currentCommit:task.currentCommit,workspaceRoot:approvalArguments.workspaceRoot,runtimeVersion:options.runtimeVersion,sourcePlanStepId:predecessor.sourcePlanStepId,sourceApplyStepId:sourceApply.stepId,sourceApplyFingerprint:sourceApply.operationFingerprint,activeContinuation,requiredPaths,beforeEntries:entries,reviewHash,review});
   const record={recoveryClass:descriptor.recoveryClass,taskId:task.id,fromStateVersion:task.stateVersion,toStateVersion:task.stateVersion+1,approvalId:approval.id,approvalArguments,authorizationConsumed:true,consumed:false,maxRecoveries:1,maxReviewRemediations:1,maxProductMutations:1,maxApplyAttempts:1,maxFocusedTestRuns:1,maxFullTestRuns:1,maxAdditionalAttempts:0,repository:approvalArguments.repository,branch:task.branch,currentCommit:task.currentCommit,workspaceRoot:approvalArguments.workspaceRoot,runtimeVersion:options.runtimeVersion,requiredPaths,beforeEntries:entries,afterEntries:null,review,reviewHash,unresolvedFindingIds:review.findings.filter(item=>item.severity==="blocking").map(item=>item.id),sourcePlanHash:sourcePlan.planHash,sourcePlanSnapshot:structuredClone(sourcePlan),sourcePlanStepId:predecessor.sourcePlanStepId,sourceApplyStepId:sourceApply.stepId,sourceApplyFingerprint:sourceApply.operationFingerprint,sourceFocusedStepId:sourceFocused.stepId,sourceFullStepId:sourceFull.stepId,sourceFocusedCounts:approvalArguments.sourceFocusedCounts,sourceFullCounts:state.fullCounts,sourcePlanGenerations:structuredClone(task.metadata.implementationPlanGenerations),sourceActivePlanGeneration:task.metadata.activeImplementationPlanGeneration,predecessorStepProofs:steps.map(step=>({stepId:step.stepId,stepHash:recoveryHash(step)})),immutableHistoryHashes:immutableHistories(task,descriptor),historicalPlannedStepsHash:recoveryHash(task.metadata.steps),historicalContinuationsHash:recoveryHash(task.metadata.continuationHistory),historicalContinuationsCount:task.metadata.continuationHistory.length,successorStepsHash:recoveryHash(nextSteps),readStepIds:requiredPaths.map((path,index)=>`${base+index+1}:read_files`),planStepId:`${base+9}:plan_repair`,validateStepId:`${base+10}:validate_patch`,applyStepId:`${base+11}:apply_patch`,focusedStepId:`${base+12}:run_focused_tests`,fullTestStepId:`${base+13}:run_full_tests`,planHash:null,planGenerationId:null,filesHash:null,fullPlanHash:null,focusedTests:null,coverageHash:null,planningClaimed:false,claimedStepIds:[],repairIteration:task.repairIteration,retryCount:task.retryCount,maxRetries:task.maxRetries,maxRepairIterations:task.metadata.maxRepairIterations,workerBindingState:"awaiting_worker_bind",workerId:null,rejectedPriorWorkerIds:[...new Set([predecessor.workerId,...predecessor.rejectedPriorWorkerIds])],activeContinuation,recoveredAt:now,...(state.sourceProof?{rejectedPlanSource:state.sourceProof,reviewSourceVersion:approvalArguments.reviewSourceVersion}: {})};
   const updated=await storage.updateAutonomyTask(task.id,ownerId,{status:"queued",currentStep:base,currentPhase:"read_files",nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,blockedReason:null,checkpoint:{...task.checkpoint,pendingStep:null},metadata:{...task.metadata,steps:[...task.metadata.steps,...nextSteps],activeContinuation,continuationHistory:[...task.metadata.continuationHistory,activeContinuation],[descriptor.historyKey]:[record],requiredCapability:"repo_read_remote",autoDispatch:true}},task.stateVersion);
-  requireProof(updated,"recovery_compare_and_swap");await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:descriptor===REJECTED_DESCRIPTOR?"self_development_rejected_review_plan_continuation_recovered":"self_development_review_remediation_recovered",status:"queued",summary:"One owner-approved review remediation; original findings require fresh review after testing. No delivery or additional repair extension.",metadata:record});
+  requireProof(updated,"recovery_compare_and_swap");await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:descriptor===SOURCE_BOUND_DESCRIPTOR?"self_development_source_bound_review_replan_recovered":descriptor===REJECTED_DESCRIPTOR?"self_development_rejected_review_plan_continuation_recovered":"self_development_review_remediation_recovered",status:"queued",summary:"One owner-approved review remediation; original findings require fresh review after testing. No delivery or additional repair extension.",metadata:record});
   return{task:updated,recovery:record,idempotent:false};
 }
 
@@ -171,21 +192,22 @@ function baseEvidence(task,steps,clock){
   requireProof(same(record.unresolvedFindingIds,record.review.findings.filter(item=>item.severity==="blocking").map(item=>item.id)),"findings_require_fresh_review");
   const expectedBinding={taskId:task.id,projectId:task.projectId,expectedVersion:record.fromStateVersion,repository:record.repository,branch:record.branch,currentCommit:record.currentCommit,workspaceRoot:record.workspaceRoot,runtimeVersion:record.runtimeVersion,sourcePlanHash:record.sourcePlanHash,sourcePlanSnapshotHash:recoveryHash(record.sourcePlanSnapshot),repairIteration:record.repairIteration,consumedHistoriesHash:recoveryHash(record.immutableHistoryHashes),maxRecoveries:1,maxReviewRemediations:1,maxProductMutations:1,maxApplyAttempts:1,maxFocusedTestRuns:1,maxFullTestRuns:1,maxAdditionalAttempts:0,runtimeMinutes:15,maxSteps:13};
   requireProof(Object.entries(expectedBinding).every(([key,value])=>same(record.approvalArguments[key],value))&&["maxRecoveries","maxReviewRemediations","maxProductMutations","maxApplyAttempts","maxFocusedTestRuns","maxFullTestRuns"].every(key=>record[key]===1)&&record.maxAdditionalAttempts===0,"bounded_owner_authority");
-  const predecessor=descriptor===REJECTED_DESCRIPTOR?task.metadata.reviewRemediationHistory?.[0]:task.metadata.failedFullTestRetryHistory?.[0],sourceApply=steps.find(step=>step.stepId===record.sourceApplyStepId),sourceFocused=steps.find(step=>step.stepId===record.sourceFocusedStepId),sourceFull=steps.find(step=>step.stepId===record.sourceFullStepId),sourceBinding={sourcePlanGenerationId:record.sourcePlanSnapshot?.provenance?.generationId,sourcePlanGenerationsHash:recoveryHash(record.sourcePlanGenerations),sourceApplyStepId:record.sourceApplyStepId,sourceApplyHash:recoveryHash(sourceApply),sourceFocusedStepId:record.sourceFocusedStepId,sourceFocusedHash:recoveryHash(sourceFocused),sourceFullStepId:record.sourceFullStepId,sourceFullHash:recoveryHash(sourceFull),sourceFocusedCounts:record.sourceFocusedCounts,sourceFullCounts:record.sourceFullCounts,predecessorGenerationId:predecessor?.activeContinuation?.generationId,predecessorAuthorityHash:recoveryHash(predecessor)};
+  const sourceDescriptor=descriptor===SOURCE_BOUND_DESCRIPTOR?REJECTED_DESCRIPTOR:DESCRIPTOR;
+  const predecessor=descriptor!==DESCRIPTOR?task.metadata[sourceDescriptor.historyKey]?.[0]:task.metadata.failedFullTestRetryHistory?.[0],sourceApply=steps.find(step=>step.stepId===record.sourceApplyStepId),sourceFocused=steps.find(step=>step.stepId===record.sourceFocusedStepId),sourceFull=steps.find(step=>step.stepId===record.sourceFullStepId),sourceBinding={sourcePlanGenerationId:record.sourcePlanSnapshot?.provenance?.generationId,sourcePlanGenerationsHash:recoveryHash(record.sourcePlanGenerations),sourceApplyStepId:record.sourceApplyStepId,sourceApplyHash:recoveryHash(sourceApply),sourceFocusedStepId:record.sourceFocusedStepId,sourceFocusedHash:recoveryHash(sourceFocused),sourceFullStepId:record.sourceFullStepId,sourceFullHash:recoveryHash(sourceFull),sourceFocusedCounts:record.sourceFocusedCounts,sourceFullCounts:record.sourceFullCounts,predecessorGenerationId:predecessor?.activeContinuation?.generationId,predecessorAuthorityHash:recoveryHash(predecessor)};
   requireProof(Object.entries(sourceBinding).every(([key,value])=>same(record.approvalArguments[key],value))&&record.sourcePlanStepId===predecessor?.sourcePlanStepId&&record.sourceApplyFingerprint===sourceApply?.operationFingerprint&&record.sourceActivePlanGeneration===record.sourcePlanSnapshot?.provenance?.generationId,"immutable_source_review_binding");
-  if(descriptor===REJECTED_DESCRIPTOR){
-    requireProof(same(record.rejectedPlanSource,record.approvalArguments.rejectedPlanSource)&&record.reviewSourceVersion===predecessor.fromStateVersion&&record.reviewSourceVersion===record.approvalArguments.reviewSourceVersion&&record.rejectedPlanSource?.sourceVersion===record.fromStateVersion,"approved_rejected_source_binding");
+  if(descriptor!==DESCRIPTOR){
+    requireProof(same(record.rejectedPlanSource,record.approvalArguments.rejectedPlanSource)&&record.reviewSourceVersion===(predecessor.reviewSourceVersion??predecessor.fromStateVersion)&&record.reviewSourceVersion===record.approvalArguments.reviewSourceVersion&&record.rejectedPlanSource?.sourceVersion===record.fromStateVersion,"approved_rejected_source_binding");
     const projected=structuredClone(task);
     projected.status="blocked";projected.stateVersion=record.fromStateVersion;projected.currentStep=predecessor.activeContinuation.startStep+8;projected.currentPhase="read_files";projected.errorCode="review_remediation_precondition_failed";
     projected.leaseOwner=null;projected.leaseToken=null;projected.approvalState=null;
-    delete projected.metadata[REJECTED_DESCRIPTOR.historyKey];delete projected.metadata[REJECTED_DESCRIPTOR.boundaryKey];
+    delete projected.metadata[descriptor.historyKey];delete projected.metadata[descriptor.boundaryKey];
     projected.metadata.localHandoff=null;projected.metadata.activeContinuation=predecessor.activeContinuation;
     projected.metadata.continuationHistory=projected.metadata.continuationHistory.slice(0,record.historicalContinuationsCount);
     projected.metadata.steps=projected.metadata.steps.slice(0,active.startStep);
     projected.metadata.selfDevelopmentImplementationPlan=record.sourcePlanSnapshot;
     projected.metadata.implementationPlanGenerations=record.sourcePlanGenerations;
     projected.metadata.activeImplementationPlanGeneration=record.sourceActivePlanGeneration;
-    const historical=rejectedReviewSource(projected,steps.filter(step=>ordinal(step)<=active.startStep));
+    const historical=rejectedReviewSource(projected,steps.filter(step=>ordinal(step)<=active.startStep),sourceDescriptor);
     requireProof(same(historical.sourceProof,record.rejectedPlanSource),"immutable_rejected_source_proof");
   }
   requireProof(Array.isArray(record.predecessorStepProofs)&&new Set(record.predecessorStepProofs.map(item=>item.stepId)).size===record.predecessorStepProofs.length&&steps.filter(step=>ordinal(step)<=active.startStep).length===record.predecessorStepProofs.length&&record.predecessorStepProofs.every(proof=>{const matches=steps.filter(step=>step.stepId===proof.stepId);return matches.length===1&&recoveryHash(matches[0])===proof.stepHash;}),"immutable_predecessor_steps");
@@ -213,24 +235,12 @@ function completedReads(task,steps,record,requireAll){
   return{reads,readStepIds,baselines};
 }
 
-export function validateReviewRemediationPlanCoverage(plan,{review,requiredPaths,reads}){
-  requireProof(Array.isArray(plan?.files)&&plan.files.length>0&&plan.files.length<=8&&new Set(plan.files.map(file=>file?.path)).size===plan.files.length&&plan.files.every(file=>file&&requiredPaths.includes(file.path)&&file.operation==="replace"&&typeof file.content==="string"),"ninth_file_or_operation_forbidden",true);
-  const focusedTests=plan.focusedTests?.map(item=>item?.path);
-  requireProof(Array.isArray(focusedTests)&&focusedTests.length>0&&focusedTests.length<=4&&new Set(focusedTests).size===focusedTests.length&&plan.focusedTests.every(item=>item.kind==="existing"&&requiredPaths.includes(item.path)&&/^test\/.+\.test\.js$/.test(item.path)&&reads.has(item.path)),"focused_scope_authorization",true);
-  const coverage=plan.reviewCoverage,contents=new Map(reads);for(const file of plan.files)contents.set(file.path,file.content);
-  requireProof(Array.isArray(coverage)&&coverage.length===review.acceptanceConstraints.length&&new Set(coverage.map(item=>item?.constraintId)).size===coverage.length,"complete_behavioral_coverage");
-  for(const constraint of review.acceptanceConstraints){const item=coverage.find(mapping=>mapping?.constraintId===constraint.id),source=item&&contents.get(item.testPath);
-    requireProof(keys(item,["constraintId","findingIds","testPath","testName","sourceExcerpt","sourceHash","stimulus","observable","assertion"])&&same(item.findingIds,constraint.findingIds)&&focusedTests.includes(item.testPath)&&text(item.testName,300)&&text(item.sourceExcerpt,12000)&&HASH.test(item.sourceHash||"")&&item.sourceHash===canonicalContentHash(source)&&source.includes(item.sourceExcerpt)&&item.sourceExcerpt.includes(item.testName)&&text(item.stimulus,1500)&&text(item.observable,500)&&text(item.assertion,2000)&&item.sourceExcerpt.includes(item.assertion)&&/\b(?:assert\s*[.(]|expect\s*\()/.test(item.assertion),"source_bound_behavioral_coverage");
-    const escaped=item.testName.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),namedTest=new RegExp("\\b(?:test|it)\\s*\\(\\s*(['\"`])"+escaped+"\\1"),observable=/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]\r\n]+\])*$/;
-    requireProof(namedTest.test(item.sourceExcerpt)&&observable.test(item.observable)&&item.sourceExcerpt.includes(item.stimulus)&&item.sourceExcerpt.indexOf(item.stimulus)<item.sourceExcerpt.indexOf(item.assertion)&&item.assertion.includes(item.observable)&&item.stimulus!==item.assertion&&!/\bassert\.(?:match|doesNotMatch)\s*\(\s*(?:source|sourceText|code|content)\b/.test(item.assertion)&&!new RegExp("\\b(?:const|let|var)\\s+"+item.observable.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\s*=\\s*(?:0|false|null)\\s*;?$").test(item.stimulus.trim()),"observable_behavioral_test_linkage");
-  }
-  // This binds inspectable behavioral claims, not semantic success. The next
-  // review boundary retains every blocking finding unresolved for fresh review.
-  return{coverageHash:recoveryHash(coverage),focusedTests};
+export function validateReviewRemediationPlanCoverage(plan,options){
+  return validateReviewCoverageBindings(plan,options);
 }
 
 function planBinding(task,plan,record,reads,readStepIds){
-  const coverage=validateReviewRemediationPlanCoverage(plan,{review:record.review,requiredPaths:record.requiredPaths,reads});
+  const coverage=validateReviewRemediationPlanCoverage(plan,{review:record.review,requiredPaths:record.requiredPaths,reads,context:{taskId:task.id,stateVersion:task.stateVersion,continuationGenerationId:record.activeContinuation.generationId,planGenerationId:plan.provenance?.generationId,planFingerprint:recoveryHash(plan)}});
   requireProof(plan.files.every(file=>file.expectedContent===reads.get(file.path)),"exact_current_mutation_preconditions");
   const expectedHash=recoveryHash({files:plan.files.map(({expectedContent,...file})=>file),focusedTests:plan.focusedTests,acceptanceMapping:plan.acceptanceMapping,riskLevel:plan.riskLevel,reviewCoverage:plan.reviewCoverage});
   requireProof(HASH.test(plan.planHash||"")&&plan.planHash===expectedHash&&plan.provenance?.taskId===task.id&&plan.provenance.currentCommit===task.currentCommit&&plan.provenance.reviewRemediation===true&&plan.provenance.reviewHash===record.reviewHash&&plan.provenance.continuationGenerationId===record.activeContinuation.generationId,"remediation_plan_generation");
