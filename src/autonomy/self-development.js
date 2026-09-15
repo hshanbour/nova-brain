@@ -6,7 +6,7 @@ import {describeExecutionScopeRecovery,recoverExecutionScope,EXECUTION_SCOPE_REC
 import {describeFullTestScopeRecovery,recoverFullTestScope,FULL_TEST_SCOPE_RECOVERY_TOOL,describeFailedFullTestRetry,recoverFailedFullTestRetry,FAILED_FULL_TEST_RETRY_TOOL} from "./full-test-scope-recovery.js";
 import {describeReviewRemediation,recoverReviewRemediation,REVIEW_REMEDIATION_TOOL,describeRejectedReviewPlanContinuation,recoverRejectedReviewPlanContinuation,REJECTED_REVIEW_PLAN_CONTINUATION_TOOL,describeSourceBoundReviewReplan,recoverSourceBoundReviewReplan,SOURCE_BOUND_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
 import {recoveryHash} from "./failed-local-read-recovery.js";
-import {describeEvidenceBoundReviewReplan,recoverEvidenceBoundReviewReplan,EVIDENCE_BOUND_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
+import {describeEvidenceBoundReviewReplan,recoverEvidenceBoundReviewReplan,EVIDENCE_BOUND_REVIEW_REPLAN_TOOL,describeImplementationContentReviewReplan,recoverImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -2802,7 +2802,18 @@ export function createSelfDevelopmentService({
     return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
   }
   const recoverEvidenceBoundReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverEvidenceBoundReviewReplan(planningScopeOptions(taskId,input,actor)));
+  async function requestImplementationContentReviewReplanApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeImplementationContentReviewReplan(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL,reason:"Separate owner approval is required for one implementation-content review replan after the exact five-file empty-content rejection. Nova alone may reread the unchanged eight-file scope, generate complete literal replacements once, validate, apply once, run focused tests and one full suite, then stop for fresh independent review. No repair extension, counter reset, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_implementation_content_review_replan_approval_requested",status:"waiting",summary:"One exact implementation-content review successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverImplementationContentReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverImplementationContentReviewReplan(planningScopeOptions(taskId,input,actor)));
   return Object.freeze({
+    requestImplementationContentReviewReplanApproval,
+    recoverImplementationContentReviewReplan:recoverImplementationContentReviewReplanSuccessor,
     requestEvidenceBoundReviewReplanApproval,
     recoverEvidenceBoundReviewReplan:recoverEvidenceBoundReviewReplanSuccessor,
     requestSourceBoundReviewReplanApproval,

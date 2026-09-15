@@ -1058,6 +1058,13 @@ export function createApi({
         const rejectedReviewPlanContinuation=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-rejected-review-plan-continuation|recover-rejected-review-plan-continuation)$/);
         const sourceBoundReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-source-bound-review-replan|recover-source-bound-review-replan)$/);
         const evidenceBoundReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-evidence-bound-review-replan|recover-evidence-bound-review-replan)$/);
+        const implementationContentReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-implementation-content-review-replan|recover-implementation-content-review-replan)$/);
+        if(selfDevelopment&&implementationContentReviewReplan&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=implementationContentReviewReplan[2]==="request-implementation-content-review-replan"?"requestImplementationContentReviewReplanApproval":"recoverImplementationContentReviewReplan";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(implementationContentReviewReplan[1]),input,actor));return;
+        }
         if(selfDevelopment&&evidenceBoundReviewReplan&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);
           const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
