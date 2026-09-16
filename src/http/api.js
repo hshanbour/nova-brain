@@ -263,6 +263,20 @@ export function createApi({
         if (
           developerWorkspaceHandoff &&
           request.method === "POST" &&
+          pathname === "/api/admin/developer-sessions/real/microphone/verify-workspace"
+        ) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          sendJson(response, 201, {
+            session: await developerWorkspaceHandoff.verify(
+              await readJsonBody(request, config.developerWorkspaceHandoffMaxBodyBytes || 3 * 1024 * 1024),
+            ),
+          });
+          return;
+        }
+        if (
+          developerWorkspaceHandoff &&
+          request.method === "POST" &&
           pathname === "/api/admin/developer-sessions/real/microphone/start"
         ) {
           await ready();

@@ -60,9 +60,9 @@ function environment(overrides = {}) {
   return { VERCEL_ENV: "preview", VERCEL_GIT_COMMIT_REF: REAL_DEVELOPER_PREVIEW_BRANCH, OPENAI_API_KEY: SECRET, OPENAI_MODEL: "gpt-5.2-codex", ...overrides };
 }
 
-function serviceFixture({ providerScript } = {}) {
+function serviceFixture({ providerScript, providerOverride } = {}) {
   const storage = createInMemoryStorage();
-  const provider = createDeterministicDeveloperProvider(providerScript || [{ providerSessionId: "provider-real-1", status: "running", changedPaths: [] }]);
+  const provider = providerOverride || createDeterministicDeveloperProvider(providerScript || [{ providerSessionId: "provider-real-1", status: "running", changedPaths: [] }]);
   const configurations = [];
   const service = createDeveloperWorkspaceHandoff({
     environment: environment(), storage, ownerId: OWNER,
@@ -73,10 +73,10 @@ function serviceFixture({ providerScript } = {}) {
   return { storage, provider, configurations, service };
 }
 
-function request({ body, authorized = true }) {
+function request({ body, authorized = true, url = "/api/admin/developer-sessions/real/microphone/start" }) {
   const stream = Readable.from([JSON.stringify(body)]);
   stream.method = "POST";
-  stream.url = "/api/admin/developer-sessions/real/microphone/start";
+  stream.url = url;
   stream.headers = { "content-type": "application/json", ...(authorized ? { authorization: `Bearer ${ADMIN}` } : {}) };
   return stream;
 }
@@ -86,12 +86,12 @@ function response() {
   return { statusCode: 0, setHeader() {}, end(value = "") { body += value; }, get json() { return body ? JSON.parse(body) : null; } };
 }
 
-function api(service) {
+function api(service, developerSessionSmoke = null) {
   return createApi({
     agent: { tools: { list: () => [] }, run: async () => ({}) },
     config: { allowedOrigins: [], maxBodyBytes: 64 * 1024, developerWorkspaceHandoffMaxBodyBytes: 3 * 1024 * 1024, workerAdminToken: ADMIN },
     storage: { provider: "memory", durable: false }, initialize: async () => {}, ownerId: OWNER,
-    developerWorkspaceHandoff: service, logger: { info() {}, error() {} },
+    developerWorkspaceHandoff: service, developerSessionSmoke, logger: { info() {}, error() {} },
   });
 }
 
@@ -128,6 +128,130 @@ test("real start materializes official inline environment files and pre-agent in
   assert.ok(hosted.files.some((file) => file.path === "/workspace/.nova-handoff/manifest.json"));
   assert.match(hosted.setup_commands[0].command, /verify\.mjs/);
   assert.doesNotMatch(JSON.stringify(session), /dirty\\r|sk-test-secret/);
+});
+
+test("verification-only route materializes an immutable workspace and persists proof without starting engineering", async () => {
+  const calls = [];
+  const provider = {
+    name: "agents_api",
+    async start() { throw new Error("engineering start must not be called"); },
+    async verifyWorkspace(input) {
+      calls.push(structuredClone(input));
+      return {
+        providerSessionId: "provider-verification-1",
+        status: "completed",
+        result: {
+          sessionId: "provider-verification-1",
+          environmentId: "env-verification-1",
+          outcome: "workspace_integrity_verified",
+        },
+        changedPaths: [],
+      };
+    },
+  };
+  const handoff = await bundle();
+  const { service, configurations, storage } = serviceFixture({ providerOverride: provider });
+  const session = await service.verify(handoff);
+
+  assert.equal(session.status, "completed");
+  assert.equal(session.policy.dryRun, true);
+  assert.equal(session.policy.metadata.mode, "workspace_materialization_verification");
+  assert.equal(session.changedPaths.length, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].policy.goal.includes("Continue Nova's microphone repair"), false);
+  assert.equal(calls[0].policy.approvalPolicy.allowPush, false);
+  assert.equal(calls[0].policy.approvalPolicy.allowDeploy, false);
+  assert.equal(configurations[0].environment.network.access, "disabled");
+  const verifier = configurations[0].environment.files.find((file) => file.path.endsWith("/verify.mjs"));
+  const source = Buffer.from(verifier.data, "base64").toString();
+  assert.match(source, /chmod\(join\(root,path\),0o400\)/);
+  assert.doesNotMatch(source, /0o600/);
+  assert.equal((await storage.getDeveloperSession("real-session-1", OWNER)).result.outcome, "workspace_integrity_verified");
+});
+
+test("protected verification route is authenticated, distinct from start and accepts only exact bundles", async () => {
+  const calls = [];
+  const service = {
+    async verify(value) { calls.push({ method: "verify", value }); return { id: "verification-1", status: "completed" }; },
+    async start(value) { calls.push({ method: "start", value }); return { id: "start-1", status: "running" }; },
+  };
+  const application = api(service);
+  const handoff = await bundle();
+  const denied = response();
+  await application.handle(request({ body: handoff, authorized: false, url: "/api/admin/developer-sessions/real/microphone/verify-workspace" }), denied);
+  assert.equal(denied.statusCode, 401);
+  assert.equal(calls.length, 0);
+
+  const verified = response();
+  await application.handle(request({ body: handoff, url: "/api/admin/developer-sessions/real/microphone/verify-workspace" }), verified);
+  assert.equal(verified.statusCode, 201);
+  assert.equal(calls[0].method, "verify");
+
+  const started = response();
+  await application.handle(request({ body: handoff }), started);
+  assert.equal(started.statusCode, 201);
+  assert.equal(calls[1].method, "start");
+});
+
+test("verification route remains distinct from the existing smoke route", async () => {
+  const calls = [];
+  const workspace = {
+    async verify() { calls.push("workspace.verify"); return { id: "verification-1", status: "completed" }; },
+  };
+  const smoke = {
+    async start() { calls.push("smoke.start"); return { id: "smoke-1", status: "running" }; },
+  };
+  const application = api(workspace, smoke);
+  const verified = response();
+  await application.handle(request({ body: await bundle(), url: "/api/admin/developer-sessions/real/microphone/verify-workspace" }), verified);
+  assert.equal(verified.statusCode, 201);
+  const smoked = response();
+  await application.handle(request({ body: {}, url: "/api/admin/developer-sessions/smoke/start" }), smoked);
+  assert.equal(smoked.statusCode, 201);
+  assert.deepEqual(calls, ["workspace.verify", "smoke.start"]);
+});
+
+test("verification reads but cannot mutate the bound real-task state", async () => {
+  const durableTask = Object.freeze({ stateVersion: 451, status: "blocked", branch: REAL_DEVELOPER_BRANCH, currentCommit: REAL_DEVELOPER_BASE_SHA, repairIteration: 3 });
+  let reads = 0;
+  const provider = {
+    name: "agents_api",
+    async verifyWorkspace() {
+      return { providerSessionId: "provider-verification-1", status: "completed", result: { outcome: "workspace_integrity_verified" }, changedPaths: [] };
+    },
+  };
+  const storage = createInMemoryStorage();
+  const service = createDeveloperWorkspaceHandoff({
+    environment: environment(), storage, ownerId: OWNER, providerFactory: () => provider,
+    taskReader: async () => { reads += 1; return durableTask; },
+    idFactory: () => "verification-1",
+  });
+  await service.verify(await bundle());
+  assert.equal(reads, 1);
+  assert.deepEqual(durableTask, { stateVersion: 451, status: "blocked", branch: REAL_DEVELOPER_BRANCH, currentCommit: REAL_DEVELOPER_BASE_SHA, repairIteration: 3 });
+});
+
+test("verification rejects manifest drift and the wrong Preview without invoking the provider", async () => {
+  let providerCalls = 0;
+  const provider = {
+    name: "agents_api",
+    async verifyWorkspace() { providerCalls += 1; return { providerSessionId: "unexpected", status: "completed", result: {}, changedPaths: [] }; },
+  };
+  const original = await bundle();
+  const changed = structuredClone(original);
+  changed.files[0].data = Buffer.from("drift").toString("base64");
+  const { service } = serviceFixture({ providerOverride: provider });
+  await assert.rejects(() => service.verify(changed), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
+  assert.equal(providerCalls, 0);
+
+  const storage = createInMemoryStorage();
+  const wrongPreview = createDeveloperWorkspaceHandoff({
+    environment: environment({ VERCEL_GIT_COMMIT_REF: "main" }), storage, ownerId: OWNER,
+    providerFactory: () => provider,
+    taskReader: async () => ({ stateVersion: 451, status: "blocked", branch: REAL_DEVELOPER_BRANCH, currentCommit: REAL_DEVELOPER_BASE_SHA, repairIteration: 3 }),
+  });
+  await assert.rejects(() => wrongPreview.verify(original), (error) => error.code === "developer_workspace_preview_only");
+  assert.equal(providerCalls, 0);
 });
 
 test("tampered bytes, unexpected paths and caller scope widening fail closed", async () => {

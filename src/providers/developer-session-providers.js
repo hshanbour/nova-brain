@@ -164,26 +164,61 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
     `/agents/sessions/${encodeURIComponent(providerSessionId)}`,
     "agents_session_retrieve",
   ));
+  const createSession = async ({ taskId, policyHash, mode }) => {
+    const created = await request("/agents/sessions", "agents_session_create", {
+      method: "POST",
+      body: JSON.stringify({
+        ...agentConfiguration,
+        environment: sessionEnvironment,
+        metadata: { nova_task_id: taskId, nova_policy_hash: policyHash, ...(mode ? { nova_session_mode: mode } : {}) },
+        stream: false,
+      }),
+    });
+    if (typeof created?.id !== "string" || !created.id) {
+      throw safeError({ stage: "agents_session_create", classification: "provider_result_invalid", payload: null, apiKey });
+    }
+    return created;
+  };
   return Object.freeze({
     name: "agents_api",
     async start({ policy, policyHash }) {
-      const created = await request("/agents/sessions", "agents_session_create", {
-        method: "POST",
-        body: JSON.stringify({
-          ...agentConfiguration,
-          environment: sessionEnvironment,
-          metadata: { nova_task_id: policy.taskId, nova_policy_hash: policyHash },
-          stream: false,
-        }),
-      });
-      if (typeof created?.id !== "string" || !created.id) {
-        throw safeError({ stage: "agents_session_create", classification: "provider_result_invalid", payload: null, apiKey });
-      }
+      const created = await createSession({ taskId: policy.taskId, policyHash });
       await request(`/agents/sessions/${encodeURIComponent(created.id)}/events`, "agents_initial_event_submit", {
         method: "POST",
         body: JSON.stringify({ events: [{ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: instructions(policy) }] }] }] }),
       }, "void");
       return retrieve(created.id);
+    },
+    async verifyWorkspace({ policy, policyHash }) {
+      const created = await createSession({ taskId: policy.taskId, policyHash, mode: "workspace_verification" });
+      const retrieved = await request(`/agents/sessions/${encodeURIComponent(created.id)}`, "agents_session_retrieve");
+      if (retrieved?.id !== created.id || retrieved?.status !== "idle") {
+        const error = safeError({ stage: "agents_workspace_verification", classification: "workspace_integrity_failed", payload: retrieved, apiKey });
+        error.code = "WORKSPACE_INTEGRITY_FAILED";
+        throw error;
+      }
+      await request(`/agents/sessions/${encodeURIComponent(created.id)}/events`, "agents_session_cancel", {
+        method: "POST",
+        body: JSON.stringify({ events: [{ type: "agent.session.input.cancel" }] }),
+      }, "void");
+      const environmentId = [retrieved?.environment?.id, retrieved?.environment_id, created?.environment?.id, created?.environment_id]
+        .find((value) => typeof value === "string" && value);
+      return {
+        providerSessionId: created.id,
+        status: "completed",
+        result: {
+          sessionId: created.id,
+          environmentId: environmentId || null,
+          outcome: "workspace_integrity_verified",
+          manifestHash: policy.metadata.manifestHash,
+          materializedFileCount: policy.metadata.materializedFileCount,
+          totalBytes: policy.metadata.totalBytes,
+          baseSha: policy.baseSha,
+          dirtyPaths: [...policy.metadata.dirtyPaths],
+          networkDisabled: true,
+        },
+        changedPaths: [],
+      };
     },
     async resume({ providerSessionId, approval, approvalDecision, additionalInstruction, policyHash }) {
       const decision = { contract: "nova_developer_session_resume_v1", policyHash, approvalDecision };

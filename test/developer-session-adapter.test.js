@@ -178,6 +178,59 @@ test("void Agents event responses are accepted without JSON parsing", async () =
   assert.match(requests[1].url, /\/agents\/sessions\/managed-1\/events$/);
 });
 
+test("workspace verification creates, retrieves and cancels without submitting an engineering input", async () => {
+  const requests = [];
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agent: { model: "gpt-5.2-codex", instructions: "Perform no agent work." },
+    environment: { type: "openai_hosted", network: { access: "disabled" }, files: [] },
+    async fetchImpl(url, options = {}) {
+      requests.push({ url, options });
+      if (options.method === "POST" && url.endsWith("/agents/sessions")) {
+        return Response.json({ id: "verification-provider-1", status: "idle", environment: { id: "environment-1" } });
+      }
+      if (!options.method) return Response.json({ id: "verification-provider-1", status: "idle", environment: { id: "environment-1" } });
+      return new Response(null, { status: 200 });
+    },
+  });
+  const policy = microphoneDeveloperRequest({
+    dryRun: true,
+    metadata: { manifestHash: "a".repeat(64), materializedFileCount: 153, totalBytes: 1611766, dirtyPaths: MICROPHONE_ALLOWED_PATHS },
+  });
+  const result = await provider.verifyWorkspace({ policy, policyHash: "verification-policy" });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.result.outcome, "workspace_integrity_verified");
+  assert.equal(result.result.environmentId, "environment-1");
+  assert.equal(result.changedPaths.length, 0);
+  assert.equal(requests.length, 3);
+  assert.match(requests[0].url, /\/agents\/sessions$/);
+  assert.equal(requests[1].options.method, undefined);
+  assert.match(requests[2].url, /\/agents\/sessions\/verification-provider-1\/events$/);
+  const cancellation = JSON.parse(requests[2].options.body);
+  assert.deepEqual(cancellation.events, [{ type: "agent.session.input.cancel" }]);
+  assert.doesNotMatch(JSON.stringify(requests.map((item) => item.options.body || "")), /agent\.session\.input\.message|Continue Nova's microphone repair/);
+});
+
+test("workspace verification fails closed unless the hosted session is idle after setup", async () => {
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url, options = {}) {
+      if (options.method === "POST" && url.endsWith("/agents/sessions")) return Response.json({ id: "verification-provider-1", status: "idle" });
+      return Response.json({ id: "verification-provider-1", status: "failed", error: { message: "WORKSPACE_INTEGRITY_FAILED" } });
+    },
+  });
+  const policy = microphoneDeveloperRequest({
+    metadata: { manifestHash: "a".repeat(64), materializedFileCount: 1, totalBytes: 1, dirtyPaths: MICROPHONE_ALLOWED_PATHS },
+  });
+  await assert.rejects(
+    provider.verifyWorkspace({ policy, policyHash: "verification-policy" }),
+    (error) => error.code === "WORKSPACE_INTEGRITY_FAILED" && error.safeDiagnostics.stage === "agents_workspace_verification",
+  );
+});
+
 test("response-parse diagnostics survive adapter persistence without response or secret leakage", async () => {
   const store = persistentTestStore();
   const provider = createAgentsApiDeveloperProvider({

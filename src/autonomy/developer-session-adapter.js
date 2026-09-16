@@ -168,6 +168,35 @@ export function createDeveloperSessionAdapter({ providers, sessionStore, default
   };
 
   return Object.freeze({
+    async verifyDeveloperWorkspace(input) {
+      const policy = normalizeRequest(input);
+      if (!policy.dryRun) fail("developer_provider_mutation_forbidden", "Workspace verification must be a dry-run session.");
+      const providerName = input.provider || defaultProvider;
+      const provider = providers[providerName];
+      if (!provider || typeof provider.verifyWorkspace !== "function") {
+        fail("developer_provider_unavailable", `Developer provider ${providerName} does not support workspace verification.`);
+      }
+      const now = clock().toISOString();
+      let record = {
+        id: idFactory(), taskId: policy.taskId, provider: providerName, providerSessionId: null,
+        policy, policyHash: policyHash(policy), status: "queued", approval: null, result: null,
+        error: null, changedPaths: [], events: [{ type: "developer_workspace_verification.created", status: "queued", at: now }], createdAt: now, updatedAt: now,
+      };
+      await sessionStore.save(structuredClone(record));
+      try {
+        const raw = await provider.verifyWorkspace({ policy, policyHash: record.policyHash });
+        if (typeof raw?.providerSessionId !== "string" || !raw.providerSessionId) fail("developer_provider_invalid", "Developer provider did not return a session ID.");
+        record = { ...record, providerSessionId: raw.providerSessionId };
+        return await apply(record, raw);
+      } catch (error) {
+        if (error instanceof DeveloperSessionError && error.code.startsWith("developer_provider_")) {
+          await providerFailure(record, error);
+          throw error;
+        }
+        return providerFailure(record, error);
+      }
+    },
+
     async startDeveloperSession(input) {
       const policy = normalizeRequest(input);
       const providerName = input.provider || defaultProvider;

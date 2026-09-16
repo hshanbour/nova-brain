@@ -227,8 +227,8 @@ function validateBundle(input) {
   return { manifest, materials };
 }
 
-function verificationSource() {
-  return `import{createHash}from"node:crypto";import{readFile,readdir,stat,chmod}from"node:fs/promises";import{join,relative}from"node:path";const root=${JSON.stringify(WORKSPACE_DESTINATION)},manifest=JSON.parse(await readFile(${JSON.stringify(`${HANDOFF_DESTINATION}/manifest.json`)},"utf8")),claimed=manifest.manifestHash;delete manifest.manifestHash;const manifestHash=createHash("sha256").update(JSON.stringify(manifest)).digest("hex");if(claimed!==manifestHash||manifest.taskId!==${JSON.stringify(REAL_DEVELOPER_TASK_ID)}||manifest.repository!==${JSON.stringify(REAL_DEVELOPER_REPOSITORY)}||manifest.branch!==${JSON.stringify(REAL_DEVELOPER_BRANCH)}||manifest.baseSha!==${JSON.stringify(REAL_DEVELOPER_BASE_SHA)}||manifest.workspaceDestination!==root||JSON.stringify(manifest.authorizedMutationPaths)!==${JSON.stringify(JSON.stringify(REAL_DEVELOPER_ALLOWED_PATHS))})throw new Error("WORKSPACE_INTEGRITY_FAILED");const expected=new Map(manifest.entries.map(e=>[e.path,e])),seen=[],dirs=[root];async function walk(dir){for(const name of await readdir(dir)){const full=join(dir,name),info=await stat(full);if(info.isDirectory()){dirs.push(full);await walk(full);}else if(info.isFile())seen.push(relative(root,full).replaceAll("\\\\","/"));else throw new Error("WORKSPACE_INTEGRITY_FAILED");}}await walk(root);seen.sort();if(JSON.stringify(seen)!==JSON.stringify([...expected.keys()].sort()))throw new Error("WORKSPACE_INTEGRITY_FAILED");for(const path of seen){const bytes=await readFile(join(root,path)),entry=expected.get(path),hash=createHash("sha256").update(bytes).digest("hex");if(bytes.length!==entry.size||hash!==entry.sha256||entry.dirty!==manifest.dirtyPaths.includes(path))throw new Error("WORKSPACE_INTEGRITY_FAILED");await chmod(join(root,path),manifest.authorizedMutationPaths.includes(path)?0o600:0o400);}for(const dir of dirs.reverse())await chmod(dir,0o500);console.log("NOVA_WORKSPACE_INTEGRITY_OK:"+claimed);`;
+function verificationSource({ readOnly = false } = {}) {
+  return `import{createHash}from"node:crypto";import{readFile,readdir,stat,chmod}from"node:fs/promises";import{join,relative}from"node:path";const root=${JSON.stringify(WORKSPACE_DESTINATION)},manifest=JSON.parse(await readFile(${JSON.stringify(`${HANDOFF_DESTINATION}/manifest.json`)},"utf8")),claimed=manifest.manifestHash;delete manifest.manifestHash;const manifestHash=createHash("sha256").update(JSON.stringify(manifest)).digest("hex");if(claimed!==manifestHash||manifest.taskId!==${JSON.stringify(REAL_DEVELOPER_TASK_ID)}||manifest.repository!==${JSON.stringify(REAL_DEVELOPER_REPOSITORY)}||manifest.branch!==${JSON.stringify(REAL_DEVELOPER_BRANCH)}||manifest.baseSha!==${JSON.stringify(REAL_DEVELOPER_BASE_SHA)}||manifest.workspaceDestination!==root||JSON.stringify(manifest.authorizedMutationPaths)!==${JSON.stringify(JSON.stringify(REAL_DEVELOPER_ALLOWED_PATHS))})throw new Error("WORKSPACE_INTEGRITY_FAILED");const expected=new Map(manifest.entries.map(e=>[e.path,e])),seen=[],dirs=[root];async function walk(dir){for(const name of await readdir(dir)){const full=join(dir,name),info=await stat(full);if(info.isDirectory()){dirs.push(full);await walk(full);}else if(info.isFile())seen.push(relative(root,full).replaceAll("\\\\","/"));else throw new Error("WORKSPACE_INTEGRITY_FAILED");}}await walk(root);seen.sort();if(JSON.stringify(seen)!==JSON.stringify([...expected.keys()].sort()))throw new Error("WORKSPACE_INTEGRITY_FAILED");for(const path of seen){const bytes=await readFile(join(root,path)),entry=expected.get(path),hash=createHash("sha256").update(bytes).digest("hex");if(bytes.length!==entry.size||hash!==entry.sha256||entry.dirty!==manifest.dirtyPaths.includes(path))throw new Error("WORKSPACE_INTEGRITY_FAILED");await chmod(join(root,path),${readOnly ? "0o400" : "manifest.authorizedMutationPaths.includes(path)?0o600:0o400"});}for(const dir of dirs.reverse())await chmod(dir,0o500);console.log("NOVA_WORKSPACE_INTEGRITY_OK:"+claimed);`;
 }
 
 export function createDeveloperWorkspaceHandoff({ environment = process.env, storage, ownerId, providerFactory = createAgentsApiDeveloperProvider, taskReader, idFactory, clock } = {}) {
@@ -244,28 +244,30 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
   const sessionStore = { get: (id) => storage.getDeveloperSession(id, ownerId), save: (record) => storage.saveDeveloperSession(record, ownerId) };
   const adapterFor = (provider) => createDeveloperSessionAdapter({ providers: { agents_api: provider }, defaultProvider: "agents_api", sessionStore, ...(idFactory ? { idFactory } : {}), ...(clock ? { clock } : {}) });
   const passiveProvider = () => providerFactory({ apiKey: environment.OPENAI_API_KEY, agent: { model: environment.NOVA_DEVELOPER_MODEL || environment.OPENAI_MODEL }, environment: { type: "openai_hosted", network: { access: "disabled" }, files: [] } });
+  const boundTask = async () => {
+    const task = await readTask(REAL_DEVELOPER_TASK_ID);
+    if (!task || task.stateVersion !== 451 || task.status !== "blocked" || task.branch !== REAL_DEVELOPER_BRANCH
+      || task.currentCommit !== REAL_DEVELOPER_BASE_SHA || task.repairIteration !== 3) {
+      fail("developer_workspace_task_binding_changed", "The real Nova task is no longer at its exact v451 handoff boundary.");
+    }
+  };
+  const materializingProvider = ({ manifest, materials, readOnly }) => providerFactory({
+    apiKey: environment.OPENAI_API_KEY,
+    agent: { model: environment.NOVA_DEVELOPER_MODEL || environment.OPENAI_MODEL, instructions: readOnly ? "Perform no agent work. This session exists only to provision and verify an immutable workspace." : "Act only as Nova's bounded implementation harness. Preserve the supplied workspace, do not change file or directory permissions, and obey its exact mutation and approval policy." },
+    environment: {
+      type: "openai_hosted",
+      network: { access: "disabled" },
+      files: [...materials, { type: "inline", path: `${HANDOFF_DESTINATION}/manifest.json`, data: Buffer.from(JSON.stringify(manifest)).toString("base64") }, { type: "inline", path: `${HANDOFF_DESTINATION}/verify.mjs`, data: Buffer.from(verificationSource({ readOnly })).toString("base64") }],
+      setup_commands: [{ command: `node ${HANDOFF_DESTINATION}/verify.mjs`, cwd: "/workspace" }],
+      packages: { npm: [], python: [], system: [] },
+    },
+  });
   return Object.freeze({
     async start(input) {
       assertPreview();
-      const task = await readTask(REAL_DEVELOPER_TASK_ID);
-      if (!task || task.stateVersion !== 451 || task.status !== "blocked" || task.branch !== REAL_DEVELOPER_BRANCH
-        || task.currentCommit !== REAL_DEVELOPER_BASE_SHA || task.repairIteration !== 3) {
-        fail("developer_workspace_task_binding_changed", "The real Nova task is no longer at its exact v451 handoff boundary.");
-      }
+      await boundTask();
       const { manifest, materials } = validateBundle(input);
-      const manifestData = Buffer.from(JSON.stringify(manifest)).toString("base64");
-      const verifierData = Buffer.from(verificationSource()).toString("base64");
-      const provider = providerFactory({
-        apiKey: environment.OPENAI_API_KEY,
-        agent: { model: environment.NOVA_DEVELOPER_MODEL || environment.OPENAI_MODEL, instructions: "Act only as Nova's bounded implementation harness. Preserve the supplied workspace, do not change file or directory permissions, and obey its exact mutation and approval policy." },
-        environment: {
-          type: "openai_hosted",
-          network: { access: "disabled" },
-          files: [...materials, { type: "inline", path: `${HANDOFF_DESTINATION}/manifest.json`, data: manifestData }, { type: "inline", path: `${HANDOFF_DESTINATION}/verify.mjs`, data: verifierData }],
-          setup_commands: [{ command: `node ${HANDOFF_DESTINATION}/verify.mjs`, cwd: "/workspace" }],
-          packages: { npm: [], python: [], system: [] },
-        },
-      });
+      const provider = materializingProvider({ manifest, materials, readOnly: false });
       return adapterFor(provider).startDeveloperSession({
         taskId: REAL_DEVELOPER_TASK_ID,
         goal: "Continue Nova's microphone repair from the exact materialized local workspace. Nova owns diagnosis, planning, implementation, testing, and review.",
@@ -277,6 +279,24 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
         approvalPolicy: { requireFor: ["commit", "push", "deploy", "scope_change", "dependency_change", "external_action"], allowPush: false, allowDeploy: false },
         metadata: { mode: "real_task_workspace_handoff", manifestHash: manifest.manifestHash, workspaceRoot: manifest.workspaceRoot, materializedFileCount: manifest.entries.length, taskStateVersion: 451 },
         dryRun: false,
+      });
+    },
+    async verify(input) {
+      assertPreview();
+      await boundTask();
+      const { manifest, materials } = validateBundle(input);
+      const provider = materializingProvider({ manifest, materials, readOnly: true });
+      return adapterFor(provider).verifyDeveloperWorkspace({
+        taskId: REAL_DEVELOPER_TASK_ID,
+        goal: "Verify the exact materialized Nova workspace and stop without submitting developer work.",
+        acceptanceCriteria: ["Materialize exactly the canonical manifest.", "Verify every file and hash in the hosted environment.", "Submit no engineering instruction and perform no product mutation."],
+        repository: { slug: REAL_DEVELOPER_REPOSITORY, branch: REAL_DEVELOPER_BRANCH, workspace: WORKSPACE_DESTINATION },
+        baseSha: REAL_DEVELOPER_BASE_SHA,
+        allowedPaths: [...REAL_DEVELOPER_ALLOWED_PATHS],
+        forbiddenPaths: [...REAL_DEVELOPER_PROTECTED_PATHS, ".git", "node_modules", ".env"],
+        approvalPolicy: { requireFor: [], allowPush: false, allowDeploy: false },
+        metadata: { mode: "workspace_materialization_verification", manifestHash: manifest.manifestHash, workspaceRoot: manifest.workspaceRoot, materializedFileCount: manifest.entries.length, totalBytes: manifest.totalBytes, dirtyPaths: [...manifest.dirtyPaths], taskStateVersion: 451 },
+        dryRun: true,
       });
     },
     async get(sessionId) { assertPreview(); return adapterFor(passiveProvider()).getDeveloperSession({ sessionId }); },
