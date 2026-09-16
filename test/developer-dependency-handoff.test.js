@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { gunzipSync } from "node:zlib";
 import {
   buildDeveloperDependencyHandoffBundle,
+  canonicalPackageLockIdentity,
   createDeveloperDependencyHostedFiles,
   DEVELOPER_DEPENDENCY_HANDOFF,
   validateDeveloperDependencyHandoffBundle,
@@ -29,6 +30,7 @@ test("dependency bundle is deterministic, lock-bound, bounded, and resolves the 
   ]);
   assert.deepEqual(first, second);
   assert.equal(first.manifest.packageLockSha256, digest(lock));
+  assert.equal(first.manifest.packageLockCanonicalSha256, canonicalPackageLockIdentity(lock));
   assert.deepEqual(first.manifest.packages, [{
     path: "@neondatabase/serverless",
     name: "@neondatabase/serverless",
@@ -42,6 +44,37 @@ test("dependency bundle is deterministic, lock-bound, bounded, and resolves the 
   const validated = validateDeveloperDependencyHandoffBundle(first, { expectedPackageLock: lock });
   assert.equal(validated.manifest.dependencyArchiveSha256, digest(validated.archive));
   assert.equal(createDeveloperDependencyHostedFiles(validated).length, 3);
+});
+
+test("canonical package-lock identity is stable across line endings and insignificant JSON formatting", () => {
+  const compact = '{"name":"nova-brain","lockfileVersion":3,"packages":{"":{"dependencies":{"b":"2","a":"1"}}}}';
+  const formattedLf = '{\n  "packages": {\n    "": {\n      "dependencies": { "a": "1", "b": "2" }\n    }\n  },\n  "lockfileVersion": 3,\n  "name": "nova-brain"\n}\n';
+  const formattedCrlf = formattedLf.replaceAll("\n", "\r\n");
+  assert.equal(canonicalPackageLockIdentity(compact), canonicalPackageLockIdentity(formattedLf));
+  assert.equal(canonicalPackageLockIdentity(formattedLf), canonicalPackageLockIdentity(formattedCrlf));
+  assert.notEqual(digest(Buffer.from(formattedLf)), digest(Buffer.from(formattedCrlf)));
+  assert.notEqual(
+    canonicalPackageLockIdentity(formattedLf),
+    canonicalPackageLockIdentity(formattedLf.replace('"b": "2"', '"b": "3"')),
+  );
+});
+
+test("dependency authorization accepts canonical cross-platform lock identity but rejects semantic drift", async () => {
+  const built = await actualBundle();
+  const rawLock = await readFile(join(REAL_DEVELOPER_WORKSPACE_ROOT, "package-lock.json"));
+  const parsed = JSON.parse(rawLock.toString("utf8"));
+  const linuxCheckout = Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`);
+  assert.notEqual(digest(rawLock), digest(linuxCheckout));
+  assert.equal(canonicalPackageLockIdentity(rawLock), canonicalPackageLockIdentity(linuxCheckout));
+  assert.equal(
+    validateDeveloperDependencyHandoffBundle(built, { expectedPackageLock: linuxCheckout }).manifest.packageLockSha256,
+    digest(rawLock),
+  );
+  parsed.packages["node_modules/@neondatabase/serverless"].version = "1.1.1";
+  assert.throws(
+    () => validateDeveloperDependencyHandoffBundle(built, { expectedPackageLock: Buffer.from(JSON.stringify(parsed)) }),
+    (error) => error.code === "DEPENDENCY_INTEGRITY_FAILED",
+  );
 });
 
 test("dependency archive round trip preserves exact bytes outside product mutation scope", async () => {
@@ -87,6 +120,7 @@ test("dependency validation rejects lock drift, unsafe paths, and archive drift"
   const lock = await readFile(join(REAL_DEVELOPER_WORKSPACE_ROOT, "package-lock.json"));
   for (const mutate of [
     (value) => { value.manifest.packageLockSha256 = "0".repeat(64); },
+    (value) => { value.manifest.packageLockCanonicalSha256 = "0".repeat(64); },
     (value) => { value.manifest.entries[0].path = "../package.json"; },
     (value) => { value.archive = Buffer.from("drift").toString("base64"); },
     (value) => { value.manifest.requiredPackages = ["made-up-package"]; },
@@ -129,6 +163,7 @@ test("hosted dependency verifier is setup-only and preserves product scope", asy
   assert.match(verifier, /NOVA_DEPENDENCY_INTEGRITY_OK/);
   assert.match(verifier, /node_modules/);
   assert.match(verifier, /package-lock\.json/);
+  assert.match(verifier, /digest\(lock\)!==manifest\.packageLockSha256/);
   assert.match(verifier, /\.nova-handoff\/manifest\.json/);
   assert.doesNotMatch(verifier, /Continue Nova|npm install|https?:\/\//);
 });

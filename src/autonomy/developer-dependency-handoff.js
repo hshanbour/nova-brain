@@ -20,6 +20,19 @@ function canonical(value) { return JSON.stringify(value); }
 function manifestHash(manifest) { const { dependencyManifestHash, ...rest } = manifest; return sha256(canonical(rest)); }
 function exactKeys(value, keys) { return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).every((key) => keys.includes(key)); }
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function canonicalPackageLockIdentity(value) {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
+  return sha256(stableJson(JSON.parse(bytes.toString("utf8"))));
+}
+
 function dependencyPath(value) {
   const path = String(value || "").replaceAll("\\", "/");
   if (!path || path.startsWith("/") || /^[A-Za-z]:/.test(path)
@@ -112,6 +125,7 @@ export async function buildDeveloperDependencyHandoffBundle({
   const manifest = {
     version: 1,
     packageLockSha256: sha256(packageLock),
+    packageLockCanonicalSha256: canonicalPackageLockIdentity(packageLock),
     dependencyArchiveSha256: sha256(archive),
     dependencyRoot: DEPENDENCY_ROOT,
     packages,
@@ -130,14 +144,16 @@ export async function buildDeveloperDependencyHandoffBundle({
 
 export function validateDeveloperDependencyHandoffBundle(input, { expectedPackageLock } = {}) {
   if (!Buffer.isBuffer(expectedPackageLock) || !exactKeys(input, ["manifest", "archive"]) || !exactKeys(input?.manifest, [
-    "version", "packageLockSha256", "dependencyArchiveSha256", "dependencyRoot", "packages", "requiredPackages",
+    "version", "packageLockSha256", "packageLockCanonicalSha256", "dependencyArchiveSha256", "dependencyRoot", "packages", "requiredPackages",
     "entries", "fileCount", "totalBytes", "archiveBytes", "lockfileVersion", "nodeVersion", "npmVersion", "dependencyManifestHash",
   ]) || typeof input.archive !== "string") fail();
   const manifest = structuredClone(input.manifest);
   const archive = Buffer.from(input.archive, "base64");
   const expectedLock = JSON.parse(expectedPackageLock.toString("utf8"));
   const expectedPackages = packageRoots(expectedLock);
-  if (manifest.version !== 1 || manifest.packageLockSha256 !== sha256(expectedPackageLock)
+  if (manifest.version !== 1 || !SHA256.test(manifest.packageLockSha256 || "")
+    || manifest.packageLockCanonicalSha256 !== canonicalPackageLockIdentity(expectedPackageLock)
+    || !SHA256.test(manifest.packageLockCanonicalSha256 || "")
     || manifest.dependencyArchiveSha256 !== sha256(archive) || manifest.dependencyRoot !== DEPENDENCY_ROOT
     || manifest.dependencyManifestHash !== manifestHash(manifest) || !SHA256.test(manifest.dependencyManifestHash)
     || manifest.lockfileVersion !== expectedLock.lockfileVersion || manifest.archiveBytes !== archive.length
