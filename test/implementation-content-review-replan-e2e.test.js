@@ -4,8 +4,10 @@ import {Readable} from "node:stream";
 import {createEvidenceBoundReviewReplanFixture} from "./evidence-bound-review-replan-fixture.js";
 import {executionProofSignature} from "./execution-scope-fixture.js";
 import {createApi} from "../src/http/api.js";
-import {describeImplementationContentReviewReplan,describeSourceLiteralReviewReplan,describeObservableLinkageReviewReplan,describeSemanticEvidenceReviewReplan,describeFailedSemanticReadRecovery,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_CLASS,SOURCE_LITERAL_REVIEW_REPLAN_CLASS,OBSERVABLE_LINKAGE_REVIEW_REPLAN_CLASS,SEMANTIC_EVIDENCE_REVIEW_REPLAN_CLASS,FAILED_SEMANTIC_READ_RECOVERY_CLASS} from "../src/autonomy/review-remediation-scope.js";
+import {describeImplementationContentReviewReplan,describeSourceLiteralReviewReplan,describeObservableLinkageReviewReplan,describeSemanticEvidenceReviewReplan,describeFailedSemanticReadRecovery,describeTestIdentityInventoryReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_CLASS,SOURCE_LITERAL_REVIEW_REPLAN_CLASS,OBSERVABLE_LINKAGE_REVIEW_REPLAN_CLASS,SEMANTIC_EVIDENCE_REVIEW_REPLAN_CLASS,FAILED_SEMANTIC_READ_RECOVERY_CLASS,TEST_IDENTITY_INVENTORY_REPLAN_CLASS} from "../src/autonomy/review-remediation-scope.js";
 import {recoveryHash} from "../src/autonomy/failed-local-read-recovery.js";
+import {canonicalContentHash} from "../src/autonomy/self-development-plan-lifecycle.js";
+import {REVIEW_TEST_IDENTITY_PATHS} from "../src/autonomy/test-identity-inventory.js";
 
 const freshWorker="persistent-local-abcdef01-2345-4abc-8def-0123456789ab";
 
@@ -91,8 +93,8 @@ async function v419Fixture(t,{fifthOutput}={}){
   return{...f,input,actor,options,blocked,failed,evidence,afterObservable:()=>afterObservable};
 }
 
-async function v423Fixture(t){
-  const f=await v419Fixture(t),requested=await f.service.requestSemanticEvidenceReviewReplanApproval(f.taskId,f.input,f.actor);
+async function v423Fixture(t,{sixthOutput}={}){
+  const f=await v419Fixture(t,{fifthOutput:sixthOutput}),requested=await f.service.requestSemanticEvidenceReviewReplanApproval(f.taskId,f.input,f.actor);
   await f.storage.decideApproval(requested.approval.id,f.ownerId,"approved");f.input.approvalId=requested.approval.id;
   await f.service.recoverSemanticEvidenceReviewReplan(f.taskId,f.input,f.actor);
   f.hooks.execution=()=>{throw Object.assign(new Error("Path is outside the approved repository."),{code:"path_traversal"});};
@@ -103,6 +105,31 @@ async function v423Fixture(t){
   const input=structuredClone(f.input);delete input.approvalId;input.expectedVersion=423;input.workspaceProof.expectedVersion=423;input.workspaceProofSignature=executionProofSignature(input.workspaceProof);
   const actor={...f.actor,workspaceProof:input.workspaceProof},options={...f.options,input,actor};
   return{...f,input,actor,options,blocked,failed};
+}
+
+async function v451Fixture(t,{seventhOutput}={}){
+  let afterFailedRead=0;
+  const f=await v423Fixture(t,{sixthOutput:value=>{
+    afterFailedRead++;
+    if(afterFailedRead===1){
+      const invented="Console activates all seven workspaces and voice input without fake Soon states",item=value.reviewCoverage[0];
+      value.files=value.files.filter(file=>file.path==="assets/voice-input.js");
+      value.acceptanceMapping=value.acceptanceMapping.map(mapping=>({...mapping,files:["assets/voice-input.js"]}));
+      item.testPath="test/console-static.test.js";item.testName=invented;item.sourceExcerpt=`test('${invented}', () => { assert.equal(consoleReady, true); });`;
+      return value;
+    }
+    return seventhOutput?seventhOutput(value):value;
+  }});
+  const requested=await f.service.requestFailedSemanticReadRecoveryApproval(f.taskId,f.input,f.actor);
+  await f.storage.decideApproval(requested.approval.id,f.ownerId,"approved");f.input.approvalId=requested.approval.id;
+  await f.service.recoverFailedSemanticReadRecovery(f.taskId,f.input,f.actor);
+  const predecessorWorker=f.createWorker("persistent-local-abcdef14-2345-4abc-8def-0123456789ab");for(let index=0;index<9;index++)assert.equal((await predecessorWorker.runOnce()).worked,true);
+  const blocked=await f.current(),failed=(await f.steps()).at(-1);assert.equal(blocked.stateVersion,451);assert.equal(blocked.status,"blocked");assert.equal(blocked.errorCode,"review_remediation_precondition_failed");assert.equal(failed.result.diagnostics.predicate,"semantic_test_identity_binding");assert.equal(failed.result.diagnostics.coverageDiagnostics.firstFailure.subclause,"test_identity_exists_in_exact_source");assert.equal(failed.result.diagnostics.mutationApplied,false);
+  const reference=failed.result.rejectedReviewEvidence,evidence=await f.storage.getRejectedReviewEvidence(reference.id,f.ownerId,f.taskId),item=evidence.envelope.coverage.find(entry=>entry.firstFailedSubclause==="test_identity_exists_in_exact_source");
+  assert.equal(item.testPath,"test/console-static.test.js");assert.equal(item.sourceOrigin,"fresh_read");assert.equal(item.firstFailedSubclause,"test_identity_exists_in_exact_source");
+  const input=structuredClone(f.input);delete input.approvalId;input.expectedVersion=451;input.workspaceProof.expectedVersion=451;input.workspaceProofSignature=executionProofSignature(input.workspaceProof);
+  const actor={...f.actor,workspaceProof:input.workspaceProof},options={...f.options,input,actor};
+  return{...f,input,actor,options,blocked,failed,evidence,afterFailedRead:()=>afterFailedRead};
 }
 
 test("v335 empty replacement rejection permits one distinct owner-approved complete-content replan through fresh review_ready",async t=>{
@@ -269,5 +296,44 @@ test("v423 recovery rejects workspace drift, scope expansion, predecessor reuse,
     options=>options.task.repairIteration=4,
     options=>options.steps.find(step=>step.stepId===f.failed.stepId).errorCode="worker_failed",
   ]){const options={...f.options,task:structuredClone(task),steps:structuredClone(steps),input:structuredClone(f.input),actor:structuredClone(f.actor)};options.actor.workspaceProof=options.input.workspaceProof;alter(options);await assert.rejects(()=>describeFailedSemanticReadRecovery(options));}
+  assert.deepEqual(await f.current(),task);assert.deepEqual(await f.steps(),steps);assert.equal(f.executions.filter(item=>item.name==="repo_apply_patch").length,0);
+});
+
+test("v451 deterministic current-test inventory permits one owner-approved replan through fresh review_ready",async t=>{
+  const f=await v451Fixture(t),before=structuredClone(f.blocked),described=await describeTestIdentityInventoryReviewReplan(f.options);
+  assert.equal(described.approvalArguments.expectedVersion,451);assert.equal(described.sourceProof.privateEvidenceId,f.failed.result.rejectedReviewEvidence.id);assert.equal(described.sourceProof.rejectedPlanFingerprint,f.evidence.envelope.planFingerprint);
+  assert.equal((await f.post(f.path("request-test-identity-inventory-review-replan"),f.input,"wrong-worker-token")).status,401);
+  const requestResponse=await f.post(f.path("request-test-identity-inventory-review-replan"),f.input),requested=requestResponse.body;assert.equal(requestResponse.status,200);assert.equal(requested.approval.tool,"self_development_test_identity_inventory_review_replan");
+  const decision=await f.post(`/api/approvals/${requested.approval.id}/decision`,{decision:"approved"});assert.equal(decision.status,200);assert.deepEqual(decision.body.execution,{authorized:true,approvalId:requested.approval.id});f.input.approvalId=requested.approval.id;
+  const recovered=await f.service.recoverTestIdentityInventoryReviewReplan(f.taskId,f.input,f.actor),record=recovered.recovery;
+  assert.equal(record.recoveryClass,TEST_IDENTITY_INVENTORY_REPLAN_CLASS);assert.equal(record.fromStateVersion,451);assert.equal(record.repairIteration,3);assert.equal(record.maxAdditionalAttempts,0);assert.equal(record.testIdentityInventoryReplan,true);
+  const failureEvidence=recovered.task.metadata.steps[record.activeContinuation.startStep+8].input.arguments.failureEvidence;
+  assert.deepEqual(failureEvidence.requiredCurrentTestIdentityInventoryContract,{source:"exact current contents of the four authorized test files",binding:["testPath","testName","sourceHash"],existingTest:"must use an exact inventory testPath and testName pair",newTest:"requires an authorized complete test-file replacement defining the exact named test",ambiguousOrUnsupportedExtraction:"fail_closed"});
+  const worker=f.createWorker("persistent-local-abcdef15-2345-4abc-8def-0123456789ab");for(let index=0;index<13;index++)assert.equal((await worker.runOnce()).worked,true);
+  const prompt=f.prompts.at(-1),inventory=prompt.currentTestIdentityInventory,candidates=new Map(prompt.candidateFiles.map(item=>[item.path,item.content]));
+  assert.deepEqual([...new Set(inventory.map(item=>item.testPath))].sort(),[...REVIEW_TEST_IDENTITY_PATHS].sort());assert.ok(inventory.length>=REVIEW_TEST_IDENTITY_PATHS.length);
+  for(const item of inventory){const source=candidates.get(item.testPath);assert.equal(typeof source,"string");assert.equal(item.sourceHash,canonicalContentHash(source));assert.ok(source.includes(item.testName));}
+  assert.match(prompt.testIdentityInventoryInstructions,/exact testPath and testName pair/);assert.match(prompt.testIdentityInventoryInstructions,/include its authorized test file/);
+  const final=await f.current(),history=final.metadata.testIdentityInventoryReviewReplanHistory[0],boundary=final.metadata.testIdentityInventoryReviewReplanBoundary;
+  assert.equal(final.status,"blocked");assert.equal(final.repairIteration,3);assert.equal(history.consumed,true);assert.equal(history.result,"full_tests_completed");assert.equal(boundary.kind,"review_ready");assert.equal(boundary.executionAuthorized,false);assert.equal(f.afterFailedRead(),2);
+  assert.equal(f.executions.filter(item=>item.name==="repo_apply_patch").length,1);assert.equal(f.executions.filter(item=>item.name==="test_run").length,1);assert.equal(f.executions.filter(item=>item.name==="test_run_full").length,1);assert.deepEqual(final.metadata.escalatedRepairHistory,before.metadata.escalatedRepairHistory);assert.deepEqual(await worker.runOnce(),{worked:false});await assert.rejects(()=>f.service.recoverTestIdentityInventoryReviewReplan(f.taskId,f.input,f.actor));
+});
+
+test("v451 inventory successor still rejects fabricated unchanged-source identities before mutation",async t=>{
+  const invented="fabricated inventory identity",f=await v451Fixture(t,{seventhOutput:value=>{const item=value.reviewCoverage[0];value.files=value.files.filter(file=>file.path!==item.testPath);item.testName=invented;item.sourceExcerpt=`test('${invented}', () => { const result = exercise(); assert.equal(result, true); });`;return value;}}),requested=await f.service.requestTestIdentityInventoryReviewReplanApproval(f.taskId,f.input,f.actor);
+  await f.storage.decideApproval(requested.approval.id,f.ownerId,"approved");f.input.approvalId=requested.approval.id;await f.service.recoverTestIdentityInventoryReviewReplan(f.taskId,f.input,f.actor);
+  const worker=f.createWorker("persistent-local-abcdef16-2345-4abc-8def-0123456789ab");for(let index=0;index<9;index++)assert.equal((await worker.runOnce()).worked,true);
+  const final=await f.current(),failed=(await f.steps()).at(-1);assert.equal(final.status,"blocked");assert.equal(failed.result.diagnostics.predicate,"semantic_test_identity_binding");assert.equal(failed.result.diagnostics.coverageDiagnostics.firstFailure.subclause,"test_identity_exists_in_exact_source");assert.equal(f.executions.filter(item=>item.name==="repo_apply_patch").length,0);assert.deepEqual(await worker.runOnce(),{worked:false});
+});
+
+test("v451 inventory successor refuses stale hash, scope expansion, predecessor reuse, and repair counter drift",async t=>{
+  const f=await v451Fixture(t),task=await f.current(),steps=await f.steps();
+  for(const alter of[
+    options=>options.input.workspaceProof.workspace.changedFiles[0].hash="0".repeat(40),
+    options=>options.input.workspaceProof.workspace.changedFiles.push({path:"test/ninth.test.js",hashAlgorithm:"git_sha1",hash:"0".repeat(40),rawHash:"0".repeat(40),contentHash:"0".repeat(64)}),
+    options=>options.task.metadata.failedSemanticReadRecoveryHistory[0].consumed=false,
+    options=>options.task.repairIteration=4,
+    options=>options.steps.find(step=>step.stepId===f.failed.stepId).result.diagnostics.coverageDiagnostics.constraints[0].expectedSourceHash="0".repeat(64),
+  ]){const options={...f.options,task:structuredClone(task),steps:structuredClone(steps),input:structuredClone(f.input),actor:structuredClone(f.actor)};options.actor.workspaceProof=options.input.workspaceProof;alter(options);await assert.rejects(()=>describeTestIdentityInventoryReviewReplan(options));}
   assert.deepEqual(await f.current(),task);assert.deepEqual(await f.steps(),steps);assert.equal(f.executions.filter(item=>item.name==="repo_apply_patch").length,0);
 });

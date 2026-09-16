@@ -46,6 +46,14 @@ test("private rejection envelope retains only the bounded artifact fields and ac
   assert.ok(envelope.coverage.slice(1).every(item=>item.evaluated===false&&item.clauses.length===0&&item.firstFailedSubclause===null));
 });
 
+test("private rejection envelope retains bounded semantic identity diagnostics needed by the next successor",()=>{
+  const f=fixture();f.plan.reviewCoverage[0].testName="missing exact test";
+  const plan={...f.plan,reviewCoverage:f.plan.reviewCoverage.map(item=>({...item,sourceHash:canonicalContentHash(f.reads.get(item.testPath))}))};
+  try{validateReviewCoverageBindings(plan,{review:f.review,requiredPaths:f.requiredPaths,reads:f.reads,context:{stateVersion:f.task.stateVersion,continuationGenerationId:f.task.metadata.activeContinuation.generationId,planFingerprint:recoveryHash(plan),semanticEvidenceReplan:true}});}catch(error){f.diagnostics=error.safeDiagnostics;}
+  const envelope=buildRejectedReviewEvidence(f),first=envelope.coverage[0];
+  assert.equal(envelope.rejectionPredicate,"semantic_test_identity_binding");assert.equal(first.firstFailedSubclause,"test_identity_exists_in_exact_source");assert.deepEqual(first.clauses,[{predicate:"semantic_test_identity_binding",subclause:"test_name_not_placeholder",passed:true},{predicate:"semantic_test_identity_binding",subclause:"test_identity_exists_in_exact_source",passed:false}]);
+});
+
 test("source hashes distinguish fresh bytes, proposed replacement bytes, and supplied versus derived bindings",()=>{
   const f=fixture();let first=entry(f);
   assert.equal(first.sourceOrigin,"fresh_read");assert.equal(first.expectedSourceHash,canonicalContentHash(f.source));

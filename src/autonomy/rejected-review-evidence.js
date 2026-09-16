@@ -12,7 +12,7 @@ const attachments=new WeakMap(),brands=new WeakMap();
 const HASH=/^[a-f0-9]{64}$/;
 const ID=/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const FIELD_NAMES=["testName","sourceExcerpt","stimulus","observable","assertion"];
-const PREDICATES=new Set(["ninth_file_or_operation_forbidden","focused_scope_authorization","complete_behavioral_coverage","source_bound_behavioral_coverage","observable_behavioral_test_linkage","implementation_plan_invalid"]);
+const PREDICATES=new Set(["ninth_file_or_operation_forbidden","focused_scope_authorization","complete_behavioral_coverage","source_bound_behavioral_coverage","observable_behavioral_test_linkage","semantic_test_identity_binding","implementation_plan_invalid"]);
 const SUBCLAUSES=new Set([
   "mutation_array","mutation_count","unique_mutation_paths","replacement_sources_in_scope",
   "focused_array","focused_count","unique_focused_paths","fresh_existing_focused_scope",
@@ -22,6 +22,7 @@ const SUBCLAUSES=new Set([
   "stimulus_bounded","observable_bounded","assertion_bounded","excerpt_contains_assertion","assertion_is_assertion",
   "named_test_declaration","observable_code_reference","excerpt_contains_stimulus","stimulus_precedes_assertion",
   "assertion_observes_reference","distinct_stimulus_assertion","not_token_only_source_check","not_unwired_constant_observation",
+  "test_name_not_placeholder","test_identity_exists_in_exact_source",
 ]);
 const digest=value=>typeof value==="string"&&HASH.test(value)?value:null;
 const predicate=value=>PREDICATES.has(value)?value:null;
