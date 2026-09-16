@@ -289,7 +289,7 @@ export function createApi({
           return;
         }
         const realDeveloperSessionMatch = pathname.match(
-          /^\/api\/admin\/developer-sessions\/real\/([^/]+)(?:\/(resume|cancel|reconcile))?$/,
+          /^\/api\/admin\/developer-sessions\/real\/([^/]+)(?:\/(resume|cancel|reconcile|materialize-dependencies))?$/,
         );
         if (developerWorkspaceHandoff && realDeveloperSessionMatch) {
           await ready();
@@ -312,6 +312,13 @@ export function createApi({
           if (request.method === "POST" && action === "reconcile") {
             await readJsonBody(request, config.maxBodyBytes);
             sendJson(response, 200, { session: await developerWorkspaceHandoff.reconcile(sessionId) });
+            return;
+          }
+          if (request.method === "POST" && action === "materialize-dependencies") {
+            sendJson(response, 200, { session: await developerWorkspaceHandoff.materializeDependencies(
+              sessionId,
+              await readJsonBody(request, config.developerWorkspaceHandoffMaxBodyBytes || 3 * 1024 * 1024),
+            ) });
             return;
           }
         }

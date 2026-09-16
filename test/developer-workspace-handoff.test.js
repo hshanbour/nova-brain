@@ -16,6 +16,7 @@ import {
   REAL_DEVELOPER_WORKSPACE_ROOT,
 } from "../src/autonomy/developer-workspace-handoff.js";
 import { createDeterministicDeveloperProvider } from "../src/providers/developer-session-providers.js";
+import { buildDeveloperDependencyHandoffBundle } from "../src/autonomy/developer-dependency-handoff.js";
 
 const OWNER = "owner";
 const ADMIN = "a".repeat(40);
@@ -339,4 +340,52 @@ test("excluded workspace paths never enter the materialization request", async (
   const handoff = await bundle();
   assert.equal(handoff.manifest.entries.some((entry) => /(^|\/)(?:\.git|node_modules|\.env|\.cache)(\/|$)/i.test(entry.path)), false);
   assert.equal(handoff.files.some((file) => /(^|\/)(?:\.git|node_modules|\.env|\.cache)(\/|$)/i.test(file.path)), false);
+});
+
+test("dependency materialization stays on the same provider session and environment with three bounded files", async () => {
+  const calls = [];
+  const provider = {
+    name: "agents_api",
+    async start() { return { providerSessionId: "provider-real-1", status: "idle", evidence: { environmentId: "env-real-1" }, changedPaths: [] }; },
+    async materializeDependencies(input) {
+      calls.push(structuredClone(input));
+      return { providerSessionId: "provider-real-1", status: "idle", evidence: { environmentId: "env-real-1", latestOutput: "NOVA_DEPENDENCY_INTEGRITY_OK:test" }, changedPaths: [] };
+    },
+  };
+  const { service, storage } = serviceFixture({ providerOverride: provider });
+  await service.start(await bundle());
+  const dependencies = await buildDeveloperDependencyHandoffBundle({ root: REAL_DEVELOPER_WORKSPACE_ROOT, npmVersion: async () => "11.8.0" });
+  const result = await service.materializeDependencies("real-session-1", dependencies);
+  assert.equal(result.providerSessionId, "provider-real-1");
+  assert.equal(result.evidence.environmentId, "env-real-1");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].providerSessionId, "provider-real-1");
+  assert.equal(calls[0].environmentId, "env-real-1");
+  assert.equal(calls[0].files.length, 3);
+  assert.match(calls[0].verificationInstruction, /verify\.mjs/);
+  assert.doesNotMatch(calls[0].verificationInstruction, /microphone repair|npm test/i);
+  assert.deepEqual(result.policy.allowedPaths, REAL_DEVELOPER_ALLOWED_PATHS);
+  assert.ok(result.policy.forbiddenPaths.includes("node_modules"));
+  const stored = await storage.getDeveloperSession("real-session-1", OWNER);
+  const requested = stored.events.find((event) => event.type === "developer_dependencies.materialization_requested");
+  assert.equal(requested.metadata.addedHostedFileCount, 3);
+  assert.equal(requested.metadata.hostedFileCountAfter, 6);
+  await assert.rejects(() => service.materializeDependencies("real-session-1", dependencies), (error) => error.code === "developer_session_replay");
+});
+
+test("dependency materialization route is authenticated and cannot replace the provider session", async () => {
+  const dependencies = await buildDeveloperDependencyHandoffBundle({ root: REAL_DEVELOPER_WORKSPACE_ROOT, npmVersion: async () => "11.8.0" });
+  const calls = [];
+  const service = { async materializeDependencies(sessionId, input) { calls.push({ sessionId, input }); return { id: sessionId, providerSessionId: "provider-real-1", status: "idle" }; } };
+  const application = api(service);
+  const url = "/api/admin/developer-sessions/real/real-session-1/materialize-dependencies";
+  const denied = response();
+  await application.handle(request({ body: dependencies, authorized: false, url }), denied);
+  assert.equal(denied.statusCode, 401);
+  assert.equal(calls.length, 0);
+  const accepted = response();
+  await application.handle(request({ body: dependencies, url }), accepted);
+  assert.equal(accepted.statusCode, 200);
+  assert.equal(accepted.json.session.providerSessionId, "provider-real-1");
+  assert.equal(calls[0].sessionId, "real-session-1");
 });

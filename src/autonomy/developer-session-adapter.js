@@ -226,6 +226,51 @@ export function createDeveloperSessionAdapter({ providers, sessionStore, default
       }
     },
 
+    async materializeDeveloperDependencies({ sessionId, environmentId, files, verificationInstruction, metadata } = {}) {
+      let record = await load(sessionId);
+      if (record.status !== "idle") fail("developer_session_not_idle", "Dependencies can be materialized only while the existing session is idle.");
+      if (!record.providerSessionId || !environmentId || record.evidence?.environmentId !== environmentId) {
+        fail("developer_provider_session_mismatch", "Dependency materialization is not bound to the existing provider environment.");
+      }
+      const provider = providers[record.provider];
+      if (!provider || typeof provider.materializeDependencies !== "function") {
+        fail("developer_provider_unavailable", "The developer provider does not support same-session dependency materialization.");
+      }
+      if (record.events.some((event) => event.type === "developer_dependencies.materialization_requested")) {
+        fail("developer_session_replay", "Dependency materialization is single-use for this provider session.");
+      }
+      const requestedAt = clock().toISOString();
+      record = {
+        ...record,
+        events: [...record.events, {
+          type: "developer_dependencies.materialization_requested",
+          status: "queued",
+          at: requestedAt,
+          metadata: structuredClone(metadata || {}),
+        }],
+        updatedAt: requestedAt,
+      };
+      await sessionStore.save(structuredClone(record));
+      try {
+        const raw = await provider.materializeDependencies({
+          providerSessionId: record.providerSessionId,
+          environmentId,
+          files,
+          verificationInstruction,
+        });
+        if (raw?.providerSessionId && raw.providerSessionId !== record.providerSessionId) {
+          fail("developer_provider_session_mismatch", "Provider attempted to replace the persistent session identity.");
+        }
+        return await apply(record, raw);
+      } catch (error) {
+        if (error instanceof DeveloperSessionError && error.code.startsWith("developer_provider_")) {
+          await providerFailure(record, error);
+          throw error;
+        }
+        return providerFailure(record, error);
+      }
+    },
+
     async resumeDeveloperSession({ sessionId, approvalDecision, additionalInstruction } = {}) {
       const record = await load(sessionId);
       if (TERMINAL.has(record.status)) fail("developer_session_terminal", "A terminal developer session cannot be resumed.");

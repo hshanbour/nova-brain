@@ -6,6 +6,10 @@ import { resolve, relative, sep } from "node:path";
 import { createDeveloperSessionAdapter } from "./developer-session-adapter.js";
 import { createAgentsApiDeveloperProvider } from "../providers/developer-session-providers.js";
 import { createDeterministicWorkspaceArchive, extractVerifiedWorkspaceArchive } from "./workspace-archive.js";
+import {
+  createDeveloperDependencyHostedFiles,
+  validateDeveloperDependencyHandoffBundle,
+} from "./developer-dependency-handoff.js";
 
 const execFileAsync = promisify(execFile);
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -262,6 +266,7 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
       || JSON.stringify(record.policy?.allowedPaths) !== JSON.stringify(REAL_DEVELOPER_ALLOWED_PATHS)) {
       fail("developer_workspace_session_binding_changed", "The developer session is not bound to the exact real Nova workspace handoff.");
     }
+    return record;
   };
   const materializingProvider = ({ manifest, materials, readOnly }) => {
     const archive = createDeterministicWorkspaceArchive(materials);
@@ -328,6 +333,35 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
     },
     async get(sessionId) { assertPreview(); return adapterFor(passiveProvider()).getDeveloperSession({ sessionId }); },
     async reconcile(sessionId) { assertPreview(); await boundTask(); await assertBoundRealSession(sessionId); return adapterFor(passiveProvider()).reconcileDeveloperSession({ sessionId }); },
+    async materializeDependencies(sessionId, input) {
+      assertPreview();
+      await boundTask();
+      const record = await assertBoundRealSession(sessionId);
+      const environmentId = record.evidence?.environmentId;
+      if (typeof environmentId !== "string" || !environmentId) {
+        fail("developer_workspace_environment_binding_missing", "The existing provider environment identity is unavailable.");
+      }
+      const expectedPackageLock = await readFile(new URL("../../package-lock.json", import.meta.url));
+      const bundle = validateDeveloperDependencyHandoffBundle(input, { expectedPackageLock });
+      const files = createDeveloperDependencyHostedFiles(bundle);
+      const existingCount = Number(record.policy?.metadata?.hostedFileCount || 0);
+      if (existingCount + files.length >= 50) fail("developer_workspace_file_limit", "Dependency handoff would exceed the hosted environment file limit.");
+      return adapterFor(passiveProvider()).materializeDeveloperDependencies({
+        sessionId,
+        environmentId,
+        files,
+        verificationInstruction: "Run exactly `node /workspace/.nova-dependency-handoff/verify.mjs`. Do not inspect, edit, or test product code. Do not run any other command. Return only the final NOVA_DEPENDENCY_INTEGRITY_OK marker or the bounded failure code.",
+        metadata: {
+          packageLockSha256: bundle.manifest.packageLockSha256,
+          dependencyArchiveSha256: bundle.manifest.dependencyArchiveSha256,
+          dependencyManifestHash: bundle.manifest.dependencyManifestHash,
+          dependencyFileCount: bundle.manifest.fileCount,
+          dependencyBytes: bundle.manifest.totalBytes,
+          addedHostedFileCount: files.length,
+          hostedFileCountAfter: existingCount + files.length,
+        },
+      });
+    },
     async resume(sessionId, input = {}) { assertPreview(); return adapterFor(passiveProvider()).resumeDeveloperSession({ sessionId, approvalDecision: input.approvalDecision, additionalInstruction: input.additionalInstruction }); },
     async cancel(sessionId) { assertPreview(); return adapterFor(passiveProvider()).cancelDeveloperSession({ sessionId }); },
   });

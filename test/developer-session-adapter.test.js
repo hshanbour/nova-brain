@@ -206,6 +206,43 @@ test("void Agents event responses are accepted without JSON parsing", async () =
   assert.match(requests[1].url, /\/agents\/sessions\/managed-1\/events$/);
 });
 
+test("dependency files attach to the existing environment and verifier resumes only the same session", async () => {
+  const requests = [];
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "dependency-secret",
+    agentId: "agent-1",
+    environmentTemplateId: "env-template-1",
+    async fetchImpl(url, options = {}) {
+      requests.push({ url, options });
+      if (options.method === "POST" && url.includes("/agents/environments/env-live/files")) {
+        const body = JSON.parse(options.body);
+        return Response.json({ environment_id: "env-live", object: "agent.environment.file", path: body.path, size_bytes: 1 });
+      }
+      if (options.method === "POST" && url.endsWith("/agents/sessions/provider-live/events")) return new Response(null, { status: 200 });
+      if (url.includes("/items?") || url.includes("/artifacts?")) return Response.json({ data: [] });
+      return Response.json({ id: "provider-live", status: "idle", environment: { id: "env-live" } });
+    },
+  });
+  const files = ["dependencies.tar.gz", "manifest.json", "verify.mjs"].map((name) => ({
+    type: "inline", path: `/workspace/.nova-dependency-handoff/${name}`, data: Buffer.from(name).toString("base64"),
+  }));
+  const result = await provider.materializeDependencies({
+    providerSessionId: "provider-live",
+    environmentId: "env-live",
+    files,
+    verificationInstruction: "Run exactly the bounded dependency verifier.",
+  });
+  assert.equal(result.providerSessionId, "provider-live");
+  assert.equal(result.evidence.environmentId, "env-live");
+  const uploads = requests.filter((item) => item.options.method === "POST" && item.url.includes("/agents/environments/env-live/files"));
+  assert.equal(uploads.length, 3);
+  assert.equal(requests.some((item) => item.url.endsWith("/agents/sessions") && item.options.method === "POST"), false);
+  const event = requests.find((item) => item.url.endsWith("/agents/sessions/provider-live/events"));
+  assert.match(JSON.parse(event.options.body).events[0].input[0].content[0].text, /dependency verifier/);
+  for (const item of requests) assert.equal(item.options.headers["OpenAI-Beta"], "agents=v1");
+  assert.doesNotMatch(JSON.stringify(result), /dependency-secret|Authorization/);
+});
+
 test("Agents session retrieval preserves bounded outputs artifacts tests environment and truthful changed paths", async () => {
   const provider = createAgentsApiDeveloperProvider({
     apiKey: "sk-provider-secret-123456789",

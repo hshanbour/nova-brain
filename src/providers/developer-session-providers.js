@@ -355,6 +355,26 @@ export function createAgentsApiDeveloperProvider({
         changedPaths: [],
       };
     },
+    async materializeDependencies({ providerSessionId, environmentId, files, verificationInstruction }) {
+      if (!nonEmptyString(providerSessionId) || !nonEmptyString(environmentId)
+        || !Array.isArray(files) || files.length !== 3 || !nonEmptyString(verificationInstruction)) {
+        throw safeError({ stage: "agents_dependency_materialization", classification: "provider_input_invalid", payload: null, apiKey });
+      }
+      for (const file of files) {
+        if (!file || file.type !== "inline" || !nonEmptyString(file.path) || !nonEmptyString(file.data)) {
+          throw safeError({ stage: "agents_dependency_materialization", classification: "provider_input_invalid", payload: null, apiKey });
+        }
+        await request(`/agents/environments/${encodeURIComponent(environmentId)}/files`, "agents_environment_file_create", {
+          method: "POST",
+          body: JSON.stringify(file),
+        });
+      }
+      await request(`/agents/sessions/${encodeURIComponent(providerSessionId)}/events`, "agents_dependency_verification_submit", {
+        method: "POST",
+        body: JSON.stringify({ events: [{ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: verificationInstruction }] }] }] }),
+      }, "void");
+      return retrieve(providerSessionId);
+    },
     async resume({ providerSessionId, approval, approvalDecision, additionalInstruction, policyHash }) {
       const decision = { contract: "nova_developer_session_resume_v1", policyHash, approvalDecision };
       const requiredActions = Array.isArray(approval?.requiredActions) ? approval.requiredActions : [];
