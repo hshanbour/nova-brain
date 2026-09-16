@@ -1,226 +1,265 @@
-const DEFAULT_LANGUAGE = 'ar-SA';
-const LANGUAGE_STORAGE_KEY = 'nova.composer.dictationLanguage';
-
 export const MICROPHONE_LANGUAGES = Object.freeze([
-  { value: 'ar-SA', label: 'العربية (السعودية)' },
-  { value: 'en-US', label: 'English (US)' },
-  { value: 'en-GB', label: 'English (UK)' }
+  { code: 'en-US', label: 'English' },
+  { code: 'ar-SA', label: 'العربية' },
+  { code: 'ar-EG', label: 'العربية (مصر)' }
 ]);
 
-function supportedLanguage(language) {
-  return MICROPHONE_LANGUAGES.some(({ value }) => value === language);
-}
+const languages = new Set(MICROPHONE_LANGUAGES.map(({ code }) => code));
+const states = new Set(['idle', 'recording', 'processing', 'complete', 'error']);
+const root = typeof window === 'undefined' ? {} : window;
 
-function composerMetadata(text) {
-  const hasArabic = /[\u0600-\u06ff]/u.test(text);
-  const hasLatin = /[A-Za-z]/u.test(text);
-  return {
-    direction: hasArabic ? 'rtl' : 'ltr',
-    mixed: hasArabic && hasLatin,
-    rtlAware: hasArabic,
-    editable: true
-  };
-}
+const base = (dependencies = {}) => ({
+  SpeechRecognition: root.SpeechRecognition || root.webkitSpeechRecognition,
+  storage: root.localStorage,
+  mediaDevices: root.navigator?.mediaDevices,
+  AudioContext: root.AudioContext || root.webkitAudioContext,
+  requestAnimationFrame: root.requestAnimationFrame?.bind(root) || ((callback) => setTimeout(callback, 16)),
+  cancelAnimationFrame: root.cancelAnimationFrame?.bind(root) || clearTimeout,
+  ...dependencies
+});
 
-function normalizeAmplitude(value) {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(1, value));
-}
-
-function errorDetails(error) {
-  const code = error?.error || error?.name || 'unknown';
-  const mapped = {
-    'not-allowed': ['permission-denied', 'Microphone permission was denied. Your draft was preserved.', false],
-    'service-not-allowed': ['permission-denied', 'Speech recognition is unavailable. Your draft was preserved.', false],
-    network: ['network', 'Network transcription failed. Check your connection and try again.', true],
-    'no-speech': ['no-speech', 'No speech was detected. Your draft was preserved; try again when ready.', true],
-    aborted: ['aborted', 'Dictation was stopped. Your draft was preserved.', true],
-    'audio-capture': ['audio-capture', 'No usable microphone was found. Your draft was preserved.', false],
-    unsupported: ['unsupported', 'Speech recognition is not supported in this browser. Your draft was preserved.', false]
-  }[code] || ['unknown', 'Dictation failed unexpectedly. Your draft was preserved.', true];
-  return { code: mapped[0], message: mapped[1], recoverable: mapped[2] };
-}
+const metadata = (text) => ({
+  text,
+  direction: /[\u0600-\u06ff]/.test(text) ? 'rtl' : 'ltr'
+});
 
 export function createVoiceInput(options = {}) {
-  const deps = options.dependencies || {};
-  const storage = deps.storage || globalThis.localStorage;
-  const Recognition = deps.SpeechRecognition || globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
-  const mediaDevices = deps.mediaDevices || globalThis.navigator?.mediaDevices;
-  const AudioContext = deps.AudioContext || globalThis.AudioContext || globalThis.webkitAudioContext;
-  const requestFrame = deps.requestAnimationFrame || globalThis.requestAnimationFrame;
-  const cancelFrame = deps.cancelAnimationFrame || globalThis.cancelAnimationFrame;
-  const publishState = options.onState || (() => {});
-  const publishText = options.onText || (() => {});
-  const publishFinal = options.onFinal || (() => {});
-  const publishError = options.onError || (() => {});
-  const publishAmplitude = options.onAmplitude || (() => {});
-  const readDraft = options.getDraft || (() => '');
-  let language = supportedLanguage(storage?.getItem?.(LANGUAGE_STORAGE_KEY))
-    ? storage.getItem(LANGUAGE_STORAGE_KEY)
-    : DEFAULT_LANGUAGE;
-  let session = null;
+  const dependencies = base(options.dependencies);
+  const Recognition = dependencies.SpeechRecognition;
+  const callbacks = {
+    onState: options.onState || (() => {}),
+    onText: options.onText || (() => {}),
+    onError: options.onError || (() => {}),
+    onAmplitude: options.onAmplitude || (() => {})
+  };
 
-  function isCurrent(current) {
-    return session === current && !current.terminal;
-  }
+  let language = options.language || dependencies.storage?.getItem?.('nova-composer-language') || 'en-US';
+  let state = 'idle';
+  let recognition;
+  let token = 0;
+  let draft = '';
+  let finalText = '';
+  let stream;
+  let context;
+  let source;
+  let analyser;
+  let frame;
+  let stopped = false;
 
-  function setState(current, next) {
-    if (current?.state === next) return;
-    current.state = next;
-    publishState(next);
-  }
+  if (!languages.has(language)) language = 'en-US';
 
-  function emitText(current, interim = '') {
-    const transcript = `${current.draft}${current.finals}${interim}`;
-    publishText(transcript, composerMetadata(transcript));
-    return transcript;
-  }
+  const setState = (next) => {
+    if (!states.has(next)) return;
+    state = next;
+    callbacks.onState(next);
+  };
 
-  function cleanMeter(current) {
-    if (current.frame != null) cancelFrame?.(current.frame);
-    current.frame = null;
-    current.source?.disconnect?.();
-    current.analyser?.disconnect?.();
-    current.audioContext?.close?.();
-    current.stream?.getTracks?.().forEach((track) => track.stop?.());
+  const publishAmplitude = (value) => {
+    callbacks.onAmplitude(Math.max(0, Math.min(1, value || 0)));
+  };
+
+  const clearMeter = () => {
+    if (frame) dependencies.cancelAnimationFrame(frame);
+    frame = undefined;
+    source?.disconnect?.();
+    analyser?.disconnect?.();
+    stream?.getTracks?.().forEach((track) => track.stop());
+    context?.close?.();
+    stream = undefined;
+    context = undefined;
+    source = undefined;
+    analyser = undefined;
     publishAmplitude(0);
-  }
+  };
 
-  function cleanup(current) {
-    cleanMeter(current);
-    current.recognition.onresult = null;
-    current.recognition.onerror = null;
-    current.recognition.onend = null;
-  }
+  const finish = (next) => {
+    clearMeter();
+    setState(next);
+  };
 
-  function complete(current) {
-    if (!isCurrent(current)) return;
-    current.terminal = true;
-    const transcript = emitText(current);
-    publishFinal(transcript, composerMetadata(transcript));
-    cleanup(current);
-    setState(current, 'complete');
-    if (session === current) session = null;
-  }
+  const fail = (id, event = {}) => {
+    if (id !== token) return;
+    callbacks.onText(draft, metadata(draft), false);
+    callbacks.onError({
+      code: event.error || 'recognition-error',
+      message: event.message || 'Microphone transcription failed. Your draft was restored.',
+      recoverable: true
+    });
+    finish('error');
+  };
 
-  function fail(current, source) {
-    if (!isCurrent(current)) return;
-    current.terminal = true;
-    try { current.recognition.stop?.(); } catch {}
-    publishText(current.draft, composerMetadata(current.draft));
-    cleanup(current);
-    publishError(errorDetails(source));
-    setState(current, 'error');
-    if (session === current) session = null;
-  }
+  const meter = async (id) => {
+    if (!dependencies.mediaDevices?.getUserMedia || !dependencies.AudioContext) return;
 
-  function beginMeter(current) {
-    if (!mediaDevices?.getUserMedia || !AudioContext || !requestFrame) return;
-    Promise.resolve(mediaDevices.getUserMedia({ audio: true })).then((stream) => {
-      if (!isCurrent(current)) {
-        stream.getTracks?.().forEach((track) => track.stop?.());
+    try {
+      stream = await dependencies.mediaDevices.getUserMedia({ audio: true });
+      if (id !== token || state !== 'recording') {
+        clearMeter();
         return;
       }
-      current.stream = stream;
-      current.audioContext = new AudioContext();
-      current.analyser = current.audioContext.createAnalyser();
-      current.source = current.audioContext.createMediaStreamSource(stream);
-      current.source.connect(current.analyser);
-      const samples = new Uint8Array(current.analyser.fftSize || 32);
+
+      context = new dependencies.AudioContext();
+      source = context.createMediaStreamSource(stream);
+      analyser = context.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+
+      const samples = new Uint8Array(analyser.fftSize);
+      let smooth = 0;
       const tick = () => {
-        if (!isCurrent(current) || current.state !== 'recording') return;
-        current.analyser.getByteTimeDomainData(samples);
-        let total = 0;
-        for (const sample of samples) total += Math.abs(sample - 128) / 128;
-        publishAmplitude(normalizeAmplitude(total / samples.length));
-        current.frame = requestFrame(tick);
+        if (id !== token || state !== 'recording') return;
+        analyser.getByteTimeDomainData(samples);
+
+        let sum = 0;
+        for (const value of samples) {
+          const normalized = (value - 128) / 128;
+          sum += normalized * normalized;
+        }
+
+        const raw = Math.sqrt(sum / samples.length);
+        const target = raw < .012 ? 0 : Math.min(1, raw * 8);
+        smooth += (target - smooth) * (target > smooth ? .42 : .16);
+        publishAmplitude(smooth < .008 ? 0 : smooth);
+        frame = dependencies.requestAnimationFrame(tick);
       };
+
       tick();
-    }).catch(() => {
-      // Speech recognition remains usable when optional visual metering is unavailable.
-    });
-  }
-
-  function start(draft = readDraft()) {
-    if (session) return false;
-    const originalDraft = String(draft ?? '');
-    if (!Recognition) {
-      publishText(originalDraft, composerMetadata(originalDraft));
+    } catch {
       publishAmplitude(0);
-      publishError(errorDetails({ error: 'unsupported' }));
-      publishState('error');
-      return false;
     }
+  };
 
-    const recognition = new Recognition();
-    const current = {
-      draft: originalDraft,
-      finals: '',
-      recognition,
-      terminal: false,
-      state: 'idle',
-      frame: null,
-      stream: null,
-      source: null,
-      analyser: null,
-      audioContext: null
-    };
-    session = current;
+  const start = (value = '') => {
+    if (!Recognition || state === 'recording' || state === 'processing') return false;
+
+    clearMeter();
+    draft = value;
+    finalText = '';
+    stopped = false;
+    const id = ++token;
+    recognition = new Recognition();
+    recognition.lang = language;
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = language;
     recognition.onresult = (event) => {
-      if (!isCurrent(current)) return;
+      if (id !== token) return;
+
       let interim = '';
+      let finalChunk = '';
       for (let index = event.resultIndex || 0; index < event.results.length; index += 1) {
         const result = event.results[index];
-        const text = result[0]?.transcript || '';
-        if (result.isFinal) current.finals += text;
+        const text = result[0].transcript;
+        if (result.isFinal) finalChunk += text;
         else interim += text;
       }
-      emitText(current, interim);
+
+      if (finalChunk) finalText += finalChunk;
+      const text = `${draft}${finalText}${interim}`;
+      callbacks.onText(text, metadata(text), Boolean(interim));
     };
-    recognition.onerror = (event) => fail(current, event);
+    recognition.onerror = (event) => fail(id, event);
     recognition.onend = () => {
-      if (!isCurrent(current)) return;
-      setState(current, 'processing');
-      complete(current);
+      if (id !== token) return;
+      if (state === 'recording' || (state === 'processing' && stopped)) finish('complete');
     };
 
-    setState(current, 'recording');
-    beginMeter(current);
+    setState('recording');
+    publishAmplitude(0);
+    meter(id);
+
     try {
       recognition.start();
       return true;
     } catch (error) {
-      fail(current, error);
+      fail(id, error);
       return false;
     }
-  }
-
-  function stop() {
-    if (!session || session.terminal) return false;
-    setState(session, 'processing');
-    try {
-      session.recognition.stop();
-    } catch (error) {
-      fail(session, error);
-    }
-    return true;
-  }
-
-  function setLanguage(nextLanguage) {
-    if (!supportedLanguage(nextLanguage)) return false;
-    language = nextLanguage;
-    storage?.setItem?.(LANGUAGE_STORAGE_KEY, language);
-    return true;
-  }
+  };
 
   return {
+    supported: Boolean(Recognition),
     start,
-    stop,
-    setLanguage,
+    stop() {
+      if (state !== 'recording') return false;
+      stopped = true;
+      setState('processing');
+      clearMeter();
+      recognition?.stop?.();
+      if (!recognition?.stop) finish('complete');
+      return true;
+    },
+    getState: () => state,
     getLanguage: () => language,
-    getState: () => session?.state || 'idle'
+    setLanguage(next) {
+      if (!languages.has(next)) throw new Error('Unsupported microphone language');
+      language = next;
+      dependencies.storage?.setItem?.('nova-composer-language', next);
+    },
+    destroy() {
+      token += 1;
+      clearMeter();
+      recognition?.abort?.();
+    }
+  };
+}
+
+export function createComposerVoiceControl(options = {}) {
+  const { input, button, statusTarget, errorTarget, waveformTarget, resizeInput } = options;
+  if (!input || !button) throw new Error('Composer voice control requires input and button');
+
+  let controller;
+  let lastError = '';
+  const render = (state, error = lastError, amplitude = 0) => {
+    lastError = error || '';
+    button.dataset.voiceState = state;
+    button.setAttribute('aria-pressed', String(state === 'recording'));
+    button.disabled = !controller.supported || state === 'processing';
+
+    if (statusTarget) {
+      statusTarget.textContent = !controller.supported
+        ? 'Microphone is unavailable in this browser.'
+        : ({
+            idle: 'Microphone ready',
+            recording: 'Listening…',
+            processing: 'Processing dictation…',
+            complete: 'Dictation complete',
+            error: 'Dictation failed'
+          }[state]);
+    }
+
+    if (errorTarget) errorTarget.textContent = lastError.message || '';
+    if (waveformTarget) waveformTarget.style.setProperty('--composer-voice-amplitude', String(amplitude || 0));
+  };
+
+  controller = createVoiceInput({
+    language: options.language,
+    dependencies: options.dependencies,
+    onState: (state) => render(state, state === 'recording' ? '' : lastError),
+    onText: (text, info) => {
+      input.value = text;
+      input.dir = info.direction;
+      resizeInput?.();
+    },
+    onError: (error) => render('error', error, 0),
+    onAmplitude: (amplitude) => render(controller.getState(), lastError, amplitude)
+  });
+
+  const click = () => {
+    if (controller.getState() === 'recording') controller.stop();
+    else controller.start(input.value);
+  };
+
+  button.addEventListener('click', click);
+  render('idle');
+
+  return {
+    controller,
+    getState: controller.getState,
+    getLanguage: controller.getLanguage,
+    setLanguage: controller.setLanguage,
+    destroy() {
+      button.removeEventListener('click', click);
+      controller.destroy();
+    }
   };
 }

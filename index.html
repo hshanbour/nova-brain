@@ -1,168 +1,28 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0b0d12">
-  <meta name="description" content="Nova Brain — your private AI operating system.">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Nova Brain">
-  <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="icon" href="/assets/nova-mark.svg" type="image/svg+xml">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nova Console</title>
   <link rel="stylesheet" href="/assets/console.css">
-  <title>Nova Brain — Console</title>
 </head>
 <body>
-  <div class="app-shell">
-    <aside class="sidebar" aria-label="Nova Console navigation">
-      <a class="brand" href="/" aria-label="Nova Brain home">
-        <span class="brand-mark" aria-hidden="true"><span></span></span>
-        <span class="brand-copy"><strong>Nova Brain</strong><small>Personal operating system</small></span>
-      </a>
-      <nav class="primary-nav" aria-label="Primary">
-        <a class="nav-item active" href="#chat" data-section="chat" aria-current="page"><span class="nav-icon" aria-hidden="true">⌁</span><span>Chat</span></a>
-        <a class="nav-item" href="#projects" data-section="projects"><span class="nav-icon">◇</span><span>Projects</span></a>
-        <a class="nav-item" href="#activity" data-section="activity"><span class="nav-icon">✓</span><span>Activity</span></a>
-        <a class="nav-item" href="#memory" data-section="memory"><span class="nav-icon">◫</span><span>Memory</span></a>
-        <a class="nav-item" href="#tools" data-section="tools"><span class="nav-icon">⌘</span><span>Tools</span></a>
-        <a class="nav-item" href="#approvals" data-section="approvals"><span class="nav-icon">◈</span><span>Approvals</span></a>
-        <a class="nav-item" href="#voice-benchmark" data-section="voice-benchmark"><span class="nav-icon">◉</span><span>Voice Benchmark</span></a>
-      </nav>
-      <section class="recents" aria-labelledby="recentsHeading">
-        <div class="recents-heading"><h2 id="recentsHeading">Recent conversations</h2><button type="button" id="refreshRecentsButton" aria-label="Refresh recent conversations">↻</button></div>
-        <div class="recents-list" id="recentsList" aria-live="polite"><p class="recents-state">Loading conversations…</p></div>
-      </section>
-      <div class="sidebar-footer">
-        <div class="system-state"><span class="status-dot"></span><span><strong>Nova online</strong><small id="providerStatus">Checking provider…</small></span></div>
-        <p>Private preview · Owner access only</p>
-      </div>
-    </aside>
-
-    <main class="workspace" id="chat">
-      <header class="topbar">
-        <div><p class="eyebrow">Command center</p><h1>Chat with Nova</h1></div>
-        <div class="chat-actions"><span class="voice-mode-status" id="voiceModeStatus" role="status" aria-live="polite">Voice idle</span><button class="new-chat-button voice-mode-button" id="voiceModeButton" type="button" aria-label="Start Voice"><span>●</span><span>Start Voice</span></button><button class="new-chat-button voice-end-button" id="endVoiceButton" type="button" aria-label="End Voice" disabled><span>■</span><span>End Voice</span></button><button class="new-chat-button" id="speakerEnrollmentButton" type="button" aria-label="Open speaker enrollment"><span>◎</span><span>Learn voice</span></button><button class="new-chat-button voice-settings-button" id="voiceSettingsButton" type="button" aria-label="Open legacy browser voice settings"><span>◉</span><span>Legacy voice</span></button><button class="new-chat-button history-button" id="historyButton" type="button" aria-label="Open recent conversations"><span>☰</span><span>Recents</span></button><button class="new-chat-button" id="newChatButton" type="button" aria-label="Start a new conversation"><span>＋</span><span>New conversation</span></button></div>
-        <details id="speakerFamiliarityPanel" class="privacy-note"><summary>Optional recurring voice familiarity</summary><p>This is separate from identity verification. Without explicit consent, Nova will not store or match an anonymous voiceprint. Voice Mode still works normally.</p><label>Speaker's own name or consent label <input id="speakerFamiliarityActor" maxlength="120" autocomplete="off"></label><label>Optional self-reported name <input id="speakerFamiliarityAlias" maxlength="80" autocomplete="off"></label><label class="toggle-label"><input id="speakerFamiliarityConsent" type="checkbox"> I explicitly consent to Nova deriving and storing an encrypted anonymous voiceprint only to recognize this voice as a recurring speaker. I understand this does not verify my identity, grant permissions, or retain raw audio, and I can withdraw consent and delete the voiceprint.</label><p id="speakerFamiliarityStatus" role="status">Voice familiarity is off. Voice turns continue normally without storing an anonymous voiceprint.</p><div id="anonymousSpeakerProfiles"></div></details>
-      </header>
-      <section class="conversation" aria-label="Conversation with Nova Brain">
-        <div class="messages" id="messages" role="log" aria-live="polite" aria-relevant="additions">
-          <div class="welcome" id="welcomeState">
-            <div class="nova-orb" aria-hidden="true"><span></span></div>
-            <p class="eyebrow">Nova Brain</p>
-            <h2>What are we working on?</h2>
-            <p>Think, plan, and execute from one place. Nova is connected to the live agent runtime and ready for your next instruction.</p>
-            <div class="capability-row"><span>Real OpenAI model</span><span>Bounded agent loop</span><span>Private preview</span></div>
-          </div>
-        </div>
-        <div class="composer-wrap">
-          <div class="request-error" id="requestError" role="alert" hidden></div>
-          <form class="composer" id="composer">
-            <label class="sr-only" for="messageInput">Message Nova Brain</label>
-            <textarea id="messageInput" name="message" rows="1" maxlength="12000" placeholder="Tell Nova what you want to accomplish…" required></textarea>
-            <div class="composer-actions">
-              <button class="icon-button voice-button" id="voiceButton" type="button" aria-label="Start voice input" title="Start voice input"><span></span></button>
-              <button class="send-button" id="sendButton" type="submit" aria-label="Send message"><span>Send</span><span class="send-arrow">↑</span></button>
-            </div>
-          </form>
-          <p class="composer-note">Nova can make mistakes. Review important actions before approval.</p>
-        </div>
-      </section>
-    </main>
-
-    <main class="workspace dashboard-workspace" id="projects" hidden><header class="topbar"><div><p class="eyebrow">Portfolio</p><h1>Projects</h1></div></header><div class="dashboard-scroll"><div class="dashboard-grid" id="projectsList"><p class="dashboard-state">Loading projects…</p></div></div></main>
-    <main class="workspace dashboard-workspace" id="activity" hidden><header class="topbar"><div><p class="eyebrow">Audit trail</p><h1>Activity</h1></div></header><div class="dashboard-scroll"><div class="dashboard-list" id="activityList"><p class="dashboard-state">Loading activity…</p></div></div></main>
-    <main class="workspace dashboard-workspace" id="tools" hidden><header class="topbar"><div><p class="eyebrow">Runtime capabilities</p><h1>Tools</h1></div></header><div class="dashboard-scroll"><div class="dashboard-grid" id="toolsList"><p class="dashboard-state">Loading tools…</p></div></div></main>
-    <main class="workspace dashboard-workspace" id="approvals" hidden><header class="topbar"><div><p class="eyebrow">Owner control</p><h1>Approvals</h1></div></header><div class="dashboard-scroll"><div class="dashboard-list" id="approvalsList"><p class="dashboard-state">Loading approvals…</p></div></div></main>
-
-    <main class="workspace memory-workspace" id="memory" hidden>
-      <header class="topbar"><div><p class="eyebrow">Private knowledge</p><h1>Owner &amp; Memory</h1></div><button class="new-chat-button" id="addMemoryButton" type="button"><span>＋</span><span>Add memory</span></button></header>
-      <div class="memory-scroll">
-        <section class="profile-card" aria-labelledby="ownerProfileHeading">
-          <div class="profile-identity"><div class="profile-avatar">M</div><div><p class="eyebrow">Owner profile</p><h2 id="ownerProfileHeading">Mohammad Shanbour</h2><p class="arabic-name" dir="rtl">محمد شنبور</p></div><span class="privacy-badge">Private</span></div>
-          <form id="profileForm" class="profile-form">
-            <label>Preferred name<input name="preferredName" maxlength="100"></label>
-            <label>Current location<input name="currentLocation" maxlength="200"></label>
-            <label class="wide">Communication preferences<textarea name="communication" rows="2" maxlength="1000"></textarea></label>
-            <div class="wide form-actions"><span id="profileStatus" role="status"></span><button class="secondary-button" type="submit">Save profile</button></div>
-          </form>
-        </section>
-
-        <section class="memory-section" aria-labelledby="memoryHeading">
-          <div class="section-heading"><div><p class="eyebrow">Long-term context</p><h2 id="memoryHeading">What Nova remembers</h2></div><label class="filter-label">Category<select id="memoryFilter"><option value="">All memories</option><option value="identity">Identity</option><option value="preference">Preferences</option><option value="goal">Goals</option><option value="decision">Decisions</option><option value="project_context">Project context</option><option value="relationship_context">Relationships</option><option value="reusable_instruction">Instructions</option></select></label></div>
-          <div class="memory-error" id="memoryError" role="alert" hidden></div>
-          <div class="memory-list" id="memoryList"><div class="memory-loading">Loading private memory…</div></div>
-        </section>
-      </div>
-    </main>
-
-    <main class="workspace benchmark-workspace" id="voice-benchmark" hidden>
-      <header class="topbar"><div><p class="eyebrow">Nova Voice V2 · Phase 0</p><h1>Voice Benchmark</h1></div><span class="benchmark-private">Owner-only · Preview</span></header>
-      <div class="benchmark-scroll">
-        <section class="benchmark-banner" aria-labelledby="benchmarkStatusHeading"><div><p class="eyebrow">Safety gate</p><h2 id="benchmarkStatusHeading">Checking benchmark readiness…</h2><p id="benchmarkStatusText">No provider call can run until explicit owner approval is enabled server-side.</p></div><div class="benchmark-budget"><strong id="benchmarkSpend">$0.00 / $2.00</strong><small>hard lifetime cap</small></div></section>
-        <div class="benchmark-grid">
-          <section class="benchmark-panel" aria-labelledby="sttBenchmarkHeading"><div class="section-heading"><div><p class="eyebrow">Speech to text</p><h2 id="sttBenchmarkHeading">Five fixed recordings</h2></div></div><label>Test script<select id="benchmarkSttSample"></select></label><blockquote id="benchmarkSttScript" dir="auto"></blockquote><div class="benchmark-recording"><button class="secondary-button" id="benchmarkRecordButton" type="button">Record sample</button><button class="secondary-button" id="benchmarkStopButton" type="button" disabled>Stop</button><audio id="benchmarkRecordingPlayback" controls hidden></audio><span id="benchmarkRecordingStatus" role="status">Audio stays in this browser unless you run an approved test.</span></div><div id="benchmarkSttProviders" class="provider-list"></div><button class="send-button benchmark-run" id="benchmarkRunStt" type="button" disabled>Run selected STT providers</button><div id="benchmarkSttResults" class="benchmark-results" aria-live="polite"></div></section>
-          <section class="benchmark-panel" aria-labelledby="ttsBenchmarkHeading"><div class="section-heading"><div><p class="eyebrow">Text to speech</p><h2 id="ttsBenchmarkHeading">Blind voice comparison</h2></div></div><label>Test script<select id="benchmarkTtsSample"></select></label><blockquote id="benchmarkTtsScript" dir="auto"></blockquote><div id="benchmarkTtsProviders" class="provider-list"></div><button class="send-button benchmark-run" id="benchmarkRunTts" type="button" disabled>Generate blind voice set</button><p class="privacy-note">Providers stay hidden behind Voice A/B/C until you submit ratings. Generated audio is kept only in this page session.</p><div id="benchmarkTtsResults" class="benchmark-results" aria-live="polite"></div></section>
-        </div>
-        <section class="benchmark-panel benchmark-summary"><div class="section-heading"><div><p class="eyebrow">Durable metadata</p><h2>Session results</h2></div><button class="secondary-button" id="benchmarkNewSession" type="button">New benchmark session</button></div><p id="benchmarkSummary">No benchmark session has been started. Transcripts, scores, timings, cost estimates, and ratings are stored separately from Nova memory; raw audio is not persisted.</p></section>
-      </div>
-    </main>
-
-    <nav class="mobile-nav" aria-label="Mobile navigation">
-      <a href="#chat" class="active" data-section="chat"><span>⌁</span><small>Chat</small></a>
-      <a href="#projects" data-section="projects"><span>◇</span><small>Projects</small></a>
-      <a href="#activity" data-section="activity"><span>✓</span><small>Activity</small></a>
-      <a href="#memory" data-section="memory"><span>◫</span><small>Memory</small></a>
-      <a href="#tools" data-section="tools"><span>⌘</span><small>Tools</small></a>
-      <a href="#approvals" data-section="approvals"><span>◈</span><small>Approvals</small></a>
-      <a href="#voice-benchmark" data-section="voice-benchmark"><span>◉</span><small>Voice Lab</small></a>
-    </nav>
-  </div>
-
-  <section class="recents-drawer" id="recentsDrawer" role="dialog" aria-modal="true" aria-labelledby="mobileRecentsHeading" hidden>
-    <div class="recents-drawer-panel"><div class="recents-drawer-heading"><div><p class="eyebrow">History</p><h2 id="mobileRecentsHeading">Recent conversations</h2></div><button type="button" id="closeRecentsButton" aria-label="Close recent conversations">×</button></div><div class="recents-list" id="mobileRecentsList" aria-live="polite"></div></div>
-  </section>
-
-  <template id="messageTemplate">
-    <article class="message"><div class="avatar"></div><div class="message-content"><div class="message-heading"><strong></strong><time></time><button class="speak-response" type="button" aria-label="Speak response" title="Speak response" hidden>▶</button></div><div class="message-body"></div><div class="execution-meta" hidden></div></div></article>
-  </template>
-  <section id="voiceSettingsDialog" class="memory-dialog voice-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="voiceSettingsTitle" hidden>
-    <form method="dialog">
-      <div class="dialog-heading"><div><p class="eyebrow">Secondary legacy controls</p><h2 id="voiceSettingsTitle">Browser voice settings</h2></div><button type="button" class="dialog-close" data-close-voice-settings aria-label="Close voice settings">×</button></div>
-      <fieldset><legend>Voice input</legend><label>Primary recognition language<select id="microphoneLanguage"></select></label><p id="voiceInputSupport" class="privacy-note"></p></fieldset>
-      <fieldset><legend>Voice output</legend><label>Preferred browser voice<select id="preferredVoice"></select></label><label class="toggle-label"><input id="autoSpeak" type="checkbox"> Automatically speak new Nova responses</label><div class="voice-test-row"><button type="button" class="secondary-button" id="testVoiceButton">Test Voice</button><span id="voiceDiagnostic" role="status">Ready to test browser speech.</span></div><p id="voiceOutputSupport" class="privacy-note"></p></fieldset>
-      <p class="privacy-note">These browser-native controls are separate from premium Start Voice. Preferences stay in this browser and are not saved to Nova memory.</p>
-      <div class="dialog-actions"><button type="button" class="secondary-button" data-close-voice-settings>Done</button></div>
+  <main>
+    <section id="console" aria-label="Nova console"></section>
+    <p id="requestError" role="alert"></p>
+    <form id="composerForm">
+      <label for="messageInput">Message</label>
+      <textarea id="messageInput" rows="1" placeholder="Message Nova"></textarea>
+      <div id="composerVoiceError" role="alert"></div>
+      <span id="composerVoiceStatus" aria-live="polite">Microphone ready</span>
+      <button id="voiceButton" class="composer-voice" type="button" data-voice-state="idle" aria-pressed="false" aria-describedby="composerVoiceStatus" aria-label="Dictate message">
+        <span id="composerVoiceWaveform" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+      </button>
+      <button id="sendButton" type="submit">Send</button>
     </form>
-  </section>
-  <section id="speakerEnrollmentDialog" class="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="speakerEnrollmentTitle" hidden>
-    <form id="speakerEnrollmentForm" method="dialog">
-      <div class="dialog-heading"><div><p class="eyebrow">Sensitive biometric enrollment</p><h2 id="speakerEnrollmentTitle">Learn a consenting voice</h2></div><button type="button" class="dialog-close" data-close-speaker-enrollment aria-label="Close">×</button></div>
-      <p class="privacy-note">Nova sends each sample to the private speaker-embedding worker, immediately discards the raw recording, and stores only an encrypted derived voiceprint. It will not infer emotion, age, ethnicity, health, or accent origin. You can revoke or delete the profile later.</p>
-      <div id="speakerExistingProfiles" class="privacy-note" aria-live="polite"></div>
-      <div class="dialog-grid"><label>Display name<input name="displayName" maxlength="100" required></label><label>Relationship<select name="relation"><option value="owner">Owner</option><option value="family">Consenting household member</option></select></label></div>
-      <label class="toggle-label"><input name="consent" type="checkbox" required> I am the person speaking, I understand voice recognition is biometric processing, and I explicitly consent to enrollment.</label>
-      <button type="button" class="secondary-button" id="speakerSampleButton">Start sample 1</button>
-      <ol class="speaker-sample-confirmations" aria-label="Enrollment sample status">
-        <li data-speaker-sample-confirmation data-confirmed="false">Sample 1: Not recorded</li>
-        <li data-speaker-sample-confirmation data-confirmed="false">Sample 2: Not recorded</li>
-        <li data-speaker-sample-confirmation data-confirmed="false">Sample 3: Not recorded</li>
-      </ol>
-      <p id="speakerEnrollmentStatus" class="privacy-note" role="status">Nothing is recorded until you explicitly start, stop, and confirm each sample.</p>
-      <div class="dialog-actions"><button type="button" class="secondary-button" data-close-speaker-enrollment>Cancel</button><button type="submit" class="send-button" id="speakerEnrollSubmit" disabled>Encrypt and enroll voice</button></div>
-    </form>
-  </section>
-  <section id="memoryDialog" class="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="memoryDialogTitle" hidden>
-    <form id="memoryForm" method="dialog">
-      <div class="dialog-heading"><div><p class="eyebrow">Explicit memory</p><h2 id="memoryDialogTitle">Add memory</h2></div><button type="button" class="dialog-close" data-close-memory aria-label="Close">×</button></div>
-      <input type="hidden" name="memoryId">
-      <label>What should Nova remember?<textarea name="content" rows="5" maxlength="4000" required></textarea></label>
-      <div class="dialog-grid"><label>Category<select name="category" required><option value="preference">Preference</option><option value="goal">Goal</option><option value="decision">Decision</option><option value="project_context">Project context</option><option value="relationship_context">Relationship</option><option value="reusable_instruction">Working instruction</option></select></label><label>Scope<select name="scope"><option value="global">Global owner context</option><option value="system">Nova system</option><option value="project">Specific project</option></select></label></div>
-      <label id="projectField" hidden>Project<select name="projectId"><option value="nova-brain">Nova Brain</option><option value="sharp-cuts">Sharp Cuts</option><option value="uk-missed-call-recovery">UK missed-call recovery</option></select></label>
-      <p class="privacy-note">Stored privately. Nova retrieves only a small relevant subset for each request.</p>
-      <div class="dialog-actions"><button type="button" class="secondary-button" data-close-memory>Cancel</button><button type="submit" class="send-button" id="saveMemoryButton">Save memory</button></div>
-    </form>
-  </section>
-  <script type="module" src="/assets/console.js?v=voice-v2-premium"></script>
+    <label for="microphoneLanguage">Dictation language</label>
+    <select id="microphoneLanguage"></select>
+  </main>
+  <script type="module" src="/assets/console.js"></script>
 </body>
 </html>
