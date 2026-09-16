@@ -148,7 +148,14 @@ export function createDeveloperSessionAdapter({ providers, sessionStore, default
   };
   const providerFailure = async (record, error) => {
     const updatedAt = clock().toISOString();
-    const boundedError = { code: error?.code || "developer_provider_failed", message: "Developer provider failed closed." };
+    const safeDiagnostics = error?.safeDiagnostics && typeof error.safeDiagnostics === "object" && !Array.isArray(error.safeDiagnostics)
+      ? structuredClone(error.safeDiagnostics)
+      : null;
+    const boundedError = {
+      code: error?.code || "developer_provider_failed",
+      message: "Developer provider failed closed.",
+      ...(safeDiagnostics ? { diagnostics: safeDiagnostics } : {}),
+    };
     return persist({
       ...record,
       status: "failed",

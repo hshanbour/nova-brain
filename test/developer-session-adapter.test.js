@@ -90,6 +90,43 @@ test("provider failures persist a safe closed failure without leaking the upstre
   assert.doesNotMatch(JSON.stringify(result), /sk-secret|Bearer/);
 });
 
+for (const upstreamStatus of [400, 401, 403, 404, 429, 503]) {
+  test(`agents API session-create ${upstreamStatus} persists only bounded safe diagnostics`, async () => {
+    const apiKey = "sk-private-upstream-key-123456789";
+    const fetchImpl = async () => Response.json({
+      error: {
+        type: `request_type_${upstreamStatus}`,
+        code: `request_code_${upstreamStatus}`,
+        message: `Rejected upstream. Authorization: Bearer ${apiKey}; Cookie=session-private-value ${"x".repeat(400)}`,
+      },
+      raw_secret: "must-not-be-persisted",
+      headers: { authorization: `Bearer ${apiKey}` },
+    }, { status: upstreamStatus });
+    const provider = createAgentsApiDeveloperProvider({
+      apiKey,
+      agent: { model: "gpt-5.2-codex" },
+      environment: { type: "openai_hosted", network: { access: "disabled" } },
+      fetchImpl,
+    });
+
+    const result = await adapter(provider, persistentTestStore(), "agents_api")
+      .startDeveloperSession(microphoneDeveloperRequest({ provider: "agents_api" }));
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.error.code, "agents_api_request_failed");
+    assert.equal(result.error.message, "Developer provider failed closed.");
+    assert.deepEqual({ ...result.error.diagnostics, upstreamErrorMessage: undefined }, {
+      requestStage: "agents_session_create",
+      upstreamStatus,
+      upstreamErrorType: `request_type_${upstreamStatus}`,
+      upstreamErrorCode: `request_code_${upstreamStatus}`,
+      upstreamErrorMessage: undefined,
+    });
+    assert.ok(result.error.diagnostics.upstreamErrorMessage.length <= 256);
+    assert.doesNotMatch(JSON.stringify(result), /private-upstream-key|session-private-value|must-not-be-persisted|authorization/i);
+  });
+}
+
 test("legacy provider remains the safe routing default while agents_api is opt-in", async () => {
   const legacy = createLegacyDeveloperProvider({
     async start() { return { providerSessionId: "legacy-1", status: "running", changedPaths: [] }; },

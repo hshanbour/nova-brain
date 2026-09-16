@@ -8,9 +8,36 @@ export class DeveloperProviderConfigurationError extends Error {
   }
 }
 
-function safeError(status) {
-  const error = new Error(`Managed developer provider request failed with status ${status}.`);
+const MAX_UPSTREAM_TYPE_LENGTH = 80;
+const MAX_UPSTREAM_CODE_LENGTH = 80;
+const MAX_UPSTREAM_MESSAGE_LENGTH = 256;
+
+function sanitizedDiagnosticString(value, { maxLength, apiKey }) {
+  if (typeof value !== "string") return null;
+  const normalized = value
+    .replaceAll(apiKey, "[REDACTED]")
+    .replace(/\b(?:authorization|cookie|set-cookie)\s*[:=]\s*[^,;]+/gi, "[REDACTED]")
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
+    .replace(/\b(?:sk|sess|proj)-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]")
+    .replace(/[\r\n\t]+/g, " ")
+    .trim();
+  return normalized ? normalized.slice(0, maxLength) : null;
+}
+
+function safeError({ status, stage, payload, apiKey }) {
+  const upstreamError = payload?.error && typeof payload.error === "object" && !Array.isArray(payload.error)
+    ? payload.error
+    : null;
+  const diagnostics = {
+    requestStage: stage,
+    upstreamStatus: status,
+    upstreamErrorType: sanitizedDiagnosticString(upstreamError?.type, { maxLength: MAX_UPSTREAM_TYPE_LENGTH, apiKey }),
+    upstreamErrorCode: sanitizedDiagnosticString(upstreamError?.code, { maxLength: MAX_UPSTREAM_CODE_LENGTH, apiKey }),
+    upstreamErrorMessage: sanitizedDiagnosticString(upstreamError?.message, { maxLength: MAX_UPSTREAM_MESSAGE_LENGTH, apiKey }),
+  };
+  const error = new Error("Managed developer provider request failed.");
   error.code = "agents_api_request_failed";
+  error.safeDiagnostics = Object.freeze(diagnostics);
   return error;
 }
 
@@ -93,19 +120,25 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
   if (!nonEmptyString(apiKey)) throw new DeveloperProviderConfigurationError("OPENAI_API_KEY is required for live Agents API calls.");
   const agentConfiguration = normalizeAgentConfiguration({ agentId, agent });
   const sessionEnvironment = normalizeEnvironmentConfiguration({ environmentTemplateId, environment });
-  const request = async (path, options = {}) => {
+  const request = async (path, stage, options = {}) => {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       ...options,
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", ...(options.headers || {}) },
     });
-    if (!response.ok) throw safeError(response.status);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw safeError({ status: response.status, stage, payload, apiKey });
+    }
     return response.status === 204 ? null : response.json();
   };
-  const retrieve = async (providerSessionId) => mappedSession(await request(`/agents/sessions/${encodeURIComponent(providerSessionId)}`));
+  const retrieve = async (providerSessionId) => mappedSession(await request(
+    `/agents/sessions/${encodeURIComponent(providerSessionId)}`,
+    "agents_session_retrieve",
+  ));
   return Object.freeze({
     name: "agents_api",
     async start({ policy, policyHash }) {
-      const created = await request("/agents/sessions", {
+      const created = await request("/agents/sessions", "agents_session_create", {
         method: "POST",
         body: JSON.stringify({
           ...agentConfiguration,
@@ -114,8 +147,10 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
           stream: false,
         }),
       });
-      if (typeof created?.id !== "string" || !created.id) throw safeError(502);
-      await request(`/agents/sessions/${encodeURIComponent(created.id)}/events`, {
+      if (typeof created?.id !== "string" || !created.id) {
+        throw safeError({ status: 502, stage: "agents_session_create", payload: null, apiKey });
+      }
+      await request(`/agents/sessions/${encodeURIComponent(created.id)}/events`, "agents_session_input", {
         method: "POST",
         body: JSON.stringify({ events: [{ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: instructions(policy) }] }] }] }),
       });
@@ -136,9 +171,11 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
       const message = additionalInstruction
         ? [{ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: additionalInstruction }] }] }]
         : [];
-      if (requiredActions.length && toolResults.length !== requiredActions.length) throw safeError(422);
+      if (requiredActions.length && toolResults.length !== requiredActions.length) {
+        throw safeError({ status: 422, stage: "agents_session_resume", payload: null, apiKey });
+      }
       if (!toolResults.length && !message.length) message.push({ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: JSON.stringify(decision) }] }] });
-      await request(`/agents/sessions/${encodeURIComponent(providerSessionId)}/events`, {
+      await request(`/agents/sessions/${encodeURIComponent(providerSessionId)}/events`, "agents_session_resume", {
         method: "POST",
         body: JSON.stringify({ events: [...toolResults, ...message] }),
       });
@@ -146,7 +183,7 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
     },
     async getStatus({ providerSessionId }) { return retrieve(providerSessionId); },
     async cancel({ providerSessionId }) {
-      await request(`/agents/sessions/${encodeURIComponent(providerSessionId)}/events`, {
+      await request(`/agents/sessions/${encodeURIComponent(providerSessionId)}/events`, "agents_session_cancel", {
         method: "POST",
         body: JSON.stringify({ events: [{ type: "agent.session.input.cancel" }] }),
       });
