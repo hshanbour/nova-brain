@@ -272,6 +272,99 @@ test("Agents session retrieval preserves bounded outputs artifacts tests environ
   assert.doesNotMatch(JSON.stringify(result), /provider-secret|Authorization|Bearer/);
 });
 
+test("Agents reconciliation retains bounded structured failures from large TAP command output", async () => {
+  const noise = "diagnostic noise that must not be retained\n".repeat(600);
+  const output = `${noise}
+# tests 761
+# suites 0
+# pass 758
+# fail 3
+# cancelled 0
+# skipped 0
+# todo 0
+
+✖ failing tests:
+
+test at file:///workspace/nova-brain/test/api.test.js:412:1
+✖ API preserves the existing draft (10ms)
+  AssertionError [ERR_ASSERTION]: expected draft to remain; OPENAI_API_KEY=never-persist-this
+
+test at file:///workspace/nova-brain/test/voice-benchmark.test.js:88:1
+✖ voice benchmark stays below latency budget (4ms)
+  AssertionError: latency threshold exceeded
+
+test at file:///workspace/nova-brain/test/voice-v2-service.test.js:155:1
+✖ voice v2 service preserves mixed script (3ms)
+  AssertionError: mixed script mismatch
+`;
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url, options = {}) {
+      if (options.method === "POST" && url.endsWith("/agents/sessions")) return Response.json({ id: "managed-full-suite", status: "idle", environment: { id: "env-live" } });
+      if (options.method === "POST") return new Response(null, { status: 200 });
+      if (url.includes("/items?")) return Response.json({ data: [{ id: "command-full", turn_id: "turn-full", type: "command_execution", status: "failed", exit_code: 1, command: "npm test", output }] });
+      if (url.includes("/artifacts?")) return Response.json({ data: [] });
+      return Response.json({ id: "managed-full-suite", status: "idle", environment: { id: "env-live" } });
+    },
+  });
+  const store = persistentTestStore();
+  const api = adapter(provider, store, "agents_api");
+  const started = await api.startDeveloperSession(microphoneDeveloperRequest());
+  const reconciled = await api.reconcileDeveloperSession({ sessionId: started.id });
+  const evidence = reconciled.evidence.testFailureEvidence;
+
+  assert.deepEqual(evidence.totals, { total: 761, passed: 758, failed: 3, cancelled: 0, skipped: 0, todo: 0 });
+  assert.equal(evidence.exitCode, 1);
+  assert.equal(evidence.failures.length, 3);
+  assert.equal(evidence.failureEvidenceIncomplete, false);
+  assert.equal(evidence.failures[0].title, "API preserves the existing draft");
+  assert.equal(evidence.failures[0].filePath, "test/api.test.js");
+  assert.equal(evidence.failures[0].sourceLocation, "test/api.test.js:412:1");
+  assert.equal(evidence.failures[1].errorType, "AssertionError");
+  assert.equal((await store.get(started.id)).evidence.testFailureEvidence.failures[2].filePath, "test/voice-v2-service.test.js");
+  const serialized = JSON.stringify(reconciled);
+  assert.doesNotMatch(serialized, /diagnostic noise|never-persist-this|OPENAI_API_KEY|rawOutput|stdout|stderr/);
+  assert.ok(evidence.failures.every((record) => Buffer.byteLength(JSON.stringify(record)) <= 2_048));
+  assert.ok(Buffer.byteLength(JSON.stringify(evidence.failures)) <= 16_384);
+});
+
+test("Agents test evidence caps failed records and marks unavailable details incomplete", async () => {
+  const failures = Array.from({ length: 23 }, (_, index) => `not ok ${index + 1} - failed test ${index + 1}\n  ---\n  error: 'failure ${index + 1}'\n  ...`).join("\n");
+  const outputs = [
+    `${failures}\n# tests 30\n# pass 7\n# fail 23`,
+    "# tests 761\n# pass 758\n# fail 3",
+    "# tests 10\n# pass 10\n# fail 0",
+  ];
+  let retrieval = 0;
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url) {
+      if (url.includes("/items?")) {
+        const output = outputs[Math.min(retrieval++, outputs.length - 1)];
+        return Response.json({ data: [{ id: `command-${retrieval}`, type: "command_execution", status: retrieval === 3 ? "completed" : "failed", exit_code: retrieval === 3 ? 0 : 1, command: "npm test", output }] });
+      }
+      if (url.includes("/artifacts?")) return Response.json({ data: [] });
+      return Response.json({ id: "managed-caps", status: "idle" });
+    },
+  });
+
+  const capped = (await provider.getStatus({ providerSessionId: "managed-caps" })).evidence.testFailureEvidence;
+  assert.equal(capped.failures.length, 20);
+  assert.equal(capped.failureEvidenceIncomplete, true);
+  const unavailable = (await provider.getStatus({ providerSessionId: "managed-caps" })).evidence.testFailureEvidence;
+  assert.deepEqual(unavailable.failures, []);
+  assert.equal(unavailable.failureEvidenceIncomplete, true);
+  const success = (await provider.getStatus({ providerSessionId: "managed-caps" })).evidence.testFailureEvidence;
+  assert.deepEqual(success.totals, { total: 10, passed: 10, failed: 0 });
+  assert.deepEqual(success.failures, []);
+  assert.equal(success.failureEvidenceIncomplete, false);
+  assert.ok(Buffer.byteLength(JSON.stringify(success)) < 512);
+});
+
 test("Agents lifecycle preserves approval and bounded failed-session diagnostics", async () => {
   const states = [
     { id: "managed-state", status: "requires_action", required_actions: [{ type: "function_call", name: "approval", call_id: "call-1", turn_id: "turn-1" }] },

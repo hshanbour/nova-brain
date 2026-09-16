@@ -13,6 +13,9 @@ const MAX_UPSTREAM_CODE_LENGTH = 80;
 const MAX_UPSTREAM_MESSAGE_LENGTH = 256;
 const MAX_RESULT_TEXT_LENGTH = 2_000;
 const MAX_RESULT_ITEMS = 50;
+const MAX_TEST_FAILURES = 20;
+const MAX_TEST_FAILURE_RECORD_BYTES = 2_048;
+const MAX_TEST_FAILURE_EVIDENCE_BYTES = 16_384;
 const WORKSPACE_VERIFICATION_CREATE_RETRY_DELAY_MS = 50;
 
 function sanitizedDiagnosticString(value, { maxLength, apiKey }) {
@@ -133,9 +136,124 @@ function boundedResultText(value, maxLength = MAX_RESULT_TEXT_LENGTH) {
     .replace(/\b(?:authorization|cookie|set-cookie)\s*[:=]\s*[^,;\r\n]+/gi, "[REDACTED]")
     .replace(/\bBearer\s+[^\s,;]+/gi, "[REDACTED]")
     .replace(/\b(?:sk|sess|proj)-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]")
+    .replace(/\b[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)\s*[:=]\s*[^\s,;]+/g, "[REDACTED]")
     .replace(/[\r\n\t]+/g, " ")
     .trim();
   return normalized ? normalized.slice(0, maxLength) : null;
+}
+
+function jsonBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function relativeSourceLocation(value) {
+  if (typeof value !== "string") return null;
+  return boundedResultText(value
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/^file:\/\//, "")
+    .replace(/^.*?\/workspace\/nova-brain\//, "")
+    .replace(/^.*?\\workspace\\nova-brain\\/, "")
+    .replace(/^(?:.*?\/)?workspace\/nova-brain\//, "")
+    .replace(/^(?:.*?\\)?workspace\\nova-brain\\/, "")
+    .replaceAll("\\", "/"), 512);
+}
+
+function testTotals(output) {
+  if (typeof output !== "string") return null;
+  const totals = {};
+  const names = { tests: "total", pass: "passed", fail: "failed", cancelled: "cancelled", skipped: "skipped", todo: "todo" };
+  for (const match of output.matchAll(/^\s*(?:#|ℹ)\s*(tests|pass|fail|cancelled|skipped|todo)\s+(\d+)\s*$/gmi)) {
+    totals[names[match[1].toLowerCase()]] = Number(match[2]);
+  }
+  return Object.keys(totals).length ? totals : null;
+}
+
+function tapFailureBlocks(output) {
+  if (typeof output !== "string") return [];
+  const lines = output.replace(/\u001b\[[0-9;]*m/g, "").split(/\r?\n/);
+  const blocks = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^\s*not ok\s+\d+\s+-\s+(.+?)\s*$/i);
+    if (!match) continue;
+    const block = [];
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      if (/^\s*(?:not )?ok\s+\d+\s+-\s+/i.test(lines[cursor]) || /^\s*(?:#|ℹ)\s+(?:tests|pass|fail)\s+\d+\s*$/i.test(lines[cursor])) break;
+      block.push(lines[cursor]);
+    }
+    blocks.push({ title: match[1], block });
+  }
+  return blocks;
+}
+
+function specFailureBlocks(output) {
+  if (typeof output !== "string") return [];
+  const section = output.replace(/\u001b\[[0-9;]*m/g, "").split(/^\s*✖\s+failing tests:\s*$/mi)[1];
+  if (!section) return [];
+  const lines = section.split(/\r?\n/);
+  const blocks = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const location = lines[index].match(/^\s*test at\s+(.+?)\s*$/i)?.[1];
+    if (!location) continue;
+    const titleMatch = lines[index + 1]?.match(/^\s*✖\s+(.+?)(?:\s+\([\d.]+ms\))?\s*$/i);
+    if (!titleMatch) continue;
+    const block = [`location: '${location}'`];
+    for (let cursor = index + 2; cursor < lines.length && !/^\s*test at\s+/i.test(lines[cursor]); cursor += 1) block.push(lines[cursor]);
+    blocks.push({ title: titleMatch[1], block });
+  }
+  return blocks;
+}
+
+function failureRecord({ title, block }) {
+  const text = block.join("\n");
+  const location = text.match(/^\s*location:\s*['"]?([^'"\r\n]+)['"]?\s*$/mi)?.[1]
+    || text.match(/(?:file:\/\/)?([^\s()]+\.test\.[cm]?js:\d+:\d+)/i)?.[1]
+    || null;
+  const path = location?.match(/([^\s/\\]+(?:\/|\\))*[^\s/\\]+\.test\.[cm]?js/i)?.[0] || null;
+  const errorType = text.match(/^\s*(?:name|code|failureType):\s*['"]?([^'"\r\n]+)['"]?\s*$/mi)?.[1] || null;
+  const quotedMessage = text.match(/^\s*(?:error|message):\s*['"]([^'"\r\n]+)['"]\s*$/mi)?.[1];
+  const blockMessage = text.match(/^\s*(?:error|message):\s*[|>]?-?\s*\r?\n\s+([^\r\n]+)/mi)?.[1];
+  const standardError = text.match(/^\s*([A-Za-z][A-Za-z]*Error)(?:\s+\[[^\]]+\])?:\s*([^\r\n]+)/mi);
+  const record = {
+    title: boundedResultText(title, 512),
+    filePath: relativeSourceLocation(path),
+    message: boundedResultText(quotedMessage || blockMessage || standardError?.[2], 768),
+    errorType: boundedResultText(errorType || standardError?.[1], 128),
+    sourceLocation: relativeSourceLocation(location),
+  };
+  if (jsonBytes(record) <= MAX_TEST_FAILURE_RECORD_BYTES) return record;
+  record.message = boundedResultText(record.message, 256);
+  record.sourceLocation = boundedResultText(record.sourceLocation, 256);
+  return record;
+}
+
+function extractTestFailureEvidence(items) {
+  const commands = items.filter((item) => item?.type === "command_execution" && typeof item.output === "string");
+  const item = [...commands].reverse().find((candidate) => {
+    const command = Array.isArray(candidate.command) ? candidate.command.join(" ") : candidate.command;
+    return /(?:npm\s+test|node\s+--test)/i.test(command || "") || testTotals(candidate.output) || /^\s*not ok\s+\d+\s+-/mi.test(candidate.output);
+  });
+  if (!item) return null;
+  const totals = testTotals(item.output);
+  const blocks = tapFailureBlocks(item.output);
+  const parsed = (blocks.length ? blocks : specFailureBlocks(item.output)).map(failureRecord);
+  const failures = [];
+  for (const record of parsed.slice(0, MAX_TEST_FAILURES)) {
+    const recordBytes = jsonBytes(record);
+    if (recordBytes > MAX_TEST_FAILURE_RECORD_BYTES || jsonBytes([...failures, record]) > MAX_TEST_FAILURE_EVIDENCE_BYTES) break;
+    failures.push(record);
+  }
+  const exitCode = Number.isInteger(item.exit_code) ? item.exit_code : null;
+  return {
+    version: 1,
+    commandItemId: boundedResultText(item.id, 128),
+    turnId: boundedResultText(item.turn_id, 128),
+    exitCode,
+    totals,
+    failures,
+    failureEvidenceIncomplete: parsed.length > failures.length
+      || (Number.isInteger(totals?.failed) && totals.failed > failures.length)
+      || (exitCode !== null && exitCode !== 0 && failures.length === 0),
+  };
 }
 
 function boundedScalarRecord(value) {
@@ -198,6 +316,7 @@ function extractEvidence(payload, itemPage, artifactPage) {
     latestOutput: assistantMessages.at(-1) || null,
     commandSummaries,
     testSummary,
+    testFailureEvidence: extractTestFailureEvidence(items),
     safeDiagnostics: sessionError,
     artifacts: artifacts.map((artifact) => ({
       id: boundedResultText(artifact?.id, 128),
