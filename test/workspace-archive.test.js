@@ -5,7 +5,12 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "n
 import { dirname, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { gzipSync, gunzipSync } from "node:zlib";
-import { createDeterministicWorkspaceArchive, extractVerifiedWorkspaceArchive } from "../src/autonomy/workspace-archive.js";
+import {
+  CANONICAL_GZIP_OS_BYTE,
+  canonicalizeGzipOsByte,
+  createDeterministicWorkspaceArchive,
+  extractVerifiedWorkspaceArchive,
+} from "../src/autonomy/workspace-archive.js";
 
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const files = [
@@ -55,6 +60,25 @@ test("deterministic tar.gz preserves exact bytes and paths through verified extr
   const extracted = await extract(first);
   assert.equal(extracted.result.fileCount, files.length);
   for (const file of files) assert.deepEqual(extracted.bytes[file.path], file.data);
+});
+
+test("gzip OS byte is canonical and byte-identical across simulated Windows and Linux variants", () => {
+  const canonical = createDeterministicWorkspaceArchive(files);
+  assert.equal(canonical[9], CANONICAL_GZIP_OS_BYTE);
+
+  const windows = Buffer.from(canonical);
+  windows[9] = 10;
+  const linux = Buffer.from(canonical);
+  linux[9] = 3;
+  const windowsBefore = Buffer.from(windows);
+
+  assert.deepEqual(canonicalizeGzipOsByte(windows), canonicalizeGzipOsByte(linux));
+  assert.equal(digest(windows), digest(linux));
+  assert.deepEqual(gunzipSync(windows), gunzipSync(windowsBefore));
+  assert.deepEqual(
+    [...windowsBefore.keys()].filter((index) => windowsBefore[index] !== windows[index]),
+    [9],
+  );
 });
 
 test("153 workspace files remain one deterministic archive entry before hosted materialization", async () => {

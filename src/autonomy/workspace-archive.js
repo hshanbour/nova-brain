@@ -1,6 +1,7 @@
 import { gzipSync } from "node:zlib";
 
 const BLOCK_SIZE = 512;
+export const CANONICAL_GZIP_OS_BYTE = 3;
 
 function fail() {
   throw Object.assign(new Error("WORKSPACE_INTEGRITY_FAILED"), { code: "WORKSPACE_INTEGRITY_FAILED" });
@@ -36,6 +37,13 @@ function tarHeader(path, size) {
   return header;
 }
 
+export function canonicalizeGzipOsByte(archive) {
+  if (!Buffer.isBuffer(archive) || archive.length < 10
+    || archive[0] !== 0x1f || archive[1] !== 0x8b || archive[2] !== 0x08) fail();
+  archive[9] = CANONICAL_GZIP_OS_BYTE;
+  return archive;
+}
+
 export function createDeterministicWorkspaceArchive(files) {
   if (!Array.isArray(files) || files.length === 0) fail();
   const sorted = files.map((file) => {
@@ -50,7 +58,7 @@ export function createDeterministicWorkspaceArchive(files) {
     if (padding) chunks.push(Buffer.alloc(padding));
   }
   chunks.push(Buffer.alloc(BLOCK_SIZE * 2));
-  return gzipSync(Buffer.concat(chunks), { level: 9, mtime: 0 });
+  return canonicalizeGzipOsByte(gzipSync(Buffer.concat(chunks), { level: 9, mtime: 0 }));
 }
 
 export async function extractVerifiedWorkspaceArchive({
