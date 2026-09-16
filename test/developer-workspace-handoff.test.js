@@ -104,6 +104,9 @@ test("manifest preserves exact dirty bytes and deterministic hashes", async () =
   assert.equal(css.sha256, hash(Buffer.from("dirty\r\nbytes\r\n")));
   assert.equal(Buffer.from(first.files.find((file) => file.path === css.path).data, "base64").toString(), "dirty\r\nbytes\r\n");
   assert.deepEqual(first.manifest.dirtyPaths, [...REAL_DEVELOPER_ALLOWED_PATHS].sort());
+  for (const path of REAL_DEVELOPER_ALLOWED_PATHS) {
+    assert.equal(first.manifest.entries.find((entry) => entry.path === path).sha256, hash(fixture.contents.get(path)));
+  }
 });
 
 test("manifest rejects clean remote fallback and unrelated dirty paths", async () => {
@@ -121,11 +124,16 @@ test("real start materializes official inline environment files and pre-agent in
   assert.equal(session.policy.dryRun, false);
   assert.equal(session.policy.approvalPolicy.allowPush, false);
   assert.equal(session.policy.approvalPolicy.allowDeploy, false);
+  assert.ok(["package.json", "package-lock.json"].every((path) => session.policy.forbiddenPaths.includes(path)));
   const hosted = configurations[0].environment;
   assert.equal(hosted.type, "openai_hosted");
   assert.deepEqual(hosted.network, { access: "disabled" });
+  assert.equal(hosted.files.length, 3);
   assert.ok(hosted.files.every((file) => file.type === "inline" && file.path.startsWith("/workspace/")));
+  assert.ok(hosted.files.some((file) => file.path === "/workspace/.nova-handoff/workspace.tar.gz"));
   assert.ok(hosted.files.some((file) => file.path === "/workspace/.nova-handoff/manifest.json"));
+  assert.equal(session.policy.metadata.hostedFileCount, 3);
+  assert.match(session.policy.metadata.archiveSha256, /^[a-f0-9]{64}$/);
   assert.match(hosted.setup_commands[0].command, /verify\.mjs/);
   assert.doesNotMatch(JSON.stringify(session), /dirty\\r|sk-test-secret/);
 });
@@ -162,10 +170,13 @@ test("verification-only route materializes an immutable workspace and persists p
   assert.equal(calls[0].policy.approvalPolicy.allowPush, false);
   assert.equal(calls[0].policy.approvalPolicy.allowDeploy, false);
   assert.equal(configurations[0].environment.network.access, "disabled");
+  assert.equal(configurations[0].environment.files.length, 3);
   const verifier = configurations[0].environment.files.find((file) => file.path.endsWith("/verify.mjs"));
   const source = Buffer.from(verifier.data, "base64").toString();
-  assert.match(source, /chmod\(join\(root,path\),0o400\)/);
-  assert.doesNotMatch(source, /0o600/);
+  assert.match(source, /modeForPath:path=>0o400/);
+  assert.match(source, new RegExp(handoff.manifest.manifestHash));
+  assert.equal(session.policy.metadata.hostedFileCount, 3);
+  assert.match(session.policy.metadata.archiveSha256, /^[a-f0-9]{64}$/);
   assert.equal((await storage.getDeveloperSession("real-session-1", OWNER)).result.outcome, "workspace_integrity_verified");
 });
 

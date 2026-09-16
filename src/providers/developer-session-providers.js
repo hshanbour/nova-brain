@@ -211,6 +211,8 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
           environmentId: environmentId || null,
           outcome: "workspace_integrity_verified",
           manifestHash: policy.metadata.manifestHash,
+          archiveSha256: policy.metadata.archiveSha256,
+          hostedFileCount: policy.metadata.hostedFileCount,
           materializedFileCount: policy.metadata.materializedFileCount,
           totalBytes: policy.metadata.totalBytes,
           baseSha: policy.baseSha,

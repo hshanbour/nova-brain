@@ -195,13 +195,15 @@ test("workspace verification creates, retrieves and cancels without submitting a
   });
   const policy = microphoneDeveloperRequest({
     dryRun: true,
-    metadata: { manifestHash: "a".repeat(64), materializedFileCount: 153, totalBytes: 1611766, dirtyPaths: MICROPHONE_ALLOWED_PATHS },
+    metadata: { manifestHash: "a".repeat(64), archiveSha256: "b".repeat(64), hostedFileCount: 3, materializedFileCount: 153, totalBytes: 1611766, dirtyPaths: MICROPHONE_ALLOWED_PATHS },
   });
   const result = await provider.verifyWorkspace({ policy, policyHash: "verification-policy" });
 
   assert.equal(result.status, "completed");
   assert.equal(result.result.outcome, "workspace_integrity_verified");
   assert.equal(result.result.environmentId, "environment-1");
+  assert.equal(result.result.archiveSha256, "b".repeat(64));
+  assert.equal(result.result.hostedFileCount, 3);
   assert.equal(result.changedPaths.length, 0);
   assert.equal(requests.length, 3);
   assert.match(requests[0].url, /\/agents\/sessions$/);
