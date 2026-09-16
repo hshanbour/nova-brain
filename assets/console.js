@@ -4,6 +4,8 @@ const composer = document.querySelector('#composerForm');
 const input = document.querySelector('#messageInput');
 const button = document.querySelector('#voiceButton');
 const requestError = document.querySelector('#requestError');
+const workspaceButtons = document.querySelectorAll?.('[data-workspace]') || [];
+const workspaces = document.querySelectorAll?.('.workspace') || [];
 
 const resizeInput = () => {
   if (!input) return;
@@ -42,6 +44,21 @@ if (select && voiceControl) {
   select.addEventListener('change', () => voiceControl.setLanguage(select.value));
 }
 
+const showWorkspace = (name) => {
+  workspaces.forEach((workspace) => {
+    const active = workspace.id === name;
+    workspace.hidden = !active;
+  });
+  workspaceButtons.forEach((workspaceButton) => {
+    const active = workspaceButton.dataset.workspace === name;
+    workspaceButton.setAttribute('aria-current', active ? 'page' : 'false');
+  });
+};
+
+workspaceButtons.forEach((workspaceButton) => {
+  workspaceButton.addEventListener('click', () => showWorkspace(workspaceButton.dataset.workspace));
+});
+
 composer?.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (requestError) requestError.textContent = '';
@@ -60,4 +77,4 @@ composer?.addEventListener('submit', async (event) => {
   }
 });
 
-export { voiceControl };
+export { showWorkspace, voiceControl };

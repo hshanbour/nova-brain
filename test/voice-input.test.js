@@ -33,6 +33,26 @@ test('persists supported Arabic locale', () => {
   assert.throws(() => voice.setLanguage('fr-FR'));
 });
 
+test('retires an English recognizer and creates an Arabic-configured replacement', () => {
+  const instances = [];
+
+  class Recognition {
+    constructor() { instances.push(this); }
+    start() {}
+    abort() { this.aborted = true; }
+  }
+
+  const voice = createVoiceInput({ dependencies: { SpeechRecognition: Recognition } });
+  voice.start('Draft ');
+  voice.setLanguage('ar-EG');
+  voice.start('Draft ');
+
+  assert.equal(instances.length, 2);
+  assert.equal(instances[0].lang, 'en-US');
+  assert.equal(instances[0].aborted, true);
+  assert.equal(instances[1].lang, 'ar-EG');
+});
+
 test('explicit stop reaches complete when recognition ends', () => {
   let instance;
 

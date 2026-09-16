@@ -137,6 +137,8 @@ export function createVoiceInput(options = {}) {
     finalText = '';
     stopped = false;
     const id = ++token;
+    // Recognition instances retain their language configuration. Always create
+    // one at start so a locale change cannot reuse an English-configured instance.
     recognition = new Recognition();
     recognition.lang = language;
     recognition.continuous = true;
@@ -194,6 +196,16 @@ export function createVoiceInput(options = {}) {
       if (!languages.has(next)) throw new Error('Unsupported microphone language');
       language = next;
       dependencies.storage?.setItem?.('nova-composer-language', next);
+
+      // A running recognizer cannot reliably change language. Retire it so the
+      // next start creates an instance configured with the selected locale.
+      if (recognition) {
+        token += 1;
+        recognition.abort?.();
+        recognition = undefined;
+        clearMeter();
+        if (state === 'recording' || state === 'processing') setState('idle');
+      }
     },
     destroy() {
       token += 1;

@@ -7,22 +7,38 @@
   <link rel="stylesheet" href="/assets/console.css">
 </head>
 <body>
-  <main>
-    <section id="console" aria-label="Nova console"></section>
-    <p id="requestError" role="alert"></p>
-    <form id="composerForm">
-      <label for="messageInput">Message</label>
-      <textarea id="messageInput" rows="1" placeholder="Message Nova"></textarea>
-      <div id="composerVoiceError" role="alert"></div>
-      <span id="composerVoiceStatus" aria-live="polite">Microphone ready</span>
-      <button id="voiceButton" class="composer-voice" type="button" data-voice-state="idle" aria-pressed="false" aria-describedby="composerVoiceStatus" aria-label="Dictate message">
-        <span id="composerVoiceWaveform" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
-      </button>
-      <button id="sendButton" type="submit">Send</button>
-    </form>
-    <label for="microphoneLanguage">Dictation language</label>
-    <select id="microphoneLanguage"></select>
-  </main>
+  <div class="nova-shell">
+    <nav class="nova-nav" aria-label="Nova workspaces">
+      <p class="nova-brand">NOVA</p>
+      <a href="#chat" data-workspace="chat" aria-current="page">Chat</a>
+      <a href="#memory" data-workspace="memory" aria-current="false">Memory</a>
+      <a href="#voice-mode" data-workspace="voice-mode" aria-current="false">Voice Mode</a>
+      <a href="#profile" data-workspace="profile" aria-current="false">Profile</a>
+    </nav>
+    <main class="nova-main" id="console" aria-label="Nova console">
+      <section class="workspace" id="chat" aria-labelledby="chat-title">
+        <h1 id="chat-title">Chat</h1>
+        <p class="workspace-copy">Ask Nova to think through your next move, capture an idea, or continue the conversation.</p>
+        <p id="requestError" role="alert"></p>
+        <form id="composerForm" class="composer">
+          <label class="visually-hidden" for="messageInput">Message</label>
+          <textarea id="messageInput" rows="1" placeholder="Message Nova"></textarea>
+          <button id="voiceButton" class="composer-voice" type="button" data-voice-state="idle" aria-pressed="false" aria-describedby="composerVoiceStatus" aria-label="Dictate message">
+            <span id="composerVoiceWaveform" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+          </button>
+          <button id="sendButton" class="composer-send" type="submit">Send</button>
+        </form>
+        <div class="composer-meta">
+          <label for="microphoneLanguage">Dictation language <select id="microphoneLanguage"></select></label>
+          <span id="composerVoiceStatus" aria-live="polite">Microphone ready</span>
+          <div id="composerVoiceError" role="alert"></div>
+        </div>
+      </section>
+      <section class="workspace" id="memory" hidden aria-labelledby="memory-title"><h1 id="memory-title">Memory</h1><p class="workspace-copy">Review the details Nova is keeping in context.</p></section>
+      <section class="workspace" id="voice-mode" hidden aria-labelledby="voice-title"><h1 id="voice-title">Voice Mode</h1><p class="workspace-copy">Use the composer microphone to dictate a message in your selected language.</p></section>
+      <section class="workspace" id="profile" hidden aria-labelledby="profile-title"><h1 id="profile-title">Profile</h1><p class="workspace-copy">Manage your Nova profile and preferences.</p></section>
+    </main>
+  </div>
   <script type="module" src="/assets/console.js"></script>
 </body>
 </html>

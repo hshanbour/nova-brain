@@ -126,3 +126,31 @@ test('real console integration starts and completes dictation without animation 
     restoreGlobal('window', originalWindow);
   }
 });
+
+test('console locale selection creates an Arabic-configured recognizer before dictation starts', async () => {
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  let recognition;
+
+  class Recognition {
+    constructor() { recognition = this; }
+    start() {}
+  }
+
+  const nodes = {};
+  for (const id of ['composerForm', 'messageInput', 'voiceButton', 'composerVoiceStatus', 'composerVoiceError', 'composerVoiceWaveform', 'microphoneLanguage', 'requestError']) nodes[`#${id}`] = new Target();
+  nodes['#microphoneLanguage'].value = 'ar-SA';
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { querySelector: (selector) => nodes[selector], querySelectorAll: () => [], createElement: () => new Target() } });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { SpeechRecognition: Recognition, localStorage: { getItem: () => null, setItem() {} }, navigator: { mediaDevices: undefined } } });
+
+  try {
+    await import(`../assets/console.js?arabic-locale-test=${Date.now()}`);
+    nodes['#microphoneLanguage'].value = 'ar-SA';
+    nodes['#microphoneLanguage'].listeners.change();
+    nodes['#voiceButton'].click();
+    assert.equal(recognition.lang, 'ar-SA');
+  } finally {
+    restoreGlobal('document', originalDocument);
+    restoreGlobal('window', originalWindow);
+  }
+});

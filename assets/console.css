@@ -1,4 +1,30 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: #0b1020;
+  color: #e9edff;
+}
+
+* { box-sizing: border-box; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+body { margin: 0; min-width: 320px; background: radial-gradient(circle at top, #192442, #0b1020 42rem); }
+.nova-shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
+.nova-nav { display: flex; flex-direction: column; gap: .35rem; padding: 1.25rem; background: #10182b; border-right: 1px solid #263452; }
+.nova-brand { margin: 0 0 1.5rem; font-size: 1.25rem; letter-spacing: .08em; }
+.nova-nav a { padding: .7rem .8rem; border-radius: .65rem; color: #bfc9e4; text-decoration: none; }
+.nova-nav a[aria-current="page"], .nova-nav a:hover { color: #fff; background: #263452; }
+.nova-main { width: min(100%, 1100px); margin: 0 auto; padding: clamp(1rem, 4vw, 3rem); }
 .workspace[hidden]{display:none}
+.workspace { min-height: 18rem; padding: clamp(1rem, 3vw, 2rem); border: 1px solid #2b3b5b; border-radius: 1rem; background: rgba(19, 29, 52, .88); box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, .2); }
+.workspace h1 { margin-top: 0; }
+.workspace-copy { max-width: 58ch; color: #bfc9e4; line-height: 1.6; }
+.composer { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .6rem; align-items: end; margin-top: 1rem; }
+.composer textarea, .composer select, .composer-send { min-height: 44px; border: 1px solid #3a4c70; border-radius: .7rem; color: inherit; background: #151f36; }
+.composer textarea { width: 100%; padding: .7rem .8rem; resize: vertical; }
+.composer-send { padding: 0 .9rem; cursor: pointer; }
+.composer-meta { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin-top: .65rem; color: #bfc9e4; font-size: .875rem; }
+.composer-meta label { display: flex; gap: .45rem; align-items: center; }
+.composer-meta select { min-height: 2.25rem; padding: 0 .4rem; }
 
 .composer-voice {
   position: relative;
@@ -100,4 +126,14 @@
   #composerVoiceWaveform {
     gap: 1px;
   }
+}
+
+@media (max-width: 720px) {
+  .nova-shell { grid-template-columns: 1fr; }
+  .nova-nav { position: sticky; top: 0; z-index: 1; flex-direction: row; overflow-x: auto; padding: .75rem; border-right: 0; border-bottom: 1px solid #263452; }
+  .nova-brand { margin: .45rem .5rem .45rem 0; white-space: nowrap; }
+  .nova-nav a { white-space: nowrap; }
+  .composer { grid-template-columns: minmax(0, 1fr) auto; }
+  .composer-meta { grid-column: 1 / -1; }
+  .composer-send { grid-column: 1 / -1; }
 }
