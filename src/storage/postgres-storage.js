@@ -1101,6 +1101,23 @@ export function createPostgresStorage({ connectionString }) {
         )
       ).map(activityRow);
     },
+    async saveDeveloperSession(record, ownerId) {
+      const rows = await run(
+        `INSERT INTO nova_developer_sessions (id,owner_id,record) VALUES ($1,$2,$3::jsonb)
+         ON CONFLICT (id) DO UPDATE SET record=EXCLUDED.record,updated_at=now()
+         WHERE nova_developer_sessions.owner_id=EXCLUDED.owner_id
+         RETURNING record`,
+        [record.id, ownerId, JSON.stringify(record)],
+      );
+      return rows[0]?.record || null;
+    },
+    async getDeveloperSession(id, ownerId) {
+      const rows = await run(
+        "SELECT record FROM nova_developer_sessions WHERE id=$1 AND owner_id=$2",
+        [id, ownerId],
+      );
+      return rows[0]?.record || null;
+    },
     async createVoiceBenchmarkSession(input) {
       return benchmarkSessionRow(
         (

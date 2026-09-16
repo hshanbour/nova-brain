@@ -49,6 +49,8 @@ import {
 } from "../autonomy/local-worker-handoff.js";
 import { WorkerError } from "../autonomy/worker-runtime.js";
 import { SelfDevelopmentError } from "../autonomy/self-development.js";
+import { DeveloperSessionError } from "../autonomy/developer-session-adapter.js";
+import { DeveloperSessionSmokeError } from "../autonomy/developer-session-smoke.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -169,6 +171,7 @@ export function createApi({
   speakerEngines,
   speakerAssertions,
   familiarityConsent,
+  developerSessionSmoke,
   logger = console,
 }) {
   const recognitionEngines =
@@ -239,6 +242,54 @@ export function createApi({
           logger.info("Nova authenticated POST probe", { requestId });
           sendJson(response, 200, { success: true, requestId });
           return;
+        }
+
+        if (
+          developerSessionSmoke &&
+          request.method === "POST" &&
+          pathname === "/api/admin/developer-sessions/smoke/start"
+        ) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          sendJson(response, 201, {
+            session: await developerSessionSmoke.start(
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          });
+          return;
+        }
+        const developerSessionMatch = pathname.match(
+          /^\/api\/admin\/developer-sessions\/([^/]+)(?:\/(resume|cancel))?$/,
+        );
+        if (developerSessionSmoke && developerSessionMatch) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          const sessionId = decodeURIComponent(developerSessionMatch[1]);
+          const action = developerSessionMatch[2] || null;
+          if (request.method === "GET" && !action) {
+            sendJson(response, 200, {
+              session: await developerSessionSmoke.get(sessionId),
+            });
+            return;
+          }
+          if (request.method === "POST" && action === "resume") {
+            sendJson(response, 200, {
+              session: await developerSessionSmoke.resume(
+                sessionId,
+                await readJsonBody(request, config.maxBodyBytes),
+              ),
+            });
+            return;
+          }
+          if (request.method === "POST" && action === "cancel") {
+            sendJson(response, 200, {
+              session: await developerSessionSmoke.cancel(
+                sessionId,
+                await readJsonBody(request, config.maxBodyBytes),
+              ),
+            });
+            return;
+          }
         }
 
         if (request.method === "POST" && pathname === "/api/agent") {
@@ -1869,6 +1920,21 @@ export function createApi({
             ...(error.safeDiagnostics
               ? { diagnostics: error.safeDiagnostics, requestId }
               : {}),
+          });
+          return;
+        }
+        if (error instanceof DeveloperSessionSmokeError) {
+          sendJson(response, error.statusCode, {
+            error: error.message,
+            code: error.code,
+          });
+          return;
+        }
+        if (error instanceof DeveloperSessionError) {
+          const status = error.code === "developer_session_not_found" ? 404 : 409;
+          sendJson(response, status, {
+            error: error.message,
+            code: error.code,
           });
           return;
         }

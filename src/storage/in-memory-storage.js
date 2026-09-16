@@ -24,6 +24,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const rejectedReviewEvidence = new Map();
   const autonomyLocks = new Map();
   const approvals = new Map();
+  const developerSessions = new Map();
   const activity = [];
   const benchmarkSessions = new Map();
   const benchmarkResults = new Map();
@@ -841,6 +842,16 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         .sort((a, b) => b.sequence - a.sequence)
         .slice(0, limit)
         .map(copy);
+    },
+    async saveDeveloperSession(record, ownerId) {
+      const current = developerSessions.get(record.id);
+      if (current && current.ownerId !== ownerId) return null;
+      developerSessions.set(record.id, { ownerId, record: copy(record) });
+      return copy(record);
+    },
+    async getDeveloperSession(id, ownerId) {
+      const current = developerSessions.get(id);
+      return copy(current?.ownerId === ownerId ? current.record : null);
     },
     async createVoiceBenchmarkSession(input) {
       const session = {
