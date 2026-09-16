@@ -316,6 +316,12 @@ test("official artifact list metadata and content are session-bound and SHA-256 
   ]);
   assert.doesNotMatch(JSON.stringify(verified), /artifact-secret|immutable reviewed/);
 
+  const downloaded = await provider.verifyArtifact({
+    providerSessionId: "provider-session-1", artifactId: "artifact-1", expectedSha256, includeContent: true,
+  });
+  assert.deepEqual(downloaded.content, content);
+  assert.equal(downloaded.sha256, expectedSha256);
+
   await assert.rejects(
     () => provider.verifyArtifact({ providerSessionId: "provider-session-1", artifactId: "artifact-1", expectedSha256: "0".repeat(64) }),
     (error) => error.code === "developer_artifact_integrity_failed",
@@ -339,6 +345,31 @@ test("artifact verification rejects provider-session identity mismatch before co
   await assert.rejects(
     () => provider.verifyArtifact({ providerSessionId: "provider-session-1", artifactId: "artifact-1", expectedSha256: "0".repeat(64) }),
     (error) => error.code === "developer_provider_session_mismatch",
+  );
+  assert.equal(contentRequested, false);
+});
+
+test("artifact transfer rejects oversized content before retrieval", async () => {
+  let contentRequested = false;
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "artifact-secret",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url) {
+      if (url.includes("/content")) contentRequested = true;
+      const metadata = {
+        id: "artifact-1", session_id: "provider-session-1", environment_id: "environment-1",
+        turn_id: "turn-1", path: "/workspace/outputs/artifact.tar.gz", size_bytes: 8 * 1024 * 1024 + 1,
+      };
+      return url.includes("/artifacts?") ? Response.json({ data: [metadata] }) : Response.json(metadata);
+    },
+  });
+  await assert.rejects(
+    () => provider.verifyArtifact({
+      providerSessionId: "provider-session-1", artifactId: "artifact-1",
+      expectedSha256: "0".repeat(64), includeContent: true,
+    }),
+    (error) => error.code === "developer_artifact_integrity_failed",
   );
   assert.equal(contentRequested, false);
 });

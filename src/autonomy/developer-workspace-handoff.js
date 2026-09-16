@@ -410,11 +410,15 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
         fail("developer_artifact_verification_unavailable", "The developer provider does not support artifact verification.", 503);
       }
       try {
-        return await provider.verifyArtifact({
+        const artifact = await provider.verifyArtifact({
           providerSessionId: record.providerSessionId,
           artifactId,
           expectedSha256,
         });
+        if (artifact.environmentId !== record.evidence?.environmentId) {
+          fail("developer_provider_session_mismatch", "Artifact environment does not belong to the bound provider session.");
+        }
+        return artifact;
       } catch (error) {
         if (error?.code === "developer_provider_session_mismatch") {
           fail(error.code, "Artifact identity does not belong to the bound provider session.");
@@ -423,6 +427,32 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
           fail(error.code, "Artifact content failed SHA-256 verification.");
         }
         fail("developer_artifact_verification_failed", "Artifact verification failed closed.", 502);
+      }
+    },
+    async downloadArtifact(sessionId, artifactId, expectedSha256) {
+      assertPreview();
+      await boundTask();
+      const { record } = await assertBoundRealSession(sessionId);
+      if (!SHA256.test(String(expectedSha256 || ""))) {
+        fail("developer_artifact_hash_invalid", "A full expected artifact SHA-256 is required.", 400);
+      }
+      const provider = passiveProvider();
+      try {
+        const artifact = await provider.verifyArtifact({
+          providerSessionId: record.providerSessionId,
+          artifactId,
+          expectedSha256,
+          includeContent: true,
+        });
+        if (artifact.environmentId !== record.evidence?.environmentId || !Buffer.isBuffer(artifact.content)) {
+          fail("developer_provider_session_mismatch", "Artifact environment does not belong to the bound provider session.");
+        }
+        return artifact;
+      } catch (error) {
+        if (error instanceof DeveloperWorkspaceHandoffError) throw error;
+        if (error?.code === "developer_provider_session_mismatch") fail(error.code, "Artifact identity does not belong to the bound provider session.");
+        if (error?.code === "developer_artifact_integrity_failed") fail(error.code, "Artifact content failed SHA-256 verification.");
+        fail("developer_artifact_verification_failed", "Artifact download verification failed closed.", 502);
       }
     },
     async resume(sessionId, input = {}) { assertPreview(); return adapterFor(passiveProvider()).resumeDeveloperSession({ sessionId, approvalDecision: input.approvalDecision, additionalInstruction: input.additionalInstruction }); },

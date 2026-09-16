@@ -15,6 +15,7 @@ const MAX_UPSTREAM_CODE_LENGTH = 80;
 const MAX_UPSTREAM_MESSAGE_LENGTH = 256;
 const MAX_RESULT_TEXT_LENGTH = 2_000;
 const MAX_RESULT_ITEMS = 50;
+const MAX_ARTIFACT_TRANSFER_BYTES = 8 * 1024 * 1024;
 const MAX_SESSION_ITEMS = 100;
 const MAX_TEST_FAILURES = 20;
 const MAX_TEST_FAILURE_RECORD_BYTES = 2_048;
@@ -568,7 +569,7 @@ export function createAgentsApiDeveloperProvider({
     async getStatus({ providerSessionId, afterAssistantItemId = null, requireFreshAssistantOutput = false }) {
       return retrieve(providerSessionId, { afterAssistantItemId, requireFreshAssistantOutput });
     },
-    async verifyArtifact({ providerSessionId, artifactId, expectedSha256 }) {
+    async verifyArtifact({ providerSessionId, artifactId, expectedSha256, includeContent = false }) {
       if (!nonEmptyString(providerSessionId) || !nonEmptyString(artifactId)
         || !/^[a-f0-9]{64}$/.test(String(expectedSha256 || ""))) {
         const error = new Error("Artifact verification input is invalid.");
@@ -592,6 +593,12 @@ export function createAgentsApiDeveloperProvider({
         error.code = "developer_provider_session_mismatch";
         throw error;
       }
+      if (!Number.isSafeInteger(metadata.size_bytes) || metadata.size_bytes < 0
+        || metadata.size_bytes > MAX_ARTIFACT_TRANSFER_BYTES) {
+        const error = new Error("Artifact exceeds the bounded transfer size.");
+        error.code = "developer_artifact_integrity_failed";
+        throw error;
+      }
       const content = await request(`/agents/sessions/${session}/artifacts/${artifact}/content`, "agents_session_artifact_content", {}, "bytes");
       const sha256 = createHash("sha256").update(content).digest("hex");
       if (sha256 !== expectedSha256 || content.length !== metadata.size_bytes) {
@@ -608,6 +615,7 @@ export function createAgentsApiDeveloperProvider({
         sizeBytes: metadata.size_bytes,
         sha256,
         verified: true,
+        ...(includeContent ? { content } : {}),
       });
     },
     async cancel({ providerSessionId }) {

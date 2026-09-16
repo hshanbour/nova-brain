@@ -64,6 +64,18 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
+function sendArtifact(response, artifact) {
+  response.statusCode = 200;
+  response.setHeader("Content-Type", "application/octet-stream");
+  response.setHeader("Content-Length", String(artifact.content.length));
+  response.setHeader("Content-Disposition", `attachment; filename="${artifact.path.split("/").pop().replace(/[^A-Za-z0-9._-]/g, "_")}"`);
+  response.setHeader("X-Nova-Artifact-SHA256", artifact.sha256);
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("Cache-Control", "private, no-store");
+  response.setHeader("Referrer-Policy", "no-referrer");
+  response.end(artifact.content);
+}
+
 function setSpeechHeaders(response, model) {
   response.statusCode = 200;
   response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
@@ -316,6 +328,20 @@ export function createApi({
               input?.sha256,
             ),
           });
+          return;
+        }
+        const realDeveloperArtifactDownloadMatch = pathname.match(
+          /^\/api\/admin\/developer-sessions\/real\/([^/]+)\/artifacts\/([^/]+)\/download$/,
+        );
+        if (developerWorkspaceHandoff && request.method === "POST" && realDeveloperArtifactDownloadMatch) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          const input = await readJsonBody(request, config.maxBodyBytes);
+          sendArtifact(response, await developerWorkspaceHandoff.downloadArtifact(
+            decodeURIComponent(realDeveloperArtifactDownloadMatch[1]),
+            decodeURIComponent(realDeveloperArtifactDownloadMatch[2]),
+            input?.sha256,
+          ));
           return;
         }
         const realDeveloperSessionMatch = pathname.match(

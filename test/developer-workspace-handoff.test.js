@@ -94,6 +94,18 @@ function response() {
   return { statusCode: 0, setHeader() {}, end(value = "") { body += value; }, get json() { return body ? JSON.parse(body) : null; } };
 }
 
+function binaryResponse() {
+  const headers = new Map();
+  let body = Buffer.alloc(0);
+  return {
+    statusCode: 0,
+    setHeader(name, value) { headers.set(name.toLowerCase(), String(value)); },
+    end(value = Buffer.alloc(0)) { body = Buffer.from(value); },
+    get body() { return body; },
+    get headers() { return headers; },
+  };
+}
+
 function api(service, developerSessionSmoke = null) {
   return createApi({
     agent: { tools: { list: () => [] }, run: async () => ({}) },
@@ -478,7 +490,7 @@ test("protected artifact verification stays bound to the recovery provider sessi
     async start() { return { providerSessionId: "provider-recovery-1", status: "idle", evidence: { environmentId: "env-recovery-1" }, changedPaths: [] }; },
     async verifyArtifact(input) {
       calls.push(structuredClone(input));
-      return { id: input.artifactId, providerSessionId: input.providerSessionId, sha256: input.expectedSha256, verified: true };
+      return { id: input.artifactId, providerSessionId: input.providerSessionId, environmentId: "env-recovery-1", sha256: input.expectedSha256, verified: true };
     },
   };
   const { service } = serviceFixture({ providerOverride: provider });
@@ -494,4 +506,46 @@ test("protected artifact verification stays bound to the recovery provider sessi
   assert.equal(accepted.statusCode, 200);
   assert.equal(accepted.json.artifact.verified, true);
   assert.deepEqual(calls, [{ providerSessionId: "provider-recovery-1", artifactId: "artifact-1", expectedSha256: contentSha }]);
+});
+
+test("protected artifact download returns only verified bound bytes", async () => {
+  const content = Buffer.from("immutable artifact bytes\n");
+  const contentSha = hash(content);
+  const calls = [];
+  let artifactEnvironment = "env-recovery-1";
+  const provider = {
+    name: "agents_api",
+    async start() { return { providerSessionId: "provider-recovery-1", status: "idle", evidence: { environmentId: "env-recovery-1" }, changedPaths: [] }; },
+    async verifyArtifact(input) {
+      calls.push(structuredClone(input));
+      return {
+        id: input.artifactId, providerSessionId: input.providerSessionId, environmentId: artifactEnvironment,
+        path: "/workspace/outputs/reviewed.tar.gz", sizeBytes: content.length, sha256: input.expectedSha256,
+        verified: true, ...(input.includeContent ? { content } : {}),
+      };
+    },
+  };
+  const { service } = serviceFixture({ providerOverride: provider });
+  await service.startRecovery(await recoveryBundle());
+  const application = api(service);
+  const url = "/api/admin/developer-sessions/real/real-session-1/artifacts/artifact-1/download";
+  const denied = response();
+  await application.handle(request({ body: { sha256: contentSha }, authorized: false, url }), denied);
+  assert.equal(denied.statusCode, 401);
+  assert.equal(calls.length, 0);
+  const accepted = binaryResponse();
+  await application.handle(request({ body: { sha256: contentSha }, url }), accepted);
+  assert.equal(accepted.statusCode, 200);
+  assert.deepEqual(accepted.body, content);
+  assert.equal(accepted.headers.get("content-length"), String(content.length));
+  assert.equal(accepted.headers.get("x-nova-artifact-sha256"), contentSha);
+  assert.equal(accepted.headers.get("cache-control"), "private, no-store");
+  assert.deepEqual(calls, [{
+    providerSessionId: "provider-recovery-1", artifactId: "artifact-1", expectedSha256: contentSha, includeContent: true,
+  }]);
+  artifactEnvironment = "env-other";
+  const mismatched = response();
+  await application.handle(request({ body: { sha256: contentSha }, url }), mismatched);
+  assert.equal(mismatched.statusCode, 409);
+  assert.equal(mismatched.json.code, "developer_provider_session_mismatch");
 });
