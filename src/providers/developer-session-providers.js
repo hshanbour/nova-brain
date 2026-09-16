@@ -14,6 +14,40 @@ function safeError(status) {
   return error;
 }
 
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeAgentConfiguration({ agentId, agent }) {
+  const hasAgentId = nonEmptyString(agentId);
+  const hasInlineAgent = agent && typeof agent === "object" && !Array.isArray(agent) && nonEmptyString(agent.model);
+  if (hasAgentId && agent !== undefined) {
+    throw new DeveloperProviderConfigurationError("Choose either a saved Agents API agent_id or an inline agent configuration, not both.");
+  }
+  if (hasAgentId) return Object.freeze({ agent_id: agentId.trim() });
+  if (hasInlineAgent) return Object.freeze({ agent: structuredClone(agent) });
+  throw new DeveloperProviderConfigurationError("A saved NOVA_DEVELOPER_AGENT_ID or an inline Agents API configuration with an explicit model is required.");
+}
+
+function normalizeEnvironmentConfiguration({ environmentTemplateId, environment }) {
+  const hasTemplate = nonEmptyString(environmentTemplateId);
+  const hasInlineEnvironment = environment && typeof environment === "object" && !Array.isArray(environment);
+  if (hasTemplate && hasInlineEnvironment) {
+    throw new DeveloperProviderConfigurationError("Choose either a reusable hosted environment template or an inline session environment, not both.");
+  }
+  if (hasTemplate) {
+    return Object.freeze({ type: "openai_hosted", environment_template_id: environmentTemplateId.trim() });
+  }
+  if (!hasInlineEnvironment) {
+    throw new DeveloperProviderConfigurationError("A reusable hosted environment template or an inline session environment is required.");
+  }
+  if (environment.type === "openai_hosted") return Object.freeze(structuredClone(environment));
+  if (environment.type === "self_hosted" && nonEmptyString(environment.workspace_directory)) {
+    return Object.freeze(structuredClone(environment));
+  }
+  throw new DeveloperProviderConfigurationError("The inline session environment must be openai_hosted or a self_hosted environment with workspace_directory.");
+}
+
 function instructions(policy) {
   return JSON.stringify({
     contract: "nova_developer_session_v1",
@@ -55,10 +89,10 @@ function mappedSession(payload) {
   };
 }
 
-export function createAgentsApiDeveloperProvider({ apiKey, agentId, environment, fetchImpl = globalThis.fetch, baseUrl = AGENTS_BASE_URL } = {}) {
-  if (!apiKey || !agentId || !environment) {
-    throw new DeveloperProviderConfigurationError("OPENAI_API_KEY, NOVA_DEVELOPER_AGENT_ID, and a managed repository environment are required.");
-  }
+export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, environmentTemplateId, environment, fetchImpl = globalThis.fetch, baseUrl = AGENTS_BASE_URL } = {}) {
+  if (!nonEmptyString(apiKey)) throw new DeveloperProviderConfigurationError("OPENAI_API_KEY is required for live Agents API calls.");
+  const agentConfiguration = normalizeAgentConfiguration({ agentId, agent });
+  const sessionEnvironment = normalizeEnvironmentConfiguration({ environmentTemplateId, environment });
   const request = async (path, options = {}) => {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       ...options,
@@ -74,8 +108,8 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, environment,
       const created = await request("/agents/sessions", {
         method: "POST",
         body: JSON.stringify({
-          agent_id: agentId,
-          environment,
+          ...agentConfiguration,
+          environment: sessionEnvironment,
           metadata: { nova_task_id: policy.taskId, nova_policy_hash: policyHash },
           stream: false,
         }),

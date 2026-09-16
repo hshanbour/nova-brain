@@ -104,8 +104,56 @@ test("legacy provider remains the safe routing default while agents_api is opt-i
   assert.equal(routed.providers.agents_api, agentsApi);
 });
 
-test("agents API provider requires explicit managed repository configuration", () => {
-  assert.throws(() => createAgentsApiDeveloperProvider({ apiKey: "test" }), (error) => error instanceof DeveloperProviderConfigurationError && error.code === "agents_api_configuration_required");
+test("agents API provider fails closed without a live API key", () => {
+  assert.throws(() => createAgentsApiDeveloperProvider({ agentId: "agent-1", environmentTemplateId: "env-1" }), (error) => error instanceof DeveloperProviderConfigurationError && error.code === "agents_api_configuration_required" && /OPENAI_API_KEY/.test(error.message));
+});
+
+test("agents API provider fails closed without a saved or valid inline agent configuration", () => {
+  assert.throws(() => createAgentsApiDeveloperProvider({ apiKey: "test", environmentTemplateId: "env-1" }), (error) => error instanceof DeveloperProviderConfigurationError && error.code === "agents_api_configuration_required");
+  assert.throws(() => createAgentsApiDeveloperProvider({ apiKey: "test", agent: { instructions: "missing model" }, environmentTemplateId: "env-1" }), (error) => error instanceof DeveloperProviderConfigurationError && error.code === "agents_api_configuration_required");
+});
+
+function agentsSessionFetch(requests) {
+  return async (url, options = {}) => {
+    requests.push({ url, options });
+    if (options.method === "POST" && url.endsWith("/agents/sessions")) return Response.json({ id: "managed-1", status: "idle" });
+    if (options.method === "POST") return new Response(null, { status: 204 });
+    return Response.json({ id: "managed-1", status: "idle" });
+  };
+}
+
+test("saved agent_id mode creates a session without an inline agent", async () => {
+  const requests = [];
+  const provider = createAgentsApiDeveloperProvider({ apiKey: "test", agentId: "agent-1", environmentTemplateId: "env-1", fetchImpl: agentsSessionFetch(requests) });
+  await provider.start({ policy: microphoneDeveloperRequest(), policyHash: "saved-agent" });
+  const body = JSON.parse(requests[0].options.body);
+  assert.equal(body.agent_id, "agent-1");
+  assert.equal("agent" in body, false);
+});
+
+test("inline agent mode creates a session without NOVA_DEVELOPER_AGENT_ID", async () => {
+  const requests = [];
+  const agent = { model: "gpt-5.2-codex", instructions: "Use the bounded Nova execution contract." };
+  const provider = createAgentsApiDeveloperProvider({ apiKey: "test", agent, environmentTemplateId: "env-1", fetchImpl: agentsSessionFetch(requests) });
+  await provider.start({ policy: microphoneDeveloperRequest(), policyHash: "inline-agent" });
+  const body = JSON.parse(requests[0].options.body);
+  assert.deepEqual(body.agent, agent);
+  assert.equal("agent_id" in body, false);
+});
+
+test("reusable environment template mode creates the official hosted reference", async () => {
+  const requests = [];
+  const provider = createAgentsApiDeveloperProvider({ apiKey: "test", agentId: "agent-1", environmentTemplateId: "env-template-1", fetchImpl: agentsSessionFetch(requests) });
+  await provider.start({ policy: microphoneDeveloperRequest(), policyHash: "template-environment" });
+  assert.deepEqual(JSON.parse(requests[0].options.body).environment, { type: "openai_hosted", environment_template_id: "env-template-1" });
+});
+
+test("inline hosted environment mode creates a session without a reusable template", async () => {
+  const requests = [];
+  const environment = { type: "openai_hosted", network: { access: "disabled" }, packages: { npm: ["typescript"] } };
+  const provider = createAgentsApiDeveloperProvider({ apiKey: "test", agentId: "agent-1", environment, fetchImpl: agentsSessionFetch(requests) });
+  await provider.start({ policy: microphoneDeveloperRequest(), policyHash: "inline-environment" });
+  assert.deepEqual(JSON.parse(requests[0].options.body).environment, environment);
 });
 
 test("agents API provider maps bounded policy to official managed session endpoints without logging secrets", async () => {
@@ -117,7 +165,7 @@ test("agents API provider maps bounded policy to official managed session endpoi
     if (requests.filter((item) => !item.options.method).length === 1) return Response.json({ id: "managed-1", status: "requires_action", required_actions: [{ type: "function_call", name: "approval", call_id: "call-1", turn_id: "turn-1" }] });
     return Response.json({ id: "managed-1", status: "idle" });
   };
-  const provider = createAgentsApiDeveloperProvider({ apiKey: "api-secret", agentId: "agent-1", environment: { type: "none" }, fetchImpl });
+  const provider = createAgentsApiDeveloperProvider({ apiKey: "api-secret", agentId: "agent-1", environment: { type: "openai_hosted", network: { access: "disabled" } }, fetchImpl });
   const policy = microphoneDeveloperRequest();
   const started = await provider.start({ policy, policyHash: "policy-hash" });
   assert.equal(started.status, "requires_action");
