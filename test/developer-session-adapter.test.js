@@ -117,7 +117,9 @@ for (const upstreamStatus of [400, 401, 403, 404, 429, 503]) {
     assert.equal(result.error.code, "agents_api_request_failed");
     assert.equal(result.error.message, "Developer provider failed closed.");
     assert.deepEqual({ ...result.error.diagnostics, upstreamErrorMessage: undefined }, {
+      stage: "agents_session_create",
       requestStage: "agents_session_create",
+      classification: "upstream_http_error",
       upstreamStatus,
       upstreamErrorType: `request_type_${upstreamStatus}`,
       upstreamErrorCode: `request_code_${upstreamStatus}`,
@@ -155,10 +157,112 @@ function agentsSessionFetch(requests) {
   return async (url, options = {}) => {
     requests.push({ url, options });
     if (options.method === "POST" && url.endsWith("/agents/sessions")) return Response.json({ id: "managed-1", status: "idle" });
-    if (options.method === "POST") return new Response(null, { status: 204 });
+    if (options.method === "POST") return new Response(null, { status: 200 });
     return Response.json({ id: "managed-1", status: "idle" });
   };
 }
+
+test("void Agents event responses are accepted without JSON parsing", async () => {
+  const requests = [];
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    fetchImpl: agentsSessionFetch(requests),
+  });
+
+  const result = await provider.start({ policy: microphoneDeveloperRequest(), policyHash: "void-event" });
+
+  assert.equal(result.providerSessionId, "managed-1");
+  assert.equal(result.status, "completed");
+  assert.match(requests[1].url, /\/agents\/sessions\/managed-1\/events$/);
+});
+
+test("response-parse diagnostics survive adapter persistence without response or secret leakage", async () => {
+  const store = persistentTestStore();
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "sk-parse-secret-123456789",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl() {
+      return new Response("raw-secret-response-body", { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  const result = await adapter(provider, store, "agents_api")
+    .startDeveloperSession(microphoneDeveloperRequest({ provider: "agents_api" }));
+  const persisted = await store.get("nova-session-1");
+
+  assert.equal(result.error.code, "agents_api_request_failed");
+  assert.deepEqual(result.error.diagnostics, {
+    stage: "agents_response_parse",
+    requestStage: "agents_session_create",
+    classification: "response_parse_failed",
+    upstreamStatus: 200,
+    upstreamErrorType: "SyntaxError",
+    upstreamErrorCode: null,
+    upstreamErrorMessage: "Agents API success response was not valid JSON.",
+  });
+  assert.deepEqual(persisted.error, result.error);
+  assert.doesNotMatch(JSON.stringify({ result, persisted }), /raw-secret-response-body|parse-secret|Bearer/);
+});
+
+test("every Agents provider operation retains its exact bounded transport stage", async () => {
+  const configuration = {
+    apiKey: "sk-transport-secret-123456789",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+  };
+  const transportFailure = () => Object.assign(new TypeError("Bearer sk-transport-secret-123456789"), { code: "UND_ERR_CONNECT_TIMEOUT" });
+  const expectStage = async (operation, expectedStage) => {
+    await assert.rejects(operation, (error) => {
+      assert.equal(error.code, "agents_api_request_failed");
+      assert.equal(error.safeDiagnostics.stage, expectedStage);
+      assert.equal(error.safeDiagnostics.requestStage, expectedStage);
+      assert.equal(error.safeDiagnostics.classification, "transport_error");
+      assert.equal(error.safeDiagnostics.upstreamStatus, null);
+      assert.equal(error.safeDiagnostics.upstreamErrorType, "TypeError");
+      assert.equal(error.safeDiagnostics.upstreamErrorCode, "UND_ERR_CONNECT_TIMEOUT");
+      assert.doesNotMatch(JSON.stringify(error.safeDiagnostics), /transport-secret|Bearer/);
+      return true;
+    });
+  };
+
+  await expectStage(
+    createAgentsApiDeveloperProvider({ ...configuration, fetchImpl: async () => { throw transportFailure(); } })
+      .start({ policy: microphoneDeveloperRequest(), policyHash: "create" }),
+    "agents_session_create",
+  );
+
+  let initialCall = 0;
+  await expectStage(
+    createAgentsApiDeveloperProvider({
+      ...configuration,
+      fetchImpl: async () => {
+        initialCall += 1;
+        if (initialCall === 1) return Response.json({ id: "managed-1", status: "idle" });
+        throw transportFailure();
+      },
+    }).start({ policy: microphoneDeveloperRequest(), policyHash: "initial-event" }),
+    "agents_initial_event_submit",
+  );
+
+  await expectStage(
+    createAgentsApiDeveloperProvider({ ...configuration, fetchImpl: async () => { throw transportFailure(); } })
+      .getStatus({ providerSessionId: "managed-1" }),
+    "agents_session_retrieve",
+  );
+  await expectStage(
+    createAgentsApiDeveloperProvider({ ...configuration, fetchImpl: async () => { throw transportFailure(); } })
+      .resume({ providerSessionId: "managed-1", approval: null, approvalDecision: "approved", additionalInstruction: null, policyHash: "resume" }),
+    "agents_session_resume",
+  );
+  await expectStage(
+    createAgentsApiDeveloperProvider({ ...configuration, fetchImpl: async () => { throw transportFailure(); } })
+      .cancel({ providerSessionId: "managed-1" }),
+    "agents_session_cancel",
+  );
+});
 
 test("saved agent_id mode creates a session without an inline agent", async () => {
   const requests = [];
@@ -199,7 +303,7 @@ test("agents API provider maps bounded policy to official managed session endpoi
   const fetchImpl = async (url, options = {}) => {
     requests.push({ url, options });
     if (options.method === "POST" && url.endsWith("/agents/sessions")) return Response.json({ id: "managed-1", status: "idle" });
-    if (options.method === "POST") return new Response(null, { status: 204 });
+    if (options.method === "POST") return new Response(null, { status: 200 });
     if (requests.filter((item) => !item.options.method).length === 1) return Response.json({ id: "managed-1", status: "requires_action", required_actions: [{ type: "function_call", name: "approval", call_id: "call-1", turn_id: "turn-1" }] });
     return Response.json({ id: "managed-1", status: "idle" });
   };

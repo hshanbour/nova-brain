@@ -17,23 +17,30 @@ function sanitizedDiagnosticString(value, { maxLength, apiKey }) {
   const normalized = value
     .replaceAll(apiKey, "[REDACTED]")
     .replace(/\b(?:authorization|cookie|set-cookie)\s*[:=]\s*[^,;]+/gi, "[REDACTED]")
-    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
+    .replace(/\bBearer\s+[^\s,;]+/gi, "[REDACTED]")
     .replace(/\b(?:sk|sess|proj)-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]")
     .replace(/[\r\n\t]+/g, " ")
     .trim();
   return normalized ? normalized.slice(0, maxLength) : null;
 }
 
-function safeError({ status, stage, payload, apiKey }) {
+function safeError({ status = null, stage, requestStage = stage, classification = "upstream_http_error", payload, apiKey, cause = null }) {
   const upstreamError = payload?.error && typeof payload.error === "object" && !Array.isArray(payload.error)
     ? payload.error
     : null;
   const diagnostics = {
-    requestStage: stage,
+    stage,
+    requestStage,
+    classification,
     upstreamStatus: status,
-    upstreamErrorType: sanitizedDiagnosticString(upstreamError?.type, { maxLength: MAX_UPSTREAM_TYPE_LENGTH, apiKey }),
-    upstreamErrorCode: sanitizedDiagnosticString(upstreamError?.code, { maxLength: MAX_UPSTREAM_CODE_LENGTH, apiKey }),
-    upstreamErrorMessage: sanitizedDiagnosticString(upstreamError?.message, { maxLength: MAX_UPSTREAM_MESSAGE_LENGTH, apiKey }),
+    upstreamErrorType: sanitizedDiagnosticString(upstreamError?.type || cause?.name, { maxLength: MAX_UPSTREAM_TYPE_LENGTH, apiKey }),
+    upstreamErrorCode: sanitizedDiagnosticString(upstreamError?.code || cause?.code, { maxLength: MAX_UPSTREAM_CODE_LENGTH, apiKey }),
+    upstreamErrorMessage: sanitizedDiagnosticString(
+      classification === "response_parse_failed"
+        ? "Agents API success response was not valid JSON."
+        : upstreamError?.message || cause?.message,
+      { maxLength: MAX_UPSTREAM_MESSAGE_LENGTH, apiKey },
+    ),
   };
   const error = new Error("Managed developer provider request failed.");
   error.code = "agents_api_request_failed";
@@ -120,21 +127,38 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
   if (!nonEmptyString(apiKey)) throw new DeveloperProviderConfigurationError("OPENAI_API_KEY is required for live Agents API calls.");
   const agentConfiguration = normalizeAgentConfiguration({ agentId, agent });
   const sessionEnvironment = normalizeEnvironmentConfiguration({ environmentTemplateId, environment });
-  const request = async (path, stage, options = {}) => {
-    const response = await fetchImpl(`${baseUrl}${path}`, {
-      ...options,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-        "OpenAI-Beta": "agents=v1",
-      },
-    });
+  const request = async (path, stage, options = {}, responseMode = "json") => {
+    let response;
+    try {
+      response = await fetchImpl(`${baseUrl}${path}`, {
+        ...options,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+          "OpenAI-Beta": "agents=v1",
+        },
+      });
+    } catch (cause) {
+      throw safeError({ stage, classification: "transport_error", apiKey, cause });
+    }
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
       throw safeError({ status: response.status, stage, payload, apiKey });
     }
-    return response.status === 204 ? null : response.json();
+    if (responseMode === "void") return null;
+    try {
+      return await response.json();
+    } catch (cause) {
+      throw safeError({
+        status: response.status,
+        stage: "agents_response_parse",
+        requestStage: stage,
+        classification: "response_parse_failed",
+        apiKey,
+        cause,
+      });
+    }
   };
   const retrieve = async (providerSessionId) => mappedSession(await request(
     `/agents/sessions/${encodeURIComponent(providerSessionId)}`,
@@ -153,12 +177,12 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
         }),
       });
       if (typeof created?.id !== "string" || !created.id) {
-        throw safeError({ status: 502, stage: "agents_session_create", payload: null, apiKey });
+        throw safeError({ stage: "agents_session_create", classification: "provider_result_invalid", payload: null, apiKey });
       }
-      await request(`/agents/sessions/${encodeURIComponent(created.id)}/events`, "agents_session_input", {
+      await request(`/agents/sessions/${encodeURIComponent(created.id)}/events`, "agents_initial_event_submit", {
         method: "POST",
         body: JSON.stringify({ events: [{ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: instructions(policy) }] }] }] }),
-      });
+      }, "void");
       return retrieve(created.id);
     },
     async resume({ providerSessionId, approval, approvalDecision, additionalInstruction, policyHash }) {
@@ -177,13 +201,13 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
         ? [{ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: additionalInstruction }] }] }]
         : [];
       if (requiredActions.length && toolResults.length !== requiredActions.length) {
-        throw safeError({ status: 422, stage: "agents_session_resume", payload: null, apiKey });
+        throw safeError({ stage: "agents_session_resume", classification: "provider_input_invalid", payload: null, apiKey });
       }
       if (!toolResults.length && !message.length) message.push({ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: JSON.stringify(decision) }] }] });
       await request(`/agents/sessions/${encodeURIComponent(providerSessionId)}/events`, "agents_session_resume", {
         method: "POST",
         body: JSON.stringify({ events: [...toolResults, ...message] }),
-      });
+      }, "void");
       return retrieve(providerSessionId);
     },
     async getStatus({ providerSessionId }) { return retrieve(providerSessionId); },
@@ -191,7 +215,7 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
       await request(`/agents/sessions/${encodeURIComponent(providerSessionId)}/events`, "agents_session_cancel", {
         method: "POST",
         body: JSON.stringify({ events: [{ type: "agent.session.input.cancel" }] }),
-      });
+      }, "void");
       return { providerSessionId, status: "cancelled", changedPaths: [] };
     },
   });
