@@ -289,6 +289,20 @@ export function createApi({
         if (
           developerWorkspaceHandoff &&
           request.method === "POST" &&
+          pathname === "/api/admin/developer-sessions/real/microphone/original-console-recovery/start"
+        ) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          sendJson(response, 201, {
+            session: await developerWorkspaceHandoff.startOriginalConsoleRecovery(
+              await readJsonBody(request, config.developerWorkspaceHandoffMaxBodyBytes || 3 * 1024 * 1024),
+            ),
+          });
+          return;
+        }
+        if (
+          developerWorkspaceHandoff &&
+          request.method === "POST" &&
           pathname === "/api/admin/developer-sessions/real/microphone/recovery/start"
         ) {
           await ready();

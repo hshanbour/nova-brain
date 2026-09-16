@@ -7,10 +7,14 @@ import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import {
   buildDeveloperWorkspaceHandoffBundle,
   buildDeveloperRecoveryWorkspaceHandoffBundle,
+  buildOriginalConsoleRecoveryWorkspaceHandoffBundle,
   createDeveloperWorkspaceHandoff,
+  ORIGINAL_CONSOLE_REFERENCES,
+  ORIGINAL_CONSOLE_REFERENCE_COMMIT,
   REAL_DEVELOPER_ALLOWED_PATHS,
   REAL_DEVELOPER_BASE_SHA,
   REAL_DEVELOPER_RECOVERY_BASE_SHA,
+  REAL_DEVELOPER_ORIGINAL_CONSOLE_RECOVERY_BASE_SHA,
   REAL_DEVELOPER_BRANCH,
   REAL_DEVELOPER_PREVIEW_BRANCH,
   REAL_DEVELOPER_REPOSITORY,
@@ -62,6 +66,11 @@ async function bundle(options) {
 async function recoveryBundle(options = {}) {
   const fixture = fakeWorkspace({ status: "", baseSha: REAL_DEVELOPER_RECOVERY_BASE_SHA, ...options });
   return buildDeveloperRecoveryWorkspaceHandoffBundle({ root: REAL_DEVELOPER_WORKSPACE_ROOT, git: fixture.git, read: fixture.read, stat: fixture.stat });
+}
+
+async function originalConsoleRecoveryBundle(options = {}) {
+  const fixture = fakeWorkspace({ status: "", baseSha: REAL_DEVELOPER_ORIGINAL_CONSOLE_RECOVERY_BASE_SHA, ...options });
+  return buildOriginalConsoleRecoveryWorkspaceHandoffBundle({ root: REAL_DEVELOPER_WORKSPACE_ROOT, git: fixture.git, read: fixture.read, stat: fixture.stat });
 }
 
 function environment(overrides = {}) {
@@ -168,6 +177,41 @@ test("historical and clean recovery contracts cannot cross-bind", async () => {
   await assert.rejects(() => serviceFixture().service.startRecovery(wrongTask), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
 });
 
+test("original-console recovery binds the clean 5f4 base and exact 911c references using existing hosted files", async () => {
+  const recovery = await originalConsoleRecoveryBundle();
+  assert.equal(recovery.manifest.baseSha, REAL_DEVELOPER_ORIGINAL_CONSOLE_RECOVERY_BASE_SHA);
+  assert.deepEqual(recovery.manifest.dirtyPaths, []);
+  assert.deepEqual(recovery.references.map(({ path }) => path), ORIGINAL_CONSOLE_REFERENCES.map(({ path }) => path));
+  assert.ok(recovery.references.every((reference) => reference.sourceCommit === ORIGINAL_CONSOLE_REFERENCE_COMMIT));
+  const { service, configurations } = serviceFixture();
+  const session = await service.startOriginalConsoleRecovery(recovery);
+  assert.equal(session.policy.baseSha, REAL_DEVELOPER_ORIGINAL_CONSOLE_RECOVERY_BASE_SHA);
+  assert.equal(session.policy.metadata.mode, "real_task_original_console_recovery_handoff");
+  assert.equal(session.policy.metadata.referenceSourceCommit, ORIGINAL_CONSOLE_REFERENCE_COMMIT);
+  assert.deepEqual(session.policy.metadata.referencePaths, ORIGINAL_CONSOLE_REFERENCES.map(({ path }) => path));
+  const hosted = configurations[0].environment;
+  assert.equal(hosted.files.length, 6);
+  assert.equal(hosted.setup_commands.length, 2);
+  assert.match(hosted.setup_commands[0].command, /NOVA_ORIGINAL_CONSOLE_REFERENCES_OK/);
+  for (const expected of ORIGINAL_CONSOLE_REFERENCES) {
+    const reference = hosted.files.find(({ path }) => path.endsWith(`/${expected.path}`));
+    assert.ok(reference);
+    assert.equal(hash(Buffer.from(reference.data, "base64")), expected.sha256);
+  }
+});
+
+test("original-console recovery rejects wrong base, dirty workspaces, reference drift, and cross-binding", async () => {
+  await assert.rejects(() => originalConsoleRecoveryBundle({ baseSha: "f".repeat(40) }), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
+  await assert.rejects(() => originalConsoleRecoveryBundle({ status: " M index.html\0" }), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
+  const recovery = await originalConsoleRecoveryBundle();
+  const drifted = structuredClone(recovery);
+  drifted.references[0].data = Buffer.from("drift").toString("base64");
+  await assert.rejects(() => serviceFixture().service.startOriginalConsoleRecovery(drifted), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
+  const priorRecovery = await recoveryBundle();
+  await assert.rejects(() => serviceFixture().service.startOriginalConsoleRecovery(priorRecovery), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
+  await assert.rejects(() => serviceFixture().service.startRecovery(recovery), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
+});
+
 test("protected clean recovery route is authenticated and distinct from historical start", async () => {
   const calls = [];
   const service = {
@@ -185,6 +229,25 @@ test("protected clean recovery route is authenticated and distinct from historic
   await application.handle(request({ body: clean, url }), accepted);
   assert.equal(accepted.statusCode, 201);
   assert.deepEqual(calls.map(([name]) => name), ["recovery"]);
+});
+
+test("protected original-console recovery route is authenticated and distinct", async () => {
+  const calls = [];
+  const service = {
+    async startOriginalConsoleRecovery(value) { calls.push(value); return { id: "original-console-recovery" }; },
+  };
+  const application = api(service);
+  const recovery = await originalConsoleRecoveryBundle();
+  const url = "/api/admin/developer-sessions/real/microphone/original-console-recovery/start";
+  const denied = response();
+  await application.handle(request({ body: recovery, authorized: false, url }), denied);
+  assert.equal(denied.statusCode, 401);
+  assert.equal(calls.length, 0);
+  const accepted = response();
+  await application.handle(request({ body: recovery, url }), accepted);
+  assert.equal(accepted.statusCode, 201);
+  assert.equal(accepted.json.session.id, "original-console-recovery");
+  assert.equal(calls.length, 1);
 });
 
 test("real start materializes official inline environment files and pre-agent integrity verification", async () => {

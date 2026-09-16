@@ -24,6 +24,8 @@ export const REAL_DEVELOPER_REPOSITORY = "hshanbour/nova-brain";
 export const REAL_DEVELOPER_BRANCH = "feat/nova-brain-mvp-foundation";
 export const REAL_DEVELOPER_BASE_SHA = "911c1bc472e6017fac65146dd14298966a11c26f";
 export const REAL_DEVELOPER_RECOVERY_BASE_SHA = "1509b7ec6eec689cd0b3030074c9f3ffba63379f";
+export const REAL_DEVELOPER_ORIGINAL_CONSOLE_RECOVERY_BASE_SHA = "5f4f8a4c209ff5718ab986f451916947b6825fd8";
+export const ORIGINAL_CONSOLE_REFERENCE_COMMIT = REAL_DEVELOPER_BASE_SHA;
 export const REAL_DEVELOPER_PREVIEW_BRANCH = "stage13/control-plane-approved-delivery-runtime";
 export const REAL_DEVELOPER_WORKSPACE_ROOT = "C:/Users/hamod/Documents/Codex/2026-08-28/we-are-continuing-the-nova-brain/work/nova-brain-microphone-task";
 export const REAL_DEVELOPER_ALLOWED_PATHS = Object.freeze([
@@ -54,7 +56,18 @@ const CLEAN_RECOVERY_HANDOFF = Object.freeze({
   dirtyPaths: Object.freeze([]),
   mode: "real_task_clean_recovery_handoff",
 });
-const HANDOFF_CONTRACTS = Object.freeze([HISTORICAL_HANDOFF, CLEAN_RECOVERY_HANDOFF]);
+const ORIGINAL_CONSOLE_RECOVERY_HANDOFF = Object.freeze({
+  baseSha: REAL_DEVELOPER_ORIGINAL_CONSOLE_RECOVERY_BASE_SHA,
+  dirtyPaths: Object.freeze([]),
+  mode: "real_task_original_console_recovery_handoff",
+});
+const HANDOFF_CONTRACTS = Object.freeze([HISTORICAL_HANDOFF, CLEAN_RECOVERY_HANDOFF, ORIGINAL_CONSOLE_RECOVERY_HANDOFF]);
+export const ORIGINAL_CONSOLE_REFERENCES = Object.freeze([
+  Object.freeze({ path: "index.html", size: 20499, sha256: "1b87b6ec59a421d8757b237a4eec59aa16abb378c591a46232cd203861a8fcc9" }),
+  Object.freeze({ path: "assets/console.css", size: 21720, sha256: "85d696ca265cb9d8179dd521fd52a756290fabc71039de1ef8b12d6ac1a9b24b" }),
+  Object.freeze({ path: "assets/console.js", size: 28053, sha256: "7af8757b642db197bc25a7192f7aa082e5f9934d747ae976bb65cef9368146da" }),
+]);
+const ORIGINAL_CONSOLE_REFERENCE_ROOT = "/workspace/.nova-restoration-reference/911c1bc472e6017fac65146dd14298966a11c26f";
 
 export class DeveloperWorkspaceHandoffError extends Error {
   constructor(code, message, statusCode = 409) {
@@ -211,6 +224,58 @@ export function buildDeveloperRecoveryWorkspaceHandoffBundle(options = {}) {
   return buildWorkspaceHandoffBundle(options, CLEAN_RECOVERY_HANDOFF);
 }
 
+async function defaultHistoricalRead(root, path) {
+  const { stdout } = await execFileAsync("git", ["-c", `safe.directory=${root}`, "-C", root, "show", `${ORIGINAL_CONSOLE_REFERENCE_COMMIT}:${path}`], {
+    encoding: "buffer",
+    maxBuffer: 512 * 1024,
+  });
+  return stdout;
+}
+
+export async function buildOriginalConsoleRecoveryWorkspaceHandoffBundle(options = {}) {
+  const workspace = await buildWorkspaceHandoffBundle(options, ORIGINAL_CONSOLE_RECOVERY_HANDOFF);
+  const root = resolve(options.root || REAL_DEVELOPER_WORKSPACE_ROOT);
+  const historicalRead = options.historicalRead || defaultHistoricalRead;
+  const references = [];
+  for (const expected of ORIGINAL_CONSOLE_REFERENCES) {
+    const bytes = Buffer.from(await historicalRead(root, expected.path));
+    if (bytes.length !== expected.size || sha256(bytes) !== expected.sha256) {
+      fail("WORKSPACE_INTEGRITY_FAILED", "Historical console reference bytes do not match the pinned source commit.");
+    }
+    references.push(Object.freeze({
+      path: expected.path,
+      sourceCommit: ORIGINAL_CONSOLE_REFERENCE_COMMIT,
+      destination: `${ORIGINAL_CONSOLE_REFERENCE_ROOT}/${expected.path}`,
+      size: expected.size,
+      sha256: expected.sha256,
+      data: bytes.toString("base64"),
+    }));
+  }
+  return Object.freeze({ ...workspace, references: Object.freeze(references) });
+}
+
+function validateOriginalConsoleReferences(input) {
+  if (!exactKeys(input, ["manifest", "files", "references"]) || !Array.isArray(input.references)
+    || input.references.length !== ORIGINAL_CONSOLE_REFERENCES.length) {
+    fail("WORKSPACE_INTEGRITY_FAILED", "The exact historical console reference set is required.", 400);
+  }
+  return ORIGINAL_CONSOLE_REFERENCES.map((expected, index) => {
+    const reference = input.references[index];
+    const destination = `${ORIGINAL_CONSOLE_REFERENCE_ROOT}/${expected.path}`;
+    if (!exactKeys(reference, ["path", "sourceCommit", "destination", "size", "sha256", "data"])
+      || reference.path !== expected.path || reference.sourceCommit !== ORIGINAL_CONSOLE_REFERENCE_COMMIT
+      || reference.destination !== destination || reference.size !== expected.size || reference.sha256 !== expected.sha256
+      || typeof reference.data !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(reference.data)) {
+      fail("WORKSPACE_INTEGRITY_FAILED", "Historical console reference binding is invalid.");
+    }
+    const bytes = Buffer.from(reference.data, "base64");
+    if (bytes.length !== expected.size || sha256(bytes) !== expected.sha256) {
+      fail("WORKSPACE_INTEGRITY_FAILED", "Historical console reference integrity verification failed.");
+    }
+    return Object.freeze({ ...reference });
+  });
+}
+
 function validateBundle(input, contract) {
   if (!exactKeys(input, ["manifest", "files"]) || !exactKeys(input.manifest, [
     "version", "taskId", "repository", "branch", "baseSha", "workspaceRoot", "workspaceDestination",
@@ -260,6 +325,12 @@ function verificationSource({ readOnly = false, archiveSha256, expectedManifestH
   return `import{createHash}from"node:crypto";import{readFile,readdir,stat,chmod,mkdir,writeFile}from"node:fs/promises";import{resolve,dirname,relative,sep}from"node:path";import{gunzipSync}from"node:zlib";const root=${JSON.stringify(WORKSPACE_DESTINATION)},manifest=JSON.parse(await readFile(${JSON.stringify(`${HANDOFF_DESTINATION}/manifest.json`)},"utf8")),claimed=manifest.manifestHash;delete manifest.manifestHash;const manifestHash=createHash("sha256").update(JSON.stringify(manifest)).digest("hex");if(claimed!==${JSON.stringify(expectedManifestHash)}||claimed!==manifestHash||manifest.taskId!==${JSON.stringify(REAL_DEVELOPER_TASK_ID)}||manifest.repository!==${JSON.stringify(REAL_DEVELOPER_REPOSITORY)}||manifest.branch!==${JSON.stringify(REAL_DEVELOPER_BRANCH)}||manifest.baseSha!==${JSON.stringify(contract.baseSha)}||manifest.workspaceDestination!==root||JSON.stringify(manifest.dirtyPaths)!==${JSON.stringify(JSON.stringify(contract.dirtyPaths))}||JSON.stringify(manifest.authorizedMutationPaths)!==${JSON.stringify(JSON.stringify(REAL_DEVELOPER_ALLOWED_PATHS))}||JSON.stringify(manifest.protectedPaths)!==${JSON.stringify(JSON.stringify(REAL_DEVELOPER_PROTECTED_PATHS))}||manifest.entries.some(entry=>entry.dirty!==manifest.dirtyPaths.includes(entry.path)))throw new Error("WORKSPACE_INTEGRITY_FAILED");const extractVerifiedWorkspaceArchive=${extractVerifiedWorkspaceArchive.toString()};const archive=await readFile(${JSON.stringify(WORKSPACE_ARCHIVE_PATH)});await extractVerifiedWorkspaceArchive({archive,root,entries:manifest.entries,archiveSha256:${JSON.stringify(archiveSha256)},createHash,gunzipSync,mkdir,writeFile,readFile,readdir,stat,chmod,resolve,dirname,relative,sep,modeForPath:path=>${readOnly ? "0o400" : "manifest.authorizedMutationPaths.includes(path)?0o600:0o400"}});console.log("NOVA_WORKSPACE_INTEGRITY_OK:"+claimed);`;
 }
 
+function referenceVerificationCommand(references) {
+  const evidence = references.map(({ destination, size, sha256: hash }) => ({ destination, size, sha256: hash }));
+  const source = `import{createHash}from"node:crypto";import{readFile}from"node:fs/promises";const digest=value=>createHash("sha256").update(value).digest("hex");for(const reference of ${JSON.stringify(evidence)}){const bytes=await readFile(reference.destination);if(bytes.length!==reference.size||digest(bytes)!==reference.sha256)throw new Error("WORKSPACE_INTEGRITY_FAILED");}console.log("NOVA_ORIGINAL_CONSOLE_REFERENCES_OK");`;
+  return `node --input-type=module -e ${JSON.stringify(source)}`;
+}
+
 export function createDeveloperWorkspaceHandoff({ environment = process.env, storage, ownerId, providerFactory = createAgentsApiDeveloperProvider, taskReader, idFactory, clock } = {}) {
   if (!storage?.saveDeveloperSession || !storage?.getDeveloperSession) fail("developer_workspace_storage_required", "Durable developer session storage is required.", 503);
   const assertPreview = () => {
@@ -293,14 +364,18 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
     }
     return { record, contract };
   };
-  const materializingProvider = ({ manifest, materials, readOnly, contract }) => {
+  const materializingProvider = ({ manifest, materials, readOnly, contract, references = [] }) => {
     const archive = createDeterministicWorkspaceArchive(materials);
     const archiveSha256 = sha256(archive);
     const hostedFiles = [
       { type: "inline", path: WORKSPACE_ARCHIVE_PATH, data: archive.toString("base64") },
       { type: "inline", path: `${HANDOFF_DESTINATION}/manifest.json`, data: Buffer.from(JSON.stringify(manifest)).toString("base64") },
       { type: "inline", path: `${HANDOFF_DESTINATION}/verify.mjs`, data: Buffer.from(verificationSource({ readOnly, archiveSha256, expectedManifestHash: manifest.manifestHash, contract })).toString("base64") },
+      ...references.map((reference) => ({ type: "inline", path: reference.destination, data: reference.data })),
     ];
+    const setupCommands = references.length
+      ? [{ command: referenceVerificationCommand(references), cwd: "/workspace" }, { command: `node ${HANDOFF_DESTINATION}/verify.mjs`, cwd: "/workspace" }]
+      : [{ command: `node ${HANDOFF_DESTINATION}/verify.mjs`, cwd: "/workspace" }];
     return {
       archiveSha256,
       hostedFileCount: hostedFiles.length,
@@ -311,17 +386,19 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
           type: "openai_hosted",
           network: { access: "disabled" },
           files: hostedFiles,
-          setup_commands: [{ command: `node ${HANDOFF_DESTINATION}/verify.mjs`, cwd: "/workspace" }],
+          setup_commands: setupCommands,
           packages: { npm: [], python: [], system: [] },
         },
       }),
     };
   };
-  const start = async (input, contract, { goal, acceptanceCriteria }) => {
+  const start = async (input, contract, { goal, acceptanceCriteria, originalConsoleReferences = false }) => {
     assertPreview();
     await boundTask();
-    const { manifest, materials } = validateBundle(input, contract);
-    const packaged = materializingProvider({ manifest, materials, readOnly: false, contract });
+    const references = originalConsoleReferences ? validateOriginalConsoleReferences(input) : [];
+    const workspaceInput = originalConsoleReferences ? { manifest: input.manifest, files: input.files } : input;
+    const { manifest, materials } = validateBundle(workspaceInput, contract);
+    const packaged = materializingProvider({ manifest, materials, readOnly: false, contract, references });
     return adapterFor(packaged.provider).startDeveloperSession({
       taskId: REAL_DEVELOPER_TASK_ID,
       goal,
@@ -331,7 +408,7 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
       allowedPaths: [...REAL_DEVELOPER_ALLOWED_PATHS],
       forbiddenPaths: [...REAL_DEVELOPER_PROTECTED_PATHS, ".git", "node_modules", ".env"],
       approvalPolicy: { requireFor: ["commit", "push", "deploy", "scope_change", "dependency_change", "external_action"], allowPush: false, allowDeploy: false },
-      metadata: { mode: contract.mode, manifestHash: manifest.manifestHash, archiveSha256: packaged.archiveSha256, hostedFileCount: packaged.hostedFileCount, workspaceRoot: manifest.workspaceRoot, materializedFileCount: manifest.entries.length, taskStateVersion: 451 },
+      metadata: { mode: contract.mode, manifestHash: manifest.manifestHash, archiveSha256: packaged.archiveSha256, hostedFileCount: packaged.hostedFileCount, workspaceRoot: manifest.workspaceRoot, materializedFileCount: manifest.entries.length, taskStateVersion: 451, ...(references.length ? { referenceSourceCommit: ORIGINAL_CONSOLE_REFERENCE_COMMIT, referencePaths: references.map(({ path }) => path), referenceHashes: Object.fromEntries(references.map(({ path, sha256: hash }) => [path, hash])) } : {}) },
       dryRun: false,
     });
   };
@@ -346,6 +423,13 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
       return start(input, CLEAN_RECOVERY_HANDOFF, {
         goal: "Reapply Nova's reviewed microphone browser-acceptance repair from the exact clean feature workspace and publish immutable delivery artifacts.",
         acceptanceCriteria: ["Begin from the exact clean recovery base.", "Modify only the eight authorized paths.", "Run the bounded focused tests and fresh Nova review.", "Publish immutable reviewed changed-file artifacts before delivery readiness.", "Do not modify dependencies, commit, push, deploy, or widen scope."],
+      });
+    },
+    async startOriginalConsoleRecovery(input) {
+      return start(input, ORIGINAL_CONSOLE_RECOVERY_HANDOFF, {
+        goal: "Restore the original Nova Console from the exact attached 911c1bc historical references while preserving the current reviewed microphone behavior. Nova owns all product changes, focused testing, review, and immutable artifact publication.",
+        acceptanceCriteria: ["Begin from the exact clean 5f4f8a4 feature workspace.", "Use the three attached historical files only as hash-verified restoration references.", "Restore the established console shell without unrelated redesign.", "Preserve the current microphone and voice behavior.", "Modify only the eight authorized paths.", "Publish immutable reviewed changed-file artifacts before delivery readiness.", "Do not modify dependencies, commit, push, deploy, or widen scope."],
+        originalConsoleReferences: true,
       });
     },
     async verify(input) {
