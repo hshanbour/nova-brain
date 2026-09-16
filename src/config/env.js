@@ -111,6 +111,7 @@ export function readConfig(environment = process.env) {
     }),
     allowedOrigins: parseOrigins(environment.CORS_ALLOWED_ORIGINS),
     maxBodyBytes: 64 * 1024,
+    developerWorkspaceHandoffMaxBodyBytes: 3 * 1024 * 1024,
     voiceV2: Object.freeze({
       sttModel: "gpt-transcribe",
       ttsModel: ELEVENLABS_DEFAULT_TTS_MODEL,

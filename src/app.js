@@ -36,6 +36,7 @@ import { registerSelfDevelopmentTools } from "./autonomy/self-development-tools.
 import { createSelfDevelopmentImplementationPlanner } from "./autonomy/self-development-implementation-planner.js";
 import { createAutoDispatchService } from "./autonomy/auto-dispatch.js";
 import { createDeveloperSessionSmoke } from "./autonomy/developer-session-smoke.js";
+import { createDeveloperWorkspaceHandoff } from "./autonomy/developer-workspace-handoff.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -57,6 +58,9 @@ export function createApp({
   const storage = storageOverride || createStorage(config);
   const developerSessionSmoke = storage.saveDeveloperSession && storage.getDeveloperSession
     ? createDeveloperSessionSmoke({ environment, storage, ownerId: OWNER_ID })
+    : null;
+  const developerWorkspaceHandoff = storage.saveDeveloperSession && storage.getDeveloperSession
+    ? createDeveloperWorkspaceHandoff({ environment, storage, ownerId: OWNER_ID })
     : null;
   const initialize = () =>
     storage.initialize({
@@ -216,6 +220,7 @@ export function createApp({
     speakerAssertions,
     familiarityConsent,
     developerSessionSmoke,
+    developerWorkspaceHandoff,
     logger,
   });
   return Object.freeze({ ...api, initialize, workerRuntime });

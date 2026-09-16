@@ -51,6 +51,7 @@ import { WorkerError } from "../autonomy/worker-runtime.js";
 import { SelfDevelopmentError } from "../autonomy/self-development.js";
 import { DeveloperSessionError } from "../autonomy/developer-session-adapter.js";
 import { DeveloperSessionSmokeError } from "../autonomy/developer-session-smoke.js";
+import { DeveloperWorkspaceHandoffError } from "../autonomy/developer-workspace-handoff.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -172,6 +173,7 @@ export function createApi({
   speakerAssertions,
   familiarityConsent,
   developerSessionSmoke,
+  developerWorkspaceHandoff,
   logger = console,
 }) {
   const recognitionEngines =
@@ -257,6 +259,42 @@ export function createApi({
             ),
           });
           return;
+        }
+        if (
+          developerWorkspaceHandoff &&
+          request.method === "POST" &&
+          pathname === "/api/admin/developer-sessions/real/microphone/start"
+        ) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          sendJson(response, 201, {
+            session: await developerWorkspaceHandoff.start(
+              await readJsonBody(request, config.developerWorkspaceHandoffMaxBodyBytes || 3 * 1024 * 1024),
+            ),
+          });
+          return;
+        }
+        const realDeveloperSessionMatch = pathname.match(
+          /^\/api\/admin\/developer-sessions\/real\/([^/]+)(?:\/(resume|cancel))?$/,
+        );
+        if (developerWorkspaceHandoff && realDeveloperSessionMatch) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          const sessionId = decodeURIComponent(realDeveloperSessionMatch[1]);
+          const action = realDeveloperSessionMatch[2] || null;
+          if (request.method === "GET" && !action) {
+            sendJson(response, 200, { session: await developerWorkspaceHandoff.get(sessionId) });
+            return;
+          }
+          if (request.method === "POST" && action === "resume") {
+            sendJson(response, 200, { session: await developerWorkspaceHandoff.resume(sessionId, await readJsonBody(request, config.maxBodyBytes)) });
+            return;
+          }
+          if (request.method === "POST" && action === "cancel") {
+            await readJsonBody(request, config.maxBodyBytes);
+            sendJson(response, 200, { session: await developerWorkspaceHandoff.cancel(sessionId) });
+            return;
+          }
         }
         const developerSessionMatch = pathname.match(
           /^\/api\/admin\/developer-sessions\/([^/]+)(?:\/(resume|cancel))?$/,
@@ -1924,6 +1962,13 @@ export function createApi({
           return;
         }
         if (error instanceof DeveloperSessionSmokeError) {
+          sendJson(response, error.statusCode, {
+            error: error.message,
+            code: error.code,
+          });
+          return;
+        }
+        if (error instanceof DeveloperWorkspaceHandoffError) {
           sendJson(response, error.statusCode, {
             error: error.message,
             code: error.code,
