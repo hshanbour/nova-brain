@@ -8,6 +8,7 @@ import {
   createLegacyDeveloperProvider,
   DeveloperProviderConfigurationError,
 } from "../src/providers/developer-session-providers.js";
+import { createOpenAIModelProvider } from "../src/providers/openai-model-provider.js";
 import { MICROPHONE_ACCEPTANCE, MICROPHONE_ALLOWED_PATHS, microphoneDeveloperRequest, persistentTestStore } from "./developer-session-fixture.js";
 
 function adapter(provider, store = persistentTestStore(), defaultProvider = "legacy") {
@@ -217,6 +218,12 @@ test("agents API provider maps bounded policy to official managed session endpoi
   const resumed = await provider.resume({ providerSessionId: "managed-1", approval: started.approval, approvalDecision: "approved", additionalInstruction: null, policyHash: "policy-hash" });
   assert.equal(resumed.providerSessionId, "managed-1");
   assert.equal(resumed.status, "completed");
+  assert.ok(requests.length >= 5);
+  for (const request of requests) {
+    assert.equal(request.options.headers["OpenAI-Beta"], "agents=v1");
+    assert.equal(request.options.headers.Authorization, "Bearer api-secret");
+  }
+  assert.doesNotMatch(JSON.stringify({ started, resumed }), /api-secret|Authorization|OpenAI-Beta/);
   assert.match(requests[3].url, /\/agents\/sessions\/managed-1\/events$/);
   assert.deepEqual(JSON.parse(requests[3].options.body).events[0], {
     type: "agent.session.input.tool_result",
@@ -225,6 +232,33 @@ test("agents API provider maps bounded policy to official managed session endpoi
     success: true,
     output: JSON.stringify({ contract: "nova_developer_session_resume_v1", policyHash: "policy-hash", approvalDecision: "approved" }),
   });
+});
+
+test("Agents beta header is isolated from unrelated OpenAI Responses API calls", async () => {
+  let request;
+  const provider = createOpenAIModelProvider({
+    apiKey: "responses-secret",
+    model: "test-model",
+    async fetchImpl(url, options) {
+      request = { url, options };
+      return Response.json({
+        id: "response-1",
+        output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }],
+      });
+    },
+  });
+
+  const result = await provider.generate({
+    message: "bounded check",
+    conversationHistory: [],
+    context: {},
+    tools: [],
+  });
+
+  assert.equal(result.message, "ok");
+  assert.equal(request.options.headers.Authorization, "Bearer responses-secret");
+  assert.equal("OpenAI-Beta" in request.options.headers, false);
+  assert.doesNotMatch(JSON.stringify(result), /responses-secret/);
 });
 
 test("adapter refuses provider session replacement and terminal replay", async () => {

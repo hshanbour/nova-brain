@@ -123,7 +123,12 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
   const request = async (path, stage, options = {}) => {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       ...options,
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", ...(options.headers || {}) },
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+        "OpenAI-Beta": "agents=v1",
+      },
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
