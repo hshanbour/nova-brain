@@ -71,6 +71,34 @@ test("status and cancellation stay bound to the persisted provider session", asy
   assert.equal(provider.calls[2].input.providerSessionId, "long-running");
 });
 
+test("idle is resumable and continuation keeps the same provider session", async () => {
+  const provider = createDeterministicDeveloperProvider([
+    { providerSessionId: "idle-session", status: "idle", changedPaths: [] },
+    { providerSessionId: "idle-session", status: "running", changedPaths: [] },
+  ]);
+  const api = adapter(provider);
+  const started = await api.startDeveloperSession(microphoneDeveloperRequest());
+  assert.equal(started.status, "idle");
+  const resumed = await api.resumeDeveloperSession({ sessionId: "nova-session-1", additionalInstruction: "Continue the bounded task." });
+  assert.equal(resumed.status, "running");
+  assert.equal(resumed.providerSessionId, "idle-session");
+  assert.equal(provider.calls[1].input.providerSessionId, "idle-session");
+});
+
+test("a historically misclassified completion can reconcile from provider truth without creating a new session", async () => {
+  const provider = createDeterministicDeveloperProvider([
+    { providerSessionId: "historical-session", status: "completed", result: { outcome: "historically-misclassified" }, changedPaths: [] },
+    { providerSessionId: "historical-session", status: "idle", evidence: { environmentId: "env-historical" } },
+  ]);
+  const api = adapter(provider);
+  assert.equal((await api.startDeveloperSession(microphoneDeveloperRequest())).status, "completed");
+  const reconciled = await api.reconcileDeveloperSession({ sessionId: "nova-session-1" });
+  assert.equal(reconciled.status, "idle");
+  assert.equal(reconciled.providerSessionId, "historical-session");
+  assert.equal(reconciled.evidence.environmentId, "env-historical");
+  assert.deepEqual(provider.calls.map((call) => call.method), ["start", "getStatus"]);
+});
+
 test("scope input and provider output fail closed", async () => {
   const noCall = createDeterministicDeveloperProvider([]);
   await assert.rejects(adapter(noCall).startDeveloperSession(microphoneDeveloperRequest({ allowedPaths: ["../secret"] })), (error) => error instanceof DeveloperSessionError && error.code === "developer_session_scope_invalid");
@@ -174,8 +202,76 @@ test("void Agents event responses are accepted without JSON parsing", async () =
   const result = await provider.start({ policy: microphoneDeveloperRequest(), policyHash: "void-event" });
 
   assert.equal(result.providerSessionId, "managed-1");
-  assert.equal(result.status, "completed");
+  assert.equal(result.status, "idle");
   assert.match(requests[1].url, /\/agents\/sessions\/managed-1\/events$/);
+});
+
+test("Agents session retrieval preserves bounded outputs artifacts tests environment and truthful changed paths", async () => {
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "sk-provider-secret-123456789",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url, options = {}) {
+      if (options.method === "POST" && url.endsWith("/agents/sessions")) return Response.json({ id: "managed-evidence", status: "idle" });
+      if (options.method === "POST") return new Response(null, { status: 200 });
+      if (url.includes("/items?")) return Response.json({ data: [
+        { id: "message-1", type: "message", role: "assistant", content: [{ type: "output_text", text: "Focused repair complete." }] },
+        { id: "command-1", type: "command_execution", status: "completed", exit_code: 0, command: "node --test test/voice-input.test.js", changed_paths: ["/workspace/nova-brain/assets/voice-input.js"], test_summary: { passed: 7, failed: 0 } },
+      ] });
+      if (url.includes("/artifacts?")) return Response.json({ data: [{ id: "artifact-1", environment_id: "env-live", path: "/workspace/nova-brain/assets/voice-input.js", size_bytes: 123, turn_id: "turn-1" }] });
+      return Response.json({ id: "managed-evidence", status: "idle", environment: { id: "env-live" } });
+    },
+  });
+
+  const result = await provider.start({ policy: microphoneDeveloperRequest(), policyHash: "evidence" });
+  assert.equal(result.status, "idle");
+  assert.equal(result.evidence.environmentId, "env-live");
+  assert.equal(result.evidence.latestOutput, "Focused repair complete.");
+  assert.deepEqual(result.evidence.testSummary, { passed: 7, failed: 0 });
+  assert.deepEqual(result.changedPaths, ["assets/voice-input.js"]);
+  assert.deepEqual(result.evidence.artifacts[0], { id: "artifact-1", environmentId: "env-live", path: "/workspace/nova-brain/assets/voice-input.js", sizeBytes: 123, turnId: "turn-1" });
+  assert.equal(result.evidence.commandSummaries[0].exitCode, 0);
+  assert.equal(result.evidence.commandSummaries[0].executable, "node");
+  assert.doesNotMatch(JSON.stringify(result), /provider-secret|Authorization|Bearer/);
+});
+
+test("Agents lifecycle preserves approval and bounded failed-session diagnostics", async () => {
+  const states = [
+    { id: "managed-state", status: "requires_action", required_actions: [{ type: "function_call", name: "approval", call_id: "call-1", turn_id: "turn-1" }] },
+    { id: "managed-state", status: "failed", error: { type: "execution_error", code: "turn_failed", message: "Bounded failure" } },
+  ];
+  let stateIndex = 0;
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url) {
+      if (url.includes("/items?") || url.includes("/artifacts?")) return Response.json({ data: [] });
+      return Response.json(states[Math.min(stateIndex++, states.length - 1)]);
+    },
+  });
+  const approval = await provider.getStatus({ providerSessionId: "managed-state" });
+  assert.equal(approval.status, "requires_action");
+  assert.equal(approval.approval.requiredActions[0].call_id, "call-1");
+  const failed = await provider.getStatus({ providerSessionId: "managed-state" });
+  assert.equal(failed.status, "failed");
+  assert.deepEqual(failed.evidence.safeDiagnostics, { type: "execution_error", code: "turn_failed", message: "Bounded failure" });
+});
+
+test("Agents session retrieval does not fabricate changed paths when upstream omits them", async () => {
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url, options = {}) {
+      if (options.method === "POST" && url.endsWith("/agents/sessions")) return Response.json({ id: "managed-no-paths", status: "idle" });
+      if (options.method === "POST") return new Response(null, { status: 200 });
+      if (url.includes("/items?") || url.includes("/artifacts?")) return Response.json({ data: [] });
+      return Response.json({ id: "managed-no-paths", status: "idle" });
+    },
+  });
+  const result = await provider.start({ policy: microphoneDeveloperRequest(), policyHash: "no-paths" });
+  assert.equal(Object.hasOwn(result, "changedPaths"), false);
 });
 
 test("workspace verification creates, retrieves and cancels without submitting an engineering input", async () => {
@@ -497,15 +593,18 @@ test("agents API provider maps bounded policy to official managed session endpoi
   assert.equal(JSON.stringify(body).includes("api-secret"), false);
   const resumed = await provider.resume({ providerSessionId: "managed-1", approval: started.approval, approvalDecision: "approved", additionalInstruction: null, policyHash: "policy-hash" });
   assert.equal(resumed.providerSessionId, "managed-1");
-  assert.equal(resumed.status, "completed");
+  assert.equal(resumed.status, "idle");
   assert.ok(requests.length >= 5);
   for (const request of requests) {
     assert.equal(request.options.headers["OpenAI-Beta"], "agents=v1");
     assert.equal(request.options.headers.Authorization, "Bearer api-secret");
   }
   assert.doesNotMatch(JSON.stringify({ started, resumed }), /api-secret|Authorization|OpenAI-Beta/);
-  assert.match(requests[3].url, /\/agents\/sessions\/managed-1\/events$/);
-  assert.deepEqual(JSON.parse(requests[3].options.body).events[0], {
+  const resumeRequest = requests.find((request) => request.options.method === "POST"
+    && request.url.endsWith("/agents/sessions/managed-1/events")
+    && JSON.stringify(request.options.body).includes("agent.session.input.tool_result"));
+  assert.ok(resumeRequest);
+  assert.deepEqual(JSON.parse(resumeRequest.options.body).events[0], {
     type: "agent.session.input.tool_result",
     call_id: "call-1",
     turn_id: "turn-1",

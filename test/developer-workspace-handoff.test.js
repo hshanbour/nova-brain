@@ -308,6 +308,23 @@ test("protected real route is authenticated and caller cannot widen fixed task s
   assert.equal(accepted.json.session.taskId, REAL_DEVELOPER_TASK_ID);
 });
 
+test("protected reconciliation restores a misclassified real session from provider truth without replacement", async () => {
+  const handoff = await bundle();
+  const { service, provider } = serviceFixture({ providerScript: [
+    { providerSessionId: "provider-real-1", status: "completed", result: { outcome: "historical-mapping" }, changedPaths: [] },
+    { providerSessionId: "provider-real-1", status: "idle", evidence: { environmentId: "env-real-1" } },
+  ] });
+  assert.equal((await service.start(handoff)).status, "completed");
+  const application = api(service);
+  const reconciled = response();
+  await application.handle(request({ body: {}, url: "/api/admin/developer-sessions/real/real-session-1/reconcile" }), reconciled);
+  assert.equal(reconciled.statusCode, 200);
+  assert.equal(reconciled.json.session.status, "idle");
+  assert.equal(reconciled.json.session.providerSessionId, "provider-real-1");
+  assert.equal(reconciled.json.session.evidence.environmentId, "env-real-1");
+  assert.deepEqual(provider.calls.map((call) => call.method), ["start", "getStatus"]);
+});
+
 test("real handoff rejects the wrong Preview and any change to the durable v451 task binding", async () => {
   const handoff = await bundle();
   const storage = createInMemoryStorage();

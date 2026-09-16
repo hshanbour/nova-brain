@@ -11,6 +11,8 @@ export class DeveloperProviderConfigurationError extends Error {
 const MAX_UPSTREAM_TYPE_LENGTH = 80;
 const MAX_UPSTREAM_CODE_LENGTH = 80;
 const MAX_UPSTREAM_MESSAGE_LENGTH = 256;
+const MAX_RESULT_TEXT_LENGTH = 2_000;
+const MAX_RESULT_ITEMS = 50;
 const WORKSPACE_VERIFICATION_CREATE_RETRY_DELAY_MS = 50;
 
 function sanitizedDiagnosticString(value, { maxLength, apiKey }) {
@@ -125,19 +127,105 @@ function instructions(policy) {
   });
 }
 
-function mappedSession(payload) {
+function boundedResultText(value, maxLength = MAX_RESULT_TEXT_LENGTH) {
+  if (typeof value !== "string") return null;
+  const normalized = value
+    .replace(/\b(?:authorization|cookie|set-cookie)\s*[:=]\s*[^,;\r\n]+/gi, "[REDACTED]")
+    .replace(/\bBearer\s+[^\s,;]+/gi, "[REDACTED]")
+    .replace(/\b(?:sk|sess|proj)-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]")
+    .replace(/[\r\n\t]+/g, " ")
+    .trim();
+  return normalized ? normalized.slice(0, maxLength) : null;
+}
+
+function boundedScalarRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = {};
+  for (const [key, item] of Object.entries(value).slice(0, 20)) {
+    if (typeof item === "boolean" || (typeof item === "number" && Number.isFinite(item))) result[key] = item;
+    else if (typeof item === "string") result[key] = boundedResultText(item, 256);
+  }
+  return Object.keys(result).length ? result : null;
+}
+
+function extractChangedPaths(payload, items) {
+  const candidates = [payload?.changed_paths, payload?.changedPaths, payload?.result?.changed_paths, payload?.result?.changedPaths];
+  for (const item of items) candidates.push(item?.changed_paths, item?.changedPaths, item?.result?.changed_paths, item?.result?.changedPaths);
+  const paths = candidates.flatMap((value) => Array.isArray(value) ? value : [])
+    .filter((value) => typeof value === "string" && value.trim())
+    .map((value) => value.replaceAll("\\", "/").replace(/^\/workspace\/nova-brain\//, "").replace(/^\.\//, ""));
+  return paths.length ? [...new Set(paths)].slice(0, MAX_RESULT_ITEMS) : null;
+}
+
+function boundedRequiredActions(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 20).map((action) => ({
+    type: boundedResultText(action?.type, 64),
+    name: boundedResultText(action?.name, 128),
+    call_id: boundedResultText(action?.call_id, 128),
+    turn_id: boundedResultText(action?.turn_id, 128),
+    environment_id: boundedResultText(action?.environment_id, 128),
+  }));
+}
+
+function extractEvidence(payload, itemPage, artifactPage) {
+  const items = Array.isArray(itemPage?.data) ? itemPage.data.slice(-MAX_RESULT_ITEMS) : [];
+  const artifacts = Array.isArray(artifactPage?.data) ? artifactPage.data.slice(0, MAX_RESULT_ITEMS) : [];
+  const assistantMessages = items
+    .filter((item) => item?.type === "message" && item?.role === "assistant")
+    .flatMap((item) => Array.isArray(item.content) ? item.content : [])
+    .map((part) => boundedResultText(part?.text))
+    .filter(Boolean);
+  const commandSummaries = items
+    .filter((item) => item?.type === "command_execution")
+    .slice(-20)
+    .map((item) => ({
+      id: boundedResultText(item.id, 128),
+      status: boundedResultText(item.status, 64),
+      exitCode: Number.isInteger(item.exit_code) ? item.exit_code : null,
+      executable: boundedResultText((Array.isArray(item.command) ? item.command[0] : item.command)?.split?.(/\s+/)?.[0], 64),
+    }));
+  const testSummary = [payload?.test_summary, payload?.testSummary, payload?.result?.tests, ...items.map((item) => item?.test_summary || item?.testSummary || item?.result?.tests)]
+    .map(boundedScalarRecord)
+    .find(Boolean) || null;
+  const environmentId = [payload?.environment?.id, payload?.environment_id]
+    .find((value) => typeof value === "string" && value) || null;
+  const sessionError = typeof payload?.error === "string"
+    ? { message: boundedResultText(payload.error, MAX_UPSTREAM_MESSAGE_LENGTH) }
+    : boundedScalarRecord(payload?.error);
+  return {
+    environmentId,
+    latestOutput: assistantMessages.at(-1) || null,
+    commandSummaries,
+    testSummary,
+    safeDiagnostics: sessionError,
+    artifacts: artifacts.map((artifact) => ({
+      id: boundedResultText(artifact?.id, 128),
+      environmentId: boundedResultText(artifact?.environment_id, 128),
+      path: boundedResultText(artifact?.path, 512),
+      sizeBytes: Number.isInteger(artifact?.size_bytes) && artifact.size_bytes >= 0 ? artifact.size_bytes : null,
+      turnId: boundedResultText(artifact?.turn_id, 128),
+    })),
+  };
+}
+
+function mappedSession(payload, itemPage = null, artifactPage = null) {
   const status = payload.status === "in_progress"
     ? "running"
-    : payload.status === "idle"
-      ? "completed"
+    : payload.status === "error"
+      ? "failed"
       : payload.status;
+  const items = Array.isArray(itemPage?.data) ? itemPage.data : [];
+  const evidence = extractEvidence(payload, itemPage, artifactPage);
+  const changedPaths = extractChangedPaths(payload, items);
   return {
     providerSessionId: payload.id,
     status,
-    approval: payload.status === "requires_action" ? { requiredActions: payload.required_actions || [] } : null,
+    approval: payload.status === "requires_action" ? { requiredActions: boundedRequiredActions(payload.required_actions) } : null,
     result: status === "completed" ? { sessionId: payload.id, outcome: "completed" } : null,
     error: payload.error ? { code: "agents_api_session_failed", message: "Managed developer session failed." } : null,
-    changedPaths: [],
+    evidence,
+    ...(changedPaths ? { changedPaths } : {}),
   };
 }
 
@@ -182,10 +270,15 @@ export function createAgentsApiDeveloperProvider({
       });
     }
   };
-  const retrieve = async (providerSessionId) => mappedSession(await request(
-    `/agents/sessions/${encodeURIComponent(providerSessionId)}`,
-    "agents_session_retrieve",
-  ));
+  const retrieve = async (providerSessionId) => {
+    const encoded = encodeURIComponent(providerSessionId);
+    const payload = await request(`/agents/sessions/${encoded}`, "agents_session_retrieve");
+    const [items, artifacts] = await Promise.all([
+      request(`/agents/sessions/${encoded}/items?limit=${MAX_RESULT_ITEMS}&order=asc`, "agents_session_items_list"),
+      request(`/agents/sessions/${encoded}/artifacts?limit=${MAX_RESULT_ITEMS}&order=asc`, "agents_session_artifacts_list"),
+    ]);
+    return mappedSession(payload, items, artifacts);
+  };
   const createSession = async ({ taskId, policyHash, mode }) => {
     const options = {
       method: "POST",

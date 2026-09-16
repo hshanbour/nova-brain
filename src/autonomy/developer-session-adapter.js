@@ -86,7 +86,7 @@ function policyHash(policy) {
 function normalizeProviderState(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("developer_provider_invalid", "Developer provider returned an invalid response.");
   const status = value.status === "requires_action" ? "approval_required" : value.status;
-  if (!["queued", "running", "approval_required", "completed", "failed", "cancelled"].includes(status)) {
+  if (!["queued", "running", "idle", "approval_required", "completed", "failed", "cancelled"].includes(status)) {
     fail("developer_provider_invalid", "Developer provider returned an unsupported status.");
   }
   if (status === "approval_required" && (!value.approval || typeof value.approval !== "object")) {
@@ -99,7 +99,8 @@ function normalizeProviderState(value) {
 }
 
 function enforceScope(policy, state) {
-  const changedPaths = Array.isArray(state.changedPaths) ? state.changedPaths.map((path, index) => repoPath(path, `changedPaths[${index}]`)) : [];
+  const changedPaths = Array.isArray(state.changedPaths) ? state.changedPaths.map((path, index) => repoPath(path, `changedPaths[${index}]`)) : null;
+  if (!changedPaths) return state;
   const outside = changedPaths.filter((path) => !policy.allowedPaths.includes(path) || policy.forbiddenPaths.includes(path));
   if (outside.length) fail("developer_provider_scope_violation", `Provider reported out-of-scope changes: ${outside.join(", ")}`);
   if (policy.dryRun && changedPaths.length) fail("developer_provider_mutation_forbidden", "Dry-run developer sessions cannot report product mutations.");
@@ -134,14 +135,16 @@ export function createDeveloperSessionAdapter({ providers, sessionStore, default
       approval: state.approval || null,
       result: state.result || null,
       error: state.error ? { code: state.error.code || "provider_failed", message: state.error.message || "Developer provider failed." } : null,
-      changedPaths: state.changedPaths,
+      changedPaths: state.changedPaths || record.changedPaths,
+      evidence: state.evidence || record.evidence || null,
       events: [...record.events, {
         type: "developer_session.status",
         status: state.status,
         at: updatedAt,
-        changedPaths: state.changedPaths,
+        changedPaths: state.changedPaths || record.changedPaths,
         ...(state.approval ? { approval: structuredClone(state.approval) } : {}),
         ...(state.result ? { result: structuredClone(state.result) } : {}),
+        ...(state.evidence ? { evidence: structuredClone(state.evidence) } : {}),
       }],
       updatedAt,
     });
@@ -257,6 +260,23 @@ export function createDeveloperSessionAdapter({ providers, sessionStore, default
         const raw = await providers[record.provider].getStatus({ providerSessionId: record.providerSessionId, policyHash: record.policyHash });
         return await apply(record, raw);
       } catch (error) {
+        return providerFailure(record, error);
+      }
+    },
+
+    async reconcileDeveloperSession({ sessionId } = {}) {
+      const record = await load(sessionId);
+      try {
+        const raw = await providers[record.provider].getStatus({ providerSessionId: record.providerSessionId, policyHash: record.policyHash });
+        if (raw?.providerSessionId && raw.providerSessionId !== record.providerSessionId) {
+          fail("developer_provider_session_mismatch", "Provider attempted to replace the persistent session identity.");
+        }
+        return await apply(record, raw);
+      } catch (error) {
+        if (error instanceof DeveloperSessionError && error.code.startsWith("developer_provider_")) {
+          await providerFailure(record, error);
+          throw error;
+        }
         return providerFailure(record, error);
       }
     },

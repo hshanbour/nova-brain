@@ -253,6 +253,16 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
       fail("developer_workspace_task_binding_changed", "The real Nova task is no longer at its exact v451 handoff boundary.");
     }
   };
+  const assertBoundRealSession = async (sessionId) => {
+    const record = await storage.getDeveloperSession(sessionId, ownerId);
+    if (!record || record.taskId !== REAL_DEVELOPER_TASK_ID || record.provider !== "agents_api"
+      || record.providerSessionId == null || record.policy?.metadata?.mode !== "real_task_workspace_handoff"
+      || record.policy?.baseSha !== REAL_DEVELOPER_BASE_SHA || record.policy?.repository?.slug !== REAL_DEVELOPER_REPOSITORY
+      || record.policy?.repository?.branch !== REAL_DEVELOPER_BRANCH
+      || JSON.stringify(record.policy?.allowedPaths) !== JSON.stringify(REAL_DEVELOPER_ALLOWED_PATHS)) {
+      fail("developer_workspace_session_binding_changed", "The developer session is not bound to the exact real Nova workspace handoff.");
+    }
+  };
   const materializingProvider = ({ manifest, materials, readOnly }) => {
     const archive = createDeterministicWorkspaceArchive(materials);
     const archiveSha256 = sha256(archive);
@@ -317,6 +327,7 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
       });
     },
     async get(sessionId) { assertPreview(); return adapterFor(passiveProvider()).getDeveloperSession({ sessionId }); },
+    async reconcile(sessionId) { assertPreview(); await boundTask(); await assertBoundRealSession(sessionId); return adapterFor(passiveProvider()).reconcileDeveloperSession({ sessionId }); },
     async resume(sessionId, input = {}) { assertPreview(); return adapterFor(passiveProvider()).resumeDeveloperSession({ sessionId, approvalDecision: input.approvalDecision, additionalInstruction: input.additionalInstruction }); },
     async cancel(sessionId) { assertPreview(); return adapterFor(passiveProvider()).cancelDeveloperSession({ sessionId }); },
   });
