@@ -277,6 +277,20 @@ export function createApi({
         if (
           developerWorkspaceHandoff &&
           request.method === "POST" &&
+          pathname === "/api/admin/developer-sessions/real/microphone/recovery/start"
+        ) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          sendJson(response, 201, {
+            session: await developerWorkspaceHandoff.startRecovery(
+              await readJsonBody(request, config.developerWorkspaceHandoffMaxBodyBytes || 3 * 1024 * 1024),
+            ),
+          });
+          return;
+        }
+        if (
+          developerWorkspaceHandoff &&
+          request.method === "POST" &&
           pathname === "/api/admin/developer-sessions/real/microphone/start"
         ) {
           await ready();
@@ -284,6 +298,22 @@ export function createApi({
           sendJson(response, 201, {
             session: await developerWorkspaceHandoff.start(
               await readJsonBody(request, config.developerWorkspaceHandoffMaxBodyBytes || 3 * 1024 * 1024),
+            ),
+          });
+          return;
+        }
+        const realDeveloperArtifactMatch = pathname.match(
+          /^\/api\/admin\/developer-sessions\/real\/([^/]+)\/artifacts\/([^/]+)\/verify$/,
+        );
+        if (developerWorkspaceHandoff && request.method === "POST" && realDeveloperArtifactMatch) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          const input = await readJsonBody(request, config.maxBodyBytes);
+          sendJson(response, 200, {
+            artifact: await developerWorkspaceHandoff.verifyArtifact(
+              decodeURIComponent(realDeveloperArtifactMatch[1]),
+              decodeURIComponent(realDeveloperArtifactMatch[2]),
+              input?.sha256,
             ),
           });
           return;

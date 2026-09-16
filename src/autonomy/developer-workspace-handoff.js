@@ -23,6 +23,7 @@ export const REAL_DEVELOPER_TASK_ID = "selfdev_1a8f17abea3f043813fc4b5fc5db0e36"
 export const REAL_DEVELOPER_REPOSITORY = "hshanbour/nova-brain";
 export const REAL_DEVELOPER_BRANCH = "feat/nova-brain-mvp-foundation";
 export const REAL_DEVELOPER_BASE_SHA = "911c1bc472e6017fac65146dd14298966a11c26f";
+export const REAL_DEVELOPER_RECOVERY_BASE_SHA = "1509b7ec6eec689cd0b3030074c9f3ffba63379f";
 export const REAL_DEVELOPER_PREVIEW_BRANCH = "stage13/control-plane-approved-delivery-runtime";
 export const REAL_DEVELOPER_WORKSPACE_ROOT = "C:/Users/hamod/Documents/Codex/2026-08-28/we-are-continuing-the-nova-brain/work/nova-brain-microphone-task";
 export const REAL_DEVELOPER_ALLOWED_PATHS = Object.freeze([
@@ -42,6 +43,18 @@ export const REAL_DEVELOPER_PROTECTED_PATHS = Object.freeze([
   "pnpm-lock.yaml",
   "yarn.lock",
 ]);
+
+const HISTORICAL_HANDOFF = Object.freeze({
+  baseSha: REAL_DEVELOPER_BASE_SHA,
+  dirtyPaths: Object.freeze([...REAL_DEVELOPER_ALLOWED_PATHS].sort()),
+  mode: "real_task_workspace_handoff",
+});
+const CLEAN_RECOVERY_HANDOFF = Object.freeze({
+  baseSha: REAL_DEVELOPER_RECOVERY_BASE_SHA,
+  dirtyPaths: Object.freeze([]),
+  mode: "real_task_clean_recovery_handoff",
+});
+const HANDOFF_CONTRACTS = Object.freeze([HISTORICAL_HANDOFF, CLEAN_RECOVERY_HANDOFF]);
 
 export class DeveloperWorkspaceHandoffError extends Error {
   constructor(code, message, statusCode = 409) {
@@ -124,12 +137,12 @@ function normalizeRemote(value) {
   return match ? match[1] : text;
 }
 
-export async function buildDeveloperWorkspaceHandoffBundle({
+async function buildWorkspaceHandoffBundle({
   root = REAL_DEVELOPER_WORKSPACE_ROOT,
   git = defaultGit,
   read = readFile,
   stat = lstat,
-} = {}) {
+} = {}, contract) {
   const absoluteRoot = resolve(root);
   const [topLevel, repository, branch, head, trackedRaw, statusRaw] = await Promise.all([
     git(absoluteRoot, ["rev-parse", "--show-toplevel"]),
@@ -143,14 +156,16 @@ export async function buildDeveloperWorkspaceHandoffBundle({
     || canonicalRoot(absoluteRoot) !== canonicalRoot(REAL_DEVELOPER_WORKSPACE_ROOT)
     || normalizeRemote(repository) !== REAL_DEVELOPER_REPOSITORY
     || branch.trim() !== REAL_DEVELOPER_BRANCH
-    || head.trim().toLowerCase() !== REAL_DEVELOPER_BASE_SHA) {
+    || head.trim().toLowerCase() !== contract.baseSha) {
     fail("WORKSPACE_INTEGRITY_FAILED", "Local workspace identity does not match the real Nova task.");
   }
   const statuses = parseStatus(statusRaw);
   const dirtyPaths = statuses.map((item) => item.path).sort();
-  const expectedDirty = [...REAL_DEVELOPER_ALLOWED_PATHS].sort();
+  const expectedDirty = [...contract.dirtyPaths];
   if (JSON.stringify(dirtyPaths) !== JSON.stringify(expectedDirty)) {
-    fail("WORKSPACE_INTEGRITY_FAILED", "The exact eight-file dirty workspace is required; clean-remote fallback and unrelated drift are forbidden.");
+    fail("WORKSPACE_INTEGRITY_FAILED", contract.dirtyPaths.length
+      ? "The exact eight-file dirty workspace is required; clean-remote fallback and unrelated drift are forbidden."
+      : "The recovery workspace must be clean; dirty or untracked paths are forbidden.");
   }
   const tracked = parseNul(trackedRaw).map(repoPath);
   const paths = [...new Set([...tracked, ...dirtyPaths])].filter((path) => !excludedPath(path)).sort();
@@ -175,7 +190,7 @@ export async function buildDeveloperWorkspaceHandoffBundle({
     taskId: REAL_DEVELOPER_TASK_ID,
     repository: REAL_DEVELOPER_REPOSITORY,
     branch: REAL_DEVELOPER_BRANCH,
-    baseSha: REAL_DEVELOPER_BASE_SHA,
+    baseSha: contract.baseSha,
     workspaceRoot: absoluteRoot.replaceAll("\\", "/"),
     workspaceDestination: WORKSPACE_DESTINATION,
     entries,
@@ -188,7 +203,15 @@ export async function buildDeveloperWorkspaceHandoffBundle({
   return Object.freeze({ manifest: Object.freeze(manifest), files: Object.freeze(files) });
 }
 
-function validateBundle(input) {
+export function buildDeveloperWorkspaceHandoffBundle(options = {}) {
+  return buildWorkspaceHandoffBundle(options, HISTORICAL_HANDOFF);
+}
+
+export function buildDeveloperRecoveryWorkspaceHandoffBundle(options = {}) {
+  return buildWorkspaceHandoffBundle(options, CLEAN_RECOVERY_HANDOFF);
+}
+
+function validateBundle(input, contract) {
   if (!exactKeys(input, ["manifest", "files"]) || !exactKeys(input.manifest, [
     "version", "taskId", "repository", "branch", "baseSha", "workspaceRoot", "workspaceDestination",
     "entries", "dirtyPaths", "authorizedMutationPaths", "protectedPaths", "totalBytes", "manifestHash",
@@ -197,11 +220,11 @@ function validateBundle(input) {
   }
   const manifest = structuredClone(input.manifest);
   if (manifest.version !== 1 || manifest.taskId !== REAL_DEVELOPER_TASK_ID || manifest.repository !== REAL_DEVELOPER_REPOSITORY
-    || manifest.branch !== REAL_DEVELOPER_BRANCH || manifest.baseSha !== REAL_DEVELOPER_BASE_SHA
+    || manifest.branch !== REAL_DEVELOPER_BRANCH || manifest.baseSha !== contract.baseSha
     || canonicalRoot(manifest.workspaceRoot) !== canonicalRoot(REAL_DEVELOPER_WORKSPACE_ROOT)
     || manifest.workspaceDestination !== WORKSPACE_DESTINATION || !SHA256.test(manifest.manifestHash)
     || manifest.manifestHash !== manifestHash(manifest)
-    || JSON.stringify(manifest.dirtyPaths) !== JSON.stringify([...REAL_DEVELOPER_ALLOWED_PATHS].sort())
+    || JSON.stringify(manifest.dirtyPaths) !== JSON.stringify(contract.dirtyPaths)
     || JSON.stringify(manifest.authorizedMutationPaths) !== JSON.stringify(REAL_DEVELOPER_ALLOWED_PATHS)
     || JSON.stringify(manifest.protectedPaths) !== JSON.stringify(REAL_DEVELOPER_PROTECTED_PATHS)) {
     fail("WORKSPACE_INTEGRITY_FAILED", "Workspace manifest bindings do not match the real Nova task.");
@@ -233,8 +256,8 @@ function validateBundle(input) {
   return { manifest, materials };
 }
 
-function verificationSource({ readOnly = false, archiveSha256, expectedManifestHash } = {}) {
-  return `import{createHash}from"node:crypto";import{readFile,readdir,stat,chmod,mkdir,writeFile}from"node:fs/promises";import{resolve,dirname,relative,sep}from"node:path";import{gunzipSync}from"node:zlib";const root=${JSON.stringify(WORKSPACE_DESTINATION)},manifest=JSON.parse(await readFile(${JSON.stringify(`${HANDOFF_DESTINATION}/manifest.json`)},"utf8")),claimed=manifest.manifestHash;delete manifest.manifestHash;const manifestHash=createHash("sha256").update(JSON.stringify(manifest)).digest("hex");if(claimed!==${JSON.stringify(expectedManifestHash)}||claimed!==manifestHash||manifest.taskId!==${JSON.stringify(REAL_DEVELOPER_TASK_ID)}||manifest.repository!==${JSON.stringify(REAL_DEVELOPER_REPOSITORY)}||manifest.branch!==${JSON.stringify(REAL_DEVELOPER_BRANCH)}||manifest.baseSha!==${JSON.stringify(REAL_DEVELOPER_BASE_SHA)}||manifest.workspaceDestination!==root||JSON.stringify(manifest.dirtyPaths)!==${JSON.stringify(JSON.stringify([...REAL_DEVELOPER_ALLOWED_PATHS].sort()))}||JSON.stringify(manifest.authorizedMutationPaths)!==${JSON.stringify(JSON.stringify(REAL_DEVELOPER_ALLOWED_PATHS))}||JSON.stringify(manifest.protectedPaths)!==${JSON.stringify(JSON.stringify(REAL_DEVELOPER_PROTECTED_PATHS))}||manifest.entries.some(entry=>entry.dirty!==manifest.dirtyPaths.includes(entry.path)))throw new Error("WORKSPACE_INTEGRITY_FAILED");const extractVerifiedWorkspaceArchive=${extractVerifiedWorkspaceArchive.toString()};const archive=await readFile(${JSON.stringify(WORKSPACE_ARCHIVE_PATH)});await extractVerifiedWorkspaceArchive({archive,root,entries:manifest.entries,archiveSha256:${JSON.stringify(archiveSha256)},createHash,gunzipSync,mkdir,writeFile,readFile,readdir,stat,chmod,resolve,dirname,relative,sep,modeForPath:path=>${readOnly ? "0o400" : "manifest.authorizedMutationPaths.includes(path)?0o600:0o400"}});console.log("NOVA_WORKSPACE_INTEGRITY_OK:"+claimed);`;
+function verificationSource({ readOnly = false, archiveSha256, expectedManifestHash, contract } = {}) {
+  return `import{createHash}from"node:crypto";import{readFile,readdir,stat,chmod,mkdir,writeFile}from"node:fs/promises";import{resolve,dirname,relative,sep}from"node:path";import{gunzipSync}from"node:zlib";const root=${JSON.stringify(WORKSPACE_DESTINATION)},manifest=JSON.parse(await readFile(${JSON.stringify(`${HANDOFF_DESTINATION}/manifest.json`)},"utf8")),claimed=manifest.manifestHash;delete manifest.manifestHash;const manifestHash=createHash("sha256").update(JSON.stringify(manifest)).digest("hex");if(claimed!==${JSON.stringify(expectedManifestHash)}||claimed!==manifestHash||manifest.taskId!==${JSON.stringify(REAL_DEVELOPER_TASK_ID)}||manifest.repository!==${JSON.stringify(REAL_DEVELOPER_REPOSITORY)}||manifest.branch!==${JSON.stringify(REAL_DEVELOPER_BRANCH)}||manifest.baseSha!==${JSON.stringify(contract.baseSha)}||manifest.workspaceDestination!==root||JSON.stringify(manifest.dirtyPaths)!==${JSON.stringify(JSON.stringify(contract.dirtyPaths))}||JSON.stringify(manifest.authorizedMutationPaths)!==${JSON.stringify(JSON.stringify(REAL_DEVELOPER_ALLOWED_PATHS))}||JSON.stringify(manifest.protectedPaths)!==${JSON.stringify(JSON.stringify(REAL_DEVELOPER_PROTECTED_PATHS))}||manifest.entries.some(entry=>entry.dirty!==manifest.dirtyPaths.includes(entry.path)))throw new Error("WORKSPACE_INTEGRITY_FAILED");const extractVerifiedWorkspaceArchive=${extractVerifiedWorkspaceArchive.toString()};const archive=await readFile(${JSON.stringify(WORKSPACE_ARCHIVE_PATH)});await extractVerifiedWorkspaceArchive({archive,root,entries:manifest.entries,archiveSha256:${JSON.stringify(archiveSha256)},createHash,gunzipSync,mkdir,writeFile,readFile,readdir,stat,chmod,resolve,dirname,relative,sep,modeForPath:path=>${readOnly ? "0o400" : "manifest.authorizedMutationPaths.includes(path)?0o600:0o400"}});console.log("NOVA_WORKSPACE_INTEGRITY_OK:"+claimed);`;
 }
 
 export function createDeveloperWorkspaceHandoff({ environment = process.env, storage, ownerId, providerFactory = createAgentsApiDeveloperProvider, taskReader, idFactory, clock } = {}) {
@@ -257,24 +280,26 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
       fail("developer_workspace_task_binding_changed", "The real Nova task is no longer at its exact v451 handoff boundary.");
     }
   };
+  const contractForMode = (mode) => HANDOFF_CONTRACTS.find((contract) => contract.mode === mode) || null;
   const assertBoundRealSession = async (sessionId) => {
     const record = await storage.getDeveloperSession(sessionId, ownerId);
+    const contract = contractForMode(record?.policy?.metadata?.mode);
     if (!record || record.taskId !== REAL_DEVELOPER_TASK_ID || record.provider !== "agents_api"
-      || record.providerSessionId == null || record.policy?.metadata?.mode !== "real_task_workspace_handoff"
-      || record.policy?.baseSha !== REAL_DEVELOPER_BASE_SHA || record.policy?.repository?.slug !== REAL_DEVELOPER_REPOSITORY
+      || record.providerSessionId == null || !contract
+      || record.policy?.baseSha !== contract.baseSha || record.policy?.repository?.slug !== REAL_DEVELOPER_REPOSITORY
       || record.policy?.repository?.branch !== REAL_DEVELOPER_BRANCH
       || JSON.stringify(record.policy?.allowedPaths) !== JSON.stringify(REAL_DEVELOPER_ALLOWED_PATHS)) {
       fail("developer_workspace_session_binding_changed", "The developer session is not bound to the exact real Nova workspace handoff.");
     }
-    return record;
+    return { record, contract };
   };
-  const materializingProvider = ({ manifest, materials, readOnly }) => {
+  const materializingProvider = ({ manifest, materials, readOnly, contract }) => {
     const archive = createDeterministicWorkspaceArchive(materials);
     const archiveSha256 = sha256(archive);
     const hostedFiles = [
       { type: "inline", path: WORKSPACE_ARCHIVE_PATH, data: archive.toString("base64") },
       { type: "inline", path: `${HANDOFF_DESTINATION}/manifest.json`, data: Buffer.from(JSON.stringify(manifest)).toString("base64") },
-      { type: "inline", path: `${HANDOFF_DESTINATION}/verify.mjs`, data: Buffer.from(verificationSource({ readOnly, archiveSha256, expectedManifestHash: manifest.manifestHash })).toString("base64") },
+      { type: "inline", path: `${HANDOFF_DESTINATION}/verify.mjs`, data: Buffer.from(verificationSource({ readOnly, archiveSha256, expectedManifestHash: manifest.manifestHash, contract })).toString("base64") },
     ];
     return {
       archiveSha256,
@@ -292,31 +317,42 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
       }),
     };
   };
+  const start = async (input, contract, { goal, acceptanceCriteria }) => {
+    assertPreview();
+    await boundTask();
+    const { manifest, materials } = validateBundle(input, contract);
+    const packaged = materializingProvider({ manifest, materials, readOnly: false, contract });
+    return adapterFor(packaged.provider).startDeveloperSession({
+      taskId: REAL_DEVELOPER_TASK_ID,
+      goal,
+      acceptanceCriteria,
+      repository: { slug: REAL_DEVELOPER_REPOSITORY, branch: REAL_DEVELOPER_BRANCH, workspace: WORKSPACE_DESTINATION },
+      baseSha: contract.baseSha,
+      allowedPaths: [...REAL_DEVELOPER_ALLOWED_PATHS],
+      forbiddenPaths: [...REAL_DEVELOPER_PROTECTED_PATHS, ".git", "node_modules", ".env"],
+      approvalPolicy: { requireFor: ["commit", "push", "deploy", "scope_change", "dependency_change", "external_action"], allowPush: false, allowDeploy: false },
+      metadata: { mode: contract.mode, manifestHash: manifest.manifestHash, archiveSha256: packaged.archiveSha256, hostedFileCount: packaged.hostedFileCount, workspaceRoot: manifest.workspaceRoot, materializedFileCount: manifest.entries.length, taskStateVersion: 451 },
+      dryRun: false,
+    });
+  };
   return Object.freeze({
     async start(input) {
-      assertPreview();
-      await boundTask();
-      const { manifest, materials } = validateBundle(input);
-      const packaged = materializingProvider({ manifest, materials, readOnly: false });
-      const provider = packaged.provider;
-      return adapterFor(provider).startDeveloperSession({
-        taskId: REAL_DEVELOPER_TASK_ID,
+      return start(input, HISTORICAL_HANDOFF, {
         goal: "Continue Nova's microphone repair from the exact materialized local workspace. Nova owns diagnosis, planning, implementation, testing, and review.",
         acceptanceCriteria: ["Use only the exact materialized workspace bytes.", "Modify only the eight authorized paths.", "Do not modify dependencies, commit, push, deploy, or widen scope."],
-        repository: { slug: REAL_DEVELOPER_REPOSITORY, branch: REAL_DEVELOPER_BRANCH, workspace: WORKSPACE_DESTINATION },
-        baseSha: REAL_DEVELOPER_BASE_SHA,
-        allowedPaths: [...REAL_DEVELOPER_ALLOWED_PATHS],
-        forbiddenPaths: [...REAL_DEVELOPER_PROTECTED_PATHS, ".git", "node_modules", ".env"],
-        approvalPolicy: { requireFor: ["commit", "push", "deploy", "scope_change", "dependency_change", "external_action"], allowPush: false, allowDeploy: false },
-        metadata: { mode: "real_task_workspace_handoff", manifestHash: manifest.manifestHash, archiveSha256: packaged.archiveSha256, hostedFileCount: packaged.hostedFileCount, workspaceRoot: manifest.workspaceRoot, materializedFileCount: manifest.entries.length, taskStateVersion: 451 },
-        dryRun: false,
+      });
+    },
+    async startRecovery(input) {
+      return start(input, CLEAN_RECOVERY_HANDOFF, {
+        goal: "Reapply Nova's reviewed microphone browser-acceptance repair from the exact clean feature workspace and publish immutable delivery artifacts.",
+        acceptanceCriteria: ["Begin from the exact clean recovery base.", "Modify only the eight authorized paths.", "Run the bounded focused tests and fresh Nova review.", "Publish immutable reviewed changed-file artifacts before delivery readiness.", "Do not modify dependencies, commit, push, deploy, or widen scope."],
       });
     },
     async verify(input) {
       assertPreview();
       await boundTask();
-      const { manifest, materials } = validateBundle(input);
-      const packaged = materializingProvider({ manifest, materials, readOnly: true });
+      const { manifest, materials } = validateBundle(input, HISTORICAL_HANDOFF);
+      const packaged = materializingProvider({ manifest, materials, readOnly: true, contract: HISTORICAL_HANDOFF });
       const provider = packaged.provider;
       return adapterFor(provider).verifyDeveloperWorkspace({
         taskId: REAL_DEVELOPER_TASK_ID,
@@ -336,7 +372,7 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
     async materializeDependencies(sessionId, input) {
       assertPreview();
       await boundTask();
-      const record = await assertBoundRealSession(sessionId);
+      const { record } = await assertBoundRealSession(sessionId);
       const environmentId = record.evidence?.environmentId;
       if (typeof environmentId !== "string" || !environmentId) {
         fail("developer_workspace_environment_binding_missing", "The existing provider environment identity is unavailable.");
@@ -361,6 +397,33 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
           hostedFileCountAfter: existingCount + files.length,
         },
       });
+    },
+    async verifyArtifact(sessionId, artifactId, expectedSha256) {
+      assertPreview();
+      await boundTask();
+      const { record } = await assertBoundRealSession(sessionId);
+      if (!SHA256.test(String(expectedSha256 || ""))) {
+        fail("developer_artifact_hash_invalid", "A full expected artifact SHA-256 is required.", 400);
+      }
+      const provider = passiveProvider();
+      if (typeof provider.verifyArtifact !== "function") {
+        fail("developer_artifact_verification_unavailable", "The developer provider does not support artifact verification.", 503);
+      }
+      try {
+        return await provider.verifyArtifact({
+          providerSessionId: record.providerSessionId,
+          artifactId,
+          expectedSha256,
+        });
+      } catch (error) {
+        if (error?.code === "developer_provider_session_mismatch") {
+          fail(error.code, "Artifact identity does not belong to the bound provider session.");
+        }
+        if (error?.code === "developer_artifact_integrity_failed") {
+          fail(error.code, "Artifact content failed SHA-256 verification.");
+        }
+        fail("developer_artifact_verification_failed", "Artifact verification failed closed.", 502);
+      }
     },
     async resume(sessionId, input = {}) { assertPreview(); return adapterFor(passiveProvider()).resumeDeveloperSession({ sessionId, approvalDecision: input.approvalDecision, additionalInstruction: input.additionalInstruction }); },
     async cancel(sessionId) { assertPreview(); return adapterFor(passiveProvider()).cancelDeveloperSession({ sessionId }); },

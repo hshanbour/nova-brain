@@ -6,9 +6,11 @@ import { createApi } from "../src/http/api.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import {
   buildDeveloperWorkspaceHandoffBundle,
+  buildDeveloperRecoveryWorkspaceHandoffBundle,
   createDeveloperWorkspaceHandoff,
   REAL_DEVELOPER_ALLOWED_PATHS,
   REAL_DEVELOPER_BASE_SHA,
+  REAL_DEVELOPER_RECOVERY_BASE_SHA,
   REAL_DEVELOPER_BRANCH,
   REAL_DEVELOPER_PREVIEW_BRANCH,
   REAL_DEVELOPER_REPOSITORY,
@@ -24,7 +26,7 @@ const SECRET = "sk-test-secret-never-serialize";
 
 function hash(value) { return createHash("sha256").update(value).digest("hex"); }
 
-function fakeWorkspace({ status = null } = {}) {
+function fakeWorkspace({ status = null, baseSha = REAL_DEVELOPER_BASE_SHA } = {}) {
   const contents = new Map([
     ...REAL_DEVELOPER_ALLOWED_PATHS.map((path, index) => [path, Buffer.from(index === 0 ? "dirty\r\nbytes\r\n" : `dirty-${index}\n`)]),
     ["package.json", Buffer.from('{"type":"module"}\n')],
@@ -37,7 +39,7 @@ function fakeWorkspace({ status = null } = {}) {
     if (key === "rev-parse --show-toplevel") return `${REAL_DEVELOPER_WORKSPACE_ROOT}\n`;
     if (key === "remote get-url origin") return "git@github.com:hshanbour/nova-brain.git\n";
     if (key === "branch --show-current") return `${REAL_DEVELOPER_BRANCH}\n`;
-    if (key === "rev-parse HEAD") return `${REAL_DEVELOPER_BASE_SHA}\n`;
+    if (key === "rev-parse HEAD") return `${baseSha}\n`;
     if (key === "ls-files -z") return `${tracked.join("\0")}\0`;
     if (key === "status --porcelain=v1 -z --untracked-files=all") return status ?? dirtyStatus;
     throw new Error(`unexpected git command: ${key}`);
@@ -55,6 +57,11 @@ function fakeWorkspace({ status = null } = {}) {
 async function bundle(options) {
   const fixture = fakeWorkspace(options);
   return buildDeveloperWorkspaceHandoffBundle({ root: REAL_DEVELOPER_WORKSPACE_ROOT, git: fixture.git, read: fixture.read, stat: fixture.stat });
+}
+
+async function recoveryBundle(options = {}) {
+  const fixture = fakeWorkspace({ status: "", baseSha: REAL_DEVELOPER_RECOVERY_BASE_SHA, ...options });
+  return buildDeveloperRecoveryWorkspaceHandoffBundle({ root: REAL_DEVELOPER_WORKSPACE_ROOT, git: fixture.git, read: fixture.read, stat: fixture.stat });
 }
 
 function environment(overrides = {}) {
@@ -113,6 +120,59 @@ test("manifest preserves exact dirty bytes and deterministic hashes", async () =
 test("manifest rejects clean remote fallback and unrelated dirty paths", async () => {
   await assert.rejects(() => bundle({ status: "" }), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
   await assert.rejects(() => bundle({ status: ` M package.json\0` }), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
+});
+
+test("clean recovery contract accepts only the exact 1509 base and zero dirty paths", async () => {
+  const clean = await recoveryBundle();
+  assert.equal(clean.manifest.baseSha, REAL_DEVELOPER_RECOVERY_BASE_SHA);
+  assert.deepEqual(clean.manifest.dirtyPaths, []);
+  const { service, configurations } = serviceFixture();
+  const session = await service.startRecovery(clean);
+  assert.equal(session.policy.baseSha, REAL_DEVELOPER_RECOVERY_BASE_SHA);
+  assert.equal(session.policy.metadata.mode, "real_task_clean_recovery_handoff");
+  assert.deepEqual(session.policy.allowedPaths, REAL_DEVELOPER_ALLOWED_PATHS);
+  assert.equal(configurations[0].environment.files.length, 3);
+
+  await assert.rejects(
+    () => recoveryBundle({ baseSha: "f".repeat(40) }),
+    (error) => error.code === "WORKSPACE_INTEGRITY_FAILED",
+  );
+  await assert.rejects(
+    () => recoveryBundle({ status: ` M assets/voice-input.js\0` }),
+    (error) => error.code === "WORKSPACE_INTEGRITY_FAILED",
+  );
+});
+
+test("historical and clean recovery contracts cannot cross-bind", async () => {
+  const historical = await bundle();
+  const recovery = await recoveryBundle();
+  await assert.rejects(() => serviceFixture().service.startRecovery(historical), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
+  await assert.rejects(() => serviceFixture().service.start(recovery), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
+
+  const wrongTask = structuredClone(recovery);
+  wrongTask.manifest.taskId = "other-task";
+  const { manifestHash: _ignored, ...payload } = wrongTask.manifest;
+  wrongTask.manifest.manifestHash = hash(JSON.stringify(payload));
+  await assert.rejects(() => serviceFixture().service.startRecovery(wrongTask), (error) => error.code === "WORKSPACE_INTEGRITY_FAILED");
+});
+
+test("protected clean recovery route is authenticated and distinct from historical start", async () => {
+  const calls = [];
+  const service = {
+    async start(value) { calls.push(["historical", value]); return { id: "historical" }; },
+    async startRecovery(value) { calls.push(["recovery", value]); return { id: "recovery" }; },
+  };
+  const application = api(service);
+  const clean = await recoveryBundle();
+  const url = "/api/admin/developer-sessions/real/microphone/recovery/start";
+  const denied = response();
+  await application.handle(request({ body: clean, authorized: false, url }), denied);
+  assert.equal(denied.statusCode, 401);
+  assert.equal(calls.length, 0);
+  const accepted = response();
+  await application.handle(request({ body: clean, url }), accepted);
+  assert.equal(accepted.statusCode, 201);
+  assert.deepEqual(calls.map(([name]) => name), ["recovery"]);
 });
 
 test("real start materializes official inline environment files and pre-agent integrity verification", async () => {
@@ -373,6 +433,26 @@ test("dependency materialization stays on the same provider session and environm
   await assert.rejects(() => service.materializeDependencies("real-session-1", dependencies), (error) => error.code === "developer_session_replay");
 });
 
+test("clean recovery sessions reuse the existing same-session dependency handoff", async () => {
+  const calls = [];
+  const provider = {
+    name: "agents_api",
+    async start() { return { providerSessionId: "provider-recovery-1", status: "idle", evidence: { environmentId: "env-recovery-1" }, changedPaths: [] }; },
+    async materializeDependencies(input) {
+      calls.push(structuredClone(input));
+      return { providerSessionId: "provider-recovery-1", status: "idle", evidence: { environmentId: "env-recovery-1" }, changedPaths: [] };
+    },
+  };
+  const { service } = serviceFixture({ providerOverride: provider });
+  await service.startRecovery(await recoveryBundle());
+  const dependencies = await buildDeveloperDependencyHandoffBundle({ root: REAL_DEVELOPER_WORKSPACE_ROOT, npmVersion: async () => "11.8.0" });
+  const result = await service.materializeDependencies("real-session-1", dependencies);
+  assert.equal(result.providerSessionId, "provider-recovery-1");
+  assert.equal(calls[0].providerSessionId, "provider-recovery-1");
+  assert.equal(calls[0].environmentId, "env-recovery-1");
+  assert.equal(calls[0].files.length, 3);
+});
+
 test("dependency materialization route is authenticated and cannot replace the provider session", async () => {
   const dependencies = await buildDeveloperDependencyHandoffBundle({ root: REAL_DEVELOPER_WORKSPACE_ROOT, npmVersion: async () => "11.8.0" });
   const calls = [];
@@ -388,4 +468,30 @@ test("dependency materialization route is authenticated and cannot replace the p
   assert.equal(accepted.statusCode, 200);
   assert.equal(accepted.json.session.providerSessionId, "provider-real-1");
   assert.equal(calls[0].sessionId, "real-session-1");
+});
+
+test("protected artifact verification stays bound to the recovery provider session", async () => {
+  const contentSha = "a".repeat(64);
+  const calls = [];
+  const provider = {
+    name: "agents_api",
+    async start() { return { providerSessionId: "provider-recovery-1", status: "idle", evidence: { environmentId: "env-recovery-1" }, changedPaths: [] }; },
+    async verifyArtifact(input) {
+      calls.push(structuredClone(input));
+      return { id: input.artifactId, providerSessionId: input.providerSessionId, sha256: input.expectedSha256, verified: true };
+    },
+  };
+  const { service } = serviceFixture({ providerOverride: provider });
+  await service.startRecovery(await recoveryBundle());
+  const application = api(service);
+  const url = "/api/admin/developer-sessions/real/real-session-1/artifacts/artifact-1/verify";
+  const denied = response();
+  await application.handle(request({ body: { sha256: contentSha }, authorized: false, url }), denied);
+  assert.equal(denied.statusCode, 401);
+  assert.equal(calls.length, 0);
+  const accepted = response();
+  await application.handle(request({ body: { sha256: contentSha }, url }), accepted);
+  assert.equal(accepted.statusCode, 200);
+  assert.equal(accepted.json.artifact.verified, true);
+  assert.deepEqual(calls, [{ providerSessionId: "provider-recovery-1", artifactId: "artifact-1", expectedSha256: contentSha }]);
 });

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const AGENTS_BASE_URL = "https://api.openai.com/v1";
 
 export class DeveloperProviderConfigurationError extends Error {
@@ -398,6 +400,20 @@ export function createAgentsApiDeveloperProvider({
       throw safeError({ status: response.status, stage, payload, apiKey });
     }
     if (responseMode === "void") return null;
+    if (responseMode === "bytes") {
+      try {
+        return Buffer.from(await response.arrayBuffer());
+      } catch (cause) {
+        throw safeError({
+          status: response.status,
+          stage: "agents_response_parse",
+          requestStage: stage,
+          classification: "response_parse_failed",
+          apiKey,
+          cause,
+        });
+      }
+    }
     try {
       return await response.json();
     } catch (cause) {
@@ -551,6 +567,48 @@ export function createAgentsApiDeveloperProvider({
     },
     async getStatus({ providerSessionId, afterAssistantItemId = null, requireFreshAssistantOutput = false }) {
       return retrieve(providerSessionId, { afterAssistantItemId, requireFreshAssistantOutput });
+    },
+    async verifyArtifact({ providerSessionId, artifactId, expectedSha256 }) {
+      if (!nonEmptyString(providerSessionId) || !nonEmptyString(artifactId)
+        || !/^[a-f0-9]{64}$/.test(String(expectedSha256 || ""))) {
+        const error = new Error("Artifact verification input is invalid.");
+        error.code = "developer_artifact_integrity_failed";
+        throw error;
+      }
+      const session = encodeURIComponent(providerSessionId);
+      const artifact = encodeURIComponent(artifactId);
+      const page = await request(`/agents/sessions/${session}/artifacts?limit=${MAX_RESULT_ITEMS}&order=asc`, "agents_session_artifacts_list");
+      const listed = (Array.isArray(page?.data) ? page.data : []).find((item) => item?.id === artifactId);
+      if (!listed || listed.session_id !== providerSessionId) {
+        const error = new Error("Artifact list identity does not match the provider session.");
+        error.code = "developer_provider_session_mismatch";
+        throw error;
+      }
+      const metadata = await request(`/agents/sessions/${session}/artifacts/${artifact}`, "agents_session_artifact_retrieve");
+      if (metadata?.id !== artifactId || metadata?.session_id !== providerSessionId
+        || metadata?.environment_id !== listed.environment_id || metadata?.turn_id !== listed.turn_id
+        || metadata?.path !== listed.path || metadata?.size_bytes !== listed.size_bytes) {
+        const error = new Error("Artifact metadata identity does not match the listed artifact.");
+        error.code = "developer_provider_session_mismatch";
+        throw error;
+      }
+      const content = await request(`/agents/sessions/${session}/artifacts/${artifact}/content`, "agents_session_artifact_content", {}, "bytes");
+      const sha256 = createHash("sha256").update(content).digest("hex");
+      if (sha256 !== expectedSha256 || content.length !== metadata.size_bytes) {
+        const error = new Error("Artifact content does not match its expected identity.");
+        error.code = "developer_artifact_integrity_failed";
+        throw error;
+      }
+      return Object.freeze({
+        id: metadata.id,
+        providerSessionId: metadata.session_id,
+        environmentId: metadata.environment_id,
+        turnId: metadata.turn_id,
+        path: boundedResultText(metadata.path, 512),
+        sizeBytes: metadata.size_bytes,
+        sha256,
+        verified: true,
+      });
     },
     async cancel({ providerSessionId }) {
       await request(`/agents/sessions/${encodeURIComponent(providerSessionId)}/events`, "agents_session_cancel", {

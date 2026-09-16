@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createDeveloperSessionAdapter, DeveloperSessionError } from "../src/autonomy/developer-session-adapter.js";
 import {
   createAgentsApiDeveloperProvider,
@@ -270,6 +271,76 @@ test("Agents session retrieval preserves bounded outputs artifacts tests environ
   assert.equal(result.evidence.commandSummaries[0].exitCode, 0);
   assert.equal(result.evidence.commandSummaries[0].executable, "node");
   assert.doesNotMatch(JSON.stringify(result), /provider-secret|Authorization|Bearer/);
+});
+
+test("official artifact list metadata and content are session-bound and SHA-256 verified", async () => {
+  const content = Buffer.from("immutable reviewed product artifact\n");
+  const expectedSha256 = createHash("sha256").update(content).digest("hex");
+  const metadata = {
+    id: "artifact-1",
+    object: "agent.session.artifact",
+    session_id: "provider-session-1",
+    environment_id: "environment-1",
+    turn_id: "turn-1",
+    path: "/workspace/nova-repair.tar.gz",
+    size_bytes: content.length,
+  };
+  const requests = [];
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "artifact-secret",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url, options = {}) {
+      requests.push({ url, options });
+      if (url.includes("/artifacts?")) return Response.json({ data: [metadata] });
+      if (url.endsWith("/artifacts/artifact-1/content")) return new Response(content);
+      if (url.endsWith("/artifacts/artifact-1")) return Response.json(metadata);
+      throw new Error(`unexpected URL ${url}`);
+    },
+  });
+  const verified = await provider.verifyArtifact({ providerSessionId: "provider-session-1", artifactId: "artifact-1", expectedSha256 });
+  assert.deepEqual(verified, {
+    id: "artifact-1",
+    providerSessionId: "provider-session-1",
+    environmentId: "environment-1",
+    turnId: "turn-1",
+    path: "/workspace/nova-repair.tar.gz",
+    sizeBytes: content.length,
+    sha256: expectedSha256,
+    verified: true,
+  });
+  assert.deepEqual(requests.map(({ url }) => url.replace("https://api.openai.com/v1", "")), [
+    "/agents/sessions/provider-session-1/artifacts?limit=50&order=asc",
+    "/agents/sessions/provider-session-1/artifacts/artifact-1",
+    "/agents/sessions/provider-session-1/artifacts/artifact-1/content",
+  ]);
+  assert.doesNotMatch(JSON.stringify(verified), /artifact-secret|immutable reviewed/);
+
+  await assert.rejects(
+    () => provider.verifyArtifact({ providerSessionId: "provider-session-1", artifactId: "artifact-1", expectedSha256: "0".repeat(64) }),
+    (error) => error.code === "developer_artifact_integrity_failed",
+  );
+});
+
+test("artifact verification rejects provider-session identity mismatch before content retrieval", async () => {
+  let contentRequested = false;
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "artifact-secret",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url) {
+      if (url.includes("/content")) contentRequested = true;
+      return Response.json({ data: [{
+        id: "artifact-1", session_id: "other-session", environment_id: "environment-1",
+        turn_id: "turn-1", path: "/workspace/artifact.tar.gz", size_bytes: 1,
+      }] });
+    },
+  });
+  await assert.rejects(
+    () => provider.verifyArtifact({ providerSessionId: "provider-session-1", artifactId: "artifact-1", expectedSha256: "0".repeat(64) }),
+    (error) => error.code === "developer_provider_session_mismatch",
+  );
+  assert.equal(contentRequested, false);
 });
 
 test("Agents reconciliation retains bounded structured failures from large TAP command output", async () => {
