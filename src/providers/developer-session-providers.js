@@ -13,6 +13,7 @@ const MAX_UPSTREAM_CODE_LENGTH = 80;
 const MAX_UPSTREAM_MESSAGE_LENGTH = 256;
 const MAX_RESULT_TEXT_LENGTH = 2_000;
 const MAX_RESULT_ITEMS = 50;
+const MAX_SESSION_ITEMS = 100;
 const MAX_TEST_FAILURES = 20;
 const MAX_TEST_FAILURE_RECORD_BYTES = 2_048;
 const MAX_TEST_FAILURE_EVIDENCE_BYTES = 16_384;
@@ -226,9 +227,10 @@ function failureRecord({ title, block }) {
   return record;
 }
 
-function extractTestFailureEvidence(items) {
+function extractTestFailureEvidence(items, itemOrder = "asc") {
   const commands = items.filter((item) => item?.type === "command_execution" && typeof item.output === "string");
-  const item = [...commands].reverse().find((candidate) => {
+  const newestFirst = itemOrder === "desc" ? commands : [...commands].reverse();
+  const item = newestFirst.find((candidate) => {
     const command = Array.isArray(candidate.command) ? candidate.command.join(" ") : candidate.command;
     return /(?:npm\s+test|node\s+--test)/i.test(command || "") || testTotals(candidate.output) || /^\s*not ok\s+\d+\s+-/mi.test(candidate.output);
   });
@@ -286,17 +288,34 @@ function boundedRequiredActions(value) {
   }));
 }
 
-function extractEvidence(payload, itemPage, artifactPage) {
-  const items = Array.isArray(itemPage?.data) ? itemPage.data.slice(-MAX_RESULT_ITEMS) : [];
+function extractEvidence(payload, itemPage, artifactPage, {
+  itemOrder = "asc",
+  afterAssistantItemId = null,
+  requireFreshAssistantOutput = false,
+} = {}) {
+  const pageItems = Array.isArray(itemPage?.data) ? itemPage.data : [];
+  const items = itemOrder === "desc" ? pageItems.slice(0, MAX_SESSION_ITEMS) : pageItems.slice(-MAX_SESSION_ITEMS);
   const artifacts = Array.isArray(artifactPage?.data) ? artifactPage.data.slice(0, MAX_RESULT_ITEMS) : [];
-  const assistantMessages = items
+  const assistantOutputs = items
     .filter((item) => item?.type === "message" && item?.role === "assistant")
-    .flatMap((item) => Array.isArray(item.content) ? item.content : [])
-    .map((part) => boundedResultText(part?.text))
-    .filter(Boolean);
-  const commandSummaries = items
+    .map((item) => ({
+      itemId: boundedResultText(item.id, 128),
+      turnId: boundedResultText(item.turn_id, 128),
+      status: boundedResultText(item.status, 64),
+      phase: boundedResultText(item.phase, 64),
+      text: boundedResultText((Array.isArray(item.content) ? item.content : [])
+        .map((part) => typeof part?.text === "string" ? part.text : "")
+        .filter(Boolean)
+        .join("\n")),
+    }))
+    .filter((item) => item.itemId && item.text);
+  const newestAssistant = itemOrder === "desc" ? assistantOutputs[0] || null : assistantOutputs.at(-1) || null;
+  const freshAssistant = afterAssistantItemId && newestAssistant?.itemId === afterAssistantItemId ? null : newestAssistant;
+  const assistantOutputMissing = requireFreshAssistantOutput && !freshAssistant;
+  const commandItems = items
     .filter((item) => item?.type === "command_execution")
-    .slice(-20)
+    .slice(itemOrder === "desc" ? 0 : -20, itemOrder === "desc" ? 20 : undefined);
+  const commandSummaries = (itemOrder === "desc" ? [...commandItems].reverse() : commandItems)
     .map((item) => ({
       id: boundedResultText(item.id, 128),
       status: boundedResultText(item.status, 64),
@@ -313,10 +332,13 @@ function extractEvidence(payload, itemPage, artifactPage) {
     : boundedScalarRecord(payload?.error);
   return {
     environmentId,
-    latestOutput: assistantMessages.at(-1) || null,
+    latestOutput: assistantOutputMissing ? null : freshAssistant?.text || null,
+    assistantOutput: assistantOutputMissing ? null : freshAssistant,
+    assistantOutputMissing,
+    ...(requireFreshAssistantOutput ? { assistantOutputRequest: { afterItemId: boundedResultText(afterAssistantItemId, 128) } } : {}),
     commandSummaries,
     testSummary,
-    testFailureEvidence: extractTestFailureEvidence(items),
+    testFailureEvidence: extractTestFailureEvidence(items, itemOrder),
     safeDiagnostics: sessionError,
     artifacts: artifacts.map((artifact) => ({
       id: boundedResultText(artifact?.id, 128),
@@ -328,14 +350,14 @@ function extractEvidence(payload, itemPage, artifactPage) {
   };
 }
 
-function mappedSession(payload, itemPage = null, artifactPage = null) {
+function mappedSession(payload, itemPage = null, artifactPage = null, evidenceOptions = {}) {
   const status = payload.status === "in_progress"
     ? "running"
     : payload.status === "error"
       ? "failed"
       : payload.status;
   const items = Array.isArray(itemPage?.data) ? itemPage.data : [];
-  const evidence = extractEvidence(payload, itemPage, artifactPage);
+  const evidence = extractEvidence(payload, itemPage, artifactPage, evidenceOptions);
   const changedPaths = extractChangedPaths(payload, items);
   return {
     providerSessionId: payload.id,
@@ -389,14 +411,14 @@ export function createAgentsApiDeveloperProvider({
       });
     }
   };
-  const retrieve = async (providerSessionId) => {
+  const retrieve = async (providerSessionId, evidenceOptions = {}) => {
     const encoded = encodeURIComponent(providerSessionId);
     const payload = await request(`/agents/sessions/${encoded}`, "agents_session_retrieve");
     const [items, artifacts] = await Promise.all([
-      request(`/agents/sessions/${encoded}/items?limit=${MAX_RESULT_ITEMS}&order=asc`, "agents_session_items_list"),
+      request(`/agents/sessions/${encoded}/items?limit=${MAX_SESSION_ITEMS}&order=desc`, "agents_session_items_list"),
       request(`/agents/sessions/${encoded}/artifacts?limit=${MAX_RESULT_ITEMS}&order=asc`, "agents_session_artifacts_list"),
     ]);
-    return mappedSession(payload, items, artifacts);
+    return mappedSession(payload, items, artifacts, { itemOrder: "desc", ...evidenceOptions });
   };
   const createSession = async ({ taskId, policyHash, mode }) => {
     const options = {
@@ -494,7 +516,15 @@ export function createAgentsApiDeveloperProvider({
       }, "void");
       return retrieve(providerSessionId);
     },
-    async resume({ providerSessionId, approval, approvalDecision, additionalInstruction, policyHash }) {
+    async resume({
+      providerSessionId, approval, approvalDecision, additionalInstruction, policyHash,
+      afterAssistantItemId = null, requireFreshAssistantOutput = false,
+    }) {
+      let freshnessBaseline = afterAssistantItemId;
+      if (requireFreshAssistantOutput && !freshnessBaseline) {
+        const before = await retrieve(providerSessionId);
+        freshnessBaseline = before.evidence?.assistantOutput?.itemId || null;
+      }
       const decision = { contract: "nova_developer_session_resume_v1", policyHash, approvalDecision };
       const requiredActions = Array.isArray(approval?.requiredActions) ? approval.requiredActions : [];
       const toolResults = requiredActions
@@ -517,9 +547,11 @@ export function createAgentsApiDeveloperProvider({
         method: "POST",
         body: JSON.stringify({ events: [...toolResults, ...message] }),
       }, "void");
-      return retrieve(providerSessionId);
+      return retrieve(providerSessionId, { afterAssistantItemId: freshnessBaseline, requireFreshAssistantOutput });
     },
-    async getStatus({ providerSessionId }) { return retrieve(providerSessionId); },
+    async getStatus({ providerSessionId, afterAssistantItemId = null, requireFreshAssistantOutput = false }) {
+      return retrieve(providerSessionId, { afterAssistantItemId, requireFreshAssistantOutput });
+    },
     async cancel({ providerSessionId }) {
       await request(`/agents/sessions/${encodeURIComponent(providerSessionId)}/events`, "agents_session_cancel", {
         method: "POST",

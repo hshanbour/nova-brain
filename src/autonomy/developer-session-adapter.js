@@ -126,6 +126,10 @@ export function createDeveloperSessionAdapter({ providers, sessionStore, default
     if (!record) fail("developer_session_not_found", "Developer session was not found.");
     return record;
   };
+  const assistantFreshness = (record) => ({
+    afterAssistantItemId: record.evidence?.assistantOutputRequest?.afterItemId || null,
+    requireFreshAssistantOutput: record.evidence?.assistantOutputMissing === true,
+  });
   const apply = async (record, rawState) => {
     const state = enforceScope(record.policy, normalizeProviderState(rawState));
     const updatedAt = clock().toISOString();
@@ -284,6 +288,8 @@ export function createDeveloperSessionAdapter({ providers, sessionStore, default
           approvalDecision: approvalDecision || null,
           additionalInstruction: additionalInstruction ? text(additionalInstruction, "additionalInstruction") : null,
           policyHash: record.policyHash,
+          afterAssistantItemId: record.evidence?.assistantOutput?.itemId || null,
+          requireFreshAssistantOutput: Boolean(additionalInstruction),
         });
         if (raw?.providerSessionId && raw.providerSessionId !== record.providerSessionId) {
           fail("developer_provider_session_mismatch", "Provider attempted to replace the persistent session identity.");
@@ -302,7 +308,11 @@ export function createDeveloperSessionAdapter({ providers, sessionStore, default
       const record = await load(sessionId);
       if (TERMINAL.has(record.status)) return publicSession(record);
       try {
-        const raw = await providers[record.provider].getStatus({ providerSessionId: record.providerSessionId, policyHash: record.policyHash });
+        const raw = await providers[record.provider].getStatus({
+          providerSessionId: record.providerSessionId,
+          policyHash: record.policyHash,
+          ...assistantFreshness(record),
+        });
         return await apply(record, raw);
       } catch (error) {
         return providerFailure(record, error);
@@ -312,7 +322,11 @@ export function createDeveloperSessionAdapter({ providers, sessionStore, default
     async reconcileDeveloperSession({ sessionId } = {}) {
       const record = await load(sessionId);
       try {
-        const raw = await providers[record.provider].getStatus({ providerSessionId: record.providerSessionId, policyHash: record.policyHash });
+        const raw = await providers[record.provider].getStatus({
+          providerSessionId: record.providerSessionId,
+          policyHash: record.policyHash,
+          ...assistantFreshness(record),
+        });
         if (raw?.providerSessionId && raw.providerSessionId !== record.providerSessionId) {
           fail("developer_provider_session_mismatch", "Provider attempted to replace the persistent session identity.");
         }

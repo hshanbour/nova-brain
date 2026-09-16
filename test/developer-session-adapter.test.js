@@ -365,6 +365,154 @@ test("Agents test evidence caps failed records and marks unavailable details inc
   assert.ok(Buffer.byteLength(JSON.stringify(success)) < 512);
 });
 
+test("assistant-only review output is selected from the newest descending page with turn identity", async () => {
+  const requests = [];
+  const staleItems = Array.from({ length: 50 }, (_, index) => ({
+    id: `stale-${index}`,
+    turn_id: `turn-stale-${index}`,
+    type: "message",
+    role: index === 0 ? "assistant" : "user",
+    content: [{ type: "output_text", text: index === 0 ? "stale microphone test summary" : "old input" }],
+  }));
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url, options = {}) {
+      requests.push({ url, options });
+      if (options.method === "POST") return new Response(null, { status: 200 });
+      if (url.includes("/items?")) return Response.json({
+        data: [{ id: "review-new", turn_id: "turn-review", type: "message", role: "assistant", status: "completed", phase: "final_answer", content: [{ type: "output_text", text: "Fresh independent review: PASS." }] }, ...staleItems],
+        has_more: true,
+        last_id: "stale-49",
+      });
+      if (url.includes("/artifacts?")) return Response.json({ data: [] });
+      return Response.json({ id: "managed-review", status: "idle", environment: { id: "env-live" } });
+    },
+  });
+
+  const result = await provider.resume({
+    providerSessionId: "managed-review",
+    approval: null,
+    approvalDecision: null,
+    additionalInstruction: "Review only.",
+    policyHash: "review-policy",
+    afterAssistantItemId: "stale-0",
+    requireFreshAssistantOutput: true,
+  });
+  assert.equal(result.evidence.latestOutput, "Fresh independent review: PASS.");
+  assert.deepEqual(result.evidence.assistantOutput, {
+    itemId: "review-new",
+    turnId: "turn-review",
+    status: "completed",
+    phase: "final_answer",
+    text: "Fresh independent review: PASS.",
+  });
+  assert.equal(result.evidence.assistantOutputMissing, false);
+  assert.deepEqual(result.evidence.assistantOutputRequest, { afterItemId: "stale-0" });
+  const itemRequest = requests.find((entry) => entry.url.includes("/items?"));
+  assert.match(itemRequest.url, /limit=100&order=desc/);
+  assert.doesNotMatch(JSON.stringify(result), /old input/);
+});
+
+test("missing fresh assistant output is explicit and stale output is not reused", async () => {
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url, options = {}) {
+      if (options.method === "POST") return new Response(null, { status: 200 });
+      if (url.includes("/items?")) return Response.json({ data: [{
+        id: "assistant-old",
+        turn_id: "turn-old",
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "Prior full-suite summary" }],
+      }] });
+      if (url.includes("/artifacts?")) return Response.json({ data: [] });
+      return Response.json({ id: "managed-missing", status: "idle" });
+    },
+  });
+
+  const result = await provider.resume({
+    providerSessionId: "managed-missing",
+    approval: null,
+    approvalDecision: null,
+    additionalInstruction: "Review only.",
+    policyHash: "review-policy",
+    afterAssistantItemId: "assistant-old",
+    requireFreshAssistantOutput: true,
+  });
+  assert.equal(result.evidence.latestOutput, null);
+  assert.equal(result.evidence.assistantOutput, null);
+  assert.equal(result.evidence.assistantOutputMissing, true);
+  assert.deepEqual(result.evidence.assistantOutputRequest, { afterItemId: "assistant-old" });
+  assert.doesNotMatch(JSON.stringify(result), /Prior full-suite summary/);
+});
+
+test("legacy records without assistant item identity establish a baseline before review submission", async () => {
+  let itemReads = 0;
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    async fetchImpl(url, options = {}) {
+      if (options.method === "POST") return new Response(null, { status: 200 });
+      if (url.includes("/items?")) {
+        itemReads += 1;
+        return Response.json({ data: [{ id: "legacy-latest", turn_id: "legacy-turn", type: "message", role: "assistant", content: [{ type: "output_text", text: "stale legacy summary" }] }] });
+      }
+      if (url.includes("/artifacts?")) return Response.json({ data: [] });
+      return Response.json({ id: "managed-legacy-freshness", status: "idle" });
+    },
+  });
+  const result = await provider.resume({
+    providerSessionId: "managed-legacy-freshness",
+    approval: null,
+    approvalDecision: null,
+    additionalInstruction: "Review only.",
+    policyHash: "review-policy",
+    requireFreshAssistantOutput: true,
+  });
+  assert.equal(itemReads, 2);
+  assert.equal(result.evidence.latestOutput, null);
+  assert.equal(result.evidence.assistantOutputMissing, true);
+  assert.deepEqual(result.evidence.assistantOutputRequest, { afterItemId: "legacy-latest" });
+  assert.doesNotMatch(JSON.stringify(result), /stale legacy summary/);
+});
+
+test("same-session reconciliation carries pending assistant freshness until new review output appears", async () => {
+  const calls = [];
+  const provider = {
+    name: "agents_api",
+    async start() {
+      return { providerSessionId: "same-provider", status: "idle", changedPaths: [], evidence: { assistantOutput: { itemId: "old-item", turnId: "old-turn", text: "old" }, assistantOutputMissing: false } };
+    },
+    async resume(input) {
+      calls.push({ method: "resume", input: structuredClone(input) });
+      return { providerSessionId: "same-provider", status: "idle", changedPaths: [], evidence: { latestOutput: null, assistantOutput: null, assistantOutputMissing: true, assistantOutputRequest: { afterItemId: input.afterAssistantItemId } } };
+    },
+    async getStatus(input) {
+      calls.push({ method: "getStatus", input: structuredClone(input) });
+      return { providerSessionId: "same-provider", status: "idle", changedPaths: [], evidence: { latestOutput: "fresh review", assistantOutput: { itemId: "new-item", turnId: "new-turn", text: "fresh review" }, assistantOutputMissing: false, assistantOutputRequest: { afterItemId: input.afterAssistantItemId } } };
+    },
+    async cancel() { return { providerSessionId: "same-provider", status: "cancelled", changedPaths: [] }; },
+  };
+  const api = adapter(provider, persistentTestStore(), "agents_api");
+  await api.startDeveloperSession(microphoneDeveloperRequest());
+  const waiting = await api.resumeDeveloperSession({ sessionId: "nova-session-1", additionalInstruction: "Review only." });
+  assert.equal(waiting.evidence.assistantOutputMissing, true);
+  assert.equal(calls[0].input.afterAssistantItemId, "old-item");
+  const reconciled = await api.reconcileDeveloperSession({ sessionId: "nova-session-1" });
+  assert.equal(calls[1].input.afterAssistantItemId, "old-item");
+  assert.equal(calls[1].input.requireFreshAssistantOutput, true);
+  assert.equal(reconciled.providerSessionId, "same-provider");
+  assert.equal(reconciled.evidence.latestOutput, "fresh review");
+  assert.equal(reconciled.evidence.assistantOutput.turnId, "new-turn");
+  assert.equal(reconciled.evidence.assistantOutputMissing, false);
+});
+
 test("Agents lifecycle preserves approval and bounded failed-session diagnostics", async () => {
   const states = [
     { id: "managed-state", status: "requires_action", required_actions: [{ type: "function_call", name: "approval", call_id: "call-1", turn_id: "turn-1" }] },
