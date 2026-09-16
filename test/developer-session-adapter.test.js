@@ -204,6 +204,7 @@ test("workspace verification creates, retrieves and cancels without submitting a
   assert.equal(result.result.environmentId, "environment-1");
   assert.equal(result.result.archiveSha256, "b".repeat(64));
   assert.equal(result.result.hostedFileCount, 3);
+  assert.equal(result.result.sessionCreateAttemptCount, 1);
   assert.equal(result.changedPaths.length, 0);
   assert.equal(requests.length, 3);
   assert.match(requests[0].url, /\/agents\/sessions$/);
@@ -212,6 +213,126 @@ test("workspace verification creates, retrieves and cancels without submitting a
   const cancellation = JSON.parse(requests[2].options.body);
   assert.deepEqual(cancellation.events, [{ type: "agent.session.input.cancel" }]);
   assert.doesNotMatch(JSON.stringify(requests.map((item) => item.options.body || "")), /agent\.session\.input\.message|Continue Nova's microphone repair/);
+});
+
+test("workspace verification retries exactly once for the proven create-time runtime conflict", async () => {
+  const requests = [];
+  const delays = [];
+  let creates = 0;
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agent: { model: "gpt-5.2-codex", instructions: "Perform no agent work." },
+    environment: { type: "openai_hosted", network: { access: "disabled" }, files: [] },
+    sleepImpl: async (delayMs) => { delays.push(delayMs); },
+    async fetchImpl(url, options = {}) {
+      requests.push({ url, options });
+      if (options.method === "POST" && url.endsWith("/agents/sessions")) {
+        creates += 1;
+        if (creates === 1) return Response.json({
+          error: {
+            type: "conflict_error",
+            code: "conflict_error",
+            message: "session runtime changed during update",
+          },
+        }, { status: 409 });
+        return Response.json({ id: "verification-provider-retry", status: "idle", environment: { id: "environment-retry" } });
+      }
+      if (!options.method) return Response.json({ id: "verification-provider-retry", status: "idle", environment: { id: "environment-retry" } });
+      return new Response(null, { status: 200 });
+    },
+  });
+  const policy = microphoneDeveloperRequest({
+    dryRun: true,
+    metadata: { manifestHash: "a".repeat(64), archiveSha256: "b".repeat(64), hostedFileCount: 3, materializedFileCount: 153, totalBytes: 1611766, dirtyPaths: MICROPHONE_ALLOWED_PATHS },
+  });
+
+  const result = await provider.verifyWorkspace({ policy, policyHash: "verification-retry" });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.result.sessionCreateAttemptCount, 2);
+  assert.deepEqual(delays, [50]);
+  assert.equal(requests.filter(({ url, options }) => options.method === "POST" && url.endsWith("/agents/sessions")).length, 2);
+  assert.equal(requests.filter(({ options }) => JSON.stringify(options.body || "").includes("agent.session.input.message")).length, 0);
+  assert.equal(requests.filter(({ url, options }) => options.method === "POST" && url.endsWith("/events")).length, 1);
+  assert.equal(requests[0].options.body, requests[1].options.body);
+});
+
+test("workspace verification does not retry other 409 or 4xx failures", async () => {
+  for (const failure of [
+    { status: 409, type: "conflict_error", code: "conflict_error", message: "another conflict" },
+    { status: 400, type: "invalid_request_error", code: "invalid_request", message: "bad request" },
+  ]) {
+    let calls = 0;
+    const provider = createAgentsApiDeveloperProvider({
+      apiKey: "test",
+      agentId: "agent-1",
+      environmentTemplateId: "env-1",
+      sleepImpl: async () => { throw new Error("delay must not run"); },
+      async fetchImpl() {
+        calls += 1;
+        return Response.json({ error: { type: failure.type, code: failure.code, message: failure.message } }, { status: failure.status });
+      },
+    });
+    await assert.rejects(
+      provider.verifyWorkspace({ policy: microphoneDeveloperRequest(), policyHash: "not-retryable" }),
+      (error) => error.safeDiagnostics.upstreamStatus === failure.status && error.safeDiagnostics.attemptCount === 1,
+    );
+    assert.equal(calls, 1);
+  }
+});
+
+test("workspace verification stops after one retry and preserves bounded attempt diagnostics", async () => {
+  let calls = 0;
+  const delays = [];
+  const store = persistentTestStore();
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    sleepImpl: async (delayMs) => { delays.push(delayMs); },
+    async fetchImpl() {
+      calls += 1;
+      return Response.json({
+        error: { type: "conflict_error", code: "conflict_error", message: "session runtime changed during update" },
+      }, { status: 409 });
+    },
+  });
+
+  const result = await adapter(provider, store, "agents_api")
+    .verifyDeveloperWorkspace(microphoneDeveloperRequest({ provider: "agents_api" }));
+  const persisted = await store.get("nova-session-1");
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.diagnostics.stage, "agents_session_create");
+  assert.equal(result.error.diagnostics.upstreamStatus, 409);
+  assert.equal(result.error.diagnostics.upstreamErrorType, "conflict_error");
+  assert.equal(result.error.diagnostics.upstreamErrorCode, "conflict_error");
+  assert.equal(result.error.diagnostics.upstreamErrorMessage, "session runtime changed during update");
+  assert.equal(result.error.diagnostics.attemptCount, 2);
+  assert.deepEqual(persisted.error, result.error);
+  assert.equal(calls, 2);
+  assert.deepEqual(delays, [50]);
+});
+
+test("real developer start does not retry the verification-only runtime conflict", async () => {
+  let calls = 0;
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    sleepImpl: async () => { throw new Error("real start must not delay or retry"); },
+    async fetchImpl() {
+      calls += 1;
+      return Response.json({
+        error: { type: "conflict_error", code: "conflict_error", message: "session runtime changed during update" },
+      }, { status: 409 });
+    },
+  });
+  await assert.rejects(
+    provider.start({ policy: microphoneDeveloperRequest(), policyHash: "real-start" }),
+    (error) => error.safeDiagnostics.upstreamStatus === 409 && error.safeDiagnostics.attemptCount === undefined,
+  );
+  assert.equal(calls, 1);
 });
 
 test("workspace verification fails closed unless the hosted session is idle after setup", async () => {

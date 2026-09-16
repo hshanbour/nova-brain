@@ -11,6 +11,7 @@ export class DeveloperProviderConfigurationError extends Error {
 const MAX_UPSTREAM_TYPE_LENGTH = 80;
 const MAX_UPSTREAM_CODE_LENGTH = 80;
 const MAX_UPSTREAM_MESSAGE_LENGTH = 256;
+const WORKSPACE_VERIFICATION_CREATE_RETRY_DELAY_MS = 50;
 
 function sanitizedDiagnosticString(value, { maxLength, apiKey }) {
   if (typeof value !== "string") return null;
@@ -46,6 +47,23 @@ function safeError({ status = null, stage, requestStage = stage, classification 
   error.code = "agents_api_request_failed";
   error.safeDiagnostics = Object.freeze(diagnostics);
   return error;
+}
+
+function withAttemptCount(error, attemptCount) {
+  if (error?.safeDiagnostics && typeof error.safeDiagnostics === "object" && !Array.isArray(error.safeDiagnostics)) {
+    error.safeDiagnostics = Object.freeze({ ...error.safeDiagnostics, attemptCount });
+  }
+  return error;
+}
+
+function retryableWorkspaceCreateConflict(error) {
+  const diagnostics = error?.safeDiagnostics;
+  return diagnostics?.stage === "agents_session_create"
+    && diagnostics.requestStage === "agents_session_create"
+    && diagnostics.upstreamStatus === 409
+    && diagnostics.upstreamErrorType === "conflict_error"
+    && diagnostics.upstreamErrorCode === "conflict_error"
+    && diagnostics.upstreamErrorMessage === "session runtime changed during update";
 }
 
 function nonEmptyString(value) {
@@ -123,7 +141,11 @@ function mappedSession(payload) {
   };
 }
 
-export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, environmentTemplateId, environment, fetchImpl = globalThis.fetch, baseUrl = AGENTS_BASE_URL } = {}) {
+export function createAgentsApiDeveloperProvider({
+  apiKey, agentId, agent, environmentTemplateId, environment, fetchImpl = globalThis.fetch,
+  baseUrl = AGENTS_BASE_URL,
+  sleepImpl = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+} = {}) {
   if (!nonEmptyString(apiKey)) throw new DeveloperProviderConfigurationError("OPENAI_API_KEY is required for live Agents API calls.");
   const agentConfiguration = normalizeAgentConfiguration({ agentId, agent });
   const sessionEnvironment = normalizeEnvironmentConfiguration({ environmentTemplateId, environment });
@@ -165,7 +187,7 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
     "agents_session_retrieve",
   ));
   const createSession = async ({ taskId, policyHash, mode }) => {
-    const created = await request("/agents/sessions", "agents_session_create", {
+    const options = {
       method: "POST",
       body: JSON.stringify({
         ...agentConfiguration,
@@ -173,16 +195,33 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
         metadata: { nova_task_id: taskId, nova_policy_hash: policyHash, ...(mode ? { nova_session_mode: mode } : {}) },
         stream: false,
       }),
-    });
+    };
+    let attemptCount = 1;
+    let created;
+    try {
+      created = await request("/agents/sessions", "agents_session_create", options);
+    } catch (error) {
+      if (mode !== "workspace_verification") throw error;
+      if (!retryableWorkspaceCreateConflict(error)) {
+        throw withAttemptCount(error, attemptCount);
+      }
+      await sleepImpl(WORKSPACE_VERIFICATION_CREATE_RETRY_DELAY_MS);
+      attemptCount += 1;
+      try {
+        created = await request("/agents/sessions", "agents_session_create", options);
+      } catch (retryError) {
+        throw withAttemptCount(retryError, attemptCount);
+      }
+    }
     if (typeof created?.id !== "string" || !created.id) {
       throw safeError({ stage: "agents_session_create", classification: "provider_result_invalid", payload: null, apiKey });
     }
-    return created;
+    return { created, attemptCount };
   };
   return Object.freeze({
     name: "agents_api",
     async start({ policy, policyHash }) {
-      const created = await createSession({ taskId: policy.taskId, policyHash });
+      const { created } = await createSession({ taskId: policy.taskId, policyHash });
       await request(`/agents/sessions/${encodeURIComponent(created.id)}/events`, "agents_initial_event_submit", {
         method: "POST",
         body: JSON.stringify({ events: [{ type: "agent.session.input.message", input: [{ role: "user", content: [{ type: "input_text", text: instructions(policy) }] }] }] }),
@@ -190,7 +229,7 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
       return retrieve(created.id);
     },
     async verifyWorkspace({ policy, policyHash }) {
-      const created = await createSession({ taskId: policy.taskId, policyHash, mode: "workspace_verification" });
+      const { created, attemptCount } = await createSession({ taskId: policy.taskId, policyHash, mode: "workspace_verification" });
       const retrieved = await request(`/agents/sessions/${encodeURIComponent(created.id)}`, "agents_session_retrieve");
       if (retrieved?.id !== created.id || retrieved?.status !== "idle") {
         const error = safeError({ stage: "agents_workspace_verification", classification: "workspace_integrity_failed", payload: retrieved, apiKey });
@@ -218,6 +257,7 @@ export function createAgentsApiDeveloperProvider({ apiKey, agentId, agent, envir
           baseSha: policy.baseSha,
           dirtyPaths: [...policy.metadata.dirtyPaths],
           networkDisabled: true,
+          sessionCreateAttemptCount: attemptCount,
         },
         changedPaths: [],
       };
