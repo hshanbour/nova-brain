@@ -396,9 +396,185 @@ export function createSelfDevelopmentService({
       runtimeBudgetMinutes,
       status: "structured",
       startingCommit,
+      intent: IMPLEMENTATION_GOAL.test(userGoal)
+        ? "implementation"
+        : "analysis_only",
     });
   }
-  function plan(request) {
+  const requestFingerprint = (request) => {
+    const identity = { ...request };
+    delete identity.intent;
+    return hash(identity);
+  };
+  const evidenceCandidates = (request) => {
+    const candidates = [
+      ...new Set([
+        ...(request.scope.paths || []),
+        ...(request.scope.focusedTests || []),
+      ]),
+    ];
+    if (
+      candidates.length < 2 ||
+      candidates.length > 12 ||
+      candidates.some((path) => REPLAN_PROTECTED.test(path)) ||
+      !candidates.some((path) => !path.startsWith("test/")) ||
+      !candidates.some((path) => path.startsWith("test/"))
+    )
+      return null;
+    return candidates;
+  };
+  const appendEvidenceBoundImplementation = ({
+    steps,
+    base = 0,
+    taskId,
+    candidates,
+    branch,
+    currentCommit,
+  }) => {
+    const add = (...args) =>
+      steps.push(annotation(base + steps.length + 1, ...args));
+    for (const path of candidates)
+      add(
+        "read_files",
+        "repo_read_remote",
+        {
+          tool: "repo_read",
+          arguments: { path, startLine: 1, endLine: 1000 },
+        },
+        `Complete contents of ${path}`,
+        "Evidence candidate is read before implementation planning",
+        { retry: "safe_read" },
+      );
+    add(
+      "plan_implementation",
+      "reasoning",
+      {
+        tool: "self_development_plan_implementation",
+        arguments: { taskId, candidatePaths: candidates, currentCommit },
+      },
+      "Nova-generated structured implementation plan",
+      "Plan is generated only from durable evidence",
+      { retry: "new_evidence_required" },
+    );
+    add(
+      "apply_patch",
+      "repo_mutate_local",
+      {
+        tool: "repo_apply_patch",
+        arguments: {
+          branch,
+          currentCommit: "$CURRENT_COMMIT",
+          files: "$IMPLEMENTATION_FILES",
+        },
+      },
+      "Bounded evidence-generated files changed",
+      "Hands applies only the validated Nova plan",
+      { retry: "repair_required" },
+    );
+    add(
+      "run_focused_tests",
+      "test_local",
+      {
+        tool: "test_run",
+        arguments: { files: "$IMPLEMENTATION_TESTS", timeoutMs: 180000 },
+      },
+      "Focused test report",
+      "All Nova-selected focused tests pass",
+      { retry: "repair_required" },
+    );
+    add(
+      "run_full_tests",
+      "test_local",
+      { tool: "test_run_full", arguments: { timeoutMs: 180000 } },
+      "Full test report",
+      "Complete suite passes",
+      { retry: "repair_required" },
+    );
+    add(
+      "inspect_diff",
+      "repo_read_remote",
+      { tool: "repo_diff", arguments: { paths: "$IMPLEMENTATION_PATHS" } },
+      "Complete bounded diff review",
+      "Diff contains only evidence-generated scope",
+      { retry: "safe_read" },
+    );
+    add(
+      "commit",
+      "repo_mutate_local",
+      {
+        tool: "git_commit",
+        arguments: {
+          paths: "$IMPLEMENTATION_PATHS",
+          branch,
+          message: "Complete bounded Nova self-development task",
+        },
+      },
+      "Exact local commit SHA",
+      "One reviewed local commit created",
+      { retry: "idempotent_commit" },
+    );
+    add(
+      "review_commit",
+      "repo_read_remote",
+      {
+        tool: "repo_review_commit",
+        arguments: {
+          commitSha: "$CURRENT_COMMIT",
+          paths: "$IMPLEMENTATION_PATHS",
+        },
+      },
+      "Exact immutable commit review",
+      "Commit exactly matches the reviewed bounded change-set",
+      { retry: "not_retryable" },
+    );
+    add(
+      "push",
+      "github_write",
+      {
+        tool: "git_push",
+        arguments: { branch, commitSha: "$CURRENT_COMMIT" },
+      },
+      "Approved remote feature commit",
+      "Exact push approval succeeds",
+      { retry: "approval_bound", approval: true },
+    );
+    add(
+      "deploy_preview",
+      "vercel_preview",
+      {
+        tool: "preview_deploy",
+        arguments: { branch, commitSha: "$CURRENT_COMMIT" },
+      },
+      "Git-backed Preview deployment",
+      "Preview deployment created",
+      { retry: "idempotent_deploy", approval: true },
+    );
+    add(
+      "wait",
+      "scheduler",
+      { delayMs: 5000 },
+      "Bounded deployment wait",
+      "Task reschedules without busy-looping",
+      { retry: "bounded_wait" },
+    );
+    add(
+      "verify_preview",
+      "vercel_preview",
+      {
+        tool: "preview_verify",
+        arguments: {
+          deploymentId: "$DEPLOYMENT_ID",
+          path: "/api/health",
+          expectedStatus: 200,
+          commitSha: "$CURRENT_COMMIT",
+        },
+      },
+      "Protected Preview verification",
+      "Exact SHA Preview health succeeds",
+      { retry: "repair_required" },
+    );
+  };
+  function plan(request, taskId) {
     const steps = [],
       add = (...args) => steps.push(annotation(steps.length + 1, ...args)),
       root = request.scope.inspectPath || ".";
@@ -442,7 +618,20 @@ export function createSelfDevelopmentService({
         "File read succeeds",
         { retry: "safe_read" },
       );
-    add(
+    const files = request.scope.patch.files,
+      candidates =
+        request.intent === "implementation" && !files.length
+          ? evidenceCandidates(request)
+          : null;
+    if (candidates) {
+      appendEvidenceBoundImplementation({
+        steps,
+        taskId,
+        candidates,
+        branch: request.targetBranch,
+        currentCommit: request.startingCommit,
+      });
+    } else add(
       "plan_patch",
       "reasoning",
       {
@@ -454,7 +643,6 @@ export function createSelfDevelopmentService({
       "Plan stays within declared scope",
       { retry: "new_evidence_required" },
     );
-    const files = request.scope.patch.files;
     if (files.length) {
       if (request.riskLevel === "high")
         add(
@@ -529,6 +717,20 @@ export function createSelfDevelopmentService({
         { retry: "idempotent_commit" },
       );
       add(
+        "review_commit",
+        "repo_read_remote",
+        {
+          tool: "repo_review_commit",
+          arguments: {
+            commitSha: "$CURRENT_COMMIT",
+            paths: files.map((x) => x.path),
+          },
+        },
+        "Exact immutable commit review",
+        "Commit exactly matches the reviewed bounded change-set",
+        { retry: "not_retryable" },
+      );
+      add(
         "push",
         "github_write",
         {
@@ -597,13 +799,13 @@ export function createSelfDevelopmentService({
   }
   async function create(input) {
     const request = structure(input),
-      steps = plan(request),
-      requestFingerprint = hash(request),
-      taskId = `selfdev_${requestFingerprint.slice(0, 32)}`,
+      fingerprint = requestFingerprint(request),
+      taskId = `selfdev_${fingerprint.slice(0, 32)}`,
+      steps = plan(request, taskId),
       prior = await runtime.get(taskId);
     if (prior) {
       if (
-        prior.metadata?.selfDevelopmentRequestFingerprint !== requestFingerprint
+        prior.metadata?.selfDevelopmentRequestFingerprint !== fingerprint
       )
         throw new SelfDevelopmentError(
           "durable_task_create_failed",
@@ -634,7 +836,7 @@ export function createSelfDevelopmentService({
           steps,
           maxRepairIterations: request.maxRepairIterations,
           selfDevelopment: request,
-          selfDevelopmentRequestFingerprint: requestFingerprint,
+          selfDevelopmentRequestFingerprint: fingerprint,
           repairHistory: [],
           autoDispatch: true,
         },
@@ -642,8 +844,7 @@ export function createSelfDevelopmentService({
     } catch (error) {
       const concurrent = await runtime.get(taskId).catch(() => null);
       if (
-        concurrent?.metadata?.selfDevelopmentRequestFingerprint ===
-        requestFingerprint
+        concurrent?.metadata?.selfDevelopmentRequestFingerprint === fingerprint
       )
         return {
           request,
@@ -748,6 +949,21 @@ export function createSelfDevelopmentService({
         "summarize",
       ];
     const priorApprovals = await storage.listApprovals(ownerId, { limit: 100 });
+    const failedScopeSummary = steps.some(
+      (step) =>
+        step.stepType === "summarize" &&
+        step.status === "failed" &&
+        step.errorCode === "implementation_scope_required",
+    );
+    const eligibleTerminal =
+      (current.status === "completed" &&
+        requiredDiscovery.every((type) => completedTypes.includes(type))) ||
+      (current.status === "blocked" &&
+        current.errorCode === "implementation_scope_required" &&
+        ["inspect_repo", "search_code", "plan_patch"].every((type) =>
+          completedTypes.includes(type),
+        ) &&
+        failedScopeSummary);
     const hasDeliveryEvidence =
       steps.some((step) =>
         [
@@ -764,14 +980,13 @@ export function createSelfDevelopmentService({
       current.metadata?.lastDeploymentId ||
       current.metadata?.selfDevelopmentDeliveryAttestation;
     if (
-      current.status !== "completed" ||
+      !eligibleTerminal ||
       current.branch !== approvedBranch ||
       request?.targetBranch !== approvedBranch ||
       request?.environment !== "preview" ||
       !IMPLEMENTATION_GOAL.test(current.objective || request?.userGoal || "") ||
       request?.scope?.patch?.files?.length ||
       request?.scope?.paths?.length ||
-      !requiredDiscovery.every((type) => completedTypes.includes(type)) ||
       hasDeliveryEvidence
     )
       throw new SelfDevelopmentError(
@@ -852,147 +1067,28 @@ export function createSelfDevelopmentService({
         .map((step) => step.stepId),
       base = current.metadata.steps.length,
       continuation = [];
-    for (const path of candidates)
-      continuation.push(
-        annotation(
-          base + continuation.length + 1,
-          "read_files",
-          "repo_read_remote",
-          {
-            tool: "repo_read",
-            arguments: { path, startLine: 1, endLine: 1000 },
-          },
-          `Complete contents of ${path}`,
-          "Evidence candidate is read before implementation planning",
-          { retry: "safe_read" },
-        ),
-      );
+    appendEvidenceBoundImplementation({
+      steps: continuation,
+      base,
+      taskId: current.id,
+      candidates,
+      branch: current.branch,
+      currentCommit: current.currentCommit,
+    });
     continuation.push(
       annotation(
         base + continuation.length + 1,
-        "plan_implementation",
+        "summarize",
         "reasoning",
         {
-          tool: "self_development_plan_implementation",
-          arguments: {
-            taskId: current.id,
-            candidatePaths: candidates,
-            currentCommit: current.currentCommit,
-          },
+          summary:
+            "Nova self-development task completed after Preview verification.",
         },
-        "Nova-generated structured implementation plan",
-        "Plan is generated only from durable evidence",
-        { retry: "new_evidence_required" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "apply_patch",
-        "repo_mutate_local",
-        {
-          tool: "repo_apply_patch",
-          arguments: {
-            branch: current.branch,
-            currentCommit: "$CURRENT_COMMIT",
-            files: "$IMPLEMENTATION_FILES",
-          },
-        },
-        "Bounded evidence-generated files changed",
-        "Hands applies only the validated Nova plan",
-        { retry: "repair_required" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "run_focused_tests",
-        "test_local",
-        {
-          tool: "test_run",
-          arguments: { files: "$IMPLEMENTATION_TESTS", timeoutMs: 180000 },
-        },
-        "Focused test report",
-        "All Nova-selected focused tests pass",
-        { retry: "repair_required" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "run_full_tests",
-        "test_local",
-        { tool: "test_run_full", arguments: { timeoutMs: 180000 } },
-        "Full test report",
-        "Complete suite passes",
-        { retry: "repair_required" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "inspect_diff",
-        "repo_read_remote",
-        { tool: "repo_diff", arguments: { paths: "$IMPLEMENTATION_PATHS" } },
-        "Complete bounded diff review",
-        "Diff contains only evidence-generated scope",
-        { retry: "safe_read" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "commit",
-        "repo_mutate_local",
-        {
-          tool: "git_commit",
-          arguments: {
-            paths: "$IMPLEMENTATION_PATHS",
-            branch: current.branch,
-            message: "Complete bounded Nova self-development task",
-          },
-        },
-        "Exact local commit SHA",
-        "One reviewed local commit created",
-        { retry: "idempotent_commit" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "review_commit",
-        "repo_read_remote",
-        {
-          tool: "repo_review_commit",
-          arguments: {
-            commitSha: "$CURRENT_COMMIT",
-            paths: "$IMPLEMENTATION_PATHS",
-          },
-        },
-        "Exact immutable commit review",
-        "Commit exactly matches the reviewed bounded change-set",
+        "Durable owner-facing summary",
+        "All planned acceptance gates completed",
         { retry: "not_retryable" },
       ),
     );
-    for (const step of plan({
-      ...request,
-      scope: {
-        ...request.scope,
-        patch: { files: [{ path: "placeholder", content: "placeholder" }] },
-      },
-    }).filter((step) =>
-      [
-        "push",
-        "deploy_preview",
-        "wait",
-        "verify_preview",
-        "summarize",
-      ].includes(step.type),
-    ))
-      continuation.push({
-        ...step,
-        idempotencyIdentity: `self-development:${base + continuation.length + 1}:${hash([step.type, clean(step.input)])}`,
-      });
     const now = clock().toISOString(),
       scopeHash = hash(candidates),
       replanRecord = {
@@ -1028,6 +1124,10 @@ export function createSelfDevelopmentService({
         ),
         metadata: {
           ...current.metadata,
+          selfDevelopment: {
+            ...request,
+            intent: request.intent || "implementation",
+          },
           steps: [...current.metadata.steps, ...continuation],
           requiredCapability: "repo_read_remote",
           autoDispatch: true,

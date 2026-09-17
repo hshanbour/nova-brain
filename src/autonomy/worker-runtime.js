@@ -250,6 +250,63 @@ export function createWorkerRuntime({
           approval_required: Boolean(planned.approvalRequired),
         };
   }
+  async function implementationCompletionIssue(task) {
+    if (
+      task.taskType !== "self_development" ||
+      task.metadata?.selfDevelopment?.intent !== "implementation"
+    )
+      return null;
+    const durable = await storage.listAutonomySteps(task.id),
+      ordinal = (item) => Number.parseInt(String(item?.stepId || ""), 10),
+      latestPlanner = durable.findLast(
+        (item) =>
+          ["plan_implementation", "plan_repair"].includes(item.stepType) &&
+          item.status === "completed",
+      ),
+      lifecycle = latestPlanner
+        ? durable.filter((item) => ordinal(item) > ordinal(latestPlanner))
+        : durable,
+      completed = (type) =>
+        lifecycle.some(
+          (item) => item.stepType === type && item.status === "completed",
+        ),
+      plannedTypes = new Set(
+        (task.metadata?.steps || []).map((item) => item.type),
+      ),
+      hasBoundPlan =
+        Boolean(task.metadata?.selfDevelopmentImplementationPlan) ||
+        Boolean(task.metadata?.selfDevelopment?.scope?.patch?.files?.length),
+      review = lifecycle.findLast(
+        (item) =>
+          item.stepType === "review_commit" && item.status === "completed",
+      ),
+      explicitReviewedNoChange = review?.result?.noChangeRequired === true,
+      missing = [];
+    if (!hasBoundPlan) missing.push("implementation_plan");
+    if (!completed("apply_patch") && !explicitReviewedNoChange)
+      missing.push("mutation_apply");
+    if (
+      plannedTypes.has("run_focused_tests") &&
+      !completed("run_focused_tests")
+    )
+      missing.push("focused_tests");
+    if (plannedTypes.has("run_full_tests") && !completed("run_full_tests"))
+      missing.push("full_tests");
+    if (!review) missing.push("review");
+    if (!missing.length) return null;
+    const scopeEmpty =
+      !task.metadata?.selfDevelopment?.scope?.patch?.files?.length &&
+      !task.metadata?.selfDevelopmentImplementationPlan;
+    return {
+      code: scopeEmpty
+        ? "implementation_scope_required"
+        : "implementation_evidence_incomplete",
+      message: scopeEmpty
+        ? "Implementation intent requires bounded implementation and test candidates before completion."
+        : `Implementation completion evidence is incomplete: ${missing.join(", ")}.`,
+      missing,
+    };
+  }
   async function tick({ idempotencyKey = randomUUID() } = {}) {
     const task = await storage.claimAutonomyTask({
       ownerId,
@@ -438,6 +495,24 @@ export function createWorkerRuntime({
         };
       }
       if (type === "summarize") {
+        const completionIssue = await implementationCompletionIssue(task);
+        if (completionIssue) {
+          await storage.updateAutonomyStep(task.id, step.stepId, {
+            status: "failed",
+            errorCode: completionIssue.code,
+            result: redact({
+              message: completionIssue.message,
+              missing: completionIssue.missing,
+            }),
+            completedAt: iso(clock),
+          });
+          return stop(
+            task,
+            "blocked",
+            completionIssue.code,
+            completionIssue.message,
+          );
+        }
         await storage.updateAutonomyStep(task.id, step.stepId, {
           status: "completed",
           result: redact(plan.required_inputs),

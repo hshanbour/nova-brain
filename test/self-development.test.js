@@ -176,6 +176,19 @@ test("natural-language request becomes a structured self-development task", asyn
     value = f.service.structure(input());
   assert.equal(value.kind, "self_development_task");
   assert.match(value.userGoal, /natural language/);
+  assert.equal(value.intent, "implementation");
+});
+test("task intent distinguishes implementation from analysis-only goals", async () => {
+  const f = await fixture();
+  assert.equal(
+    f.service.structure({ userGoal: "Implement a harmless console fix" }).intent,
+    "implementation",
+  );
+  assert.equal(
+    f.service.structure({ userGoal: "Inspect the harmless console architecture" })
+      .intent,
+    "analysis_only",
+  );
 });
 test("target repository and feature branch are bound by default", async () => {
   const f = await fixture(),
@@ -198,6 +211,113 @@ test("real chat-style goal resolves deployed commit project branch and safe defa
     created.plan.some((step) => step.type === "apply_patch"),
     false,
   );
+});
+test("implementation intent with empty scope blocks instead of completing discovery-only", async () => {
+  const f = await fixture(),
+    created = await f.service.create({
+      userGoal: "Implement a harmless console improvement",
+    });
+  for (let index = 0; index < created.plan.length; index++)
+    await f.runtime.tickTask(created.task.id, {
+      idempotencyKey: `empty-implementation-${index}`,
+    });
+  const task = await f.runtime.get(created.task.id),
+    steps = await f.runtime.steps(created.task.id),
+    summary = steps.find((step) => step.stepType === "summarize");
+  assert.equal(task.status, "blocked");
+  assert.equal(task.errorCode, "implementation_scope_required");
+  assert.equal(summary.status, "failed");
+  assert.equal(summary.errorCode, "implementation_scope_required");
+  assert.equal(steps.some((step) => step.stepType === "apply_patch"), false);
+});
+test("implementation completion guard rejects missing lifecycle evidence", async () => {
+  const f = await fixture(),
+    created = await f.service.create(input()),
+    summary = created.plan.find((step) => step.type === "summarize");
+  await f.storage.updateAutonomyTask(created.task.id, OWNER, {
+    currentStep: 0,
+    metadata: { ...created.task.metadata, steps: [summary] },
+  });
+  await f.runtime.tickTask(created.task.id, {
+    idempotencyKey: "missing-lifecycle-evidence",
+  });
+  const task = await f.runtime.get(created.task.id);
+  assert.equal(task.status, "blocked");
+  assert.equal(task.errorCode, "implementation_evidence_incomplete");
+  assert.match(task.resultSummary, /mutation_apply/);
+  assert.match(task.resultSummary, /review/);
+});
+test("analysis-only intent may complete discovery-only", async () => {
+  const f = await fixture(),
+    created = await f.service.create({
+      userGoal: "Inspect the harmless console architecture",
+    });
+  for (let index = 0; index < created.plan.length; index++)
+    await f.runtime.tickTask(created.task.id, {
+      idempotencyKey: `analysis-only-${index}`,
+    });
+  assert.equal((await f.runtime.get(created.task.id)).status, "completed");
+});
+test("safe implementation and test candidates use the evidence-bound worker flow", async () => {
+  const f = await fixture(),
+    created = await f.service.create({
+      userGoal: "Implement a harmless console improvement",
+      scope: {
+        paths: ["assets/console.js"],
+        searchTerms: ["console"],
+        patch: { files: [] },
+        focusedTests: ["test/console-static.test.js"],
+      },
+    }),
+    types = created.plan.map((step) => step.type);
+  assert.equal(created.request.intent, "implementation");
+  assert.equal(types.includes("plan_patch"), false);
+  for (const type of [
+    "plan_implementation",
+    "apply_patch",
+    "run_focused_tests",
+    "run_full_tests",
+    "inspect_diff",
+    "commit",
+    "review_commit",
+    "push",
+    "deploy_preview",
+  ])
+    assert.ok(types.includes(type), `${type} is planned`);
+  const plannerIndex = types.indexOf("plan_implementation");
+  for (let index = 0; index <= plannerIndex; index++)
+    await f.runtime.tickTask(created.task.id, {
+      idempotencyKey: `evidence-flow-${index}`,
+    });
+  assert.equal(
+    f.calls.some(
+      (call) => call.name === "self_development_plan_implementation",
+    ),
+    true,
+  );
+});
+test("unsafe or incomplete candidates fail closed at implementation scope", async () => {
+  const f = await fixture(),
+    created = await f.service.create({
+      userGoal: "Implement a protected runtime improvement",
+      scope: {
+        paths: ["src/autonomy/worker-runtime.js"],
+        searchTerms: [],
+        patch: { files: [] },
+        focusedTests: ["test/self-development.test.js"],
+      },
+    });
+  assert.equal(
+    created.plan.some((step) => step.type === "plan_implementation"),
+    false,
+  );
+  for (let index = 0; index < created.plan.length; index++)
+    await f.runtime.tickTask(created.task.id, {
+      idempotencyKey: `protected-empty-${index}`,
+    });
+  const task = await f.runtime.get(created.task.id);
+  assert.equal(task.status, "blocked");
+  assert.equal(task.errorCode, "implementation_scope_required");
 });
 test("identical chat create retries return the same durable task", async () => {
   const f = await fixture(),
@@ -322,6 +442,7 @@ test("planner reuses only safe Hands tool names", async () => {
         "test_run",
         "test_run_full",
         "repo_diff",
+        "repo_review_commit",
         "git_commit",
         "git_push",
         "preview_deploy",
@@ -822,6 +943,15 @@ async function completedDiscoveryFixture({
       },
     }),
     created = await f.service.create({ userGoal: goal });
+  const createdTask = await f.runtime.get(created.task.id),
+    legacyRequest = { ...createdTask.metadata.selfDevelopment };
+  delete legacyRequest.intent;
+  await f.storage.updateAutonomyTask(created.task.id, OWNER, {
+    metadata: {
+      ...createdTask.metadata,
+      selfDevelopment: legacyRequest,
+    },
+  });
   for (let index = 0; index < created.plan.length; index++)
     await f.runtime.tickTask(created.task.id, {
       idempotencyKey: `discovery-${index}`,
@@ -861,6 +991,35 @@ test("completed discovery-only task is replanned in place from durable evidence"
   assert.ok(result.continuationSteps.includes("review_commit"));
   assert.ok(result.continuationSteps.includes("push"));
   assert.equal(result.task.metadata.autoDispatch, true);
+});
+test("new scope-blocked implementation task reuses discovery-only replan in place", async () => {
+  const f = await fixture({
+      execute(name) {
+        if (name === "repo_list") return { ok: true, files: candidates() };
+        if (name === "repo_search") return { ok: true, matches: [] };
+        return { ok: true };
+      },
+    }),
+    created = await f.service.create({
+      userGoal: "Implement a harmless documentation improvement",
+    });
+  for (let index = 0; index < created.plan.length; index++)
+    await f.runtime.tickTask(created.task.id, {
+      idempotencyKey: `blocked-replan-${index}`,
+    });
+  const blocked = await f.runtime.get(created.task.id);
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.errorCode, "implementation_scope_required");
+  const result = await f.service.replanDiscoveryOnly(blocked.id, {
+    expectedVersion: blocked.stateVersion,
+    runtimeBudgetMinutes: 60,
+    candidatePaths: candidates(),
+  });
+  assert.equal(result.task.id, blocked.id);
+  assert.equal(result.task.status, "queued");
+  assert.equal(result.task.metadata.selfDevelopment.intent, "implementation");
+  assert.ok(result.continuationSteps.includes("plan_implementation"));
+  assert.ok(result.continuationSteps.includes("review_commit"));
 });
 test("replan preserves completed checkpoints and resets only the bounded runtime window", async () => {
   const f = await completedDiscoveryFixture(),
