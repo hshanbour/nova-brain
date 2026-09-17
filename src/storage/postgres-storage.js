@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
 import { SCHEMA_STATEMENTS } from "./schema.js";
 import { rankRelevantMemories } from "../memory/relevance.js";
+import {validateRejectedReviewEvidenceEnvelope} from "../autonomy/rejected-review-evidence.js";
 
 const json = (value) => JSON.stringify(value ?? {});
 const date = (value) => (value instanceof Date ? value.toISOString() : value);
@@ -790,6 +791,22 @@ export function createPostgresStorage({ connectionString }) {
         )[0],
       );
     },
+    async createRejectedReviewEvidence({ownerId,taskId,envelope}) {
+      if(!validateRejectedReviewEvidenceEnvelope(envelope)||envelope.taskId!==taskId)throw new Error("Invalid private rejection evidence binding.");
+      const params=[randomUUID(),ownerId,taskId,envelope.executionId,envelope.attempt,envelope.continuationGenerationId,json(envelope)];
+      const inserted=await run(`INSERT INTO nova_rejected_review_evidence (id,owner_id,task_id,execution_id,attempt,continuation_generation_id,envelope)
+        SELECT $1,$2,$3,$4,$5,$6,$7::jsonb WHERE EXISTS (SELECT 1 FROM nova_autonomy_tasks WHERE id=$3 AND owner_id=$2)
+        ON CONFLICT (owner_id,task_id,execution_id,attempt,continuation_generation_id) DO NOTHING RETURNING *`,params);
+      const row=inserted[0]||(await run(`SELECT e.* FROM nova_rejected_review_evidence e JOIN nova_autonomy_tasks t ON t.id=e.task_id AND t.owner_id=e.owner_id
+        WHERE e.owner_id=$1 AND e.task_id=$2 AND e.execution_id=$3 AND e.attempt=$4 AND e.continuation_generation_id=$5`,params.slice(1,6)))[0];
+      if(!row)throw new Error("Invalid private rejection evidence owner/task.");
+      return{id:row.id,ownerId:row.owner_id,taskId:row.task_id,createdAt:date(row.created_at),envelope:row.envelope};
+    },
+    async getRejectedReviewEvidence(id,ownerId,taskId) {
+      const row=(await run(`SELECT e.* FROM nova_rejected_review_evidence e JOIN nova_autonomy_tasks t ON t.id=e.task_id AND t.owner_id=e.owner_id
+        WHERE e.id=$1 AND e.owner_id=$2 AND e.task_id=$3`,[id,ownerId,taskId]))[0];
+      return row?{id:row.id,ownerId:row.owner_id,taskId:row.task_id,createdAt:date(row.created_at),envelope:row.envelope}:null;
+    },
     async listAutonomyTasks(ownerId, { status, limit = 50 } = {}) {
       return (
         await run(
@@ -904,10 +921,11 @@ export function createPostgresStorage({ connectionString }) {
       expectedBranch,
       expectedCommit,
       expectedVersion,
+      claimMetadata,
     }) {
       const row = (
         await run(
-          `WITH expired AS (UPDATE nova_autonomy_tasks SET status='queued',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,state_version=state_version+1,updated_at=now() WHERE owner_id=$1 AND ($7::text IS NULL OR id=$7) AND lease_expires_at<=now() AND status IN ('running','planning','retrying')), candidate AS (SELECT id FROM nova_autonomy_tasks WHERE owner_id=$1 AND ($7::text IS NULL OR id=$7) AND ($8::text IS NULL OR branch=$8) AND ($9::text IS NULL OR current_commit=$9) AND ($10::bigint IS NULL OR state_version=$10) AND ((status IN ('queued','retrying','waiting_for_worker') AND COALESCE(next_run_at,now())<=now()) OR (status='waiting' AND next_run_at IS NOT NULL AND next_run_at<=now())) AND (metadata->>'requiredCapability' IS NULL OR metadata->>'requiredCapability'=ANY($2::text[])) ORDER BY priority DESC,created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE nova_autonomy_tasks t SET status=CASE WHEN started_at IS NULL THEN 'planning' ELSE 'running' END,started_at=COALESCE(started_at,now()),lease_owner=$3,lease_token=$4,lease_expires_at=now()+($5::int*interval '1 millisecond'),metadata=metadata||jsonb_build_object('claimKey',$6::text),state_version=t.state_version+1,updated_at=now() FROM candidate WHERE t.id=candidate.id RETURNING t.*`,
+          `WITH expired AS (UPDATE nova_autonomy_tasks SET status='queued',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,state_version=state_version+1,updated_at=now() WHERE owner_id=$1 AND ($7::text IS NULL OR id=$7) AND lease_expires_at<=now() AND status IN ('running','planning','retrying')), candidate AS (SELECT id FROM nova_autonomy_tasks WHERE owner_id=$1 AND ($7::text IS NULL OR id=$7) AND ($8::text IS NULL OR branch=$8) AND ($9::text IS NULL OR current_commit=$9) AND ($10::bigint IS NULL OR state_version=$10) AND ((status IN ('queued','retrying','waiting_for_worker') AND COALESCE(next_run_at,now())<=now()) OR (status='waiting' AND next_run_at IS NOT NULL AND next_run_at<=now())) AND (metadata->>'requiredCapability' IS NULL OR metadata->>'requiredCapability'=ANY($2::text[])) ORDER BY priority DESC,created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE nova_autonomy_tasks t SET status=CASE WHEN started_at IS NULL THEN 'planning' ELSE 'running' END,started_at=COALESCE(started_at,now()),lease_owner=$3,lease_token=$4,lease_expires_at=now()+($5::int*interval '1 millisecond'),metadata=metadata||$11::jsonb||jsonb_build_object('claimKey',$6::text),state_version=t.state_version+1,updated_at=now() FROM candidate WHERE t.id=candidate.id RETURNING t.*`,
           [
             ownerId,
             capabilities,
@@ -919,6 +937,7 @@ export function createPostgresStorage({ connectionString }) {
             expectedBranch || null,
             expectedCommit || null,
             expectedVersion ?? null,
+            JSON.stringify(claimMetadata || {}),
           ],
         )
       )[0];
@@ -1081,6 +1100,23 @@ export function createPostgresStorage({ connectionString }) {
           [ownerId, projectId || null, runId || null, limit],
         )
       ).map(activityRow);
+    },
+    async saveDeveloperSession(record, ownerId) {
+      const rows = await run(
+        `INSERT INTO nova_developer_sessions (id,owner_id,record) VALUES ($1,$2,$3::jsonb)
+         ON CONFLICT (id) DO UPDATE SET record=EXCLUDED.record,updated_at=now()
+         WHERE nova_developer_sessions.owner_id=EXCLUDED.owner_id
+         RETURNING record`,
+        [record.id, ownerId, JSON.stringify(record)],
+      );
+      return rows[0]?.record || null;
+    },
+    async getDeveloperSession(id, ownerId) {
+      const rows = await run(
+        "SELECT record FROM nova_developer_sessions WHERE id=$1 AND owner_id=$2",
+        [id, ownerId],
+      );
+      return rows[0]?.record || null;
     },
     async createVoiceBenchmarkSession(input) {
       return benchmarkSessionRow(

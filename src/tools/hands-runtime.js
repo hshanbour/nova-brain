@@ -1,8 +1,9 @@
-import { readFile, readdir, writeFile, rename, rm } from "node:fs/promises";
+import { readFile, readdir, writeFile, rename, rm, lstat, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { resolve, relative, sep, dirname, basename, join, delimiter } from "node:path";
+import { resolve, relative, sep, dirname, basename, join, delimiter, isAbsolute } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import {tmpdir} from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { RISK_LEVELS } from "../policy/action-policy.js";
 import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA } from "../autonomy/self-development-implementation-contract.js";
@@ -10,6 +11,11 @@ import { resolveRepositoryContext } from "./repository-context.js";
 import { createGitExecutor } from "./git-execution.js";
 import {canonicalContentHash,IMPLEMENTATION_PLAN_PROVENANCE_VERSION} from "../autonomy/self-development-plan-lifecycle.js";
 import {parseTestFailure} from "./test-failure-evidence.js";
+import {implementationContentHash,implementationContentIssue,isJavaScriptImplementationPath} from "../autonomy/implementation-content.js";
+import {recoveryHash,recoveryRoot} from "../autonomy/failed-local-read-recovery.js";
+import {EXECUTION_SCOPE_RECOVERY_CLASS,executionScopePayload,validateExecutionScopeContext} from "../autonomy/execution-scope-recovery.js";
+import {FULL_TEST_SCOPE_RECOVERY_CLASS,FAILED_FULL_TEST_RETRY_CLASS,fullTestScopeDescriptor,fullTestScopePayload,validateFullTestScopeContext} from "../autonomy/full-test-scope-recovery.js";
+import {reviewRemediationDescriptorForClass,reviewRemediationDescriptor,reviewRemediationScopePayload,validateReviewRemediationContext} from "../autonomy/review-remediation-scope.js";
 
 const exec = promisify(execFile);
 const protectedName =
@@ -50,16 +56,19 @@ const boundedGitFailure = (result) => ({
   stdout: String(result.stdout || "").slice(-4_000),
   stderr: String(result.stderr || "").slice(-4_000),
 });
-function safe(root, input = ".") {
+export function resolveRepositoryPath(root, input = ".") {
   if (typeof input !== "string" || !input.trim())
     fail("invalid_input", "A repository path is required.");
-  const target = resolve(root, input);
-  if (target !== root && !target.startsWith(`${root}${sep}`))
+  const canonicalRoot = resolve(root);
+  const target = resolve(canonicalRoot, input);
+  const within = relative(canonicalRoot, target);
+  if (within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within))
     fail("path_traversal", "Path is outside the approved repository.");
-  if (protectedName.test(relative(root, target)))
+  if (protectedName.test(within))
     fail("protected_path", "Protected repository path.");
   return target;
 }
+const safe = resolveRepositoryPath;
 async function tree(root, dir = root, out = []) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     if ([".git", "node_modules", ".vercel"].includes(entry.name)) continue;
@@ -132,6 +141,11 @@ const def = (tool) => ({
   available: true,
   configurationStatus: "ready",
   ...tool,
+  execute:async(input,context)=>{
+    if(context?.reviewRemediationScope&&!["repo_read_task_owned_local","repo_validate_patch","repo_apply_patch","test_run","test_run_full"].includes(tool.name))fail("review_remediation_precondition_failed","Review-remediation authority cannot execute another Hands tool.",{predicate:"remediation_tool_forbidden",mutationApplied:false});
+    if(context?.fullTestScope&&tool.name!=="test_run_full")fail("full_test_scope_recovery_precondition_failed","Full-test-only authority cannot execute another Hands tool.",{predicate:"full_test_tool_forbidden",mutationApplied:false});
+    return tool.execute(input,context);
+  },
 });
 
 export function registerHandsTools(
@@ -161,6 +175,149 @@ export function registerHandsTools(
       );
     return branch;
   };
+  // Execution authority is carried only in the authenticated handoff context,
+  // never in planner/tool arguments. Recheck the exact local bytes at each
+  // action; the server independently reserves the one-use step before dispatch.
+  const executedScopeSteps=new Set();
+  const exactScope=(left,right)=>recoveryHash(left)===recoveryHash(right);
+  const rejectExecution=(predicate,mutationApplied=false)=>fail("execution_scope_recovery_precondition_failed","The exact owner-approved execution binding could not be proven.",{predicate,mutationApplied});
+  const rejectFullTest=predicate=>fail("full_test_scope_recovery_precondition_failed","The exact owner-approved full-test binding could not be proven.",{predicate,mutationApplied:false});
+  const rejectRemediation=(predicate,details={})=>fail("review_remediation_precondition_failed","The exact owner-approved remediation binding could not be proven.",{predicate,mutationApplied:false,...details});
+  async function remediationContext(tool,input,context){
+    const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null,scope=context?.reviewRemediationScope;
+    if(!scope){if(reviewRemediationDescriptor(durable))rejectRemediation("remediation_context_required");return null;}
+    if(context.executionScope||context.fullTestScope||scope.version!==1||!reviewRemediationDescriptorForClass(scope.recoveryClass)||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.reviewHash,scope.sourcePlanHash,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxProductMutations!==1||scope.maxApplyAttempts!==1||scope.maxFocusedTestRuns!==1||scope.maxFullTestRuns!==1||scope.maxAdditionalAttempts!==0||scope.runtimeMinutes!==15||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectRemediation("remediation_context_binding");
+    const carried=context.repositoryContext;
+    if(carried.version!==1||carried.repository!==repository||carried.branch!==branch||carried.source!=="persistent_worker_handoff"||recoveryRoot(carried.root)!==recoveryRoot(root))rejectRemediation("remediation_repository_context");
+    const paths=scope.requiredPaths,phaseIds=[...(scope.readStepIds||[]),scope.planStepId,scope.validateStepId,scope.applyStepId,scope.focusedStepId,scope.fullTestStepId],types=[...Array(8).fill("read_files"),"plan_repair","validate_patch","apply_patch","run_focused_tests","run_full_tests"],start=Number.parseInt(phaseIds[0],10);
+    if(!Array.isArray(paths)||paths.length!==8||new Set(paths).size!==8||paths.some(path=>typeof path!=="string"||!path||safe(root,path)!==resolve(root,path))||phaseIds.length!==13||phaseIds.some((id,index)=>id!==`${start+index}:${types[index]}`))rejectRemediation("remediation_exact_scope");
+    for(const entries of [scope.beforeEntries,...(scope.afterEntries?[scope.afterEntries]:[])])if(!Array.isArray(entries)||entries.length!==8||new Set(entries.map(item=>item.path)).size!==8||entries.some(item=>!paths.includes(item.path)||item.hashAlgorithm!=="git_sha1"||!SHA.test(item.hash||"")||item.rawHash!==item.hash||!/^[a-f0-9]{64}$/.test(item.contentHash||"")))rejectRemediation("remediation_complete_lineage");
+    const readIndex=scope.readStepIds.indexOf(context.stepId),stepId=tool==="repo_read_task_owned_local"&&readIndex>=0?scope.readStepIds[readIndex]:tool==="repo_validate_patch"?scope.validateStepId:tool==="repo_apply_patch"?scope.applyStepId:tool==="test_run"?scope.focusedStepId:tool==="test_run_full"?scope.fullTestStepId:null;
+    if(!stepId||stepId!==context.stepId)rejectRemediation("remediation_phase_binding");
+    if(durable){if(!storage.listAutonomySteps)rejectRemediation("remediation_steps_required");const{record}=validateReviewRemediationContext(durable,await storage.listAutonomySteps(context.runId),{runtimeVersion:context.runtimeVersion,generationId:context.continuationGenerationId,repository,branch,root,workerId:context.workerId});if(!exactScope(scope,reviewRemediationScopePayload(record)))rejectRemediation("remediation_durable_payload");}
+    const after=tool==="test_run"||tool==="test_run_full",entries=after?scope.afterEntries:scope.beforeEntries;
+    if(readIndex>=0){const entry=scope.beforeEntries.find(item=>item.path===paths[readIndex]),binding=input.binding;if(input.path!==entry.path||input.expectedContentHash!==entry.contentHash||binding?.version!==1||binding.taskId!==scope.taskId||binding.repository!==scope.repository||binding.branch!==scope.branch||binding.currentCommit!==scope.currentCommit||recoveryRoot(binding.workspaceRoot)!==recoveryRoot(scope.workspaceRoot)||binding.runtimeVersion!==scope.runtimeVersion||binding.continuationGenerationId!==scope.continuationGenerationId||binding.sourcePlanStepId!==scope.sourcePlanStepId||binding.sourceApplyStepId!==scope.sourceApplyStepId||binding.sourceApplyFingerprint!==scope.sourceApplyFingerprint)rejectRemediation("remediation_read_binding");}
+    else{
+      if(![scope.planHash,scope.planGenerationId,scope.filesHash,scope.fullPlanHash,scope.coverageHash].every(value=>/^[a-f0-9]{64}$/.test(value||""))||!scope.afterEntries||!Array.isArray(scope.focusedTests)||!scope.focusedTests.length||new Set(scope.focusedTests).size!==scope.focusedTests.length||scope.focusedTests.some(path=>!paths.includes(path)||!/^test\/.+\.test\.js$/.test(path)))rejectRemediation("remediation_accepted_plan_required");
+      if(["repo_validate_patch","repo_apply_patch"].includes(tool)){
+        if(input.branch!==branch||input.currentCommit!==scope.currentCommit||!Array.isArray(input.files)||!input.files.length||input.files.some(item=>!paths.includes(item.path))||recoveryHash(input.files)!==scope.filesHash||input.planProvenance?.generationId!==scope.planGenerationId||input.planProvenance?.reviewRemediation!==true||input.planProvenance?.reviewHash!==scope.reviewHash||input.planProvenance?.continuationGenerationId!==scope.continuationGenerationId)rejectRemediation("remediation_exact_replacements");
+        for(const file of input.files){const entry=scope.afterEntries.find(item=>item.path===file.path),bytes=Buffer.from(file.content,"utf8");if(createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex")!==entry.hash||canonicalContentHash(file.content)!==entry.contentHash)rejectRemediation("remediation_replacement_hash");}
+      }else if(!exactScope(input,tool==="test_run"?{files:scope.focusedTests}:{}))rejectRemediation("remediation_exact_tests");
+    }
+    const key=`review-remediation:${scope.continuationGenerationId}:${stepId}`;
+    if(executedScopeSteps.has(key))rejectRemediation("remediation_local_replay");
+    await verifyRemediationWorkspace(scope,entries,{before:!after});
+    if(after&&Date.parse(scope.runtimeDeadline)-Date.now()<125000)rejectRemediation("remediation_test_runtime_insufficient");
+    return{scope,key,entries};
+  }
+  async function verifyRemediationWorkspace(scope,entries,{before=false,afterRun=false}={}){
+    const reject=predicate=>rejectRemediation(predicate,afterRun?{verificationPhase:"post_run",mutationApplied:null,workspaceDriftObserved:true}:{});
+    try{
+      if(recoveryRoot(await realpath(root))!==recoveryRoot(scope.workspaceRoot))reject("remediation_canonical_workspace");
+      const run=args=>localGit?localGit(root,args):gitCommand(root,args,{runner:commandRunner,environment,gitExecutable});
+      const bound=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:branch,expectedHead:scope.currentCommit,requireClean:true,source:scope.recoveryClass,git:(_root,args)=>run(args)});
+      if(bound.actualHead!==scope.currentCommit)reject("remediation_product_head");
+      const status=await run(["status","--porcelain=v1","--untracked-files=all"]),lines=status.stdout.split(/\r?\n/).filter(Boolean),dirty=lines.map(line=>line.slice(3).replaceAll("\\","/")).sort();
+      if(status.exitCode!==0||lines.some(line=>!line.startsWith(" M ")&&!line.startsWith("?? "))||(before?!exactScope(dirty,[...scope.requiredPaths].sort()):dirty.some(path=>!scope.requiredPaths.includes(path))))reject("remediation_complete_dirty_set");
+      const tip=await run(["ls-remote","--heads","origin",`refs/heads/${branch}`]);if(tip.exitCode!==0||tip.stdout.trim()!==`${scope.currentCommit}\trefs/heads/${branch}`)reject("remediation_live_product_tip");
+      for(const entry of entries){const path=safe(root,entry.path),info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||recoveryRoot(await realpath(path))!==recoveryRoot(path))reject("remediation_regular_file");const bytes=await readFile(path),rawHash=createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");if(rawHash!==entry.hash||canonicalContentHash(bytes.toString("utf8"))!==entry.contentHash)reject("remediation_current_bytes");}
+      if(Date.parse(scope.runtimeDeadline)<=Date.now())reject("remediation_runtime_window");
+    }catch(error){if(error.code==="review_remediation_precondition_failed")throw error;reject("remediation_workspace_unavailable");}
+  }
+  const remediationEvidence=(remediation,entries=remediation.entries)=>({generationId:remediation.scope.continuationGenerationId,reviewHash:remediation.scope.reviewHash,planHash:remediation.scope.planHash||null,entries});
+  async function fullTestContext(tool,input,context){
+    const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null,scope=context?.fullTestScope;
+    if(!scope){if(fullTestScopeDescriptor(durable))rejectFullTest("full_test_context_required");return null;}
+    if(tool!=="test_run_full"||context.executionScope||scope.version!==1||![FULL_TEST_SCOPE_RECOVERY_CLASS,FAILED_FULL_TEST_RETRY_CLASS].includes(scope.recoveryClass)||!exactScope(input,{})||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||scope.fullTestStepId!==context.stepId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.planHash,scope.planGenerationId,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxFullTestRuns!==1||scope.maxProductMutations!==0||scope.maxAdditionalAttempts!==0||scope.runtimeMinutes!==5||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectFullTest("full_test_context_binding");
+    const retry=scope.recoveryClass===FAILED_FULL_TEST_RETRY_CLASS;
+    if(retry?(scope.maxFullTestRetries!==1||!/^\d+:run_full_tests$/.test(scope.failedSourceStepId||"")||!/^[a-f0-9]{64}$/.test(scope.failedFailureFingerprint||"")||!exactScope(scope.dependencyPreflight,{package:"@neondatabase/serverless",cwd:scope.workspaceRoot,required:true,consumesOnFailure:true})):scope.dependencyPreflight!==undefined)rejectFullTest("full_test_dependency_binding");
+    const carried=context.repositoryContext;
+    if(carried.version!==1||carried.repository!==repository||carried.branch!==branch||recoveryRoot(carried.root)!==recoveryRoot(root))rejectFullTest("full_test_repository_context");
+    if(durable){
+      if(!storage.listAutonomySteps)rejectFullTest("full_test_durable_steps_required");
+      const {record}=validateFullTestScopeContext(durable,await storage.listAutonomySteps(context.runId),{runtimeVersion:context.runtimeVersion,generationId:context.continuationGenerationId,repository,branch,root,workerId:context.workerId});
+      if(!exactScope(scope,fullTestScopePayload(record)))rejectFullTest("full_test_durable_payload");
+    }
+    if(!Array.isArray(scope.requiredPaths)||scope.requiredPaths.length<1||scope.requiredPaths.length>8||new Set(scope.requiredPaths).size!==scope.requiredPaths.length||!Array.isArray(scope.entries)||scope.entries.length!==scope.requiredPaths.length||new Set(scope.entries.map(item=>item.path)).size!==scope.requiredPaths.length||scope.entries.some(item=>!scope.requiredPaths.includes(item.path)||item.hashAlgorithm!=="git_sha1"||!SHA.test(item.hash||"")||item.rawHash!==item.hash||!/^[a-f0-9]{64}$/.test(item.contentHash||"")))rejectFullTest("full_test_complete_lineage");
+    const key=`full-test:${scope.continuationGenerationId}:${scope.fullTestStepId}`;
+    if(executedScopeSteps.has(key))rejectFullTest("full_test_local_replay");
+    await verifyFullTestWorkspace(scope);
+    if(Date.parse(scope.runtimeDeadline)-Date.now()<(retry?135000:125000))rejectFullTest("full_test_runtime_insufficient");
+    return{scope,key,retry};
+  }
+  async function verifyFullTestWorkspace(scope,{afterRun=false}={}){
+    const reject=(predicate,observation=false)=>{
+      if(!afterRun)rejectFullTest(predicate);
+      fail("full_test_scope_recovery_precondition_failed","Post-run workspace verification rejected the full-test result.",{predicate,verificationPhase:"post_run",mutationApplied:observation,workspaceDriftObserved:observation});
+    };
+    try{
+      if(recoveryRoot(await realpath(root))!==recoveryRoot(scope.workspaceRoot))reject("full_test_canonical_workspace",true);
+      const run=args=>localGit?localGit(root,args):gitCommand(root,args,{runner:commandRunner,environment});
+      let bound;try{bound=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:branch,expectedHead:scope.currentCommit,requireClean:true,source:"owner_approved_full_test",git:(_root,args)=>run(args)});}catch{reject("full_test_workspace_identity",null);}
+      if(bound.actualHead!==scope.currentCommit)reject("full_test_product_head",true);
+      const status=await run(["status","--porcelain=v1","--untracked-files=all"]),lines=status.stdout.split(/\r?\n/).filter(Boolean),dirty=lines.map(line=>line.slice(3).replaceAll("\\","/")).sort();
+      if(status.exitCode!==0)reject("full_test_complete_dirty_set",null);
+      if(lines.some(line=>!line.startsWith(" M ")&&!line.startsWith("?? "))||!exactScope(dirty,[...scope.requiredPaths].sort()))reject("full_test_complete_dirty_set",true);
+      const remoteTip=await run(["ls-remote","--heads","origin",`refs/heads/${branch}`]);if(remoteTip.exitCode!==0||remoteTip.stdout.trim()!==`${scope.currentCommit}\trefs/heads/${branch}`)reject("full_test_live_product_tip",null);
+      for(const entry of scope.entries){const path=safe(root,entry.path),info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||recoveryRoot(await realpath(path))!==recoveryRoot(path))reject("full_test_regular_file",true);const bytes=await readFile(path),hash=createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");if(hash!==entry.hash||canonicalContentHash(bytes.toString("utf8"))!==entry.contentHash)reject("full_test_current_bytes",true);}
+      if(Date.parse(scope.runtimeDeadline)<=Date.now())reject("full_test_runtime_window");
+    }catch(error){
+      if(!afterRun||error.safeDiagnostics?.verificationPhase==="post_run")throw error;
+      reject("full_test_post_run_unverifiable",null);
+    }
+  }
+  async function executionContext(tool,input,context){
+    const durable=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null;
+    if(context?.fullTestScope||fullTestScopeDescriptor(durable))rejectFullTest("full_test_tool_forbidden");
+    const scope=context?.executionScope;
+    if(!scope){
+      if(durable?.metadata?.executionScopeRecoveryHistory?.length)rejectExecution("execution_context_required");
+      return null;
+    }
+    const stepId=tool==="repo_apply_patch"?scope.applyStepId:tool==="test_run"?scope.testStepId:null;
+    if(!stepId||scope.version!==1||scope.recoveryClass!==EXECUTION_SCOPE_RECOVERY_CLASS||scope.taskId!==context.runId||scope.repository!==repository||scope.branch!==approved()||scope.currentCommit!==context.repositoryContext?.expectedHead||recoveryRoot(scope.workspaceRoot)!==recoveryRoot(root)||scope.runtimeVersion!==context.runtimeVersion||scope.workerId!==context.workerId||scope.continuationGenerationId!==context.continuationGenerationId||stepId!==context.stepId||!scope.approvalId||!SHA.test(scope.runtimeVersion||"")||!SHA.test(scope.currentCommit||"")||!/^persistent-local-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(scope.workerId||"")||![scope.planHash,scope.planGenerationId,scope.filesHash,scope.fullPlanHash,scope.continuationGenerationId].every(value=>/^[a-f0-9]{64}$/.test(value||""))||scope.maxProductMutations!==1||scope.maxApplyAttempts!==1||scope.maxFocusedTestRuns!==1||scope.maxAdditionalAttempts!==0||!Number.isFinite(Date.parse(scope.runtimeDeadline))||Date.parse(scope.runtimeDeadline)<=Date.now())rejectExecution("execution_context_binding");
+    const carried=context.repositoryContext;
+    if(carried.version!==1||carried.repository!==repository||carried.branch!==branch||recoveryRoot(carried.root)!==recoveryRoot(root))rejectExecution("execution_repository_context");
+    if(durable){
+      if(!storage.listAutonomySteps)rejectExecution("execution_durable_steps_required");
+      const steps=await storage.listAutonomySteps(context.runId);
+      const {record}=validateExecutionScopeContext(durable,steps,{runtimeVersion:context.runtimeVersion,generationId:context.continuationGenerationId,repository,branch,root,workerId:context.workerId});
+      if(!exactScope(scope,executionScopePayload(record)))rejectExecution("execution_durable_payload");
+    }
+    const paths=scope.requiredPaths;
+    if(!Array.isArray(paths)||!paths.length||paths.length>8||new Set(paths).size!==paths.length||!Array.isArray(scope.focusedTests)||!scope.focusedTests.length||new Set(scope.focusedTests).size!==scope.focusedTests.length||scope.focusedTests.some(path=>!paths.includes(path)||!/^test\/[a-z0-9._/-]+\.test\.js$/i.test(path)))rejectExecution("execution_exact_scope");
+    for(const entries of [scope.beforeEntries,scope.afterEntries])if(!Array.isArray(entries)||entries.length!==paths.length||new Set(entries.map(item=>item.path)).size!==paths.length||entries.some(item=>!paths.includes(item.path)||item.hashAlgorithm!=="git_sha1"||!SHA.test(item.hash||"")||item.rawHash!==item.hash||!/^[a-f0-9]{64}$/.test(item.contentHash||"")))rejectExecution("execution_exact_evidence");
+    if(tool==="repo_apply_patch"){
+      if(input.branch!==branch||input.currentCommit!==scope.currentCommit||!exactScope(input.files?.map(item=>item.path).sort(),[...paths].sort())||recoveryHash(input.files)!==scope.filesHash||input.planProvenance?.generationId!==scope.planGenerationId||input.planProvenance?.planningOnly!==true)rejectExecution("execution_exact_replacements");
+      for(const file of input.files){const after=scope.afterEntries.find(item=>item.path===file.path),bytes=Buffer.from(file.content,"utf8"),hash=createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");if(hash!==after.hash||canonicalContentHash(file.content)!==after.contentHash)rejectExecution("execution_replacement_hash");}
+    }else if(!exactScope(input,{files:scope.focusedTests}))rejectExecution("execution_exact_focused_tests");
+    const key=`${scope.continuationGenerationId}:${stepId}`;
+    if(executedScopeSteps.has(key))rejectExecution("execution_local_replay");
+    await verifyExecutionWorkspace(scope,tool==="repo_apply_patch"?scope.beforeEntries:scope.afterEntries);
+    return{scope,key};
+  }
+  async function verifyExecutionWorkspace(scope,entries){
+    const reject=predicate=>rejectExecution(predicate,entries===scope.afterEntries);
+    if(recoveryRoot(await realpath(root))!==recoveryRoot(scope.workspaceRoot))reject("execution_canonical_workspace");
+    let bound;
+    try{bound=await resolveRepositoryContext({root,expectedRepository:repository,expectedBranch:branch,expectedHead:scope.currentCommit,requireClean:true,source:"owner_approved_execution",git:(exactRoot,args)=>localGit?localGit(exactRoot,args):gitCommand(exactRoot,args,{runner:commandRunner,environment})});}catch{reject("execution_workspace_identity");}
+    if(bound.actualHead!==scope.currentCommit)reject("execution_product_head");
+    const run=args=>localGit?localGit(root,args):gitCommand(root,args,{runner:commandRunner,environment});
+    const status=await run(["status","--porcelain=v1","--untracked-files=all"]),lines=status.stdout.split(/\r?\n/).filter(Boolean),dirty=lines.map(line=>line.slice(3).replaceAll("\\","/")).sort();
+    const before=entries===scope.beforeEntries;
+    // An exact approved replacement may restore a tracked file to HEAD. Its
+    // bytes remain proven below, while no new dirty or staged path is allowed.
+    if(status.exitCode!==0||lines.some(line=>!line.startsWith(" M ")&&!line.startsWith("?? "))||(before?!exactScope(dirty,[...scope.requiredPaths].sort()):dirty.some(path=>!scope.requiredPaths.includes(path))))reject("execution_complete_dirty_set");
+    const remoteTip=await run(["ls-remote","--heads","origin",`refs/heads/${branch}`]);
+    if(remoteTip.exitCode!==0||remoteTip.stdout.trim()!==`${scope.currentCommit}\trefs/heads/${branch}`)reject("execution_live_product_tip");
+    for(const entry of entries){
+      const path=safe(root,entry.path),info=await lstat(path);
+      if(!info.isFile()||info.isSymbolicLink()||recoveryRoot(await realpath(path))!==recoveryRoot(path))reject("execution_regular_file");
+      const bytes=await readFile(path),hash=createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");
+      if(hash!==entry.hash||canonicalContentHash(bytes.toString("utf8"))!==entry.contentHash)reject("execution_current_bytes");
+    }
+    if(Date.parse(scope.runtimeDeadline)<=Date.now())reject("execution_runtime_window");
+  }
   const audit = async (tool, result, context = {}, started = Date.now()) => {
     if (storage && ownerId)
       await storage.appendActivity({
@@ -828,11 +985,49 @@ export function registerHandsTools(
   );
   registry.register(
     def({
-      name: "repo_apply_patch",
-      description:
-        "Atomically create or replace multiple validated files without committing or pushing.",
-      capability: "write",
-      riskLevel: RISK_LEVELS.LOW_RISK_WRITE,
+      name: "repo_read_task_owned_local",
+      description: "Read one complete, hash-bound task-owned file from the controlled local workspace.",
+      inputSchema: schema({path:text,expectedContentHash:text,binding:{type:"object"}},["path","expectedContentHash","binding"]),
+      async execute({path,expectedContentHash,binding},context){
+        const remediation=await remediationContext("repo_read_task_owned_local",{path,expectedContentHash,binding},context);
+        const started=Date.now(),repositoryContext=context?.repositoryContext,canonical=value=>String(value||"").replaceAll("\\","/").replace(/\/$/,"").toLowerCase(),valid=repositoryContext?.source==="persistent_worker_handoff"&&context?.runId===binding?.taskId&&binding?.version===1&&binding.repository===repository&&binding.branch===branch&&binding.currentCommit===repositoryContext.expectedHead&&canonical(binding.workspaceRoot)===canonical(root)&&canonical(repositoryContext.root)===canonical(root)&&typeof binding.sourcePlanStepId==="string"&&/^\d+:plan_(implementation|repair)$/.test(binding.sourcePlanStepId)&&typeof binding.sourceApplyStepId==="string"&&/^\d+:apply_patch$/.test(binding.sourceApplyStepId)&&/^[a-f0-9]{64}$/.test(binding.sourceApplyFingerprint||"")&&typeof binding.continuationGenerationId==="string"&&binding.continuationGenerationId===context?.continuationGenerationId&&/^[a-f0-9]{64}$/.test(expectedContentHash||"");
+        if(!valid)fail("task_owned_local_read_unproven","The task-owned local read binding is invalid.");
+        const target=safe(root,path),content=await readFile(target,"utf8").catch(()=>fail("task_owned_local_read_unavailable","The bound task-owned local file is unavailable."));
+        if(content.length>200000)fail("task_owned_local_read_too_large","The bound task-owned local file exceeds the complete-read limit.");
+        const contentHash=canonicalContentHash(content);
+        if(contentHash!==expectedContentHash)fail("task_owned_local_read_drift","The bound task-owned local file changed after attestation.");
+        const status=await gitCommand(root,["status","--porcelain=v1","--",path],{runner:commandRunner,environment,gitExecutable});
+        if(status.exitCode!==0||!String(status.stdout||"").trim())fail("task_owned_local_read_unproven","The bound path is not current task-owned workspace output.");
+        if(remediation){
+          executedScopeSteps.add(remediation.key);
+          const run=args=>localGit?localGit(root,args):gitCommand(root,args,{runner:commandRunner,environment,gitExecutable});
+          const listed=await run(["ls-tree","--name-only",binding.currentCommit,"--",path]);
+          if(listed.exitCode!==0||!["",path].includes(listed.stdout.trim()))rejectRemediation("remediation_baseline_path");
+          let baselineContent=null;
+          if(listed.stdout.trim()){
+            const baseline=await run(["show",`${binding.currentCommit}:${path}`]);
+            if(baseline.exitCode!==0||baseline.stdout.length>=100000)rejectRemediation("remediation_baseline_complete_read");
+            baselineContent=baseline.stdout;
+          }
+          await verifyRemediationWorkspace(remediation.scope,remediation.scope.beforeEntries,{before:true,afterRun:true});
+          const result={ok:true,path,content,contentHash,truncated:false,source:"task_owned_local_workspace",baselineContent,baselineCommit:binding.currentCommit,baselineContentHash:baselineContent===null?null:canonicalContentHash(baselineContent),reviewRemediationEvidence:remediationEvidence(remediation)};
+          if(JSON.stringify(result).length>190000)rejectRemediation("remediation_complete_read_result_size");
+          return audit("repo_read_task_owned_local",result,context,started);
+        }
+        return audit("repo_read_task_owned_local",{ok:true,path,content,contentHash,truncated:false,source:"task_owned_local_workspace"},context,started);
+      },
+    }),
+  );
+  // Preflight and mutation deliberately share every source/lineage/syntax check.
+  // The read-only variant returns before creating any product-directory temp file.
+  for (const preflightOnly of [false, true]) registry.register(
+    def({
+      name: preflightOnly ? "repo_validate_patch" : "repo_apply_patch",
+      description: preflightOnly
+        ? "Validate exact patch syntax, current workspace bytes and task lineage without applying changes."
+        : "Atomically create or replace multiple validated files without committing or pushing.",
+      capability: preflightOnly ? "read" : "write",
+      riskLevel: preflightOnly ? RISK_LEVELS.READ_ONLY : RISK_LEVELS.LOW_RISK_WRITE,
       branchBound: true,
       autonomous: true,
       available: !remote,
@@ -855,10 +1050,33 @@ export function registerHandsTools(
             item.content.length > 250_000
           )
             fail("invalid_input", "Invalid replacement content.");
+          const contentIssue=implementationContentIssue(item.path,item.content);
+          if(contentIssue)fail("implementation_content_invalid","Replacement content is not a complete file payload.",{path:item.path,validationCode:contentIssue,contentHash:implementationContentHash(item.content),mutationApplied:false});
         }
       },
-      async execute({ files, currentCommit, planProvenance }, context) {
+      async execute({ files, currentCommit, planProvenance, branch }, context) {
         const started = Date.now();
+        const remediation=await remediationContext(preflightOnly?"repo_validate_patch":"repo_apply_patch",{files,currentCommit,planProvenance,branch},context);
+        const execution=preflightOnly||remediation?null:await executionContext("repo_apply_patch",{files,currentCommit,planProvenance,branch},context);
+        const durableTask=context?.runId&&storage?.getAutonomyTask&&ownerId?await storage.getAutonomyTask(context.runId,ownerId):null;
+        if(!preflightOnly&&!execution&&!remediation&&durableTask?.metadata?.planningScopeRecoveryHistory?.length)
+          fail("planning_scope_mutation_forbidden", "The durable task is bound to planning-only authority.", {mutationApplied:false});
+        if (!preflightOnly && !execution && !remediation && planProvenance?.planningOnly === true)
+          fail("planning_scope_mutation_forbidden", "This generation authorizes pre-mutation validation only.", {mutationApplied:false});
+        if (preflightOnly && (!currentCommit || !planProvenance))
+          fail("implementation_plan_provenance_missing", "Preflight requires the exact task-bound implementation plan.", {mutationApplied:false});
+        const planningScope=planProvenance?.planningScope;
+        if(preflightOnly&&planProvenance?.planningOnly===true){
+          const canonical=value=>String(value||"").replaceAll("\\","/").replace(/\/+$/,"").toLowerCase();
+          if(!planningScope||planningScope.taskId!==context?.runId||planningScope.repository!==repository||planningScope.branch!==branch||planningScope.currentCommit!==currentCommit||canonical(planningScope.workspaceRoot)!==canonical(root)||planningScope.runtimeVersion!==context?.runtimeVersion||planningScope.workerId!==context?.workerId||planningScope.continuationGenerationId!==context?.continuationGenerationId||!Number.isFinite(Date.parse(planningScope.deadline))||Date.parse(planningScope.deadline)<=Date.now()||!Array.isArray(planningScope.requiredPaths)||!Array.isArray(planningScope.readProofs)||planningScope.readProofs.length!==planningScope.requiredPaths.length||new Set(planningScope.readProofs.map(item=>item.path)).size!==planningScope.requiredPaths.length||files.some(item=>!planningScope.requiredPaths.includes(item.path)))fail("planning_scope_precondition_failed","Local planning context does not match the exact owner-bound preflight.",{mutationApplied:false});
+          for(const proof of planningScope.readProofs){
+            const bytes=await readFile(safe(root,proof.path));
+            const rawHash=createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");
+            if(!planningScope.requiredPaths.includes(proof.path)||rawHash!==proof.rawHash||canonicalContentHash(bytes.toString("utf8"))!==proof.contentHash)fail("planning_scope_precondition_failed","Current product bytes drifted after owner-authorized planning.",{path:proof.path,mutationApplied:false});
+          }
+        }
+        const authorizedTaskOwnedDirtyPaths=new Set();let authorizedTaskOwnedDirtyLineage=null;
+        for(const item of files){if(!isJavaScriptImplementationPath(item.path))continue;const syntaxPath=join(tmpdir(),`.nova-${randomUUID()}${item.path.toLowerCase().endsWith(".cjs")?".cjs":".mjs"}`);try{await writeFile(syntaxPath,item.content,"utf8");await exec(process.execPath,["--check",syntaxPath],{maxBuffer:64_000,windowsHide:true});}catch(error){fail("implementation_content_invalid","Replacement JavaScript failed syntax validation.",{path:item.path,validationCode:"javascript_syntax_invalid",contentHash:implementationContentHash(item.content),exitCode:Number.isInteger(error?.code)?error.code:1,mutationApplied:false});}finally{await rm(syntaxPath,{force:true}).catch(()=>{});}}
         if (currentCommit) {
           if (!/^[a-f0-9]{40}$/.test(currentCommit))
             fail("invalid_input", "Invalid bound commit.");
@@ -871,13 +1089,16 @@ export function registerHandsTools(
           if (!repositoryContext.clean) {
             const statusResult=await (localGit?localGit(root,["status","--porcelain=v1"]):gitCommand(root,["status","--porcelain=v1"],{runner:commandRunner,environment}));
             const dirtyPaths=statusResult.exitCode===0?statusResult.stdout.split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replaceAll("\\","/")).sort():[];
-            const plannedPaths=files.map(item=>item.path).sort(),preconditions=new Map((planProvenance?.mutationPreconditions||[]).map(item=>[item.path,item]));
+            const plannedPaths=files.map(item=>item.path).sort(),preconditions=new Map((planProvenance?.mutationPreconditions||[]).map(item=>[item.path,item])),lineage=planProvenance?.taskOwnedDirtyLineage,lineageEntries=new Map((lineage?.entries||[]).map(item=>[item.path,item]));
             const exactPlan=planProvenance?.version===IMPLEMENTATION_PLAN_PROVENANCE_VERSION&&planProvenance.taskId===context?.runId&&planProvenance.currentCommit===currentCommit&&preconditions.size===files.length;
-            const exactPaths=dirtyPaths.length>0&&dirtyPaths.length<=plannedPaths.length&&dirtyPaths.every(path=>plannedPaths.includes(path));
-            const exactContents=exactPlan&&files.every(item=>item.operation==="replace"&&preconditions.get(item.path)?.operation==="replace"&&preconditions.get(item.path)?.expectedContentHash===canonicalContentHash(item.expectedContent));
+            const subsetRepair=plannedPaths.length<dirtyPaths.length;
+            const exactPaths=dirtyPaths.length>0&&dirtyPaths.length===lineageEntries.size&&dirtyPaths.every(path=>lineageEntries.has(path))&&plannedPaths.length>0&&(!subsetRepair||plannedPaths.every(path=>lineageEntries.has(path)));
+            const exactLineage=lineage?.version===1&&lineage.taskId===context?.runId&&lineage.repository===repository&&lineage.branch===branch&&lineage.currentCommit===currentCommit&&/^\d+:(plan_implementation|plan_repair)$/.test(lineage.sourcePlanStepId||"")&&/^\d+:apply_patch$/.test(lineage.sourceApplyStepId||"")&&(!subsetRepair||/^\d+:(plan_implementation|plan_repair)$/.test(lineage.activePlanStepId||""))&&lineageEntries.size===lineage.entries.length;
+            const exactContents=exactPlan&&exactLineage&&dirtyPaths.every(path=>/^[a-f0-9]{64}$/.test(lineageEntries.get(path)?.contentHash||""));
             let currentContentsMatch=exactContents;
-            if(currentContentsMatch)for(const item of files){try{if(canonicalContentHash(await readFile(safe(root,item.path),"utf8"))!==canonicalContentHash(item.expectedContent)){currentContentsMatch=false;break;}}catch{currentContentsMatch=false;break;}}
+            if(currentContentsMatch)for(const path of dirtyPaths){try{if(canonicalContentHash(await readFile(safe(root,path),"utf8"))!==lineageEntries.get(path).contentHash){currentContentsMatch=false;break;}}catch{currentContentsMatch=false;break;}}
             if(!exactPaths||!currentContentsMatch)fail("working_tree_dirty", "Local checkout must be clean or exactly match the active task-owned patch preconditions.",{dirtyFileCount:dirtyPaths.length,plannedFileCount:plannedPaths.length,dirtyPaths,plannedPaths,exactPlan,exactPaths,currentContentsMatch,taskOwnedDirtyProven:false});
+            for(const path of dirtyPaths)authorizedTaskOwnedDirtyPaths.add(path);authorizedTaskOwnedDirtyLineage=lineage;
           }
         }
         const originals = [];
@@ -912,11 +1133,12 @@ export function registerHandsTools(
               `Create target already exists: ${item.path}.`,
               { path: item.path, requiredAction: "read_before_modify" },
             );
+          const lineageHash=authorizedTaskOwnedDirtyPaths.has(item.path)?planProvenance?.taskOwnedDirtyLineage?.entries?.find(entry=>entry.path===item.path)?.contentHash:null;
           if (
             operation === "replace" &&
             (current === null ||
               !("expectedContent" in item) ||
-              canonicalContentHash(item.expectedContent) !== canonicalContentHash(current))
+              (canonicalContentHash(item.expectedContent) !== canonicalContentHash(current)&&lineageHash!==canonicalContentHash(current)))
           )
             fail(
               "patch_conflict",
@@ -925,7 +1147,18 @@ export function registerHandsTools(
             );
           originals.push({ path: item.path, current });
         }
+        if (preflightOnly){
+          if(remediation){executedScopeSteps.add(remediation.key);await verifyRemediationWorkspace(remediation.scope,remediation.scope.beforeEntries,{before:true,afterRun:true});}
+          return audit("repo_validate_patch", {
+          ok:true, preMutationValidated:true, mutationApplied:false,
+          files:files.map(item=>item.path), currentCommit,
+          planGenerationId:planProvenance.generationId,
+          ...(remediation?{reviewRemediationEvidence:remediationEvidence(remediation)}:{}),
+        }, context, started);
+        }
         const temps = [];
+        if(execution){await verifyExecutionWorkspace(execution.scope,execution.scope.beforeEntries);if(executedScopeSteps.has(execution.key))rejectExecution("execution_local_replay");executedScopeSteps.add(execution.key);}
+        if(remediation){await verifyRemediationWorkspace(remediation.scope,remediation.scope.beforeEntries,{before:true});if(executedScopeSteps.has(remediation.key))rejectRemediation("remediation_local_replay");executedScopeSteps.add(remediation.key);}
         try {
           for (const item of files) {
             const target = safe(root, item.path);
@@ -951,12 +1184,19 @@ export function registerHandsTools(
           }
           throw error;
         }
+        let taskOwnedDirtyLineage;
+        if(authorizedTaskOwnedDirtyLineage){const entries=[];for(const entry of authorizedTaskOwnedDirtyLineage.entries){const content=await readFile(safe(root,entry.path),"utf8");entries.push({path:entry.path,contentHash:canonicalContentHash(content)});}taskOwnedDirtyLineage={version:1,taskId:context.runId,repository,branch,currentCommit,sourcePlanStepId:authorizedTaskOwnedDirtyLineage.activePlanStepId||authorizedTaskOwnedDirtyLineage.sourcePlanStepId,sourceApplyStepId:context.stepId,entries:entries.sort((a,b)=>a.path.localeCompare(b.path))};}
+        if(execution)await verifyExecutionWorkspace(execution.scope,execution.scope.afterEntries);
+        if(remediation)await verifyRemediationWorkspace(remediation.scope,remediation.scope.afterEntries,{afterRun:true});
         return audit(
           "repo_apply_patch",
           {
             ok: true,
             files: files.map((x) => x.path),
             changedFiles: files.length,
+            ...(taskOwnedDirtyLineage?{taskOwnedDirtyLineage}:{}),
+            ...(execution?{executionScopeEvidence:{generationId:execution.scope.continuationGenerationId,planHash:execution.scope.planHash,entries:execution.scope.afterEntries}}:{}),
+            ...(remediation?{reviewRemediationEvidence:remediationEvidence(remediation,remediation.scope.afterEntries)}:{}),
           },
           context,
           started,
@@ -986,6 +1226,7 @@ export function registerHandsTools(
             ),
         async execute(input, context) {
           const started = Date.now();
+          const remediation=await remediationContext(full?"test_run_full":"test_run",input,context),fullTest=remediation?null:await fullTestContext(full?"test_run_full":"test_run",input,context),execution=remediation||fullTest?null:await executionContext(full?"test_run_full":"test_run",input,context);
           const timeoutMs = Math.max(
             1000,
             Math.min(180_000, input.timeoutMs || 120_000),
@@ -1029,20 +1270,67 @@ export function registerHandsTools(
               ...input.files,
             ];
           }
+          if(execution){if(executedScopeSteps.has(execution.key))rejectExecution("execution_local_replay");executedScopeSteps.add(execution.key);}
+          if(fullTest){if(executedScopeSteps.has(fullTest.key))rejectFullTest("full_test_local_replay");executedScopeSteps.add(fullTest.key);}
+          if(remediation){if(executedScopeSteps.has(remediation.key))rejectRemediation("remediation_local_replay");executedScopeSteps.add(remediation.key);}
+          const testEnvironment=full&&gitExecutable?(()=>{const child={...process.env,...environment};for(const key of Object.keys(child))if(key.toLowerCase()==="path")delete child[key];const inherited=environment.PATH||environment.Path||process.env.PATH||process.env.Path||"";child[process.platform==="win32"?"Path":"PATH"]=[dirname(gitExecutable),inherited].filter(Boolean).join(delimiter);return child;})():undefined;
+          let dependencyPreflight=null;
+          if(full&&reviewRemediationDescriptorForClass(remediation?.scope.recoveryClass)?.dependencyPreflight===true){
+            // This phase's single-use reservation is already durable. Resolve
+            // the existing locked direct dependencies without installing,
+            // evaluating packages, or changing the manifest/lock/workspace.
+            const source=`import {readFile,access} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+const manifest=JSON.parse(await readFile('package.json','utf8'));
+const lock=JSON.parse(await readFile('package-lock.json','utf8'));
+const names=Object.keys({...manifest.dependencies,...manifest.devDependencies}).sort(),packages=[];
+for(const name of names){
+  const expected=lock.packages?.['node_modules/'+name]?.version||lock.dependencies?.[name]?.version;
+  if(typeof expected!=='string'||!expected)throw new Error('Missing locked dependency');
+  const installed=JSON.parse(await readFile('node_modules/'+name+'/package.json','utf8'));
+  if(installed.version!==expected)throw new Error('Locked dependency version mismatch');
+  await access(fileURLToPath(import.meta.resolve(name)));
+  packages.push({name,version:expected});
+}
+process.stdout.write(JSON.stringify({resolved:true,packages}));`;
+            let preflight,resolution;
+            try{preflight=await command(root,process.execPath,["--input-type=module","--eval",source],{timeoutMs:10000,runner:commandRunner,environment:testEnvironment});if(preflight.exitCode===0)resolution=JSON.parse(preflight.stdout);}catch(error){preflight={exitCode:1,spawnErrorCode:error.code||"dependency_resolution_failed"};}
+            await verifyRemediationWorkspace(remediation.scope,remediation.scope.afterEntries,{afterRun:true});
+            if(preflight.exitCode!==0||resolution?.resolved!==true||!Array.isArray(resolution.packages))fail("dependency_provisioning_required","The existing locked dependencies must be available in the exact product worker cwd before full tests.",{operation:"worker_cwd_locked_dependency_resolution",workspaceRoot:remediation.scope.workspaceRoot,resolved:false,npmInvoked:false,consumesOnFailure:true,mutationApplied:false,exitCode:preflight.exitCode,errorCode:preflight.spawnErrorCode||"dependency_resolution_failed"});
+            dependencyPreflight={cwd:remediation.scope.workspaceRoot,resolved:true,packages:resolution.packages};
+            if(Date.parse(remediation.scope.runtimeDeadline)-Date.now()<125000)rejectRemediation("remediation_test_runtime_insufficient");
+          }
+          if(fullTest?.retry){
+            // The atomic claim and local reservation precede this preflight:
+            // failure consumes this one use rather than permitting silent retry.
+            let preflight;
+            try{preflight=await command(root,process.execPath,["--input-type=module","--eval","import {access} from 'node:fs/promises';import {fileURLToPath} from 'node:url';await access(fileURLToPath(import.meta.resolve('@neondatabase/serverless')));"],{timeoutMs:10000,runner:commandRunner,environment:testEnvironment});}catch(error){preflight={exitCode:1,spawnErrorCode:error.code||"dependency_resolution_failed"};}
+            await verifyFullTestWorkspace(fullTest.scope,{afterRun:true});
+            if(preflight.exitCode!==0)fail("dependency_provisioning_required","Provision @neondatabase/serverless in the exact product worker cwd before requesting another bounded retry.",{operation:"worker_cwd_dependency_resolution",dependency:"@neondatabase/serverless",workspaceRoot:fullTest.scope.workspaceRoot,resolved:false,npmInvoked:false,consumesOnFailure:true,mutationApplied:false,exitCode:preflight.exitCode,errorCode:preflight.spawnErrorCode||"dependency_resolution_failed"});
+            dependencyPreflight={package:"@neondatabase/serverless",cwd:fullTest.scope.workspaceRoot,resolved:true};
+            if(Date.parse(fullTest.scope.runtimeDeadline)-Date.now()<125000)rejectFullTest("full_test_runtime_insufficient");
+          }
           const result = await command(root, file, args, {
             timeoutMs,
             runner: commandRunner,
-            environment: full&&gitExecutable?(()=>{const child={...process.env,...environment};for(const key of Object.keys(child))if(key.toLowerCase()==="path")delete child[key];const inherited=environment.PATH||environment.Path||process.env.PATH||process.env.Path||"";child[process.platform==="win32"?"Path":"PATH"]=[dirname(gitExecutable),inherited].filter(Boolean).join(delimiter);return child;})():undefined,
+            environment:testEnvironment,
           });
           const completeOutput = `${result.stdout}\n${result.stderr}`.trim(),
             outputLimit = 20_000,
             output = completeOutput.slice(-outputLimit);
+          if(execution)await verifyExecutionWorkspace(execution.scope,execution.scope.afterEntries);
+          if(fullTest)await verifyFullTestWorkspace(fullTest.scope,{afterRun:true});
+          if(remediation)await verifyRemediationWorkspace(remediation.scope,remediation.scope.afterEntries,{afterRun:true});
           const value = {
             ok: result.exitCode === 0,
             exitCode: result.exitCode,
             durationMs: result.durationMs,
             output,
             outputTruncated: completeOutput.length > outputLimit,
+            ...(execution?{executionScopeEvidence:{generationId:execution.scope.continuationGenerationId,planHash:execution.scope.planHash,entries:execution.scope.afterEntries}}:{}),
+            ...(fullTest?{fullTestScopeEvidence:{generationId:fullTest.scope.continuationGenerationId,planHash:fullTest.scope.planHash,entries:fullTest.scope.entries}}:{}),
+            ...(remediation?{reviewRemediationEvidence:remediationEvidence(remediation,remediation.scope.afterEntries)}:{}),
+            ...(dependencyPreflight?{dependencyPreflight}:{}),
           };
           if (result.spawnErrorCode)
             value.error = {
@@ -1058,7 +1346,7 @@ export function registerHandsTools(
             value.error = {
               code: "test_failed",
               message: "Allowlisted tests failed.",
-              evidence: parseTestFailure({root,runner:"node_test",command:full?"npm:test":"node:test:focused",exitCode:result.exitCode,signal:result.signal,stdout:result.stdout,stderr:result.stderr,durationMs:result.durationMs}),
+              evidence: {...parseTestFailure({root,runner:"node_test",command:full?"npm:test":"node:test:focused",exitCode:result.exitCode,signal:result.signal,stdout:result.stdout,stderr:result.stderr,durationMs:result.durationMs}),...(remediation?{reviewRemediationEvidence:value.reviewRemediationEvidence}:{}),...(fullTest?{fullTestScopeEvidence:value.fullTestScopeEvidence}:{}),...(dependencyPreflight?{dependencyPreflight}:{})},
             };
           return audit(name, value, context, started);
         },

@@ -44,10 +44,14 @@ import {
 } from "../autonomy/task-migration.js";
 import {
   authorizeLocalWorker,
+  verifyLocalWorkerWorkspaceProof,
   HandoffError,
 } from "../autonomy/local-worker-handoff.js";
 import { WorkerError } from "../autonomy/worker-runtime.js";
 import { SelfDevelopmentError } from "../autonomy/self-development.js";
+import { DeveloperSessionError } from "../autonomy/developer-session-adapter.js";
+import { DeveloperSessionSmokeError } from "../autonomy/developer-session-smoke.js";
+import { DeveloperWorkspaceHandoffError } from "../autonomy/developer-workspace-handoff.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -58,6 +62,18 @@ function sendJson(response, statusCode, payload) {
   response.setHeader("Cache-Control", "no-store");
   response.setHeader("Referrer-Policy", "no-referrer");
   response.end(JSON.stringify(payload));
+}
+
+function sendArtifact(response, artifact) {
+  response.statusCode = 200;
+  response.setHeader("Content-Type", "application/octet-stream");
+  response.setHeader("Content-Length", String(artifact.content.length));
+  response.setHeader("Content-Disposition", `attachment; filename="${artifact.path.split("/").pop().replace(/[^A-Za-z0-9._-]/g, "_")}"`);
+  response.setHeader("X-Nova-Artifact-SHA256", artifact.sha256);
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("Cache-Control", "private, no-store");
+  response.setHeader("Referrer-Policy", "no-referrer");
+  response.end(artifact.content);
 }
 
 function setSpeechHeaders(response, model) {
@@ -168,6 +184,8 @@ export function createApi({
   speakerEngines,
   speakerAssertions,
   familiarityConsent,
+  developerSessionSmoke,
+  developerWorkspaceHandoff,
   logger = console,
 }) {
   const recognitionEngines =
@@ -238,6 +256,178 @@ export function createApi({
           logger.info("Nova authenticated POST probe", { requestId });
           sendJson(response, 200, { success: true, requestId });
           return;
+        }
+
+        if (
+          developerSessionSmoke &&
+          request.method === "POST" &&
+          pathname === "/api/admin/developer-sessions/smoke/start"
+        ) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          sendJson(response, 201, {
+            session: await developerSessionSmoke.start(
+              await readJsonBody(request, config.maxBodyBytes),
+            ),
+          });
+          return;
+        }
+        if (
+          developerWorkspaceHandoff &&
+          request.method === "POST" &&
+          pathname === "/api/admin/developer-sessions/real/microphone/verify-workspace"
+        ) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          sendJson(response, 201, {
+            session: await developerWorkspaceHandoff.verify(
+              await readJsonBody(request, config.developerWorkspaceHandoffMaxBodyBytes || 3 * 1024 * 1024),
+            ),
+          });
+          return;
+        }
+        if (
+          developerWorkspaceHandoff &&
+          request.method === "POST" &&
+          pathname === "/api/admin/developer-sessions/real/microphone/original-console-recovery/start"
+        ) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          sendJson(response, 201, {
+            session: await developerWorkspaceHandoff.startOriginalConsoleRecovery(
+              await readJsonBody(request, config.developerWorkspaceHandoffMaxBodyBytes || 3 * 1024 * 1024),
+            ),
+          });
+          return;
+        }
+        if (
+          developerWorkspaceHandoff &&
+          request.method === "POST" &&
+          pathname === "/api/admin/developer-sessions/real/microphone/recovery/start"
+        ) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          sendJson(response, 201, {
+            session: await developerWorkspaceHandoff.startRecovery(
+              await readJsonBody(request, config.developerWorkspaceHandoffMaxBodyBytes || 3 * 1024 * 1024),
+            ),
+          });
+          return;
+        }
+        if (
+          developerWorkspaceHandoff &&
+          request.method === "POST" &&
+          pathname === "/api/admin/developer-sessions/real/microphone/start"
+        ) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          sendJson(response, 201, {
+            session: await developerWorkspaceHandoff.start(
+              await readJsonBody(request, config.developerWorkspaceHandoffMaxBodyBytes || 3 * 1024 * 1024),
+            ),
+          });
+          return;
+        }
+        const realDeveloperArtifactMatch = pathname.match(
+          /^\/api\/admin\/developer-sessions\/real\/([^/]+)\/artifacts\/([^/]+)\/verify$/,
+        );
+        if (developerWorkspaceHandoff && request.method === "POST" && realDeveloperArtifactMatch) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          const input = await readJsonBody(request, config.maxBodyBytes);
+          sendJson(response, 200, {
+            artifact: await developerWorkspaceHandoff.verifyArtifact(
+              decodeURIComponent(realDeveloperArtifactMatch[1]),
+              decodeURIComponent(realDeveloperArtifactMatch[2]),
+              input?.sha256,
+            ),
+          });
+          return;
+        }
+        const realDeveloperArtifactDownloadMatch = pathname.match(
+          /^\/api\/admin\/developer-sessions\/real\/([^/]+)\/artifacts\/([^/]+)\/download$/,
+        );
+        if (developerWorkspaceHandoff && request.method === "POST" && realDeveloperArtifactDownloadMatch) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          const input = await readJsonBody(request, config.maxBodyBytes);
+          sendArtifact(response, await developerWorkspaceHandoff.downloadArtifact(
+            decodeURIComponent(realDeveloperArtifactDownloadMatch[1]),
+            decodeURIComponent(realDeveloperArtifactDownloadMatch[2]),
+            input?.sha256,
+          ));
+          return;
+        }
+        const realDeveloperSessionMatch = pathname.match(
+          /^\/api\/admin\/developer-sessions\/real\/([^/]+)(?:\/(resume|cancel|reconcile|materialize-dependencies|lifecycle))?$/,
+        );
+        if (developerWorkspaceHandoff && realDeveloperSessionMatch) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          const sessionId = decodeURIComponent(realDeveloperSessionMatch[1]);
+          const action = realDeveloperSessionMatch[2] || null;
+          if (request.method === "GET" && !action) {
+            sendJson(response, 200, { session: await developerWorkspaceHandoff.get(sessionId) });
+            return;
+          }
+          if (request.method === "GET" && action === "lifecycle") {
+            sendJson(response, 200, { lifecycle: await developerWorkspaceHandoff.inspectLifecycle(sessionId) });
+            return;
+          }
+          if (request.method === "POST" && action === "resume") {
+            sendJson(response, 200, { session: await developerWorkspaceHandoff.resume(sessionId, await readJsonBody(request, config.maxBodyBytes)) });
+            return;
+          }
+          if (request.method === "POST" && action === "cancel") {
+            await readJsonBody(request, config.maxBodyBytes);
+            sendJson(response, 200, { session: await developerWorkspaceHandoff.cancel(sessionId) });
+            return;
+          }
+          if (request.method === "POST" && action === "reconcile") {
+            await readJsonBody(request, config.maxBodyBytes);
+            sendJson(response, 200, { session: await developerWorkspaceHandoff.reconcile(sessionId) });
+            return;
+          }
+          if (request.method === "POST" && action === "materialize-dependencies") {
+            sendJson(response, 200, { session: await developerWorkspaceHandoff.materializeDependencies(
+              sessionId,
+              await readJsonBody(request, config.developerWorkspaceHandoffMaxBodyBytes || 3 * 1024 * 1024),
+            ) });
+            return;
+          }
+        }
+        const developerSessionMatch = pathname.match(
+          /^\/api\/admin\/developer-sessions\/([^/]+)(?:\/(resume|cancel))?$/,
+        );
+        if (developerSessionSmoke && developerSessionMatch) {
+          await ready();
+          authorizeWorkerAdmin(request, config.workerAdminToken);
+          const sessionId = decodeURIComponent(developerSessionMatch[1]);
+          const action = developerSessionMatch[2] || null;
+          if (request.method === "GET" && !action) {
+            sendJson(response, 200, {
+              session: await developerSessionSmoke.get(sessionId),
+            });
+            return;
+          }
+          if (request.method === "POST" && action === "resume") {
+            sendJson(response, 200, {
+              session: await developerSessionSmoke.resume(
+                sessionId,
+                await readJsonBody(request, config.maxBodyBytes),
+              ),
+            });
+            return;
+          }
+          if (request.method === "POST" && action === "cancel") {
+            sendJson(response, 200, {
+              session: await developerSessionSmoke.cancel(
+                sessionId,
+                await readJsonBody(request, config.maxBodyBytes),
+              ),
+            });
+            return;
+          }
         }
 
         if (request.method === "POST" && pathname === "/api/agent") {
@@ -932,6 +1122,7 @@ export function createApi({
         const approvedDeliveryHandoffRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-approved-delivery-handoff$/);
         const approvedDeliveryHandoffRuntimeRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-approved-delivery-handoff-runtime$/);
         const divergedApprovedDeliveryIntegrationRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-diverged-approved-delivery-integration$/);
+        const approvalContractDeliveryRuntimeRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-approval-contract-delivery-runtime$/);
         if(selfDevelopment&&selfDevelopmentEscalatedRepairRequest&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.requestEscalatedRepair(decodeURIComponent(selfDevelopmentEscalatedRepairRequest[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if(selfDevelopment&&selfDevelopmentEscalatedRepairRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverEscalatedRepair(decodeURIComponent(selfDevelopmentEscalatedRepairRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if(selfDevelopment&&selfDevelopmentFullTestHandoffRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverFullTestHandoffOverflow(decodeURIComponent(selfDevelopmentFullTestHandoffRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
@@ -940,6 +1131,7 @@ export function createApi({
         if(workerRuntime&&approvedDeliveryHandoffRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await workerRuntime.recoverApprovedDeliveryHandoff(decodeURIComponent(approvedDeliveryHandoffRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if(workerRuntime&&approvedDeliveryHandoffRuntimeRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await workerRuntime.recoverApprovedDeliveryHandoffRuntime(decodeURIComponent(approvedDeliveryHandoffRuntimeRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if(selfDevelopment&&divergedApprovedDeliveryIntegrationRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverDivergedApprovedDeliveryIntegration(decodeURIComponent(divergedApprovedDeliveryIntegrationRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
+        if(selfDevelopment&&approvalContractDeliveryRuntimeRecovery&&request.method==="POST"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverApprovedContractDeliveryRuntime(decodeURIComponent(approvalContractDeliveryRuntimeRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if (
           selfDevelopment &&
           selfDevelopmentMatch &&
@@ -1045,6 +1237,129 @@ export function createApi({
         );
         const selfDevelopmentHandsContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-commit-mismatch$/);
         const selfDevelopmentHandsDirtyRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-hands-working-tree-dirty$/);
+        const selfDevelopmentWorkspaceAttestation = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/attest-workspace$/);
+        const failedLocalReadRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-failed-local-read$/);
+        const planningScopeRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-planning-scope-recovery|recover-planning-scope)$/);
+        const executionScopeRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-execution-scope-recovery|recover-execution-scope)$/);
+        const fullTestScopeRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-full-test-scope-recovery|recover-full-test-scope)$/);
+        const failedFullTestRetry=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-failed-full-test-retry|recover-failed-full-test-retry)$/);
+        const reviewRemediation=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-review-remediation|recover-review-remediation)$/);
+        const rejectedReviewPlanContinuation=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-rejected-review-plan-continuation|recover-rejected-review-plan-continuation)$/);
+        const sourceBoundReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-source-bound-review-replan|recover-source-bound-review-replan)$/);
+        const evidenceBoundReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-evidence-bound-review-replan|recover-evidence-bound-review-replan)$/);
+        const implementationContentReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-implementation-content-review-replan|recover-implementation-content-review-replan)$/);
+        const sourceLiteralReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-source-literal-review-replan|recover-source-literal-review-replan)$/);
+        const observableLinkageReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-observable-linkage-review-replan|recover-observable-linkage-review-replan)$/);
+        const semanticEvidenceReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-semantic-evidence-review-replan|recover-semantic-evidence-review-replan)$/);
+        const failedSemanticReadRecovery=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-failed-semantic-read-recovery|recover-failed-semantic-read-recovery)$/);
+        const testIdentityInventoryReviewReplan=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/(request-test-identity-inventory-review-replan|recover-test-identity-inventory-review-replan)$/);
+        if(selfDevelopment&&testIdentityInventoryReviewReplan&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=testIdentityInventoryReviewReplan[2]==="request-test-identity-inventory-review-replan"?"requestTestIdentityInventoryReviewReplanApproval":"recoverTestIdentityInventoryReviewReplan";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(testIdentityInventoryReviewReplan[1]),input,actor));return;
+        }
+        if(selfDevelopment&&failedSemanticReadRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=failedSemanticReadRecovery[2]==="request-failed-semantic-read-recovery"?"requestFailedSemanticReadRecoveryApproval":"recoverFailedSemanticReadRecovery";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(failedSemanticReadRecovery[1]),input,actor));return;
+        }
+        if(selfDevelopment&&semanticEvidenceReviewReplan&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=semanticEvidenceReviewReplan[2]==="request-semantic-evidence-review-replan"?"requestSemanticEvidenceReviewReplanApproval":"recoverSemanticEvidenceReviewReplan";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(semanticEvidenceReviewReplan[1]),input,actor));return;
+        }
+        if(selfDevelopment&&observableLinkageReviewReplan&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=observableLinkageReviewReplan[2]==="request-observable-linkage-review-replan"?"requestObservableLinkageReviewReplanApproval":"recoverObservableLinkageReviewReplan";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(observableLinkageReviewReplan[1]),input,actor));return;
+        }
+        if(selfDevelopment&&sourceLiteralReviewReplan&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=sourceLiteralReviewReplan[2]==="request-source-literal-review-replan"?"requestSourceLiteralReviewReplanApproval":"recoverSourceLiteralReviewReplan";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(sourceLiteralReviewReplan[1]),input,actor));return;
+        }
+        if(selfDevelopment&&implementationContentReviewReplan&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=implementationContentReviewReplan[2]==="request-implementation-content-review-replan"?"requestImplementationContentReviewReplanApproval":"recoverImplementationContentReviewReplan";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(implementationContentReviewReplan[1]),input,actor));return;
+        }
+        if(selfDevelopment&&evidenceBoundReviewReplan&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=evidenceBoundReviewReplan[2]==="request-evidence-bound-review-replan"?"requestEvidenceBoundReviewReplanApproval":"recoverEvidenceBoundReviewReplan";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(evidenceBoundReviewReplan[1]),input,actor));return;
+        }
+        const rejectedReviewEvidence=pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/rejected-plan-evidence\/([a-f0-9-]{36})$/);
+        if(rejectedReviewEvidence&&request.method==="GET"){
+          // This private diagnostic is unavailable to ordinary task readers and
+          // local workers. The configured administrator acts for this owner only.
+          authorizeWorkerAdmin(request,config.workerAdminToken);await ready();
+          const taskId=decodeURIComponent(rejectedReviewEvidence[1]);
+          const task=await storage.getAutonomyTask(taskId,ownerId);
+          const evidence=task&&await storage.getRejectedReviewEvidence(rejectedReviewEvidence[2],ownerId,taskId);
+          if(!evidence){sendJson(response,404,{code:"rejected_review_evidence_not_found"});return;}
+          response.statusCode=200;
+          response.setHeader("Content-Type","application/json; charset=utf-8");
+          response.setHeader("X-Content-Type-Options","nosniff");
+          response.setHeader("Cache-Control","no-store");
+          response.setHeader("Referrer-Policy","no-referrer");
+          // JSON only; escape HTML-sensitive characters even if embedded by a
+          // diagnostic client. Clients must render strings as text, never HTML.
+          response.end(JSON.stringify({evidence}).replace(/[<>&\u2028\u2029]/g,char=>`\\u${char.charCodeAt(0).toString(16).padStart(4,"0")}`));return;
+        }
+        if(selfDevelopment&&sourceBoundReviewReplan&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=sourceBoundReviewReplan[2]==="request-source-bound-review-replan"?"requestSourceBoundReviewReplanApproval":"recoverSourceBoundReviewReplan";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(sourceBoundReviewReplan[1]),input,actor));return;
+        }
+        if(selfDevelopment&&rejectedReviewPlanContinuation&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=rejectedReviewPlanContinuation[2]==="request-rejected-review-plan-continuation"?"requestRejectedReviewPlanContinuationApproval":"recoverRejectedReviewPlanContinuation";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(rejectedReviewPlanContinuation[1]),input,actor));return;
+        }
+        if(selfDevelopment&&reviewRemediation&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=reviewRemediation[2]==="request-review-remediation"?"requestReviewRemediationApproval":"recoverReviewRemediation";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(reviewRemediation[1]),input,actor));return;
+        }
+        if(selfDevelopment&&failedFullTestRetry&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=failedFullTestRetry[2]==="request-failed-full-test-retry"?"requestFailedFullTestRetry":"recoverFailedFullTestRetry";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(failedFullTestRetry[1]),input,actor));return;
+        }
+        if(selfDevelopment&&fullTestScopeRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=fullTestScopeRecovery[2]==="request-full-test-scope-recovery"?"requestFullTestScopeRecovery":"recoverFullTestScope";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(fullTestScopeRecovery[1]),input,actor));return;
+        }
+        if(selfDevelopment&&executionScopeRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=executionScopeRecovery[2]==="request-execution-scope-recovery"?"requestExecutionScopeRecovery":"recoverValidatedExecutionScope";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(executionScopeRecovery[1]),input,actor));return;
+        }
+        if(selfDevelopment&&planningScopeRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          const method=planningScopeRecovery[2]==="request-planning-scope-recovery"?"requestPlanningScopeRecovery":"recoverPlanningScopeFailure";
+          sendJson(response,200,await selfDevelopment[method](decodeURIComponent(planningScopeRecovery[1]),input,actor));return;
+        }
+        if(selfDevelopment&&failedLocalReadRecovery&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);
+          const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);
+          sendJson(response,200,await selfDevelopment.recoverFailedTaskOwnedLocalRead(decodeURIComponent(failedLocalReadRecovery[1]),input,actor));return;
+        }
         const selfDevelopmentRepositoryContextRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-repository-context$/);
         const selfDevelopmentPlanLifecycleRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-plan-lifecycle$/);
         const selfDevelopmentFullTestRecovery = pathname.match(/^\/api\/admin\/self-development\/tasks\/([^/]+)\/recover-full-test-failure$/);
@@ -1070,6 +1385,9 @@ export function createApi({
         }
         if(selfDevelopment&&selfDevelopmentHandsDirtyRecovery&&request.method==="POST"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await selfDevelopment.recoverHandsWorkingTreeDirty(decodeURIComponent(selfDevelopmentHandsDirtyRecovery[1]),await readJsonBody(request,config.maxBodyBytes)));return;
+        }
+        if(selfDevelopment&&selfDevelopmentWorkspaceAttestation&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes),actor=verifyLocalWorkerWorkspaceProof(input.workspaceProof,input.workspaceProofSignature,config.localWorkerToken);sendJson(response,200,await selfDevelopment.attestHandsWorkspace(decodeURIComponent(selfDevelopmentWorkspaceAttestation[1]),input,actor));return;
         }
         if (selfDevelopment && selfDevelopmentStaleBaseRecovery && request.method === "POST") {
           await ready();authorizeLocalWorker(request,config.localWorkerToken);
@@ -1506,7 +1824,7 @@ export function createApi({
             workerRuntime && approval.runId
               ? await workerRuntime.get(approval.runId)
               : null;
-          if(approval.tool==="self_development_escalated_repair"){
+          if(["self_development_escalated_repair","self_development_planning_scope_recovery","self_development_execution_scope_recovery","self_development_full_test_scope_recovery","self_development_failed_full_test_retry","self_development_review_remediation","self_development_rejected_review_plan_continuation","self_development_source_bound_review_replan","self_development_evidence_bound_review_replan","self_development_implementation_content_review_replan","self_development_source_literal_review_replan","self_development_observable_linkage_review_replan","self_development_semantic_evidence_review_replan","self_development_failed_semantic_read_recovery","self_development_test_identity_inventory_review_replan"].includes(approval.tool)){
             execution={authorized:decision==="approved",approvalId:approval.id};
           } else if (autonomyTask) {
             execution =
@@ -1740,6 +2058,28 @@ export function createApi({
             ...(error.safeDiagnostics
               ? { diagnostics: error.safeDiagnostics, requestId }
               : {}),
+          });
+          return;
+        }
+        if (error instanceof DeveloperSessionSmokeError) {
+          sendJson(response, error.statusCode, {
+            error: error.message,
+            code: error.code,
+          });
+          return;
+        }
+        if (error instanceof DeveloperWorkspaceHandoffError) {
+          sendJson(response, error.statusCode, {
+            error: error.message,
+            code: error.code,
+          });
+          return;
+        }
+        if (error instanceof DeveloperSessionError) {
+          const status = error.code === "developer_session_not_found" ? 404 : 409;
+          sendJson(response, status, {
+            error: error.message,
+            code: error.code,
           });
           return;
         }

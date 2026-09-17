@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 9;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -120,6 +120,17 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     lock_key text PRIMARY KEY, task_id text NOT NULL REFERENCES nova_autonomy_tasks(id) ON DELETE CASCADE,
     lease_token text NOT NULL, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
   )`,
+  // Private diagnostic storage, deliberately separate from tasks and activity.
+  `CREATE TABLE IF NOT EXISTS nova_rejected_review_evidence (
+    id text PRIMARY KEY,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    task_id text NOT NULL REFERENCES nova_autonomy_tasks(id) ON DELETE CASCADE,
+    execution_id text NOT NULL, attempt integer NOT NULL CHECK (attempt > 0),
+    continuation_generation_id text NOT NULL,
+    envelope jsonb NOT NULL CHECK (octet_length(envelope::text) <= 98304),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(owner_id,task_id,execution_id,attempt,continuation_generation_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS nova_approvals (
     id text PRIMARY KEY, owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
     project_id text REFERENCES nova_projects(id) ON DELETE SET NULL, run_id text REFERENCES nova_execution_runs(id) ON DELETE SET NULL,
@@ -134,6 +145,14 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     created_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS nova_activity_owner_recent_idx ON nova_activity_events (owner_id, sequence DESC)`,
+  `CREATE TABLE IF NOT EXISTS nova_developer_sessions (
+    id text PRIMARY KEY,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    record jsonb NOT NULL CHECK (octet_length(record::text) <= 262144),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_developer_sessions_owner_recent_idx ON nova_developer_sessions (owner_id, updated_at DESC)`,
   `CREATE TABLE IF NOT EXISTS nova_voice_benchmark_sessions (
     id text PRIMARY KEY, owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
     budget_usd numeric NOT NULL CHECK (budget_usd > 0 AND budget_usd <= 2), created_at timestamptz NOT NULL DEFAULT now()
@@ -154,5 +173,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
   )`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_owner_cost_idx ON nova_voice_benchmark_results (owner_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_session_idx ON nova_voice_benchmark_results (session_id, created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9) ON CONFLICT (version) DO NOTHING`
 ]);

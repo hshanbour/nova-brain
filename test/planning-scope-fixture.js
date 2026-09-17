@@ -1,0 +1,58 @@
+import {createHash,createHmac} from "node:crypto";
+import {createInMemoryStorage} from "../src/storage/in-memory-storage.js";
+import {canonicalContentHash} from "../src/autonomy/self-development-plan-lifecycle.js";
+import {recoveryHash,recoveryRoot} from "../src/autonomy/failed-local-read-recovery.js";
+import {describePlanningScopeRecovery,recoverPlanningScope} from "../src/autonomy/planning-scope-recovery.js";
+
+export const PLANNING_PATHS=["assets/console.css","assets/console.js","assets/voice-input.js","index.html","test/composer-dictation.test.js","test/composer-voice-console.integration.test.js","test/console-static.test.js","test/voice-input.test.js"];
+export const PLANNING_OWNER="synthetic-planning-owner",PLANNING_TASK="synthetic-v201-planning-task";
+export const PLANNING_REPOSITORY="hshanbour/nova-brain",PLANNING_BRANCH="feat/nova-brain-mvp-foundation",PLANNING_RUNTIME="a".repeat(40),PLANNING_OLD_RUNTIME="b".repeat(40);
+export const PLANNING_WORKER="persistent-local-22222222-3333-4444-8555-666666666666",PLANNING_OLD_WORKER="persistent-local-11111111-2222-4333-8444-555555555555";
+export const PLANNING_TOKEN="synthetic-planning-worker-secret",PLANNING_CLOCK=()=>new Date("2026-09-15T12:00:00.000Z");
+const blobHash=content=>createHash("sha1").update(`blob ${Buffer.byteLength(content,"utf8")}\0`).update(content).digest("hex");
+const stable=value=>Array.isArray(value)?value.map(stable):value&&typeof value==="object"?Object.fromEntries(Object.keys(value).sort().map(key=>[key,stable(value[key])])):value;
+
+// Entirely synthetic durable state; callers may supply an isolated temp git
+// workspace. This helper has no filesystem, credential, HTTP or product tools.
+export async function seedPlanningRecoveryFixture({root="C:/synthetic/nova-product",head="1".repeat(40),contents=new Map(PLANNING_PATHS.map((path,index)=>[path,`/* current task-owned source ${index} */\n`])),clock=PLANNING_CLOCK}={}){
+  const taskId=PLANNING_TASK,ownerId=PLANNING_OWNER,repository=PLANNING_REPOSITORY,branch=PLANNING_BRANCH,runtimeVersion=PLANNING_RUNTIME;
+  const storage=createInMemoryStorage({clock});await storage.initialize({owner:{id:ownerId,fullName:"Synthetic"},projects:[{id:"nova-brain",name:"Fixture"}]});
+  const entries=PLANNING_PATHS.map(path=>({path,contentHash:canonicalContentHash(contents.get(path)),hashAlgorithm:"git_sha1",hash:blobHash(contents.get(path))}));
+  const applyFingerprint="e".repeat(64),fingerprint="f".repeat(64),oldActive={version:2,generationId:"d".repeat(64),recoveryClass:"task_owned_local_read_recovery",startStep:121,maxSteps:10,runtimeStartedAt:"2026-09-14T14:00:00.000Z",runtimeMinutes:15,runtimeDeadline:"2026-09-14T14:15:00.000Z"};
+  const active={version:2,generationId:"c".repeat(64),recoveryClass:"failed_task_owned_local_read_recovery",startStep:131,maxSteps:15,runtimeStartedAt:"2026-09-14T16:01:24.347Z",runtimeMinutes:15,runtimeDeadline:"2026-09-14T16:16:24.347Z"};
+  const failureEvidence={code:"repair_plan_incomplete",version:1,fingerprint,requiredPaths:PLANNING_PATHS,mutationApplied:false,sourcePlanStepId:"79:plan_repair",sourceApplyStepId:"80:apply_patch"};
+  const extension={recoveryClass:"owner_approved_single_repair_extension",fromStateVersion:105,approvalId:"synthetic-consumed-extension",failedStepId:"58:run_focused_tests",failureFingerprint:"3".repeat(64),planGenerationId:"4".repeat(64),previousRepairIteration:3,globalRepairLimit:3,maxAdditionalAttempts:1};
+  const renewal={recoveryClass:"stale_task_runtime_to_active_continuation",sourceRecoveryClass:"task_owned_local_read_recovery",fromStateVersion:170,maxRenewals:1,authorizationConsumed:true,workerId:PLANNING_OLD_WORKER};
+  const implementationRecovery={recoveryClass:"task_owned_local_read_recovery",previousStateVersion:169,runtimeVersion:PLANNING_OLD_RUNTIME};
+  const partial={taskId,repository,branch,currentCommit:head,workspaceRoot:root,sourceApplyStepId:"80:apply_patch",sourcePlanStepId:"79:plan_repair",sourceApplyFingerprint:applyFingerprint,fingerprint,requiredPaths:PLANNING_PATHS,entries};
+  const planned=Array.from({length:131},()=>({type:"read_files",input:{tool:"repo_read",arguments:{path:PLANNING_PATHS[0]}}}));
+  for(const path of PLANNING_PATHS)planned.push({type:"read_files",input:{tool:"repo_read_task_owned_local",arguments:{path}}});
+  planned.push({type:"plan_repair",input:{tool:"self_development_plan_implementation",arguments:{taskId,candidatePaths:PLANNING_PATHS,currentCommit:"$CURRENT_COMMIT",failureEvidence}}},
+    {type:"apply_patch",input:{tool:"repo_apply_patch",arguments:{branch:"$TASK_BRANCH",currentCommit:"$CURRENT_COMMIT",files:"$IMPLEMENTATION_FILES",planProvenance:"$IMPLEMENTATION_PLAN_PROVENANCE"}}},
+    {type:"run_focused_tests",input:{tool:"test_run",arguments:{files:"$IMPLEMENTATION_TESTS"}}},
+    {type:"run_full_tests",input:{tool:"test_run_full",arguments:{}}},
+    {type:"inspect_diff",input:{tool:"repo_diff",arguments:{paths:"$IMPLEMENTATION_PATHS"}}},
+    {type:"commit",input:{tool:"git_commit",arguments:{branch,paths:"$IMPLEMENTATION_PATHS",message:"Fixture"}}},
+    {type:"review_commit",input:{tool:"repo_review_commit",arguments:{commitSha:"$CURRENT_COMMIT",paths:"$IMPLEMENTATION_PATHS"}}});
+  const failedLocal={recoveryClass:active.recoveryClass,taskId,fromStateVersion:174,toStateVersion:175,maxRecoveries:1,failedStepId:"122:read_files",failedAttempt:1,failedExecutionFingerprint:"9".repeat(64),predecessorRenewalHash:recoveryHash(renewal),predecessorRecoveryHash:recoveryHash(implementationRecovery),repository,branch,currentCommit:head,workspaceRoot:recoveryRoot(root),runtimeVersion:PLANNING_OLD_RUNTIME,sourcePlanStepId:partial.sourcePlanStepId,sourceApplyStepId:partial.sourceApplyStepId,sourceApplyFingerprint:applyFingerprint,fingerprint,entries:entries.map(({path,contentHash})=>({path,contentHash})),requiredPaths:PLANNING_PATHS,readPaths:PLANNING_PATHS,extensionHistoryHash:recoveryHash([extension]),repairIteration:3,retryCount:1,maxRetries:1,workerBindingState:"bound",workerId:PLANNING_OLD_WORKER,rejectedPriorWorkerIds:[],activeContinuation:active};
+  const metadata={steps:planned,autoDispatch:true,requiredCapability:"reasoning",selfDevelopment:{repository,userGoal:"Complete composer microphone dictation with editable draft and waveform",acceptanceCriteria:["Editable dictation; no auto-send"],repairLimit:3},maxRepairIterations:3,escalatedRepairHistory:[extension],continuationRuntimeResumeHistory:[renewal],implementationPlanRecoveryHistory:[implementationRecovery],partialRepairPlanRecoveryHistory:[partial],failedLocalReadRecoveryHistory:[failedLocal],activeContinuation:active,continuationHistory:[oldActive,active],
+    selfDevelopmentImplementationPlan:{files:PLANNING_PATHS.map(path=>({path,operation:"replace",content:"/* obsolete historical plan MUST NOT replace current read bytes */\n"})),focusedTests:PLANNING_PATHS.filter(path=>path.startsWith("test/")).map(path=>({path,kind:"existing"}))}};
+  await storage.createAutonomyTask({id:taskId,ownerId,projectId:"nova-brain",title:"Synthetic real-v201-shaped rejected planning",objective:"Bounded plan and pre-mutation verification only",taskType:"self_development",branch,startingCommit:head,maxSteps:100,maxRuntimeMinutes:15,maxRetries:1,metadata});
+  const record=(stepId,stepType,result,status="completed",errorCode=null,input,operationFingerprint=canonicalContentHash(stepId))=>storage.recordAutonomyStep({taskId,stepId,stepType,status,errorCode,result,input,attempt:1,operationFingerprint});
+  await record("11:read_files","read_files",{path:"test/console-client.test.js",content:"/* previously discovered API client fixture */\n",truncated:false},"completed",null,{tool:"repo_read",arguments:{path:"test/console-client.test.js"}});
+  await record("79:plan_repair","plan_repair",{implementationPlan:{files:PLANNING_PATHS.slice(0,6).map(path=>({path,content:contents.get(path)}))}});
+  await record("80:apply_patch","apply_patch",{ok:true,files:PLANNING_PATHS.slice(0,6),taskOwnedDirtyLineage:{version:1,taskId,repository,branch,currentCommit:head,sourcePlanStepId:"79:plan_repair",entries}},"completed",null,undefined,applyFingerprint);
+  await record("122:read_files","read_files",{message:"The task-owned local read binding is invalid."},"failed","task_owned_local_read_unproven",{tool:"repo_read_task_owned_local",arguments:{path:PLANNING_PATHS[5]}},"9".repeat(64));
+  for(const [index,path] of PLANNING_PATHS.entries())await record(`${132+index}:read_files`,"read_files",{path,content:contents.get(path),contentHash:canonicalContentHash(contents.get(path)),truncated:false,source:"task_owned_local_workspace"},"completed",null,{tool:"repo_read_task_owned_local",arguments:{path,expectedContentHash:canonicalContentHash(contents.get(path)),binding:{taskId,repository,branch,currentCommit:head,workspaceRoot:root,sourcePlanStepId:partial.sourcePlanStepId,sourceApplyStepId:partial.sourceApplyStepId,sourceApplyFingerprint:applyFingerprint,runtimeVersion:PLANNING_OLD_RUNTIME,continuationGenerationId:active.generationId}}});
+  await record("140:plan_repair","plan_repair",{message:"Focused test is not eligible for bounded evidence expansion.",diagnostics:{proposedPath:"test/console-client.test.js",rejectionCode:"focused_test_evidence_rejected",classification:"unrelated",expansionRound:2,plannerAttempt:1,outputShapeHash:null,validationIssues:["focused_test_evidence_rejected"]}},"failed","implementation_scope_violation",planned[139].input);
+  await storage.createApproval({id:extension.approvalId,ownerId,runId:taskId,tool:"self_development_escalated_repair",arguments:{taskId,expectedVersion:105,branch,currentCommit:head,failedStepId:extension.failedStepId,failureFingerprint:extension.failureFingerprint,planGenerationId:extension.planGenerationId,maxAdditionalAttempts:1}});
+  await storage.decideApproval(extension.approvalId,ownerId,"approved");
+  let task=await storage.getAutonomyTask(taskId,ownerId);while(task.stateVersion<201)task=await storage.updateAutonomyTask(taskId,ownerId,{status:"failed",currentStep:139,currentPhase:"read_files",repairIteration:3,retryCount:1,maxRetries:1,errorCode:"implementation_scope_violation"},task.stateVersion);
+  const workspaceProof={taskId,expectedVersion:201,runtimeVersion,workspace:{root,gitTopLevel:root,repository,branch,head,liveTip:head,clean:false,changedFiles:entries}};
+  const input={expectedVersion:201,runtimeVersion,workspaceProof,workspaceProofSignature:createHmac("sha256",PLANNING_TOKEN).update(JSON.stringify(stable(workspaceProof))).digest("hex")},actor={actorType:"scoped_local_worker",workspaceProof};
+  const runtime={get:id=>storage.getAutonomyTask(id,ownerId),steps:id=>storage.listAutonomySteps(id)},remoteOverrides={};
+  const verifyRemote=async request=>({currentTip:remoteOverrides[request.branch]||(request.branch===branch?head:runtimeVersion),ancestors:Object.fromEntries(request.requiredAncestors.map(sha=>[sha,true]))});
+  const options={taskId,input,actor,runtime,storage,ownerId,repository,approvedBranch:branch,runtimeVersion,verifyRemote,clock};
+  const authorize=async()=>{const {approvalArguments}=await describePlanningScopeRecovery(options);await storage.createApproval({id:"synthetic-current-planning-approval",ownerId,runId:taskId,tool:"self_development_planning_scope_recovery",arguments:approvalArguments});await storage.decideApproval("synthetic-current-planning-approval",ownerId,"approved");input.approvalId="synthetic-current-planning-approval";return approvalArguments;};
+  return{storage,runtime,options,input,actor,authorize,recover:()=>recoverPlanningScope(options),describe:()=>describePlanningScopeRecovery(options),taskId,ownerId,repository,branch,runtimeVersion,root,head,contents,entries,remoteOverrides,clock};
+}

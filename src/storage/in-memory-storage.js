@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { rankRelevantMemories } from "../memory/relevance.js";
+import {validateRejectedReviewEvidenceEnvelope} from "../autonomy/rejected-review-evidence.js";
 
 function copy(value) {
   return value === undefined ? undefined : structuredClone(value);
@@ -20,8 +21,10 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const runs = new Map();
   const autonomyTasks = new Map();
   const autonomySteps = new Map();
+  const rejectedReviewEvidence = new Map();
   const autonomyLocks = new Map();
   const approvals = new Map();
+  const developerSessions = new Map();
   const activity = [];
   const benchmarkSessions = new Map();
   const benchmarkResults = new Map();
@@ -517,6 +520,19 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const task = autonomyTasks.get(id);
       return copy(task?.ownerId === ownerId ? task : null);
     },
+    async createRejectedReviewEvidence({ownerId,taskId,envelope}) {
+      const task=autonomyTasks.get(taskId);
+      if(!validateRejectedReviewEvidenceEnvelope(envelope)||envelope.taskId!==taskId||task?.ownerId!==ownerId)throw new Error("Invalid private rejection evidence binding.");
+      const key=JSON.stringify([ownerId,taskId,envelope.executionId,envelope.attempt,envelope.continuationGenerationId]);
+      const existing=rejectedReviewEvidence.get(key);
+      if(existing)return copy(existing);
+      const record={id:randomUUID(),ownerId,taskId,createdAt:now(clock),envelope:copy(envelope)};
+      rejectedReviewEvidence.set(key,record);return copy(record);
+    },
+    async getRejectedReviewEvidence(id,ownerId,taskId) {
+      if(autonomyTasks.get(taskId)?.ownerId!==ownerId)return null;
+      return copy([...rejectedReviewEvidence.values()].find(item=>item.id===id&&item.ownerId===ownerId&&item.taskId===taskId)||null);
+    },
     async listAutonomyTasks(ownerId, { status, limit = 50 } = {}) {
       return [...autonomyTasks.values()]
         .filter(
@@ -641,6 +657,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       expectedBranch,
       expectedCommit,
       expectedVersion,
+      claimMetadata,
     }) {
       const timestamp = clock();
       for (const task of autonomyTasks.values())
@@ -686,7 +703,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       eligible.leaseExpiresAt = new Date(
         timestamp.getTime() + leaseMs,
       ).toISOString();
-      eligible.metadata = { ...eligible.metadata, claimKey: idempotencyKey };
+      eligible.metadata = { ...eligible.metadata, ...copy(claimMetadata || {}), claimKey: idempotencyKey };
       eligible.stateVersion += 1;
       eligible.updatedAt = timestamp.toISOString();
       return copy(eligible);
@@ -825,6 +842,16 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         .sort((a, b) => b.sequence - a.sequence)
         .slice(0, limit)
         .map(copy);
+    },
+    async saveDeveloperSession(record, ownerId) {
+      const current = developerSessions.get(record.id);
+      if (current && current.ownerId !== ownerId) return null;
+      developerSessions.set(record.id, { ownerId, record: copy(record) });
+      return copy(record);
+    },
+    async getDeveloperSession(id, ownerId) {
+      const current = developerSessions.get(id);
+      return copy(current?.ownerId === ownerId ? current.record : null);
     },
     async createVoiceBenchmarkSession(input) {
       const session = {

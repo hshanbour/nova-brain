@@ -35,6 +35,8 @@ import { createSelfDevelopmentExpiryRecovery } from "./autonomy/self-development
 import { registerSelfDevelopmentTools } from "./autonomy/self-development-tools.js";
 import { createSelfDevelopmentImplementationPlanner } from "./autonomy/self-development-implementation-planner.js";
 import { createAutoDispatchService } from "./autonomy/auto-dispatch.js";
+import { createDeveloperSessionSmoke } from "./autonomy/developer-session-smoke.js";
+import { createDeveloperWorkspaceHandoff } from "./autonomy/developer-workspace-handoff.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -54,6 +56,12 @@ export function createApp({
   const config = readConfig(environment);
   const modelProvider = createModelProvider(config);
   const storage = storageOverride || createStorage(config);
+  const developerSessionSmoke = storage.saveDeveloperSession && storage.getDeveloperSession
+    ? createDeveloperSessionSmoke({ environment, storage, ownerId: OWNER_ID })
+    : null;
+  const developerWorkspaceHandoff = storage.saveDeveloperSession && storage.getDeveloperSession
+    ? createDeveloperWorkspaceHandoff({ environment, storage, ownerId: OWNER_ID })
+    : null;
   const initialize = () =>
     storage.initialize({
       owner: INITIAL_OWNER_PROFILE,
@@ -127,9 +135,9 @@ export function createApp({
   toolRegistry.register({name:"preview_verify_existing",description:"Verify the exact existing acceptance Preview route.",category:"deployment",capability:"read",riskLevel:"READ_ONLY",available:Boolean(environment.NOVA_BRAIN_VERCEL_TOKEN),configurationStatus:environment.NOVA_BRAIN_VERCEL_TOKEN?"ready":"configuration_required",async execute(input){const deployment=await verifyDeployment(input);if(deployment.target==="production"||deployment.branch!==config.developmentBranch||deployment.sha!==input.commitSha)throw Object.assign(new Error("Preview source mismatch."),{code:"source_mismatch"});const response=await fetch(`https://${deployment.url}${input.path}`,{headers:{...(environment.VERCEL_AUTOMATION_BYPASS_SECRET?{"x-vercel-protection-bypass":environment.VERCEL_AUTOMATION_BYPASS_SECRET}:{})}});if(response.status!==input.expectedStatus)throw Object.assign(new Error("Preview route returned an unexpected status."),{code:"preview_unreachable"});return{ok:true,deploymentId:input.deploymentId,url:`https://${deployment.url}${input.path}`,status:response.status,commitSha:input.commitSha};}});
   toolRegistry.register({name:"preview_storage_verify_existing",description:"Verify durable Postgres readiness through the exact existing acceptance Preview health route.",category:"deployment",capability:"read",riskLevel:"READ_ONLY",available:Boolean(environment.NOVA_BRAIN_VERCEL_TOKEN),configurationStatus:environment.NOVA_BRAIN_VERCEL_TOKEN?"ready":"configuration_required",async execute(input){const deployment=await verifyDeployment(input);if(deployment.target==="production"||deployment.branch!==config.developmentBranch||deployment.sha!==input.commitSha)throw Object.assign(new Error("Preview source mismatch."),{code:"source_mismatch"});const response=await fetch(`https://${deployment.url}/api/health`,{headers:{...(environment.VERCEL_AUTOMATION_BYPASS_SECRET?{"x-vercel-protection-bypass":environment.VERCEL_AUTOMATION_BYPASS_SECRET}:{})}}),value=await response.json().catch(()=>({}));if(response.status!==200||value.storage?.provider!=="postgres"||value.storage?.durable!==true||value.storage?.status!=="ready")throw Object.assign(new Error("Preview durable storage is not ready."),{code:"storage_not_ready"});return{ok:true,deploymentId:input.deploymentId,status:200,storage:{provider:"postgres",durable:true,status:"ready"},commitSha:input.commitSha};}});
   registerWorkerTools(toolRegistry, { runtime: workerRuntime, taskMigration });
-  const implementationPlanner=createSelfDevelopmentImplementationPlanner({modelProvider,storage,ownerId:OWNER_ID,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
+  const implementationPlanner=createSelfDevelopmentImplementationPlanner({modelProvider,storage,ownerId:OWNER_ID,runtimeVersion:environment.VERCEL_GIT_COMMIT_SHA,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
   toolRegistry.register({name:"self_development_plan_implementation",description:"Generate one evidence-bound structured implementation or repair plan for the exact durable Self-Development task.",category:"autonomy",capability:"reasoning",riskLevel:"READ_ONLY",available:true,configurationStatus:"ready",inputSchema:{type:"object",properties:{taskId:{type:"string"},candidatePaths:{type:"array"},currentCommit:{type:"string"},failureEvidence:{type:"object"}},required:["taskId","candidatePaths","currentCommit"],additionalProperties:false},execute:input=>implementationPlanner.generate(input)});
-  const selfDevelopment=createSelfDevelopmentService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,currentCommit:environment.VERCEL_GIT_COMMIT_SHA,verifyRemote,compareRemoteEvidence,verifyDeployment,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
+  const selfDevelopment=createSelfDevelopmentService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,currentCommit:environment.VERCEL_GIT_COMMIT_SHA,runtimeVersion:environment.VERCEL_GIT_COMMIT_SHA,verifyRemote,compareRemoteEvidence,verifyDeployment,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
   const selfDevelopmentExpiryRecovery=createSelfDevelopmentExpiryRecovery({storage,ownerId:OWNER_ID,verifyDeployment});
   registerSelfDevelopmentTools(toolRegistry,{service:selfDevelopment});
   const speakerAssertions = createSpeakerAssertions({
@@ -211,6 +219,8 @@ export function createApp({
     speakerEngines,
     speakerAssertions,
     familiarityConsent,
+    developerSessionSmoke,
+    developerWorkspaceHandoff,
     logger,
   });
   return Object.freeze({ ...api, initialize, workerRuntime });

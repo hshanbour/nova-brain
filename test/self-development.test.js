@@ -62,7 +62,9 @@ async function fixture({
   verifyRemote,
   compareRemoteEvidence,
   verifyDeployment,
+  resolvePathState,
   currentCommit = SHA,
+  runtimeVersion,
 } = {}) {
   let now = new Date("2026-01-01T00:00:00Z");
   const storage = createInMemoryStorage({ clock: () => new Date(now) });
@@ -109,10 +111,12 @@ async function fixture({
     storage,
     ownerId: OWNER,
     currentCommit,
+    runtimeVersion,
     clock: () => new Date(now),
     verifyRemote,
     compareRemoteEvidence,
     verifyDeployment,
+    resolvePathState,
   });
   return {
     storage,
@@ -172,6 +176,19 @@ test("natural-language request becomes a structured self-development task", asyn
     value = f.service.structure(input());
   assert.equal(value.kind, "self_development_task");
   assert.match(value.userGoal, /natural language/);
+  assert.equal(value.intent, "implementation");
+});
+test("task intent distinguishes implementation from analysis-only goals", async () => {
+  const f = await fixture();
+  assert.equal(
+    f.service.structure({ userGoal: "Implement a harmless console fix" }).intent,
+    "implementation",
+  );
+  assert.equal(
+    f.service.structure({ userGoal: "Inspect the harmless console architecture" })
+      .intent,
+    "analysis_only",
+  );
 });
 test("target repository and feature branch are bound by default", async () => {
   const f = await fixture(),
@@ -194,6 +211,113 @@ test("real chat-style goal resolves deployed commit project branch and safe defa
     created.plan.some((step) => step.type === "apply_patch"),
     false,
   );
+});
+test("implementation intent with empty scope blocks instead of completing discovery-only", async () => {
+  const f = await fixture(),
+    created = await f.service.create({
+      userGoal: "Implement a harmless console improvement",
+    });
+  for (let index = 0; index < created.plan.length; index++)
+    await f.runtime.tickTask(created.task.id, {
+      idempotencyKey: `empty-implementation-${index}`,
+    });
+  const task = await f.runtime.get(created.task.id),
+    steps = await f.runtime.steps(created.task.id),
+    summary = steps.find((step) => step.stepType === "summarize");
+  assert.equal(task.status, "blocked");
+  assert.equal(task.errorCode, "implementation_scope_required");
+  assert.equal(summary.status, "failed");
+  assert.equal(summary.errorCode, "implementation_scope_required");
+  assert.equal(steps.some((step) => step.stepType === "apply_patch"), false);
+});
+test("implementation completion guard rejects missing lifecycle evidence", async () => {
+  const f = await fixture(),
+    created = await f.service.create(input()),
+    summary = created.plan.find((step) => step.type === "summarize");
+  await f.storage.updateAutonomyTask(created.task.id, OWNER, {
+    currentStep: 0,
+    metadata: { ...created.task.metadata, steps: [summary] },
+  });
+  await f.runtime.tickTask(created.task.id, {
+    idempotencyKey: "missing-lifecycle-evidence",
+  });
+  const task = await f.runtime.get(created.task.id);
+  assert.equal(task.status, "blocked");
+  assert.equal(task.errorCode, "implementation_evidence_incomplete");
+  assert.match(task.resultSummary, /mutation_apply/);
+  assert.match(task.resultSummary, /review/);
+});
+test("analysis-only intent may complete discovery-only", async () => {
+  const f = await fixture(),
+    created = await f.service.create({
+      userGoal: "Inspect the harmless console architecture",
+    });
+  for (let index = 0; index < created.plan.length; index++)
+    await f.runtime.tickTask(created.task.id, {
+      idempotencyKey: `analysis-only-${index}`,
+    });
+  assert.equal((await f.runtime.get(created.task.id)).status, "completed");
+});
+test("safe implementation and test candidates use the evidence-bound worker flow", async () => {
+  const f = await fixture(),
+    created = await f.service.create({
+      userGoal: "Implement a harmless console improvement",
+      scope: {
+        paths: ["assets/console.js"],
+        searchTerms: ["console"],
+        patch: { files: [] },
+        focusedTests: ["test/console-static.test.js"],
+      },
+    }),
+    types = created.plan.map((step) => step.type);
+  assert.equal(created.request.intent, "implementation");
+  assert.equal(types.includes("plan_patch"), false);
+  for (const type of [
+    "plan_implementation",
+    "apply_patch",
+    "run_focused_tests",
+    "run_full_tests",
+    "inspect_diff",
+    "commit",
+    "review_commit",
+    "push",
+    "deploy_preview",
+  ])
+    assert.ok(types.includes(type), `${type} is planned`);
+  const plannerIndex = types.indexOf("plan_implementation");
+  for (let index = 0; index <= plannerIndex; index++)
+    await f.runtime.tickTask(created.task.id, {
+      idempotencyKey: `evidence-flow-${index}`,
+    });
+  assert.equal(
+    f.calls.some(
+      (call) => call.name === "self_development_plan_implementation",
+    ),
+    true,
+  );
+});
+test("unsafe or incomplete candidates fail closed at implementation scope", async () => {
+  const f = await fixture(),
+    created = await f.service.create({
+      userGoal: "Implement a protected runtime improvement",
+      scope: {
+        paths: ["src/autonomy/worker-runtime.js"],
+        searchTerms: [],
+        patch: { files: [] },
+        focusedTests: ["test/self-development.test.js"],
+      },
+    });
+  assert.equal(
+    created.plan.some((step) => step.type === "plan_implementation"),
+    false,
+  );
+  for (let index = 0; index < created.plan.length; index++)
+    await f.runtime.tickTask(created.task.id, {
+      idempotencyKey: `protected-empty-${index}`,
+    });
+  const task = await f.runtime.get(created.task.id);
+  assert.equal(task.status, "blocked");
+  assert.equal(task.errorCode, "implementation_scope_required");
 });
 test("identical chat create retries return the same durable task", async () => {
   const f = await fixture(),
@@ -318,6 +442,7 @@ test("planner reuses only safe Hands tool names", async () => {
         "test_run",
         "test_run_full",
         "repo_diff",
+        "repo_review_commit",
         "git_commit",
         "git_push",
         "preview_deploy",
@@ -425,12 +550,12 @@ test("recoverable failure gets one evidence-based repair plan", async () => {
   );
 });
 
-async function exhaustedFocusedRepairFixture(){
+async function exhaustedFocusedRepairFixture({errorCode="repair_limit_reached",repairIteration=2}={}){
   const f=await fixture(),files=[{path:"assets/voice-input.js",operation:"replace",expectedContent:"old\n",content:"new\n"},{path:"test/composer-dictation.test.js",operation:"replace",expectedContent:"old test\n",content:"new test\n"}],plain={files,focusedTests:[{path:"test/composer-dictation.test.js",kind:"existing"}],evidencePaths:files.map(file=>file.path),planHash:"active-repair"};
-  await f.storage.createAutonomyTask({id:"exhausted-focused",ownerId:OWNER,projectId:"nova-brain",title:"Focused",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:SHA,currentCommit:SHA,maxSteps:100,maxRuntimeMinutes:60,repairIteration:2,metadata:{steps:[{type:"run_focused_tests"},{type:"run_focused_tests"}],maxRepairIterations:2,selfDevelopment:{userGoal:"Repair composer",acceptanceCriteria:["Six focused tests pass"],repairLimit:2},implementationPlanGenerations:[]}});
+  await f.storage.createAutonomyTask({id:"exhausted-focused",ownerId:OWNER,projectId:"nova-brain",title:"Focused",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:SHA,currentCommit:SHA,maxSteps:100,maxRuntimeMinutes:60,repairIteration,metadata:{steps:[{type:"run_focused_tests"},{type:"run_focused_tests"}],maxRepairIterations:2,selfDevelopment:{repository:"hshanbour/nova-brain",userGoal:"Repair composer",acceptanceCriteria:["Six focused tests pass"],repairLimit:2},implementationPlanGenerations:[]}});
   let task=await f.storage.getAutonomyTask("exhausted-focused",OWNER),plan={...plain,provenance:bindImplementationPlan({task,plan:plain,evidence:files.map(file=>({path:file.path,content:file.expectedContent}))})};task=await f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...planLifecycleMetadata(task,plan),steps:task.metadata.steps}});
   for(const [ordinal,failed,passed,fingerprint] of [[1,2,4,"prior"],[2,1,5,"remaining"]])await f.storage.recordAutonomyStep({taskId:task.id,stepId:`${ordinal}:run_focused_tests`,stepType:"run_focused_tests",capability:"test_local",operationFingerprint:fingerprint,status:"failed",errorCode:"test_failed",result:{diagnostics:{fingerprint,counts:{tests:6,failed,passed,skipped:0},failedFiles:["test/composer-dictation.test.js"],failedTitles:["remaining"]}}});
-  task=await f.storage.updateAutonomyTask(task.id,OWNER,{status:"failed",currentStep:1,currentPhase:"run_focused_tests",errorCode:"repair_limit_reached",repairIteration:2});return{...f,task,plan};
+  task=await f.storage.updateAutonomyTask(task.id,OWNER,{status:"failed",currentStep:1,currentPhase:"run_focused_tests",errorCode,repairIteration});return{...f,task,plan};
 }
 
 test("genuine repair-limit exhaustion requires one exact owner-approved extension",async()=>{
@@ -818,6 +943,15 @@ async function completedDiscoveryFixture({
       },
     }),
     created = await f.service.create({ userGoal: goal });
+  const createdTask = await f.runtime.get(created.task.id),
+    legacyRequest = { ...createdTask.metadata.selfDevelopment };
+  delete legacyRequest.intent;
+  await f.storage.updateAutonomyTask(created.task.id, OWNER, {
+    metadata: {
+      ...createdTask.metadata,
+      selfDevelopment: legacyRequest,
+    },
+  });
   for (let index = 0; index < created.plan.length; index++)
     await f.runtime.tickTask(created.task.id, {
       idempotencyKey: `discovery-${index}`,
@@ -857,6 +991,35 @@ test("completed discovery-only task is replanned in place from durable evidence"
   assert.ok(result.continuationSteps.includes("review_commit"));
   assert.ok(result.continuationSteps.includes("push"));
   assert.equal(result.task.metadata.autoDispatch, true);
+});
+test("new scope-blocked implementation task reuses discovery-only replan in place", async () => {
+  const f = await fixture({
+      execute(name) {
+        if (name === "repo_list") return { ok: true, files: candidates() };
+        if (name === "repo_search") return { ok: true, matches: [] };
+        return { ok: true };
+      },
+    }),
+    created = await f.service.create({
+      userGoal: "Implement a harmless documentation improvement",
+    });
+  for (let index = 0; index < created.plan.length; index++)
+    await f.runtime.tickTask(created.task.id, {
+      idempotencyKey: `blocked-replan-${index}`,
+    });
+  const blocked = await f.runtime.get(created.task.id);
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.errorCode, "implementation_scope_required");
+  const result = await f.service.replanDiscoveryOnly(blocked.id, {
+    expectedVersion: blocked.stateVersion,
+    runtimeBudgetMinutes: 60,
+    candidatePaths: candidates(),
+  });
+  assert.equal(result.task.id, blocked.id);
+  assert.equal(result.task.status, "queued");
+  assert.equal(result.task.metadata.selfDevelopment.intent, "implementation");
+  assert.ok(result.continuationSteps.includes("plan_implementation"));
+  assert.ok(result.continuationSteps.includes("review_commit"));
 });
 test("replan preserves completed checkpoints and resets only the bounded runtime window", async () => {
   const f = await completedDiscoveryFixture(),
@@ -924,6 +1087,67 @@ test("replan requires every candidate in durable discovery evidence", async () =
     f.service.replanDiscoveryOnly(f.task.id, {
       ...f.input,
       candidatePaths: ["assets/console.js", "test/self-development.test.js"],
+    }),
+    "replan_scope_not_discovered",
+  );
+});
+
+test("terminal focused-test failure at the exact repair limit is eligible for the same one-attempt approval",async()=>{
+  const f=await exhaustedFocusedRepairFixture({errorCode:"test_failed"}),requested=await f.service.requestEscalatedRepair(f.task.id,{expectedVersion:f.task.stateVersion});
+  assert.equal(requested.approval.status,"pending");assert.equal(requested.approval.arguments.maxAdditionalAttempts,1);
+  await assert.rejects(()=>f.service.recoverEscalatedRepair(f.task.id,{expectedVersion:f.task.stateVersion,approvalId:requested.approval.id}),error=>error.code==="escalated_repair_recovery_precondition_failed");
+  await f.storage.decideApproval(requested.approval.id,OWNER,"approved");const recovered=await f.service.recoverEscalatedRepair(f.task.id,{expectedVersion:f.task.stateVersion,approvalId:requested.approval.id});
+  assert.equal(recovered.recovery.maxAdditionalAttempts,1);assert.equal(recovered.task.metadata.activeContinuation.maxSteps,9);assert.equal(recovered.task.metadata.escalatedRepairHistory.length,1);
+  const before=await f.storage.listAutonomySteps(f.task.id);assert.equal(before.filter(step=>step.stepType==="apply_patch").length,0);
+  await assert.rejects(()=>f.service.requestEscalatedRepair(recovered.task.id,{expectedVersion:recovered.task.stateVersion}),error=>["escalated_repair_precondition_failed","version_conflict"].includes(error.code));
+});
+
+test("test_failed is not equivalent exhaustion below the configured repair limit",async()=>{
+  const f=await exhaustedFocusedRepairFixture({errorCode:"test_failed",repairIteration:1});
+  await assert.rejects(()=>f.service.requestEscalatedRepair(f.task.id,{expectedVersion:f.task.stateVersion}),error=>error.code==="escalated_repair_precondition_failed");
+});
+
+test("escalated repair rejects unrelated terminal codes and missing progress proof",async()=>{
+  const unrelated=await exhaustedFocusedRepairFixture({errorCode:"patch_conflict"});
+  await assert.rejects(()=>unrelated.service.requestEscalatedRepair(unrelated.task.id,{expectedVersion:unrelated.task.stateVersion}),error=>error.code==="escalated_repair_precondition_failed");
+  const noProgress=await exhaustedFocusedRepairFixture({errorCode:"test_failed"});await noProgress.storage.updateAutonomyStep(noProgress.task.id,"1:run_focused_tests",{result:{diagnostics:{fingerprint:"prior",counts:{tests:6,failed:1,passed:5},failedFiles:["test/composer-dictation.test.js"]}}});
+  await assert.rejects(()=>noProgress.service.requestEscalatedRepair(noProgress.task.id,{expectedVersion:noProgress.task.stateVersion}),error=>error.code==="escalated_repair_precondition_failed");
+});
+test("replan accepts inventory-truncated candidates only when the exact bound commit proves they exist", async () => {
+  const f = await completedDiscoveryFixture();
+  f.service = createSelfDevelopmentService({
+    runtime: f.runtime,
+    storage: f.storage,
+    ownerId: OWNER,
+    currentCommit: SHA,
+    resolvePathState: async (path, commitSha) => ({
+      existsInCommit:
+        commitSha === SHA && path === "test/console-client.test.js",
+    }),
+  });
+  const result = await f.service.replanDiscoveryOnly(f.task.id, {
+    ...f.input,
+    candidatePaths: [discoveredPath, "test/console-client.test.js"],
+  });
+  assert.equal(result.task.status, "queued");
+  assert.deepEqual(
+    result.task.metadata.steps.slice(4, 6).map((step) => step.input.arguments.path),
+    [discoveredPath, "test/console-client.test.js"],
+  );
+});
+test("replan still rejects an inventory-truncated candidate absent from the exact bound commit", async () => {
+  const f = await completedDiscoveryFixture();
+  f.service = createSelfDevelopmentService({
+    runtime: f.runtime,
+    storage: f.storage,
+    ownerId: OWNER,
+    currentCommit: SHA,
+    resolvePathState: async () => ({ existsInCommit: false }),
+  });
+  await rejects(
+    f.service.replanDiscoveryOnly(f.task.id, {
+      ...f.input,
+      candidatePaths: [discoveredPath, "test/console-client.test.js"],
     }),
     "replan_scope_not_discovered",
   );
@@ -1834,6 +2058,82 @@ test("Hands descendant rebind accepts an exact task-owned dirty subset and rebin
 
 test("working-tree-dirty recovery resumes only the exact pre-mutation active replace plan",async()=>{const f=await fixture({currentCommit:NEW_SHA,verifyRemote:async()=>({currentTip:NEW_SHA,ancestors:{[SHA]:true,[NEW_SHA]:true}}),compareRemoteEvidence:async()=>({"assets/voice-input.js":{oldSha:"same",newSha:"same",equivalent:true}})}),files=[{path:"assets/voice-input.js",operation:"replace",expectedContent:"task owned\n",content:"repaired\n"}],plain={files,evidencePaths:["assets/voice-input.js"],planHash:"repair-plan"};await f.storage.createAutonomyTask({id:"dirty-patch-resume",ownerId:OWNER,projectId:"nova-brain",title:"Context",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:SHA,currentCommit:SHA,maxSteps:100,maxRuntimeMinutes:60,metadata:{steps:[{type:"plan_repair",input:{arguments:{}},idempotencyIdentity:"p"},{type:"apply_patch",input:{arguments:{}},idempotencyIdentity:"a"},{type:"run_focused_tests",input:{arguments:{}},idempotencyIdentity:"t"}],selfDevelopment:{userGoal:"Implement",acceptanceCriteria:["safe"]},implementationPlanGenerations:[]}});let task=await f.storage.getAutonomyTask("dirty-patch-resume",OWNER),plan={...plain,provenance:bindImplementationPlan({task,plan:plain,evidence:[{path:"assets/voice-input.js",content:"task owned\n"}],readStepIds:["evidence"]})};await f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...planLifecycleMetadata(task,plan),steps:task.metadata.steps}});await f.storage.recordAutonomyStep({taskId:task.id,stepId:"1:plan_repair",stepType:"plan_repair",capability:"reasoning",operationFingerprint:"p",status:"completed",result:{implementationPlan:plan}});await f.storage.recordAutonomyStep({taskId:task.id,stepId:"2:apply_patch",stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:"a",status:"failed",errorCode:"working_tree_dirty",result:{mutationApplied:false,changed:false,changedFiles:[]}});const failed=await f.storage.updateAutonomyTask(task.id,OWNER,{status:"failed",currentStep:1,errorCode:"working_tree_dirty"}),content=Buffer.from("task owned\n"),hash=createHash("sha1").update(Buffer.from(`blob ${content.length}\0`)).update(content).digest("hex"),workspace={root:"C:/controlled/nova-brain",gitTopLevel:"C:/controlled/nova-brain",head:NEW_SHA,clean:false,changedFiles:[{path:"assets/voice-input.js",hashAlgorithm:"git_sha1",hash}]},recovered=await f.service.recoverHandsWorkingTreeDirty(task.id,{expectedVersion:failed.stateVersion,workspace});assert.equal(recovered.task.status,"waiting_for_worker");assert.equal(recovered.task.currentCommit,NEW_SHA);assert.equal(recovered.task.metadata.activeContinuation.recoveryClass,"task_owned_dirty_patch_resume");assert.equal(recovered.task.metadata.steps.at(-2).type,"apply_patch");assert.equal((await f.service.recoverHandsWorkingTreeDirty(task.id,{expectedVersion:failed.stateVersion,workspace})).idempotent,true);});
 
+test("partial repair-plan recovery replans the exact prior same-task dirty output before mutation",async()=>{
+  const paths=["assets/console.js","assets/voice-input.js","index.html"],contents=Object.fromEntries(paths.map((path,index)=>[path,`nova output ${index}\n`])),runtimeVersion="d".repeat(40);
+  const gitHash=content=>{const bytes=Buffer.from(content);return createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");};
+  async function setup({id="partial-plan",workspaceRoot="C:/controlled/nova-brain",workspaceHead=NEW_SHA,remoteTip=NEW_SHA,changedFiles=paths.map(path=>({path,hashAlgorithm:"git_sha1",hash:gitHash(contents[path])}))}={}){
+    const verifyRemote=async()=>({currentTip:remoteTip,ancestors:{[NEW_SHA]:true,[workspaceHead]:remoteTip===workspaceHead}}),compareRemoteEvidence=async()=>({}),f=await fixture({currentCommit:runtimeVersion,runtimeVersion,verifyRemote,compareRemoteEvidence}),templates=[
+      {type:"plan_repair",input:{arguments:{}},idempotencyIdentity:"prior-plan"},{type:"apply_patch",input:{arguments:{}},idempotencyIdentity:"prior-apply"},{type:"run_focused_tests",input:{arguments:{}},idempotencyIdentity:"prior-test"},{type:"plan_repair",input:{arguments:{}},idempotencyIdentity:"active-plan"},{type:"apply_patch",input:{arguments:{}},idempotencyIdentity:"active-apply"},{type:"run_focused_tests",input:{arguments:{}},idempotencyIdentity:"active-test"},
+    ];
+    await f.storage.createAutonomyTask({id,ownerId:OWNER,projectId:"nova-brain",title:"Partial",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:NEW_SHA,currentCommit:NEW_SHA,maxSteps:100,maxRuntimeMinutes:60,metadata:{steps:templates,selfDevelopment:{repository:"hshanbour/nova-brain",userGoal:"Implement",acceptanceCriteria:["safe"]},implementationPlanGenerations:[]}});
+    let task=await f.storage.getAutonomyTask(id,OWNER),prior={files:paths.map(path=>({path,operation:"replace",expectedContent:`old ${path}\n`,content:contents[path]})),evidencePaths:paths,planHash:"prior"};
+    prior={...prior,provenance:bindImplementationPlan({task,plan:prior,evidence:paths.map(path=>({path,content:`old ${path}\n`})),readStepIds:paths.map((_,index)=>`prior-read-${index}`)})};
+    const activePaths=paths.slice(1),plain={files:activePaths.map(path=>({path,operation:"replace",expectedContent:contents[path],content:`repaired ${path}\n`})),evidencePaths:activePaths,planHash:"active"},active={...plain,provenance:bindImplementationPlan({task,plan:plain,evidence:activePaths.map(path=>({path,content:contents[path]})),readStepIds:activePaths.map((_,index)=>`active-read-${index}`)})};
+    await f.storage.updateAutonomyTask(id,OWNER,{metadata:{...planLifecycleMetadata(task,active),steps:templates}});
+    for(const step of [
+      {stepId:"1:plan_repair",stepType:"plan_repair",status:"completed",result:{implementationPlan:prior}},
+      {stepId:"2:apply_patch",stepType:"apply_patch",status:"completed",result:{files:paths,mutationApplied:true,changed:true}},
+      {stepId:"4:plan_repair",stepType:"plan_repair",status:"completed",result:{implementationPlan:active}},
+      {stepId:"5:apply_patch",stepType:"apply_patch",status:"failed",errorCode:"working_tree_dirty",result:{mutationApplied:false,changed:false,changedFiles:[]}},
+    ])await f.storage.recordAutonomyStep({taskId:id,capability:"reasoning",operationFingerprint:step.stepId,...step});
+    const failed=await f.storage.updateAutonomyTask(id,OWNER,{status:"failed",currentStep:4,errorCode:"working_tree_dirty"});
+    const workspaceProof={root:workspaceRoot,gitTopLevel:workspaceRoot,repository:"hshanbour/nova-brain",branch:BRANCH,head:workspaceHead,liveTip:remoteTip,clean:false,changedFiles};
+    return{f,failed,workspace:{root:workspaceRoot,gitTopLevel:workspaceRoot,head:workspaceHead,clean:false,changedFiles},workspaceProof,makeService(version){return createSelfDevelopmentService({runtime:f.runtime,storage:f.storage,ownerId:OWNER,currentCommit:version,runtimeVersion:version,verifyRemote,compareRemoteEvidence});},async attest(overrides={},actorOverrides={}){const proof={...workspaceProof,...overrides};return f.service.attestHandsWorkspace(id,{expectedVersion:failed.stateVersion,runtimeVersion,workerId:"persistent-worker",sourceApplyStepId:"2:apply_patch",workspaceProof:proof,workspaceProofSignature:"signed"},{actorType:"scoped_local_worker",workspaceProof:proof,...actorOverrides});}};
+  }
+  const exact=await setup(),attested=await exact.attest(),duplicate=await exact.attest(),recoveryInput={expectedVersion:exact.failed.stateVersion,runtimeVersion,workspace:exact.workspace},recovered=await exact.f.service.recoverHandsWorkingTreeDirty(exact.failed.id,recoveryInput);
+  assert.equal(duplicate.idempotent,true);assert.equal(duplicate.attestation.attestationId,attested.attestation.attestationId);
+  assert.equal(attested.attestation.representation,"current_verified_workspace_linked_to_historical_apply");assert.equal(attested.attestation.historicalProvenanceClaim,false);assert.equal(attested.attestation.taskStateVersion,exact.failed.stateVersion);assert.equal(attested.attestation.sourceApplyStepId,"2:apply_patch");assert.equal((await exact.f.storage.getAutonomyTask(exact.failed.id,OWNER)).stateVersion,recovered.task.stateVersion);
+  assert.equal(recovered.recoveryCode,"repair_plan_incomplete");assert.equal(recovered.mutationApplied,false);assert.deepEqual(recovered.requiredPaths,paths);assert.equal(recovered.task.status,"queued");assert.equal(recovered.task.currentPhase,"plan_repair");assert.deepEqual(recovered.task.metadata.steps.at(-3).input.arguments.candidatePaths,paths);assert.deepEqual(recovered.task.metadata.steps.at(-3).input.arguments.failureEvidence.requiredPaths,paths);assert.equal(recovered.task.metadata.selfDevelopmentImplementationPlan,null);assert.equal(recovered.task.metadata.activeContinuation.recoveryClass,"task_owned_dirty_partial_plan_replan");assert.equal((await exact.f.service.recoverHandsWorkingTreeDirty(exact.failed.id,recoveryInput)).idempotent,true);
+  const postgresShape=await setup({id:"partial-postgres-jsonb"}),postgresAttested=await postgresShape.attest(),stored={...postgresAttested.attestation,workspaceRoot:postgresAttested.attestation.workspaceRoot.replaceAll("/","\\"),dirtyFiles:postgresAttested.attestation.dirtyFiles.map(({path,hashAlgorithm,hash})=>({hash,path,hashAlgorithm}))};
+  await postgresShape.f.storage.appendActivity({ownerId:OWNER,projectId:"nova-brain",runId:postgresShape.failed.id,action:"self_development_workspace_attested",status:"completed",summary:"Postgres jsonb-shaped attestation",metadata:stored});
+  const postgresRecovered=await postgresShape.f.service.recoverHandsWorkingTreeDirty(postgresShape.failed.id,{expectedVersion:postgresShape.failed.stateVersion,runtimeVersion,workspace:postgresShape.workspace});assert.equal(postgresRecovered.recoveryCode,"repair_plan_incomplete");assert.deepEqual(postgresRecovered.requiredPaths,paths);
+  const transitioned=await setup({id:"partial-runtime-transition"}),oldAttestation=await transitioned.attest(),nextRuntime="e".repeat(40),nextService=transitioned.makeService(nextRuntime),nextInput={expectedVersion:transitioned.failed.stateVersion,runtimeVersion:nextRuntime,workerId:"persistent-worker-next",sourceApplyStepId:"2:apply_patch",workspaceProof:transitioned.workspaceProof,workspaceProofSignature:"signed"},nextActor={actorType:"scoped_local_worker",workspaceProof:transitioned.workspaceProof},fresh=await nextService.attestHandsWorkspace(transitioned.failed.id,nextInput,nextActor),freshDuplicate=await nextService.attestHandsWorkspace(transitioned.failed.id,nextInput,nextActor);assert.equal(fresh.idempotent,false);assert.notEqual(fresh.attestation.attestationId,oldAttestation.attestation.attestationId);assert.equal(fresh.attestation.runtimeVersion,nextRuntime);assert.equal(fresh.attestation.supersedesAttestationId,oldAttestation.attestation.attestationId);assert.equal(freshDuplicate.idempotent,true);assert.equal(freshDuplicate.attestation.attestationId,fresh.attestation.attestationId);const beforeTransitionedRecovery=await transitioned.f.storage.getAutonomyTask(transitioned.failed.id,OWNER);assert.equal(beforeTransitionedRecovery.stateVersion,transitioned.failed.stateVersion);assert.equal(beforeTransitionedRecovery.status,"failed");const transitionedRecovery=await nextService.recoverHandsWorkingTreeDirty(transitioned.failed.id,{expectedVersion:transitioned.failed.stateVersion,runtimeVersion:nextRuntime,workspace:transitioned.workspace});assert.equal(transitionedRecovery.recoveryCode,"repair_plan_incomplete");
+  const superseded=await setup({id:"partial-superseded-attestation"}),valid=await superseded.attest();await superseded.f.storage.appendActivity({ownerId:OWNER,projectId:"nova-brain",runId:superseded.failed.id,action:"self_development_workspace_attested",status:"completed",summary:"Later mismatched attestation supersedes the prior one",metadata:{...valid.attestation,attestationId:"later",runtimeVersion:"e".repeat(40)}});const beforeSuperseded=await superseded.f.storage.getAutonomyTask(superseded.failed.id,OWNER);await assert.rejects(()=>superseded.f.service.recoverHandsWorkingTreeDirty(superseded.failed.id,{expectedVersion:superseded.failed.stateVersion,runtimeVersion,workspace:superseded.workspace}),error=>error.code==="hands_context_recovery_dirty_unproven");assert.equal((await superseded.f.storage.getAutonomyTask(superseded.failed.id,OWNER)).stateVersion,beforeSuperseded.stateVersion);
+  for(const [name,patch] of [
+    ["task",value=>({...value,taskId:"another-task"})],["version",value=>({...value,taskStateVersion:value.taskStateVersion+1})],["repository",value=>({...value,repository:"other/repository"})],["branch",value=>({...value,branch:"feat/other"})],["workspace",value=>({...value,workspaceRoot:"C:/other/workspace"})],["head",value=>({...value,productHead:"e".repeat(40)})],["source plan",value=>({...value,sourcePlanStepId:"25:plan_repair"})],["source apply",value=>({...value,sourceApplyStepId:"26:apply_patch"})],["fingerprint",value=>({...value,sourceApplyFingerprint:"other"})],["dirty evidence",value=>({...value,dirtyFiles:value.dirtyFiles.map((item,index)=>index?item:{...item,hash:"0".repeat(40)})})],
+  ]){const sample=await setup({id:`partial-attestation-${name.replaceAll(" ","-")}`}),created=await sample.attest();await sample.f.storage.appendActivity({ownerId:OWNER,projectId:"nova-brain",runId:sample.failed.id,action:"self_development_workspace_attested",status:"completed",summary:"Mismatched newest attestation",metadata:{...patch(created.attestation),attestationId:`wrong-${name}`}});const before=await sample.f.storage.getAutonomyTask(sample.failed.id,OWNER);await assert.rejects(()=>sample.f.service.recoverHandsWorkingTreeDirty(sample.failed.id,{expectedVersion:sample.failed.stateVersion,runtimeVersion,workspace:sample.workspace}),error=>error.code==="hands_context_recovery_dirty_unproven");assert.equal((await sample.f.storage.getAutonomyTask(sample.failed.id,OWNER)).stateVersion,before.stateVersion);}
+  for(const variant of [
+    {name:"hash drift",changedFiles:paths.map((path,index)=>({path,hashAlgorithm:"git_sha1",hash:index?gitHash(contents[path]):"0".repeat(40)}))},
+    {name:"unrelated dirty file",changedFiles:[...paths.map(path=>({path,hashAlgorithm:"git_sha1",hash:gitHash(contents[path])})),{path:"README.md",hashAlgorithm:"git_sha1",hash:"0".repeat(40)}]},
+  ]){const sample=await setup({id:`partial-${variant.name}`,workspaceRoot:variant.workspaceRoot,changedFiles:variant.changedFiles});await assert.rejects(()=>sample.attest(),error=>["workspace_attestation_dirty_lineage_mismatch","workspace_attestation_invalid"].includes(error.code));assert.equal((await sample.f.storage.getAutonomyTask(sample.failed.id,OWNER)).stateVersion,sample.failed.stateVersion);}
+  const wrongWorkspace=await setup({id:"partial-wrong-workspace"});await wrongWorkspace.attest();await assert.rejects(()=>wrongWorkspace.f.service.recoverHandsWorkingTreeDirty(wrongWorkspace.failed.id,{expectedVersion:wrongWorkspace.failed.stateVersion,runtimeVersion,workspace:{...wrongWorkspace.workspace,root:"C:/other/nova-brain",gitTopLevel:"C:/other/nova-brain"}}),error=>error.code==="hands_context_recovery_dirty_unproven");
+  for(const variant of [
+    {name:"wrong product head",workspaceHead:"e".repeat(40),remoteTip:NEW_SHA,code:"hands_context_ancestry_mismatch"},
+    {name:"wrong live product tip",workspaceHead:NEW_SHA,remoteTip:"e".repeat(40),code:"hands_context_ancestry_mismatch"},
+  ]){const sample=await setup({id:`partial-${variant.name}`,workspaceHead:variant.workspaceHead,remoteTip:variant.remoteTip});await assert.rejects(()=>sample.f.service.recoverHandsWorkingTreeDirty(sample.failed.id,{expectedVersion:sample.failed.stateVersion,runtimeVersion,workspace:sample.workspace}),error=>error.code===variant.code);assert.equal((await sample.f.storage.getAutonomyTask(sample.failed.id,OWNER)).stateVersion,sample.failed.stateVersion);}
+  const wrongRuntime=await setup({id:"partial-wrong-runtime"});await assert.rejects(()=>wrongRuntime.f.service.recoverHandsWorkingTreeDirty(wrongRuntime.failed.id,{expectedVersion:wrongRuntime.failed.stateVersion,runtimeVersion:"e".repeat(40),workspace:wrongRuntime.workspace}),error=>error.code==="hands_context_recovery_invalid");assert.equal((await wrongRuntime.f.storage.getAutonomyTask(wrongRuntime.failed.id,OWNER)).stateVersion,wrongRuntime.failed.stateVersion);
+  for(const variant of [
+    {name:"repository",patch:task=>({metadata:{...task.metadata,selfDevelopment:{...task.metadata.selfDevelopment,repository:"other/repository"}}})},
+    {name:"branch",patch:()=>({branch:"feat/other"})},
+  ]){const sample=await setup({id:`partial-wrong-${variant.name}`}),changed=await sample.f.storage.updateAutonomyTask(sample.failed.id,OWNER,variant.patch(sample.failed),sample.failed.stateVersion);await assert.rejects(()=>sample.f.service.recoverHandsWorkingTreeDirty(changed.id,{expectedVersion:changed.stateVersion,runtimeVersion,workspace:sample.workspace}),error=>error.code==="hands_context_recovery_precondition_failed");assert.equal((await sample.f.storage.getAutonomyTask(changed.id,OWNER)).stateVersion,changed.stateVersion);}
+});
+
+test("v148 partial-repair planner evidence failure rebinds only its exact bounded continuation",async()=>{
+  const runtimeVersion="d".repeat(40),f=await fixture({currentCommit:runtimeVersion,runtimeVersion}),templates=[{type:"plan_repair",input:{arguments:{}},idempotencyIdentity:"source-plan"},{type:"apply_patch",input:{arguments:{}},idempotencyIdentity:"source-apply"},{type:"run_full_tests",input:{arguments:{}},idempotencyIdentity:"source-full"},{type:"inspect_failure",input:{arguments:{}},idempotencyIdentity:"inspect"},{type:"plan_repair",input:{tool:"self_development_plan_implementation",arguments:{taskId:"v148-rebind",candidatePaths:["assets/voice-input.js","test/voice-input.test.js"],currentCommit:"$CURRENT_COMMIT",failureEvidence:{code:"repair_plan_incomplete",fingerprint:"lineage-fingerprint",requiredPaths:["assets/voice-input.js","test/voice-input.test.js"],sourcePlanStepId:"1:plan_repair",sourceApplyStepId:"2:apply_patch"}}},idempotencyIdentity:"replan"},{type:"apply_patch",input:{arguments:{}},idempotencyIdentity:"apply"},{type:"run_focused_tests",input:{arguments:{}},idempotencyIdentity:"focused"},{type:"run_full_tests",input:{arguments:{}},idempotencyIdentity:"full"}],generationId="partial-generation",extension=[{approvalId:"approved-once",recoveryClass:"owner_approved_single_repair_extension",maxAdditionalAttempts:1}];
+  await f.storage.createAutonomyTask({id:"v148-rebind",ownerId:OWNER,projectId:"nova-brain",title:"v148",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:NEW_SHA,currentCommit:NEW_SHA,maxSteps:100,maxRuntimeMinutes:60,metadata:{steps:templates,selfDevelopment:{repository:"hshanbour/nova-brain",userGoal:"Implement",acceptanceCriteria:["safe"]},activeContinuation:{generationId,runtimeDeadline:"2000-01-01T00:00:00.000Z"},escalatedRepairHistory:extension,partialRepairPlanRecoveryHistory:[{taskId:"v148-rebind",previousStateVersion:145,repository:"hshanbour/nova-brain",branch:BRANCH,currentCommit:NEW_SHA,workspaceRoot:"C:/controlled/nova-brain",fingerprint:"lineage-fingerprint",sourcePlanStepId:"1:plan_repair",sourceApplyStepId:"2:apply_patch",requiredPaths:["assets/voice-input.js","test/voice-input.test.js"],entries:[{path:"assets/voice-input.js",contentHash:"a".repeat(64)},{path:"test/voice-input.test.js",contentHash:"b".repeat(64)}],activeContinuation:{generationId}}]}});
+  for(const step of [{stepId:"1:plan_repair",stepType:"plan_repair",status:"completed",result:{implementationPlan:{files:[]}}},{stepId:"2:apply_patch",stepType:"apply_patch",status:"completed",result:{files:[],taskOwnedDirtyLineage:{version:1}}},{stepId:"5:plan_repair",stepType:"plan_repair",status:"failed",errorCode:"implementation_evidence_incomplete",result:{message:"Task-owned repair evidence no longer matches its durable lineage."},input:templates[4].input}])await f.storage.recordAutonomyStep({taskId:"v148-rebind",capability:"reasoning",operationFingerprint:step.stepId,...step});
+  const created=await f.storage.getAutonomyTask("v148-rebind",OWNER);await f.storage.updateAutonomyTask("v148-rebind",OWNER,{status:"failed",currentStep:4,currentPhase:"plan_repair",errorCode:"implementation_evidence_incomplete",repairIteration:3},created.stateVersion);const before=await f.storage.getAutonomyTask("v148-rebind",OWNER),failed=before,recovered=await f.service.recoverImplementationPlan("v148-rebind",{expectedVersion:before.stateVersion}),added=recovered.task.metadata.steps.slice(templates.length);assert.equal(recovered.task.status,"queued");assert.equal(recovered.task.currentStep,templates.length);assert.deepEqual(added.slice(0,2).map(step=>step.type),["read_files","read_files"]);assert.deepEqual(added.slice(0,2).map(step=>step.input.arguments.path),["assets/voice-input.js","test/voice-input.test.js"]);assert.equal(added[2].type,"plan_repair");assert.equal(recovered.task.metadata.activeContinuation.recoveryClass,"partial_repair_plan_evidence_rebind");assert.equal(recovered.task.metadata.activeContinuation.maxSteps,10);assert.equal(recovered.task.metadata.requiredCapability,"repo_read_remote");assert.equal(recovered.task.metadata.partialRepairPlanRecoveryHistory.at(-1).activeContinuation.generationId,recovered.task.metadata.activeContinuation.generationId);assert.notEqual(recovered.task.metadata.activeContinuation.runtimeDeadline,before.metadata.activeContinuation.runtimeDeadline);assert.equal(recovered.task.repairIteration,3);assert.deepEqual(recovered.task.metadata.escalatedRepairHistory,extension);assert.equal((await f.service.recoverImplementationPlan("v148-rebind",{expectedVersion:before.stateVersion})).idempotent,true);
+  for(const [offset,path] of [[1,"assets/voice-input.js"],[2,"test/voice-input.test.js"]])await f.storage.recordAutonomyStep({taskId:"v148-rebind",stepId:`${templates.length+offset}:read_files`,stepType:"read_files",capability:"repo_read_remote",operationFingerprint:`fresh-read-${offset}`,status:"completed",input:added[offset-1].input,result:{path,content:`current ${path}`,truncated:false}});await f.storage.recordAutonomyStep({taskId:"v148-rebind",stepId:`${templates.length+3}:plan_repair`,stepType:"plan_repair",capability:"reasoning",operationFingerprint:"v151-plan",status:"failed",errorCode:"implementation_evidence_incomplete",input:added[2].input,result:{message:"Every candidate file must be read completely before implementation planning."}});const v151=await f.storage.updateAutonomyTask("v148-rebind",OWNER,{status:"failed",currentStep:templates.length+2,currentPhase:"plan_repair",errorCode:"implementation_evidence_incomplete"},recovered.task.stateVersion),upgradedRuntime="e".repeat(40),upgraded=createSelfDevelopmentService({runtime:f.runtime,storage:f.storage,ownerId:OWNER,currentCommit:upgradedRuntime,runtimeVersion:upgradedRuntime}),reread=await upgraded.recoverImplementationPlan("v148-rebind",{expectedVersion:v151.stateVersion}),rereadAdded=reread.task.metadata.steps.slice(recovered.task.metadata.steps.length);assert.deepEqual(rereadAdded.slice(0,2).map(step=>step.type),["read_files","read_files"]);assert.equal(rereadAdded[2].type,"plan_repair");assert.equal(reread.task.metadata.implementationPlanRecoveryHistory.at(-1).runtimeVersion,upgradedRuntime);assert.equal(reread.task.repairIteration,3);assert.deepEqual(reread.task.metadata.escalatedRepairHistory,extension);
+  const rejected=await fixture({currentCommit:runtimeVersion,runtimeVersion});await rejected.storage.createAutonomyTask({id:"v148-reject",ownerId:OWNER,projectId:"nova-brain",title:"reject",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:NEW_SHA,currentCommit:NEW_SHA,maxSteps:100,maxRuntimeMinutes:60,metadata:{steps:templates,selfDevelopment:{repository:"hshanbour/nova-brain",userGoal:"Implement",acceptanceCriteria:["safe"]},activeContinuation:{generationId},partialRepairPlanRecoveryHistory:[{taskId:"v148-reject",repository:"hshanbour/nova-brain",branch:BRANCH,currentCommit:NEW_SHA,fingerprint:"wrong",sourcePlanStepId:"1:plan_repair",sourceApplyStepId:"2:apply_patch",requiredPaths:["assets/voice-input.js","test/voice-input.test.js"],activeContinuation:{generationId}}]}});await rejected.storage.recordAutonomyStep({taskId:"v148-reject",stepId:"5:plan_repair",stepType:"plan_repair",capability:"reasoning",operationFingerprint:"failed",status:"failed",errorCode:"implementation_evidence_incomplete",input:templates[4].input,result:{message:"Task-owned repair evidence no longer matches its durable lineage."}});const rejectedFailed=await rejected.storage.updateAutonomyTask("v148-reject",OWNER,{status:"failed",currentStep:4,errorCode:"implementation_evidence_incomplete"}),rejectedBefore=await rejected.storage.getAutonomyTask("v148-reject",OWNER);await assert.rejects(()=>rejected.service.recoverImplementationPlan("v148-reject",{expectedVersion:rejectedFailed.stateVersion}),error=>error.code==="implementation_plan_recovery_precondition_failed");assert.equal((await rejected.storage.getAutonomyTask("v148-reject",OWNER)).stateVersion,rejectedBefore.stateVersion);
+});
+
+test("v169 task-owned untracked read failure rebinds only the remaining reads to local Hands",async()=>{const oldRuntime="d".repeat(40),newRuntime="e".repeat(40),f=await fixture({currentCommit:oldRuntime,runtimeVersion:oldRuntime}),id="v169-local-read",paths=["test/task-owned.integration.test.js","test/console-static.test.js"],generation="g".repeat(64),started="2026-09-13T19:39:24.375Z",templates=[{type:"plan_repair",input:{arguments:{}}},{type:"apply_patch",input:{arguments:{}}},...paths.map(path=>({type:"read_files",capability:"repo_read_remote",input:{tool:"repo_read",arguments:{path,startLine:1,endLine:1000}}})),{type:"plan_repair",input:{tool:"self_development_plan_implementation",arguments:{taskId:id,candidatePaths:paths,currentCommit:"$CURRENT_COMMIT",failureEvidence:{code:"repair_plan_incomplete",fingerprint:"lineage",requiredPaths:paths,sourcePlanStepId:"1:plan_repair",sourceApplyStepId:"2:apply_patch"}}}}];await f.storage.createAutonomyTask({id,ownerId:OWNER,projectId:"nova-brain",title:"v169",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:NEW_SHA,currentCommit:NEW_SHA,maxSteps:100,maxRuntimeMinutes:60,metadata:{steps:templates,selfDevelopment:{repository:"hshanbour/nova-brain",repairLimit:3},activeContinuation:{generationId:generation,recoveryClass:"partial_repair_plan_evidence_rebind",runtimeStartedAt:started,runtimeDeadline:"2099-01-01T00:00:00.000Z"},partialRepairPlanRecoveryHistory:[{taskId:id,repository:"hshanbour/nova-brain",branch:BRANCH,currentCommit:NEW_SHA,workspaceRoot:"C:/controlled/nova",fingerprint:"lineage",sourcePlanStepId:"1:plan_repair",sourceApplyStepId:"2:apply_patch",requiredPaths:paths,entries:paths.map((path,index)=>({path,contentHash:String(index+1).repeat(64)})),activeContinuation:{generationId:generation}}],implementationPlanRecoveryHistory:[{recoveryClass:"partial_repair_plan_evidence_rebind",fingerprint:"lineage",sourcePlanStepId:"1:plan_repair",sourceApplyStepId:"2:apply_patch",runtimeVersion:oldRuntime,recoveredAt:started}]}});await f.storage.recordAutonomyStep({taskId:id,stepId:"1:plan_repair",stepType:"plan_repair",capability:"reasoning",operationFingerprint:"plan",status:"completed",result:{implementationPlan:{files:paths.map(path=>({path,content:"owned"}))}}});await f.storage.recordAutonomyStep({taskId:id,stepId:"2:apply_patch",stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:"f".repeat(64),status:"completed",result:{files:paths,taskOwnedDirtyLineage:{version:1,taskId:id,repository:"hshanbour/nova-brain",branch:BRANCH,currentCommit:NEW_SHA,sourcePlanStepId:"1:plan_repair",entries:paths.map((path,index)=>({path,contentHash:String(index+1).repeat(64)}))}}});await f.storage.recordAutonomyStep({taskId:id,stepId:"3:read_files",stepType:"read_files",capability:"repo_read_remote",operationFingerprint:"read",status:"failed",errorCode:"remote_repository_failed",input:templates[2].input,result:{message:"Repository request failed with status 404."}});const failed=await f.storage.updateAutonomyTask(id,OWNER,{status:"failed",currentStep:2,currentPhase:"read_files",errorCode:"remote_repository_failed"}),service=createSelfDevelopmentService({runtime:f.runtime,storage:f.storage,ownerId:OWNER,currentCommit:newRuntime,runtimeVersion:newRuntime}),recovered=await service.recoverImplementationPlan(id,{expectedVersion:failed.stateVersion}),added=recovered.task.metadata.steps.slice(templates.length),record=recovered.task.metadata.implementationPlanRecoveryHistory.at(-1);assert.equal(recovered.task.status,"waiting_for_worker");assert.deepEqual(added.slice(0,2).map(step=>step.input.tool),["repo_read_task_owned_local","repo_read_task_owned_local"]);assert.deepEqual(added.slice(0,2).map(step=>step.input.arguments.path),paths);assert.equal(added[2].type,"plan_repair");assert.equal(recovered.task.metadata.activeContinuation.recoveryClass,"task_owned_local_read_recovery");assert.equal(record.runtimeVersion,newRuntime);assert.equal(record.historicalContinuationGenerationId,generation);assert.equal(record.activeContinuation.generationId,recovered.task.metadata.activeContinuation.generationId);assert.notEqual(record.historicalContinuationGenerationId,record.activeContinuation.generationId);assert.equal((await service.recoverImplementationPlan(id,{expectedVersion:failed.stateVersion})).idempotent,true);});
+
+test("expired task-owned local-read continuation receives one exact workspace-bound runtime renewal",async()=>{
+  const runtimeSha="d".repeat(40),productSha=NEW_SHA,id="v170-local-read-renewal",generation="b".repeat(64),started="2025-12-31T23:40:00.000Z",paths=["assets/console.js","test/console-static.test.js","test/voice-input.test.js"],allPaths=["assets/console.css",...paths],entries=allPaths.map((path,index)=>({path,contentHash:String(index+1).repeat(64)})).sort((a,b)=>a.path.localeCompare(b.path)),templates=[{type:"plan_repair",input:{arguments:{}}},{type:"apply_patch",input:{arguments:{}}},...paths.map(path=>({type:"read_files",capability:"repo_read_remote",input:{tool:"repo_read_task_owned_local",arguments:{path}}})),{type:"plan_repair",input:{arguments:{}}}],verifyRemote=async()=>({currentTip:productSha,ancestors:{[productSha]:true}}),f=await fixture({currentCommit:runtimeSha,runtimeVersion:runtimeSha,verifyRemote});
+  await f.storage.createAutonomyTask({id,ownerId:OWNER,projectId:"nova-brain",title:"v170",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:productSha,currentCommit:productSha,maxSteps:100,maxRuntimeMinutes:60,metadata:{steps:templates,selfDevelopment:{repository:"hshanbour/nova-brain",repairLimit:3},partialRepairPlanRecoveryHistory:[{taskId:id,repository:"hshanbour/nova-brain",branch:BRANCH,currentCommit:productSha,workspaceRoot:"C:/controlled/nova",fingerprint:"lineage",sourcePlanStepId:"1:plan_repair",sourceApplyStepId:"2:apply_patch",requiredPaths:allPaths,entries,activeContinuation:{generationId:"a".repeat(64)}}],escalatedRepairHistory:[{approvalId:"already-consumed",maxAdditionalAttempts:1}]}});
+  await f.storage.recordAutonomyStep({taskId:id,stepId:"1:plan_repair",stepType:"plan_repair",capability:"reasoning",operationFingerprint:"plan",status:"completed",result:{implementationPlan:{files:allPaths.map(path=>({path,content:"owned"}))}}});
+  await f.storage.recordAutonomyStep({taskId:id,stepId:"2:apply_patch",stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:"f".repeat(64),status:"completed",result:{files:allPaths,taskOwnedDirtyLineage:{version:1,taskId:id,repository:"hshanbour/nova-brain",branch:BRANCH,currentCommit:productSha,sourcePlanStepId:"1:plan_repair",sourceApplyStepId:"2:apply_patch",entries}}});
+  let task=await f.storage.getAutonomyTask(id,OWNER);while(task.stateVersion<169)task=await f.storage.updateAutonomyTask(id,OWNER,{},task.stateVersion);const active={version:2,generationId:generation,recoveryClass:"task_owned_local_read_recovery",startStep:2,maxSteps:4,runtimeStartedAt:started,runtimeMinutes:15,runtimeDeadline:"2025-12-31T23:55:00.000Z"},recovery={recoveryClass:"task_owned_local_read_recovery",previousStateVersion:169,failedStepId:"3:read_files",sourcePlanStepId:"1:plan_repair",sourceApplyStepId:"2:apply_patch",fingerprint:"lineage",runtimeVersion:"e".repeat(40),readPaths:paths,recoveredAt:started};task=await f.storage.updateAutonomyTask(id,OWNER,{status:"waiting_for_worker",currentStep:2,currentPhase:"read_files",errorCode:null,repairIteration:3,metadata:{...task.metadata,activeContinuation:active,continuationHistory:[active],implementationPlanRecoveryHistory:[recovery],requiredCapability:"repo_read_remote",autoDispatch:true}},task.stateVersion);
+  assert.equal(task.stateVersion,170);const changedFiles=entries.map((item,index)=>({...item,hashAlgorithm:"git_sha1",hash:String(index+1).repeat(40)})),input={expectedVersion:170,runtimeVersion:runtimeSha,workspace:{root:"C:/controlled/nova",gitTopLevel:"C:/controlled/nova",repository:"hshanbour/nova-brain",branch:BRANCH,head:productSha,liveTip:productSha,clean:false,changedFiles}},beforeExtension=structuredClone(task.metadata.escalatedRepairHistory),result=await f.service.resumeFullTestContinuationRuntime(id,input);
+  assert.equal(result.idempotent,false);assert.equal(result.task.stateVersion,171);assert.equal(result.task.repairIteration,3);assert.deepEqual(result.task.metadata.escalatedRepairHistory,beforeExtension);assert.equal(result.task.metadata.activeContinuation.generationId,generation);assert.equal(result.task.metadata.activeContinuation.recoveryClass,"task_owned_local_read_recovery");assert.equal(result.task.metadata.activeContinuation.runtimeMinutes,15);assert.ok(new Date(result.task.metadata.activeContinuation.runtimeDeadline)>new Date(result.task.metadata.activeContinuation.runtimeStartedAt));assert.equal(result.task.metadata.continuationHistory.at(-1).runtimeDeadline,result.task.metadata.activeContinuation.runtimeDeadline);assert.equal(result.task.metadata.continuationRuntimeResumeHistory.length,1);assert.equal(result.task.metadata.continuationRuntimeResumeHistory[0].workerBindingState,"awaiting_worker_bind");assert.equal(result.task.metadata.continuationRuntimeResumeHistory[0].workerId,null);assert.equal((await f.service.resumeFullTestContinuationRuntime(id,input)).idempotent,true);
+  const expiredAgain=await f.storage.updateAutonomyTask(id,OWNER,{metadata:{...result.task.metadata,activeContinuation:{...result.task.metadata.activeContinuation,runtimeDeadline:"2025-12-31T23:59:00.000Z"}}},result.task.stateVersion);await assert.rejects(()=>f.service.resumeFullTestContinuationRuntime(id,{...input,expectedVersion:expiredAgain.stateVersion}),error=>error.code==="continuation_runtime_resume_precondition_failed");const nonExpired=await f.storage.updateAutonomyTask(id,OWNER,{metadata:{...expiredAgain.metadata,continuationRuntimeResumeHistory:[],activeContinuation:{...expiredAgain.metadata.activeContinuation,runtimeDeadline:"2099-01-01T00:00:00.000Z"}}},expiredAgain.stateVersion);await assert.rejects(()=>f.service.resumeFullTestContinuationRuntime(id,{...input,expectedVersion:nonExpired.stateVersion}),error=>error.code==="continuation_runtime_resume_precondition_failed");
+});
+
+test("expired structured full-test continuation retains its existing one-window renewal",async()=>{
+  const f=await fixture(),id="structured-runtime-renewal",generation="a".repeat(64),active={version:2,generationId:generation,recoveryClass:"structured_full_test_evidence_reconstruction",startStep:0,maxSteps:3,runtimeStartedAt:"2025-12-31T23:40:00.000Z",runtimeMinutes:15,runtimeDeadline:"2025-12-31T23:55:00.000Z"};await f.storage.createAutonomyTask({id,ownerId:OWNER,projectId:"nova-brain",title:"structured",objective:"test",taskType:"self_development",branch:BRANCH,startingCommit:SHA,currentCommit:SHA,maxSteps:10,maxRuntimeMinutes:60,metadata:{steps:[{type:"run_full_tests",input:{tool:"test_run_full",arguments:{}}}],selfDevelopment:{repository:"hshanbour/nova-brain"},activeContinuation:active,continuationHistory:[active],fullTestFailureRecoveryHistory:[{recoveryClass:"structured_full_test_evidence_reconstruction",fromStateVersion:1,recoveredAt:active.runtimeStartedAt}]}});const before=await f.storage.getAutonomyTask(id,OWNER),waiting=await f.storage.updateAutonomyTask(id,OWNER,{status:"waiting_for_worker",currentStep:0,currentPhase:"run_full_tests"},before.stateVersion),result=await f.service.resumeFullTestContinuationRuntime(id,{expectedVersion:waiting.stateVersion});assert.equal(result.idempotent,false);assert.equal(result.task.metadata.activeContinuation.generationId,generation);assert.equal(result.task.metadata.activeContinuation.runtimeMinutes,15);assert.equal(result.task.metadata.requiredCapability,"test_local");assert.equal(result.task.metadata.continuationRuntimeResumeHistory.length,1);assert.equal((await f.service.resumeFullTestContinuationRuntime(id,{expectedVersion:waiting.stateVersion})).idempotent,true);
+});
+
 test("focused-test schema recovery replaces only the exact missing files bridge",async()=>{const f=await fixture(),files=[{path:"assets/voice-input.js",operation:"replace",expectedContent:"old\n",content:"new\n"}],plain={files,focusedTests:[{path:"test/composer-dictation.test.js",kind:"existing"}],evidencePaths:["assets/voice-input.js","test/composer-dictation.test.js"],planHash:"repair-plan"};await f.storage.createAutonomyTask({id:"focused-schema",ownerId:OWNER,projectId:"nova-brain",title:"Focused schema",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:SHA,currentCommit:SHA,maxSteps:100,maxRuntimeMinutes:60,metadata:{steps:[{type:"plan_repair",input:{arguments:{}},idempotencyIdentity:"p"},{type:"apply_patch",input:{arguments:{}},idempotencyIdentity:"a"},{type:"run_focused_tests",input:{tool:"test_run",arguments:{tests:"$IMPLEMENTATION_TESTS"}},idempotencyIdentity:"t"},{type:"run_full_tests",input:{tool:"test_run_full",arguments:{}},idempotencyIdentity:"f"}],selfDevelopment:{userGoal:"Implement",acceptanceCriteria:["safe"]},implementationPlanGenerations:[]}});let task=await f.storage.getAutonomyTask("focused-schema",OWNER),plan={...plain,provenance:bindImplementationPlan({task,plan:plain,evidence:[{path:"assets/voice-input.js",content:"old\n"},{path:"test/composer-dictation.test.js",content:"test\n"}],readStepIds:["e1","e2"]})};task=await f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...planLifecycleMetadata(task,plan),steps:task.metadata.steps}});await f.storage.recordAutonomyStep({taskId:task.id,stepId:"1:plan_repair",stepType:"plan_repair",capability:"reasoning",operationFingerprint:"p",status:"completed",result:{implementationPlan:plan}});await f.storage.recordAutonomyStep({taskId:task.id,stepId:"2:apply_patch",stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:"a",status:"completed",result:{files:["assets/voice-input.js"]}});await f.storage.recordAutonomyStep({taskId:task.id,stepId:"3:run_focused_tests",stepType:"run_focused_tests",capability:"test_local",operationFingerprint:"t",status:"failed",errorCode:"schema_mismatch",result:{diagnostics:{tool:"test_run",fieldPath:"test_run.files",validationCode:"required_field_missing",received:{type:"missing"}}}});const failed=await f.storage.updateAutonomyTask(task.id,OWNER,{status:"failed",currentStep:2,errorCode:"schema_mismatch"}),recovered=await f.service.recoverFocusedTestSchema(task.id,{expectedVersion:failed.stateVersion});assert.equal(recovered.task.status,"waiting_for_worker");assert.deepEqual(recovered.task.metadata.steps.at(-2).input,{tool:"test_run",arguments:{files:"$IMPLEMENTATION_TESTS"}});assert.equal(recovered.task.metadata.steps.at(-1).type,"run_full_tests");assert.equal(recovered.task.metadata.activeImplementationPlanGeneration,plan.provenance.generationId);assert.equal((await f.service.recoverFocusedTestSchema(task.id,{expectedVersion:failed.stateVersion})).idempotent,true);});
 
 test("test-runner recovery retires only false npm ENOENT repair consumption",async()=>{const f=await fixture(),files=[{path:"assets/voice-input.js",operation:"replace",expectedContent:"old\n",content:"new\n"}],plain={files,evidencePaths:["assets/voice-input.js"],planHash:"repair-plan"},templates=[{type:"plan_repair"},{type:"apply_patch"},{type:"run_focused_tests"},{type:"run_full_tests"},{type:"plan_repair"},{type:"apply_patch"},{type:"run_focused_tests"},{type:"run_full_tests"},{type:"inspect_diff"},{type:"commit"},{type:"review_commit"}].map((step,index)=>({...step,input:{arguments:{}},idempotencyIdentity:`step-${index+1}`}));await f.storage.createAutonomyTask({id:"runner-infra",ownerId:OWNER,projectId:"nova-brain",title:"Runner",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:SHA,currentCommit:SHA,maxSteps:100,maxRuntimeMinutes:60,metadata:{steps:templates,selfDevelopment:{userGoal:"Implement",acceptanceCriteria:["safe"],repairLimit:2},implementationPlanGenerations:[]}});let task=await f.storage.getAutonomyTask("runner-infra",OWNER),plan={...plain,provenance:bindImplementationPlan({task,plan:plain,evidence:[{path:"assets/voice-input.js",content:"old\n"}]})},diagnostics={version:1,identity:{runner:"node_test",command:"npm:test"},durationMs:0,exitCode:1,stderrExcerpt:"spawn npm ENOENT",failedFiles:[],failedTitles:[],counts:{tests:null,failed:null,passed:null,skipped:null},fingerprint:"infra-fingerprint"};task=await f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...planLifecycleMetadata(task,plan),steps:templates,fullTestRepairHistory:[{iteration:1,fingerprint:diagnostics.fingerprint,failedStepId:"4:run_full_tests"}]}});for(const [ordinal,type,status,result,errorCode]of [[1,"plan_repair","completed",{implementationPlan:plan},null],[2,"apply_patch","completed",{files:["assets/voice-input.js"]},null],[3,"run_focused_tests","completed",{ok:true},null],[4,"run_full_tests","failed",{code:"test_failed",diagnostics},"test_failed"],[5,"plan_repair","completed",{implementationPlan:plan},null],[6,"apply_patch","completed",{files:["assets/voice-input.js"]},null],[7,"run_focused_tests","completed",{ok:true},null],[8,"run_full_tests","failed",{code:"test_failed",diagnostics},"test_failed"]])await f.storage.recordAutonomyStep({taskId:task.id,stepId:`${ordinal}:${type}`,stepType:type,capability:type.includes("test")?"test_local":"reasoning",operationFingerprint:`fp-${ordinal}`,status,result,errorCode});const failed=await f.storage.updateAutonomyTask(task.id,OWNER,{status:"failed",currentStep:7,errorCode:"repair_limit_reached"}),recovered=await f.service.recoverTestRunnerInfrastructure(task.id,{expectedVersion:failed.stateVersion});assert.equal(recovered.task.status,"waiting_for_worker");assert.equal(recovered.task.metadata.steps.at(-4).type,"run_full_tests");assert.deepEqual(recovered.task.metadata.fullTestRepairHistory,[]);assert.deepEqual(recovered.recovery.retiredRepairHistoryStepIds,["4:run_full_tests"]);assert.equal(recovered.task.metadata.activeContinuation.recoveryClass,"test_runner_unavailable_reclassification");assert.equal((await f.service.recoverTestRunnerInfrastructure(task.id,{expectedVersion:failed.stateVersion})).idempotent,true);});
@@ -1880,3 +2180,71 @@ test("repository-context recovery resolves a non-adjacent latest semantic plan a
 test("plan-lifecycle recovery preserves over-100 audit history and creates one bounded active generation",async()=>{const compared=[];const f=await fixture({currentCommit:NEW_SHA,verifyRemote:async()=>({currentTip:NEW_SHA,ancestors:{[SHA]:true,[NEW_SHA]:true}}),compareRemoteEvidence:async input=>{compared.push(input);return{"assets/voice-input.js":{oldSha:"old-blob",newSha:"new-blob",equivalent:false}};}}),steps=Array.from({length:105},(_,index)=>({type:"inspect_repo",input:{arguments:{}},idempotencyIdentity:`history-${index+1}`})),plan={files:[{path:"assets/voice-input.js",operation:"replace",expectedContent:"old\n",content:"new\n"}],evidencePaths:["assets/voice-input.js"],planHash:"legacy-plan"};steps[102]={type:"plan_implementation",input:{arguments:{taskId:"long-history"}},idempotencyIdentity:"legacy-plan"};steps[104]={type:"apply_patch",input:{arguments:{files:"$IMPLEMENTATION_FILES"}},idempotencyIdentity:"failed-apply"};await f.storage.createAutonomyTask({id:"long-history",ownerId:OWNER,projectId:"nova-brain",title:"Long history",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:SHA,currentCommit:SHA,maxSteps:100,maxRuntimeMinutes:60,metadata:{steps,selfDevelopment:{userGoal:"Implement",acceptanceCriteria:["safe"]},selfDevelopmentImplementationPlan:plan,implementationPlanGenerations:[{generationId:"legacy",authority:"active"}]}});await f.storage.recordAutonomyStep({taskId:"long-history",stepId:"103:plan_implementation",stepType:"plan_implementation",capability:"reasoning",operationFingerprint:"legacy-plan",status:"completed",result:{implementationPlan:plan}});await f.storage.recordAutonomyStep({taskId:"long-history",stepId:"105:apply_patch",stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:"failed-apply",status:"failed",errorCode:"patch_conflict",result:{message:"Expected existing content does not match assets/voice-input.js.",mutationApplied:false}});const failed=await f.storage.updateAutonomyTask("long-history",OWNER,{status:"failed",currentStep:104,errorCode:"patch_conflict"}),recovered=await f.service.recoverPlanLifecycle(failed.id,{expectedVersion:failed.stateVersion,workspace:{root:"C:/controlled/nova-brain",gitTopLevel:"C:/controlled/nova-brain",head:NEW_SHA,clean:true}});assert.equal(recovered.task.id,failed.id);assert.equal(recovered.task.currentStep,105);assert.equal(recovered.task.metadata.steps.slice(0,105).map(step=>step.idempotencyIdentity).join("|"),steps.map(step=>step.idempotencyIdentity).join("|"));assert.equal(recovered.task.metadata.implementationPlanGenerations[0].authority,"superseded");assert.equal(recovered.task.metadata.selfDevelopmentImplementationPlan,null);assert.ok(recovered.task.metadata.activeContinuation.maxSteps<=30);assert.equal(recovered.task.metadata.activeContinuation.startStep,105);assert.equal(compared.length,1);assert.equal((await f.service.recoverPlanLifecycle(failed.id,{expectedVersion:failed.stateVersion,workspace:{root:"C:/controlled/nova-brain",gitTopLevel:"C:/controlled/nova-brain",head:NEW_SHA,clean:true}})).idempotent,true);});
 
 test("semantic recovery fails closed for ambiguous unsuperseded plan history and reported mutation",()=>{const task={metadata:{steps:[{type:"plan_implementation"},{type:"apply_patch"}]}},plan={stepId:"1:plan_implementation",stepType:"plan_implementation",status:"completed",result:{implementationPlan:{files:[]}}},failed={stepId:"2:apply_patch",stepType:"apply_patch",status:"failed",errorCode:"repository_context_unproven",result:{mutationApplied:false}};assert.throws(()=>resolveSemanticPlanApplyState(task,[plan,{...plan},failed],"repository_context_unproven"),error=>error.code==="semantic_recovery_state_ambiguous");assert.throws(()=>resolveSemanticPlanApplyState(task,[plan,{...failed,result:{mutationApplied:true}}],"repository_context_unproven"),error=>error.code==="semantic_recovery_state_unresolved");});
+
+test("workspace attestation uses complete task-owned lineage rather than the latest apply mutation subset",async()=>{
+  const runtimeVersion="d".repeat(40),repository="hshanbour/nova-brain",root="C:/controlled/nova-brain",paths=["assets/console.css","assets/console.js","assets/voice-input.js","index.html","test/composer-dictation.test.js","test/composer-voice-console.integration.test.js","test/console-static.test.js","test/voice-input.test.js"],contents=Object.fromEntries(paths.map((path,index)=>[path,`nova repair ${index}\n`]));
+  const gitHash=content=>{const bytes=Buffer.from(content);return createHash("sha1").update(Buffer.from(`blob ${bytes.length}\0`)).update(bytes).digest("hex");},contentHash=content=>createHash("sha256").update(content).digest("hex"),changedFiles=paths.map(path=>({path,hashAlgorithm:"git_sha1",hash:gitHash(contents[path]),contentHash:contentHash(contents[path])})),lineageEntries=paths.map(path=>({path,contentHash:contentHash(contents[path])}));
+  async function setup({id="post-apply-attestation",failedFile=paths.at(-1),lineage=lineageEntries,workspaceFiles=changedFiles,extraStep=null,explicitSourceApply=true,applyStatus="completed",lineageContainer="apply",taskError="test_failed"}={}){
+    const verifyRemote=async()=>({currentTip:NEW_SHA,ancestors:{[NEW_SHA]:true}}),f=await fixture({currentCommit:runtimeVersion,runtimeVersion,verifyRemote}),templates=[{type:"plan_repair"},{type:"apply_patch"},{type:"run_focused_tests"},{type:"plan_repair"},{type:"apply_patch"},{type:"run_focused_tests"}].map((step,index)=>({...step,input:{arguments:{}},idempotencyIdentity:`post-apply-${index+1}`}));
+    await f.storage.createAutonomyTask({id,ownerId:OWNER,projectId:"nova-brain",title:"Post apply",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:NEW_SHA,currentCommit:NEW_SHA,maxSteps:100,maxRuntimeMinutes:60,metadata:{steps:templates,selfDevelopment:{repository,userGoal:"Implement",acceptanceCriteria:["safe"],repairLimit:3},implementationPlanGenerations:[]}});
+    let task=await f.storage.getAutonomyTask(id,OWNER),priorPlain={files:paths.map(path=>({path,operation:"replace",expectedContent:`old ${path}\n`,content:contents[path]})),focusedTests:paths,evidencePaths:paths,planHash:"prior"},prior={...priorPlain,provenance:bindImplementationPlan({task,plan:priorPlain,evidence:paths.map(path=>({path,content:`old ${path}\n`}))})},activePath=paths.at(-1),activePlain={files:[{path:activePath,operation:"replace",expectedContent:contents[activePath],content:"next repair\n"}],focusedTests:[activePath],evidencePaths:[activePath],planHash:"active"},active={...activePlain,provenance:bindImplementationPlan({task,plan:activePlain,evidence:[{path:activePath,content:contents[activePath]}]})};
+    task=await f.storage.updateAutonomyTask(id,OWNER,{repairIteration:3,metadata:{...planLifecycleMetadata(task,active),steps:templates}});
+    const diagnostics={fingerprint:"focused-after-apply",failedFiles:[failedFile],failedTitles:["remaining failure"],counts:{tests:8,failed:1,passed:7,skipped:0}};
+    const durableLineage={version:1,taskId:id,repository,branch:BRANCH,currentCommit:NEW_SHA,sourcePlanStepId:"4:plan_repair",...(explicitSourceApply===true?{sourceApplyStepId:"5:apply_patch"}:explicitSourceApply===false?{}:{sourceApplyStepId:explicitSourceApply}),entries:lineage};
+    for(const step of [{stepId:"1:plan_repair",stepType:"plan_repair",status:"completed",result:{implementationPlan:prior}},{stepId:"2:apply_patch",stepType:"apply_patch",status:"completed",result:{files:paths,mutationApplied:true}},{stepId:"3:run_focused_tests",stepType:"run_focused_tests",status:"failed",errorCode:"test_failed",result:{diagnostics:{...diagnostics,fingerprint:"earlier",failedFiles:paths,counts:{tests:8,failed:2,passed:6,skipped:0}}}},{stepId:"4:plan_repair",stepType:"plan_repair",status:"completed",result:{implementationPlan:active}},{stepId:"5:apply_patch",stepType:lineageContainer==="apply"?"apply_patch":"inspect_diff",status:applyStatus,result:{files:paths.slice(0,6),mutationApplied:true,taskOwnedDirtyLineage:durableLineage}},{stepId:"6:run_focused_tests",stepType:"run_focused_tests",status:"failed",errorCode:"test_failed",result:{diagnostics}}])await f.storage.recordAutonomyStep({taskId:id,capability:"reasoning",operationFingerprint:step.stepId,...step});
+    if(extraStep)await f.storage.recordAutonomyStep({taskId:id,capability:"reasoning",operationFingerprint:extraStep.stepId,...extraStep});
+    const failed=await f.storage.updateAutonomyTask(id,OWNER,{status:"failed",currentStep:5,currentPhase:"apply_patch",errorCode:taskError}),proof={root,gitTopLevel:root,repository,branch:BRANCH,head:NEW_SHA,liveTip:NEW_SHA,clean:false,changedFiles:workspaceFiles};
+    return{f,failed,proof,attest:()=>f.service.attestHandsWorkspace(id,{expectedVersion:failed.stateVersion,runtimeVersion,workerId:"persistent-worker",sourceApplyStepId:"5:apply_patch",workspaceProof:proof,workspaceProofSignature:"signed"},{actorType:"scoped_local_worker",workspaceProof:proof})};
+  }
+  const exact=await setup(),before=await exact.f.storage.getAutonomyTask(exact.failed.id,OWNER),created=await exact.attest(),duplicate=await exact.attest();
+  assert.equal(created.attestation.attestationClass,"post_apply_focused_test_failure");assert.equal(created.attestation.sourcePlanStepId,"4:plan_repair");assert.equal(created.attestation.sourceApplyStepId,"5:apply_patch");assert.deepEqual(created.attestation.dirtyFiles.map(item=>item.path),paths);assert.equal(created.attestation.historicalProvenanceClaim,false);assert.equal(duplicate.idempotent,true);assert.equal(duplicate.attestation.attestationId,created.attestation.attestationId);assert.equal((await exact.f.storage.getAutonomyTask(exact.failed.id,OWNER)).stateVersion,before.stateVersion);
+  const extension=await exact.f.service.requestEscalatedRepair(exact.failed.id,{expectedVersion:exact.failed.stateVersion});assert.equal(extension.approval.status,"pending");assert.equal(extension.approval.arguments.maxAdditionalAttempts,1);
+  const historical=await setup({id:"post-apply-historical-lineage",explicitSourceApply:false}),historicalBefore=(await historical.f.storage.listAutonomySteps(historical.failed.id)).find(step=>step.stepId==="5:apply_patch").result.taskOwnedDirtyLineage,historicalCreated=await historical.attest(),historicalAfter=(await historical.f.storage.listAutonomySteps(historical.failed.id)).find(step=>step.stepId==="5:apply_patch").result.taskOwnedDirtyLineage;assert.equal(historicalCreated.attestation.sourceApplyStepId,"5:apply_patch");assert.equal(Object.hasOwn(historicalBefore,"sourceApplyStepId"),false);assert.deepEqual(historicalAfter,historicalBefore);
+  const workingTree=await setup({id:"complete-lineage-working-tree",taskError:"working_tree_dirty"}),workingTreeBefore=await workingTree.f.storage.getAutonomyTask(workingTree.failed.id,OWNER),workingTreeCreated=await workingTree.attest();assert.deepEqual(workingTreeCreated.attestation.dirtyFiles.map(item=>item.path),paths);assert.equal(workingTreeCreated.attestation.dirtyFiles.at(-1).contentHash,lineageEntries.at(-1).contentHash);assert.equal((await workingTree.f.storage.getAutonomyTask(workingTree.failed.id,OWNER)).stateVersion,workingTreeBefore.stateVersion);
+  const mutationSubset=await setup({id:"complete-lineage-mutation-subset",taskError:"working_tree_dirty",workspaceFiles:changedFiles.slice(0,6)});await assert.rejects(()=>mutationSubset.attest(),error=>error.code==="workspace_attestation_dirty_lineage_mismatch");
+  for(const variant of [{id:"post-apply-incomplete",applyStatus:"failed"},{id:"post-apply-detached",lineageContainer:"other"},{id:"post-apply-contradictory",explicitSourceApply:"2:apply_patch"}]){const sample=await setup(variant),state=await sample.f.storage.getAutonomyTask(sample.failed.id,OWNER);await assert.rejects(()=>sample.attest(),error=>error.code==="workspace_attestation_precondition_failed");assert.equal((await sample.f.storage.getAutonomyTask(sample.failed.id,OWNER)).stateVersion,state.stateVersion);}
+  for(const variant of [{id:"post-apply-no-apply",source:"7:apply_patch",expected:"workspace_attestation_precondition_failed"},{id:"post-apply-unrelated-failure",failedFile:"test/unrelated.test.js",expected:"workspace_attestation_precondition_failed"},{id:"post-apply-drift",lineage:lineageEntries.map((item,index)=>index?item:{...item,contentHash:"0".repeat(64)}),expected:"workspace_attestation_dirty_lineage_mismatch"},{id:"post-apply-unrelated-dirty",workspaceFiles:[...changedFiles,{path:"README.md",hashAlgorithm:"git_sha1",hash:"0".repeat(40),contentHash:"0".repeat(64)}],expected:"workspace_attestation_dirty_lineage_mismatch"}]){
+    const sample=await setup(variant),state=await sample.f.storage.getAutonomyTask(sample.failed.id,OWNER);await assert.rejects(()=>variant.source?sample.f.service.attestHandsWorkspace(sample.failed.id,{expectedVersion:sample.failed.stateVersion,runtimeVersion,workerId:"persistent-worker",sourceApplyStepId:variant.source,workspaceProof:sample.proof,workspaceProofSignature:"signed"},{actorType:"scoped_local_worker",workspaceProof:sample.proof}):sample.attest(),error=>error.code===variant.expected);assert.equal((await sample.f.storage.getAutonomyTask(sample.failed.id,OWNER)).stateVersion,state.stateVersion);
+  }
+});
+
+test("current rejected focused-test evidence shape reopens only the exact consumed-extension continuation",async()=>{
+  let sequence=0;
+  const fixSha="2c7181426cd614597a8d4806f5e06181032a4e0f",runtimeSha="f".repeat(40);
+  const setup=async({diagnosticsPatch={},taskPatch={},metadataPatch={},extensionMode="consumed",extensionPatch={},approvalPatch={},exactVersion=false,canonicalHistory=true,runtimeLineage=true,runtimeTip=runtimeSha,contradictoryMutation=false}={})=>{
+    const f=await fixture({runtimeVersion:runtimeSha,verifyRemote:async({branch,requiredAncestors})=>({currentTip:runtimeTip,ancestors:Object.fromEntries(requiredAncestors.map(sha=>[sha,runtimeLineage&&(sha===fixSha||sha===runtimeSha)])),branch})}),id=`runner-rejected-evidence-${++sequence}`,files=[{path:"assets/voice-input.js",operation:"replace",expectedContent:"old\n",content:"new\n"}],plain={files,evidencePaths:["assets/voice-input.js"],planHash:"repair-plan"},templates=Array.from({length:76},(_,index)=>({type:"inspect_repo",input:{arguments:{}},idempotencyIdentity:`history-${index+1}`}));
+    for(const[index,type,tool]of [[69,"plan_repair","self_development_plan_implementation"],[70,"apply_patch","repo_apply_patch"],[71,"run_focused_tests","test_run"],[72,"run_full_tests","test_run_full"],[73,"inspect_diff","repo_diff"],[74,"commit","git_commit"],[75,"review_commit","repo_review_commit"]])templates[index]={type,input:{tool,arguments:{}},idempotencyIdentity:`remaining-${index+1}`};
+    await f.storage.createAutonomyTask({id,ownerId:OWNER,projectId:"nova-brain",title:"Runner",objective:"Composer",taskType:"self_development",branch:BRANCH,startingCommit:SHA,currentCommit:SHA,maxSteps:150,maxRuntimeMinutes:60,metadata:{steps:templates,selfDevelopment:{repository:"hshanbour/nova-brain",userGoal:"Implement",acceptanceCriteria:["safe"],repairLimit:3},implementationPlanGenerations:[]}});
+    let task=await f.storage.getAutonomyTask(id,OWNER),plan={...plain,provenance:bindImplementationPlan({task,plan:plain,evidence:[{path:"assets/voice-input.js",content:"old\n"}]})},diagnostics={version:1,identity:{runner:"node_test",command:"npm:test"},durationMs:100,exitCode:1,errorMessage:"Assertion failed",stdoutExcerpt:"test failure",stderrExcerpt:"",failedFiles:["test/workspace-navigation.test.js"],failedTitles:["workspace failure"],counts:{tests:681,failed:4,passed:677,skipped:0},fingerprint:"current-full-failure"};
+    const extension={recoveryClass:"owner_approved_single_repair_extension",fromStateVersion:90,approvalId:`owner-extension-${sequence}`,failedStepId:"58:run_focused_tests",failureFingerprint:"focused-failure",planGenerationId:plan.provenance.generationId,previousRepairIteration:3,globalRepairLimit:3,maxAdditionalAttempts:1,recoveredAt:"2026-09-12T00:00:00.000Z",...extensionPatch},approvalArguments={taskId:id,expectedVersion:extension.fromStateVersion,branch:BRANCH,currentCommit:SHA,failedStepId:extension.failedStepId,failureFingerprint:extension.failureFingerprint,planGenerationId:extension.planGenerationId,maxAdditionalAttempts:extension.maxAdditionalAttempts,...approvalPatch},approval=await f.storage.createApproval({id:extension.approvalId,ownerId:OWNER,projectId:"nova-brain",runId:null,tool:"self_development_escalated_repair",reason:"One bounded repair",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    if(extensionMode!=="approved_only")await f.storage.decideApproval(approval.id,OWNER,"approved");const extensionHistory=extensionMode==="none"||extensionMode==="approved_only"?[]:extensionMode==="second"?[extension,{...extension,approvalId:"second-extension"}]:[extension];
+    task=await f.storage.updateAutonomyTask(id,OWNER,{repairIteration:3,metadata:{...planLifecycleMetadata(task,plan),steps:templates,fullTestRepairHistory:[{iteration:4,fingerprint:diagnostics.fingerprint,failedStepId:"66:run_full_tests"}],testRunnerInfrastructureRecoveryHistory:canonicalHistory?[{recoveryClass:"test_runner_git_path_reclassification",fromStateVersion:1}]:[],escalatedRepairHistory:extensionHistory,...metadataPatch}});
+    await f.storage.recordAutonomyStep({taskId:id,stepId:"65:run_focused_tests",stepType:"run_focused_tests",capability:"test_local",operationFingerprint:"focused",status:"completed",result:{ok:true}});
+    await f.storage.recordAutonomyStep({taskId:id,stepId:"66:run_full_tests",stepType:"run_full_tests",capability:"test_local",operationFingerprint:"full",status:"failed",errorCode:"test_failed",result:{code:"test_failed",diagnostics}});
+    const planDiagnostics={validationIssues:["focused_test_evidence_rejected"],rejectionCode:"focused_test_evidence_rejected",classification:"nonexistent_invalid",proposedPath:"test/workspace-navigation.test.js",expansionRound:1,plannerAttempt:1,...diagnosticsPatch};
+    await f.storage.recordAutonomyStep({taskId:id,stepId:"70:plan_repair",stepType:"plan_repair",capability:"reasoning",operationFingerprint:"plan",status:"failed",errorCode:"implementation_scope_violation",result:{message:"Focused test is not eligible for bounded evidence expansion.",diagnostics:planDiagnostics}});
+    if(contradictoryMutation)await f.storage.recordAutonomyStep({taskId:id,stepId:"68:apply_patch",stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:"contradictory",status:"completed",result:{mutationApplied:true}});
+    if(exactVersion)while(task.stateVersion<119)task=await f.storage.updateAutonomyTask(id,OWNER,{retryCount:task.retryCount},task.stateVersion);
+    task=await f.storage.updateAutonomyTask(id,OWNER,{status:"failed",currentStep:69,errorCode:"implementation_scope_violation",...taskPatch},task.stateVersion);
+    return{f,task,templates,extension};
+  };
+  const exact=await setup({exactVersion:true}),recovered=await exact.f.service.recoverTestRunnerInfrastructure(exact.task.id,{expectedVersion:120});
+  assert.equal(recovered.task.stateVersion,121);assert.equal(recovered.recovery.recoveryClass,"post_runner_repair_evidence_rebind");assert.equal(recovered.task.status,"queued");assert.deepEqual(recovered.task.metadata.steps.slice(exact.templates.length).map(step=>step.type),["plan_repair","apply_patch","run_focused_tests","run_full_tests","inspect_diff","commit","review_commit"]);assert.deepEqual(recovered.task.metadata.escalatedRepairHistory,[exact.extension]);
+  const historical=await setup({canonicalHistory:false,exactVersion:true}),historicalRecovered=await historical.f.service.recoverTestRunnerInfrastructure(historical.task.id,{expectedVersion:120});assert.equal(historicalRecovered.task.stateVersion,121);assert.equal(historicalRecovered.recovery.infrastructureFixEvidence.minimumFixSha,fixSha);assert.equal(historicalRecovered.recovery.infrastructureFixEvidence.runtimeVersion,runtimeSha);assert.deepEqual(historicalRecovered.task.metadata.escalatedRepairHistory,[historical.extension]);
+  for(const variant of [
+    {name:"unrelated",diagnosticsPatch:{rejectionCode:"unrelated_scope_violation"}},
+    {name:"missing-evidence",diagnosticsPatch:{proposedPath:"test/not-in-full-failure.test.js"}},
+    {name:"repository",metadataPatch:{selfDevelopment:{repository:"other/repository",userGoal:"Implement",acceptanceCriteria:["safe"],repairLimit:3}}},
+    {name:"branch",taskPatch:{branch:"feat/other"}},
+    {name:"commit-lineage",metadataPatch:{activeImplementationPlanGeneration:"wrong-generation"}},
+    {name:"no-extension",extensionMode:"none"},
+    {name:"approved-unconsumed",extensionMode:"approved_only"},
+    {name:"second-extension",extensionMode:"second"},
+    {name:"unbounded-extension",extensionPatch:{maxAdditionalAttempts:2}},
+    {name:"wrong-extension-task",approvalPatch:{taskId:"other-task"}},
+    {name:"repair-counter-drift",taskPatch:{repairIteration:4}},
+    {name:"unrelated-runtime",canonicalHistory:false,runtimeLineage:false},
+    {name:"runtime-not-tip",canonicalHistory:false,runtimeTip:"e".repeat(40)},
+    {name:"contradictory-mutation",canonicalHistory:false,contradictoryMutation:true},
+  ]){const sample=await setup(variant),before=await sample.f.storage.getAutonomyTask(sample.task.id,OWNER);await assert.rejects(()=>sample.f.service.recoverTestRunnerInfrastructure(sample.task.id,{expectedVersion:sample.task.stateVersion}),error=>error.code==="test_runner_recovery_precondition_failed");const after=await sample.f.storage.getAutonomyTask(sample.task.id,OWNER);assert.equal(after.stateVersion,before.stateVersion);assert.deepEqual(after.metadata.steps,before.metadata.steps);assert.deepEqual(after.metadata.escalatedRepairHistory,before.metadata.escalatedRepairHistory);}
+});

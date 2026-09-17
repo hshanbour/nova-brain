@@ -1,8 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
-import {createActiveContinuation,assertActiveImplementationPlan,planLifecycleMetadata,rebindEquivalentImplementationPlan} from "./self-development-plan-lifecycle.js";
+import {createActiveContinuation,assertActiveImplementationPlan,canonicalContentHash,planLifecycleMetadata,rebindEquivalentImplementationPlan} from "./self-development-plan-lifecycle.js";
+import {recoverFailedLocalRead} from "./failed-local-read-recovery.js";
+import {describePlanningScopeRecovery,recoverPlanningScope,PLANNING_SCOPE_RECOVERY_TOOL} from "./planning-scope-recovery.js";
+import {describeExecutionScopeRecovery,recoverExecutionScope,EXECUTION_SCOPE_RECOVERY_TOOL} from "./execution-scope-recovery.js";
+import {describeFullTestScopeRecovery,recoverFullTestScope,FULL_TEST_SCOPE_RECOVERY_TOOL,describeFailedFullTestRetry,recoverFailedFullTestRetry,FAILED_FULL_TEST_RETRY_TOOL} from "./full-test-scope-recovery.js";
+import {describeReviewRemediation,recoverReviewRemediation,REVIEW_REMEDIATION_TOOL,describeRejectedReviewPlanContinuation,recoverRejectedReviewPlanContinuation,REJECTED_REVIEW_PLAN_CONTINUATION_TOOL,describeSourceBoundReviewReplan,recoverSourceBoundReviewReplan,SOURCE_BOUND_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
+import {recoveryHash} from "./failed-local-read-recovery.js";
+import {describeEvidenceBoundReviewReplan,recoverEvidenceBoundReviewReplan,EVIDENCE_BOUND_REVIEW_REPLAN_TOOL,describeImplementationContentReviewReplan,recoverImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL,describeSourceLiteralReviewReplan,recoverSourceLiteralReviewReplan,SOURCE_LITERAL_REVIEW_REPLAN_TOOL,describeObservableLinkageReviewReplan,recoverObservableLinkageReviewReplan,OBSERVABLE_LINKAGE_REVIEW_REPLAN_TOOL,describeSemanticEvidenceReviewReplan,recoverSemanticEvidenceReviewReplan,SEMANTIC_EVIDENCE_REVIEW_REPLAN_TOOL,describeFailedSemanticReadRecovery,recoverFailedSemanticReadRecovery,FAILED_SEMANTIC_READ_RECOVERY_TOOL,describeTestIdentityInventoryReviewReplan,recoverTestIdentityInventoryReviewReplan,TEST_IDENTITY_INVENTORY_REPLAN_TOOL} from "./review-remediation-scope.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
   BRANCH = "feat/nova-brain-mvp-foundation",
+  CONTROL_PLANE_BRANCH = "stage13/control-plane-approved-delivery-runtime",
+  FULL_TEST_EVIDENCE_EXPANSION_FIX_SHA = "2c7181426cd614597a8d4806f5e06181032a4e0f",
   SHA = /^[a-f0-9]{40}$/,
   REVIEW_HASH = /^[a-f0-9]{64}$/,
   DELIVERY_ATTESTATION_SHA = "58ab99b426fed92d8e36e8493718b4fc62935d08";
@@ -62,6 +71,20 @@ const HISTORICAL_DELIVERY_REPOSITORY_HISTORY_KEYS = Object.freeze([
   "approvedDeliveryRuntimeRecoveryHistory",
   "approvedDeliveryHandoffRuntimeRecoveryHistory",
 ]);
+const HISTORICAL_V288_APPROVAL_CONTRACT_DELIVERY = Object.freeze({
+  recoveryClass: "historical_v288_approval_contract_delivery_runtime_recovery",
+  taskId: "selfdev_10721df97b8cbc63c70d4171f6f4a440",
+  fromStateVersion: 288,
+  currentStep: 310,
+  approvalId: "b624260c-4cf2-4d4a-8e52-bf0efdede8dc",
+  commitSha: "911c1bc472e6017fac65146dd14298966a11c26f",
+  firstParentSha: "c60e7dd036b8faa6ff655ec8eb0b702a7f671d20",
+  secondParentSha: "5818ce4a8b0eb13285971cfcede009c7ae0d5aad",
+  repository: REPOSITORY,
+  branch: BRANCH,
+  runtimeMinutes: 5,
+  maxAdditionalDeliverySteps: 1,
+});
 export class SelfDevelopmentError extends Error {
   constructor(code, message, statusCode = 409, safeDiagnostics) {
     super(message);
@@ -191,6 +214,7 @@ export function createSelfDevelopmentService({
   approvedBranch = BRANCH,
   repository = REPOSITORY,
   currentCommit,
+  runtimeVersion,
   verifyRemote,
   compareRemoteEvidence,
   verifyDeployment,
@@ -372,9 +396,185 @@ export function createSelfDevelopmentService({
       runtimeBudgetMinutes,
       status: "structured",
       startingCommit,
+      intent: IMPLEMENTATION_GOAL.test(userGoal)
+        ? "implementation"
+        : "analysis_only",
     });
   }
-  function plan(request) {
+  const requestFingerprint = (request) => {
+    const identity = { ...request };
+    delete identity.intent;
+    return hash(identity);
+  };
+  const evidenceCandidates = (request) => {
+    const candidates = [
+      ...new Set([
+        ...(request.scope.paths || []),
+        ...(request.scope.focusedTests || []),
+      ]),
+    ];
+    if (
+      candidates.length < 2 ||
+      candidates.length > 12 ||
+      candidates.some((path) => REPLAN_PROTECTED.test(path)) ||
+      !candidates.some((path) => !path.startsWith("test/")) ||
+      !candidates.some((path) => path.startsWith("test/"))
+    )
+      return null;
+    return candidates;
+  };
+  const appendEvidenceBoundImplementation = ({
+    steps,
+    base = 0,
+    taskId,
+    candidates,
+    branch,
+    currentCommit,
+  }) => {
+    const add = (...args) =>
+      steps.push(annotation(base + steps.length + 1, ...args));
+    for (const path of candidates)
+      add(
+        "read_files",
+        "repo_read_remote",
+        {
+          tool: "repo_read",
+          arguments: { path, startLine: 1, endLine: 1000 },
+        },
+        `Complete contents of ${path}`,
+        "Evidence candidate is read before implementation planning",
+        { retry: "safe_read" },
+      );
+    add(
+      "plan_implementation",
+      "reasoning",
+      {
+        tool: "self_development_plan_implementation",
+        arguments: { taskId, candidatePaths: candidates, currentCommit },
+      },
+      "Nova-generated structured implementation plan",
+      "Plan is generated only from durable evidence",
+      { retry: "new_evidence_required" },
+    );
+    add(
+      "apply_patch",
+      "repo_mutate_local",
+      {
+        tool: "repo_apply_patch",
+        arguments: {
+          branch,
+          currentCommit: "$CURRENT_COMMIT",
+          files: "$IMPLEMENTATION_FILES",
+        },
+      },
+      "Bounded evidence-generated files changed",
+      "Hands applies only the validated Nova plan",
+      { retry: "repair_required" },
+    );
+    add(
+      "run_focused_tests",
+      "test_local",
+      {
+        tool: "test_run",
+        arguments: { files: "$IMPLEMENTATION_TESTS", timeoutMs: 180000 },
+      },
+      "Focused test report",
+      "All Nova-selected focused tests pass",
+      { retry: "repair_required" },
+    );
+    add(
+      "run_full_tests",
+      "test_local",
+      { tool: "test_run_full", arguments: { timeoutMs: 180000 } },
+      "Full test report",
+      "Complete suite passes",
+      { retry: "repair_required" },
+    );
+    add(
+      "inspect_diff",
+      "repo_read_remote",
+      { tool: "repo_diff", arguments: { paths: "$IMPLEMENTATION_PATHS" } },
+      "Complete bounded diff review",
+      "Diff contains only evidence-generated scope",
+      { retry: "safe_read" },
+    );
+    add(
+      "commit",
+      "repo_mutate_local",
+      {
+        tool: "git_commit",
+        arguments: {
+          paths: "$IMPLEMENTATION_PATHS",
+          branch,
+          message: "Complete bounded Nova self-development task",
+        },
+      },
+      "Exact local commit SHA",
+      "One reviewed local commit created",
+      { retry: "idempotent_commit" },
+    );
+    add(
+      "review_commit",
+      "repo_read_remote",
+      {
+        tool: "repo_review_commit",
+        arguments: {
+          commitSha: "$CURRENT_COMMIT",
+          paths: "$IMPLEMENTATION_PATHS",
+        },
+      },
+      "Exact immutable commit review",
+      "Commit exactly matches the reviewed bounded change-set",
+      { retry: "not_retryable" },
+    );
+    add(
+      "push",
+      "github_write",
+      {
+        tool: "git_push",
+        arguments: { branch, commitSha: "$CURRENT_COMMIT" },
+      },
+      "Approved remote feature commit",
+      "Exact push approval succeeds",
+      { retry: "approval_bound", approval: true },
+    );
+    add(
+      "deploy_preview",
+      "vercel_preview",
+      {
+        tool: "preview_deploy",
+        arguments: { branch, commitSha: "$CURRENT_COMMIT" },
+      },
+      "Git-backed Preview deployment",
+      "Preview deployment created",
+      { retry: "idempotent_deploy", approval: true },
+    );
+    add(
+      "wait",
+      "scheduler",
+      { delayMs: 5000 },
+      "Bounded deployment wait",
+      "Task reschedules without busy-looping",
+      { retry: "bounded_wait" },
+    );
+    add(
+      "verify_preview",
+      "vercel_preview",
+      {
+        tool: "preview_verify",
+        arguments: {
+          deploymentId: "$DEPLOYMENT_ID",
+          path: "/api/health",
+          expectedStatus: 200,
+          commitSha: "$CURRENT_COMMIT",
+        },
+      },
+      "Protected Preview verification",
+      "Exact SHA Preview health succeeds",
+      { retry: "repair_required" },
+    );
+  };
+  function plan(request, taskId) {
     const steps = [],
       add = (...args) => steps.push(annotation(steps.length + 1, ...args)),
       root = request.scope.inspectPath || ".";
@@ -418,7 +618,20 @@ export function createSelfDevelopmentService({
         "File read succeeds",
         { retry: "safe_read" },
       );
-    add(
+    const files = request.scope.patch.files,
+      candidates =
+        request.intent === "implementation" && !files.length
+          ? evidenceCandidates(request)
+          : null;
+    if (candidates) {
+      appendEvidenceBoundImplementation({
+        steps,
+        taskId,
+        candidates,
+        branch: request.targetBranch,
+        currentCommit: request.startingCommit,
+      });
+    } else add(
       "plan_patch",
       "reasoning",
       {
@@ -430,7 +643,6 @@ export function createSelfDevelopmentService({
       "Plan stays within declared scope",
       { retry: "new_evidence_required" },
     );
-    const files = request.scope.patch.files;
     if (files.length) {
       if (request.riskLevel === "high")
         add(
@@ -505,6 +717,20 @@ export function createSelfDevelopmentService({
         { retry: "idempotent_commit" },
       );
       add(
+        "review_commit",
+        "repo_read_remote",
+        {
+          tool: "repo_review_commit",
+          arguments: {
+            commitSha: "$CURRENT_COMMIT",
+            paths: files.map((x) => x.path),
+          },
+        },
+        "Exact immutable commit review",
+        "Commit exactly matches the reviewed bounded change-set",
+        { retry: "not_retryable" },
+      );
+      add(
         "push",
         "github_write",
         {
@@ -573,13 +799,13 @@ export function createSelfDevelopmentService({
   }
   async function create(input) {
     const request = structure(input),
-      steps = plan(request),
-      requestFingerprint = hash(request),
-      taskId = `selfdev_${requestFingerprint.slice(0, 32)}`,
+      fingerprint = requestFingerprint(request),
+      taskId = `selfdev_${fingerprint.slice(0, 32)}`,
+      steps = plan(request, taskId),
       prior = await runtime.get(taskId);
     if (prior) {
       if (
-        prior.metadata?.selfDevelopmentRequestFingerprint !== requestFingerprint
+        prior.metadata?.selfDevelopmentRequestFingerprint !== fingerprint
       )
         throw new SelfDevelopmentError(
           "durable_task_create_failed",
@@ -610,7 +836,7 @@ export function createSelfDevelopmentService({
           steps,
           maxRepairIterations: request.maxRepairIterations,
           selfDevelopment: request,
-          selfDevelopmentRequestFingerprint: requestFingerprint,
+          selfDevelopmentRequestFingerprint: fingerprint,
           repairHistory: [],
           autoDispatch: true,
         },
@@ -618,8 +844,7 @@ export function createSelfDevelopmentService({
     } catch (error) {
       const concurrent = await runtime.get(taskId).catch(() => null);
       if (
-        concurrent?.metadata?.selfDevelopmentRequestFingerprint ===
-        requestFingerprint
+        concurrent?.metadata?.selfDevelopmentRequestFingerprint === fingerprint
       )
         return {
           request,
@@ -724,6 +949,21 @@ export function createSelfDevelopmentService({
         "summarize",
       ];
     const priorApprovals = await storage.listApprovals(ownerId, { limit: 100 });
+    const failedScopeSummary = steps.some(
+      (step) =>
+        step.stepType === "summarize" &&
+        step.status === "failed" &&
+        step.errorCode === "implementation_scope_required",
+    );
+    const eligibleTerminal =
+      (current.status === "completed" &&
+        requiredDiscovery.every((type) => completedTypes.includes(type))) ||
+      (current.status === "blocked" &&
+        current.errorCode === "implementation_scope_required" &&
+        ["inspect_repo", "search_code", "plan_patch"].every((type) =>
+          completedTypes.includes(type),
+        ) &&
+        failedScopeSummary);
     const hasDeliveryEvidence =
       steps.some((step) =>
         [
@@ -740,14 +980,13 @@ export function createSelfDevelopmentService({
       current.metadata?.lastDeploymentId ||
       current.metadata?.selfDevelopmentDeliveryAttestation;
     if (
-      current.status !== "completed" ||
+      !eligibleTerminal ||
       current.branch !== approvedBranch ||
       request?.targetBranch !== approvedBranch ||
       request?.environment !== "preview" ||
       !IMPLEMENTATION_GOAL.test(current.objective || request?.userGoal || "") ||
       request?.scope?.patch?.files?.length ||
       request?.scope?.paths?.length ||
-      !requiredDiscovery.every((type) => completedTypes.includes(type)) ||
       hasDeliveryEvidence
     )
       throw new SelfDevelopmentError(
@@ -788,12 +1027,21 @@ export function createSelfDevelopmentService({
         ),
     );
     for (const path of candidates) {
-      if (!inventory.has(path))
-        throw new SelfDevelopmentError(
-          "replan_scope_not_discovered",
-          "Every candidate path must be present in durable repository discovery evidence.",
-          400,
-        );
+      if (!inventory.has(path)) {
+        if (typeof resolvePathState !== "function")
+          throw new SelfDevelopmentError(
+            "replan_scope_not_discovered",
+            "Every candidate path must be present in durable repository discovery evidence.",
+            400,
+          );
+        const pathState = await resolvePathState(path, current.currentCommit);
+        if (!pathState?.existsInCommit)
+          throw new SelfDevelopmentError(
+            "replan_scope_not_discovered",
+            "Every candidate path must be present in durable repository discovery evidence or the exact bound commit.",
+            400,
+          );
+      }
       if (REPLAN_PROTECTED.test(path))
         throw new SelfDevelopmentError(
           "replan_protected_scope",
@@ -819,147 +1067,28 @@ export function createSelfDevelopmentService({
         .map((step) => step.stepId),
       base = current.metadata.steps.length,
       continuation = [];
-    for (const path of candidates)
-      continuation.push(
-        annotation(
-          base + continuation.length + 1,
-          "read_files",
-          "repo_read_remote",
-          {
-            tool: "repo_read",
-            arguments: { path, startLine: 1, endLine: 1000 },
-          },
-          `Complete contents of ${path}`,
-          "Evidence candidate is read before implementation planning",
-          { retry: "safe_read" },
-        ),
-      );
+    appendEvidenceBoundImplementation({
+      steps: continuation,
+      base,
+      taskId: current.id,
+      candidates,
+      branch: current.branch,
+      currentCommit: current.currentCommit,
+    });
     continuation.push(
       annotation(
         base + continuation.length + 1,
-        "plan_implementation",
+        "summarize",
         "reasoning",
         {
-          tool: "self_development_plan_implementation",
-          arguments: {
-            taskId: current.id,
-            candidatePaths: candidates,
-            currentCommit: current.currentCommit,
-          },
+          summary:
+            "Nova self-development task completed after Preview verification.",
         },
-        "Nova-generated structured implementation plan",
-        "Plan is generated only from durable evidence",
-        { retry: "new_evidence_required" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "apply_patch",
-        "repo_mutate_local",
-        {
-          tool: "repo_apply_patch",
-          arguments: {
-            branch: current.branch,
-            currentCommit: "$CURRENT_COMMIT",
-            files: "$IMPLEMENTATION_FILES",
-          },
-        },
-        "Bounded evidence-generated files changed",
-        "Hands applies only the validated Nova plan",
-        { retry: "repair_required" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "run_focused_tests",
-        "test_local",
-        {
-          tool: "test_run",
-          arguments: { files: "$IMPLEMENTATION_TESTS", timeoutMs: 180000 },
-        },
-        "Focused test report",
-        "All Nova-selected focused tests pass",
-        { retry: "repair_required" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "run_full_tests",
-        "test_local",
-        { tool: "test_run_full", arguments: { timeoutMs: 180000 } },
-        "Full test report",
-        "Complete suite passes",
-        { retry: "repair_required" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "inspect_diff",
-        "repo_read_remote",
-        { tool: "repo_diff", arguments: { paths: "$IMPLEMENTATION_PATHS" } },
-        "Complete bounded diff review",
-        "Diff contains only evidence-generated scope",
-        { retry: "safe_read" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "commit",
-        "repo_mutate_local",
-        {
-          tool: "git_commit",
-          arguments: {
-            paths: "$IMPLEMENTATION_PATHS",
-            branch: current.branch,
-            message: "Complete bounded Nova self-development task",
-          },
-        },
-        "Exact local commit SHA",
-        "One reviewed local commit created",
-        { retry: "idempotent_commit" },
-      ),
-    );
-    continuation.push(
-      annotation(
-        base + continuation.length + 1,
-        "review_commit",
-        "repo_read_remote",
-        {
-          tool: "repo_review_commit",
-          arguments: {
-            commitSha: "$CURRENT_COMMIT",
-            paths: "$IMPLEMENTATION_PATHS",
-          },
-        },
-        "Exact immutable commit review",
-        "Commit exactly matches the reviewed bounded change-set",
+        "Durable owner-facing summary",
+        "All planned acceptance gates completed",
         { retry: "not_retryable" },
       ),
     );
-    for (const step of plan({
-      ...request,
-      scope: {
-        ...request.scope,
-        patch: { files: [{ path: "placeholder", content: "placeholder" }] },
-      },
-    }).filter((step) =>
-      [
-        "push",
-        "deploy_preview",
-        "wait",
-        "verify_preview",
-        "summarize",
-      ].includes(step.type),
-    ))
-      continuation.push({
-        ...step,
-        idempotencyIdentity: `self-development:${base + continuation.length + 1}:${hash([step.type, clean(step.input)])}`,
-      });
     const now = clock().toISOString(),
       scopeHash = hash(candidates),
       replanRecord = {
@@ -995,6 +1124,10 @@ export function createSelfDevelopmentService({
         ),
         metadata: {
           ...current.metadata,
+          selfDevelopment: {
+            ...request,
+            intent: request.intent || "implementation",
+          },
           steps: [...current.metadata.steps, ...continuation],
           requiredCapability: "repo_read_remote",
           autoDispatch: true,
@@ -1053,11 +1186,37 @@ export function createSelfDevelopmentService({
         "Self-development task not found.",
         404,
       );
+    const priorPartialEvidenceRecovery=(current.metadata?.implementationPlanRecoveryHistory||[]).find(item=>["partial_repair_plan_evidence_rebind","task_owned_local_read_recovery"].includes(item.recoveryClass)&&item.previousStateVersion===input.expectedVersion);
+    if(priorPartialEvidenceRecovery&&current.status!=="failed")return{task:current,recoveredStepId:priorPartialEvidenceRecovery.failedStepId,idempotent:true};
     if (current.stateVersion !== input.expectedVersion)
       throw new SelfDevelopmentError(
         "version_conflict",
         "Task changed before implementation-plan recovery.",
       );
+    const partialSteps=await runtime.steps(current.id),latestFailed=partialSteps.filter(step=>step.status==="failed").at(-1),partialRecord=(current.metadata?.partialRepairPlanRecoveryHistory||[]).at(-1),latestRebind=(current.metadata?.implementationPlanRecoveryHistory||[]).at(-1),failureEvidence=latestFailed?.input?.arguments?.failureEvidence,requiredPaths=partialRecord?.requiredPaths,partialEntries=partialRecord?.entries,partialFailure=latestFailed?.stepId===`${current.currentStep+1}:plan_repair`&&latestFailed.stepType==="plan_repair"&&latestFailed.errorCode==="implementation_evidence_incomplete"&&failureEvidence?.code==="repair_plan_incomplete"&&["Task-owned repair evidence no longer matches its durable lineage.","Every candidate file must be read completely before implementation planning."].includes(latestFailed.result?.message),generationBound=partialRecord?.activeContinuation?.generationId===current.metadata?.activeContinuation?.generationId||latestRebind?.recoveryClass==="partial_repair_plan_evidence_rebind"&&latestRebind?.fingerprint===partialRecord?.fingerprint&&latestRebind?.sourcePlanStepId===partialRecord?.sourcePlanStepId&&latestRebind?.sourceApplyStepId===partialRecord?.sourceApplyStepId&&/^[0-9a-f]{40}$/i.test(latestRebind?.runtimeVersion||"")&&current.metadata?.activeContinuation?.recoveryClass==="partial_repair_plan_evidence_rebind"&&current.metadata?.activeContinuation?.runtimeStartedAt===latestRebind?.recoveredAt,lineageExact=current.branch===approvedBranch&&current.metadata?.selfDevelopment?.repository===repository&&/^[0-9a-f]{40}$/i.test(runtimeVersion||"")&&partialRecord?.taskId===current.id&&partialRecord.repository===repository&&partialRecord.branch===approvedBranch&&partialRecord.currentCommit===current.currentCommit&&typeof partialRecord.workspaceRoot==="string"&&partialRecord.workspaceRoot.length>0&&Array.isArray(requiredPaths)&&requiredPaths.length>0&&requiredPaths.length<=12&&new Set(requiredPaths).size===requiredPaths.length&&Array.isArray(partialEntries)&&partialEntries.length===requiredPaths.length&&partialEntries.every(entry=>requiredPaths.includes(entry.path)&&/^[0-9a-f]{64}$/i.test(entry.contentHash||""))&&generationBound&&!current.leaseOwner&&!current.leaseToken&&!current.approvalState&&!partialSteps.some(step=>Number.parseInt(step.stepId,10)>Number.parseInt(latestFailed.stepId,10)),partialExact=current.status==="failed"&&current.errorCode==="implementation_evidence_incomplete"&&partialFailure&&lineageExact&&partialRecord.fingerprint===failureEvidence?.fingerprint&&partialRecord.sourcePlanStepId===failureEvidence?.sourcePlanStepId&&partialRecord.sourceApplyStepId===failureEvidence?.sourceApplyStepId&&JSON.stringify(requiredPaths)===JSON.stringify(failureEvidence?.requiredPaths);
+    const localReadFailure=latestFailed?.stepId===`${current.currentStep+1}:read_files`&&latestFailed.stepType==="read_files"&&latestFailed.errorCode==="remote_repository_failed"&&latestFailed.result?.message==="Repository request failed with status 404.";
+    if(current.status==="failed"&&current.errorCode==="remote_repository_failed"&&localReadFailure&&lineageExact){
+      const remaining=current.metadata.steps.slice(current.currentStep),leadingReads=remaining.findIndex(step=>step.type!=="read_files"),readCount=leadingReads===-1?remaining.length:leadingReads,readSteps=remaining.slice(0,readCount),failedPath=latestFailed.input?.arguments?.path;
+      if(readCount<1||readCount>12||readSteps[0]?.input?.arguments?.path!==failedPath||readSteps.some(step=>step.input?.tool!=="repo_read"||!requiredPaths.includes(step.input?.arguments?.path))||remaining[readCount]?.type!=="plan_repair")throw new SelfDevelopmentError("implementation_plan_recovery_precondition_failed","The exact bounded task-owned local-read continuation is unavailable.");
+      const base=current.metadata.steps.length,localReads=readSteps.map((step,index)=>({...step,capability:"repo_read_remote",input:{tool:"repo_read_task_owned_local",arguments:{path:step.input.arguments.path}},idempotencyIdentity:`self-development:task-owned-local-read:${base+index+1}:${createHash("sha256").update(`${current.id}:${current.stateVersion}:${step.input.arguments.path}:${partialRecord.fingerprint}`).digest("hex")}`})),nextSteps=[...localReads,...remaining.slice(readCount)].map((step,index)=>({...step,idempotencyIdentity:`${step.idempotencyIdentity||`self-development:${step.type}`}:local-read-recovery:${base+index+1}`}));
+      if(nextSteps.length>21)throw new SelfDevelopmentError("implementation_plan_recovery_precondition_failed","The task-owned local-read continuation exceeds its bounded budget.");
+      const now=clock().toISOString(),activeContinuation=createActiveContinuation({task:current,startStep:base,plannedSteps:nextSteps.length,repairLimit:current.metadata?.maxRepairIterations??2,recoveryClass:"task_owned_local_read_recovery",runtimeStartedAt:now,runtimeMinutes:15}),record={recoveryClass:"task_owned_local_read_recovery",previousStateVersion:current.stateVersion,failedStepId:latestFailed.stepId,sourcePlanStepId:partialRecord.sourcePlanStepId,sourceApplyStepId:partialRecord.sourceApplyStepId,fingerprint:partialRecord.fingerprint,runtimeVersion:runtimeVersion||null,readPaths:localReads.map(step=>step.input.arguments.path),historicalContinuationGenerationId:partialRecord.activeContinuation.generationId,activeContinuation,recoveredAt:now};
+      const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"waiting_for_worker",currentStep:base,currentPhase:"read_files",nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,retryCount:0,blockedReason:null,checkpoint:{...current.checkpoint,pendingStep:null},metadata:{...current.metadata,steps:[...current.metadata.steps,...nextSteps],requiredCapability:"repo_read_remote",autoDispatch:true,activeContinuation,continuationHistory:[...(current.metadata?.continuationHistory||[]),activeContinuation],implementationPlanRecoveryHistory:[...(current.metadata?.implementationPlanRecoveryHistory||[]),record]}},current.stateVersion);
+      if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during task-owned local-read recovery.");
+      await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_implementation_plan_recovered",status:"waiting_for_worker",summary:"The exact attested task-owned local-read continuation was restored.",metadata:{taskId:current.id,...record}});
+      return{task:updated,recoveredStepId:latestFailed.stepId,idempotent:false};
+    }
+    if(partialExact){
+      const remaining=current.metadata.steps.slice(current.currentStep),base=current.metadata.steps.length;
+      if(remaining.length<1||remaining.length>15||remaining[0]?.type!=="plan_repair")throw new SelfDevelopmentError("implementation_plan_recovery_precondition_failed","The exact bounded partial-repair continuation is unavailable.");
+      const reads=requiredPaths.map((path,index)=>({type:"read_files",capability:"repo_read_remote",input:{tool:"repo_read_task_owned_local",arguments:{path}},expectedOutput:`Complete current task-owned contents of ${path}`,successCondition:"Current complete-file evidence is recorded before repair planning",retryClassification:"safe_read",approvalRequired:false,idempotencyIdentity:`self-development:partial-evidence-reread:${base+index+1}:${createHash("sha256").update(`${current.id}:${current.stateVersion}:${path}:${partialRecord.fingerprint}`).digest("hex")}`})),continuation=[...reads,...remaining];
+      if(continuation.length>30)throw new SelfDevelopmentError("implementation_plan_recovery_precondition_failed","The exact bounded read-evidence continuation is unavailable.");
+      const nextSteps=continuation.map((step,index)=>({...step,idempotencyIdentity:`${step.idempotencyIdentity||`self-development:${step.type}`}:partial-evidence-rebind:${base+index+1}`})),now=clock().toISOString(),activeContinuation=createActiveContinuation({task:current,startStep:base,plannedSteps:nextSteps.length,repairLimit:current.metadata?.maxRepairIterations??2,recoveryClass:"partial_repair_plan_evidence_rebind",runtimeStartedAt:now,runtimeMinutes:15}),record={recoveryClass:"partial_repair_plan_evidence_rebind",previousStateVersion:current.stateVersion,failedStepId:latestFailed.stepId,sourcePlanStepId:partialRecord.sourcePlanStepId,sourceApplyStepId:partialRecord.sourceApplyStepId,fingerprint:partialRecord.fingerprint,runtimeVersion:runtimeVersion||null,readPaths:requiredPaths,recoveredAt:now},reboundPartialRecord={...partialRecord,runtimeVersion:runtimeVersion||null,activeContinuation,reboundAt:now};
+      const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",currentStep:base,currentPhase:"read_files",nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,retryCount:0,blockedReason:null,checkpoint:{...current.checkpoint,pendingStep:null},metadata:{...current.metadata,steps:[...current.metadata.steps,...nextSteps],requiredCapability:"repo_read_remote",autoDispatch:true,activeContinuation,continuationHistory:[...(current.metadata?.continuationHistory||[]),activeContinuation],partialRepairPlanRecoveryHistory:[...(current.metadata?.partialRepairPlanRecoveryHistory||[]),reboundPartialRecord],implementationPlanRecoveryHistory:[...(current.metadata?.implementationPlanRecoveryHistory||[]),record]}},current.stateVersion);
+      if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during partial repair evidence recovery.");
+      await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_implementation_plan_recovered",status:"queued",summary:"The exact task-owned partial-repair evidence continuation was rebound to the active runtime.",metadata:{taskId:current.id,...record}});
+      return{task:updated,recoveredStepId:latestFailed.stepId,idempotent:false};
+    }
     const steps = await runtime.steps(current.id),
       failed = steps.find(
         (step) =>
@@ -1156,6 +1315,9 @@ export function createSelfDevelopmentService({
     });
     return { task: updated, recoveredStepId: failed.stepId };
   }
+  async function recoverFailedTaskOwnedLocalRead(taskId,input,actor){
+    return recoverFailedLocalRead({taskId,input,actor,runtime,storage,ownerId,repository,approvedBranch,runtimeVersion,verifyRemote,clock});
+  }
   async function recoverImplementationSchema(taskId, input) {
     if (!input || Object.keys(input).some((key) => key !== "expectedVersion") || !Number.isInteger(input.expectedVersion))
       throw new SelfDevelopmentError("implementation_schema_recovery_invalid", "An exact task version is required.", 400);
@@ -1212,26 +1374,53 @@ export function createSelfDevelopmentService({
     await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_base_revision_advanced",status:"queued",summary:"Task base advanced along verified feature history; stale content evidence requires bounded refresh.",metadata:{taskId:current.id,previousBaseCommit:oldCommit,newBaseCommit:currentCommit,previousStateVersion:current.stateVersion,failedStepId:failed.stepId,invalidatedEvidencePaths:evidencePaths,workingTreeClean:true,ancestryVerified:true,maxSteps}});
     return{task:updated,previousBaseCommit:oldCommit,newBaseCommit:currentCommit,invalidatedEvidencePaths:evidencePaths,idempotent:false};
   }
+  const canonicalWorkspaceRoot=value=>typeof value==="string"?value.replaceAll("\\","/").replace(/\/$/,"").replace(/^([a-z]):/i,(_,drive)=>`${drive.toUpperCase()}:`):value;
+  const exactDirtyEvidence=(left,right)=>Array.isArray(left)&&Array.isArray(right)&&left.length===right.length&&left.every((item,index)=>item?.path===right[index]?.path&&item?.hashAlgorithm==="git_sha1"&&right[index]?.hashAlgorithm==="git_sha1"&&item?.hash===right[index]?.hash);
   async function recoverHandsCommitMismatch(taskId,input,{failureCode="commit_mismatch",recoveryClass="commit_mismatch_descendant_rebind",recoveryRoute="recover-hands-commit-mismatch"}={}){
-    if(!input||Object.keys(input).some(key=>!["expectedVersion","workspace"].includes(key))||!Number.isInteger(input.expectedVersion)||!input.workspace||Object.keys(input.workspace).some(key=>!["root","gitTopLevel","head","clean","changedFiles"].includes(key))||!SHA.test(input.workspace.head||"")||typeof input.workspace.root!=="string"||input.workspace.root!==input.workspace.gitTopLevel||typeof input.workspace.clean!=="boolean")
+    if(!input||Object.keys(input).some(key=>!["expectedVersion","runtimeVersion","workspace"].includes(key))||!Number.isInteger(input.expectedVersion)||!input.workspace||Object.keys(input.workspace).some(key=>!["root","gitTopLevel","head","clean","changedFiles"].includes(key))||!SHA.test(input.workspace.head||"")||typeof input.workspace.root!=="string"||input.workspace.root!==input.workspace.gitTopLevel||typeof input.workspace.clean!=="boolean"||(runtimeVersion!==undefined&&(!SHA.test(input.runtimeVersion||"")||input.runtimeVersion!==runtimeVersion)))
       throw new SelfDevelopmentError("hands_context_recovery_invalid","Exact version and bounded repository context are required.",400);
     const current=await runtime.get(taskId);if(!current||current.taskType!=="self_development")throw new SelfDevelopmentError("task_not_found","Self-development task not found.",404);
-    const prior=current.metadata?.handsContextRecoveryHistory?.find(item=>item.previousStateVersion===input.expectedVersion);if(prior&&current.status!=="failed")return{task:current,recoveredStepId:prior.failedStepId,idempotent:true};
+    const prior=current.metadata?.handsContextRecoveryHistory?.find(item=>item.previousStateVersion===input.expectedVersion),priorPartial=current.metadata?.partialRepairPlanRecoveryHistory?.find(item=>item.previousStateVersion===input.expectedVersion);if(prior&&current.status!=="failed")return{task:current,recoveredStepId:prior.failedStepId,idempotent:true};if(priorPartial&&current.status!=="failed")return{task:current,recoveredStepId:priorPartial.failedStepId,requiredPaths:priorPartial.requiredPaths,recoveryCode:"repair_plan_incomplete",mutationApplied:false,idempotent:true};
     if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before Hands-context recovery.");
-    const steps=await runtime.steps(current.id),semantic=resolveSemanticPlanApplyState(current,steps,failureCode,{planStepTypes:["plan_implementation","plan_repair"]}),{failed,planned,planTemplate,remaining,completedAfterPlan}=semantic,approvals=await storage.listApprovals(ownerId,{limit:100}),oldCommit=current.currentCommit,newCommit=currentCommit,noMutation=failed?.result?.mutationApplied!==true&&failed?.result?.changed!==true&&!(failed?.result?.changedFiles||[]).length;
-    if(current.status!=="failed"||current.errorCode!==failureCode||!failed||!planned||!noMutation||current.branch!==approvedBranch||["main","master"].includes(current.branch)||!SHA.test(newCommit||"")||input.workspace.head!==newCommit||completedAfterPlan||approvals.some(approval=>approval.runId===current.id)||current.metadata?.lastDeploymentId||current.metadata?.selfDevelopmentDeliveryAttestation||current.leaseOwner||remaining[0]?.type!=="apply_patch")throw new SelfDevelopmentError("hands_context_recovery_precondition_failed","Only the exact pre-mutation Hands repository-context mismatch may be recovered.");
+    const steps=await runtime.steps(current.id),semantic=resolveSemanticPlanApplyState(current,steps,failureCode,{planStepTypes:["plan_implementation","plan_repair"]}),{failed,planned,planTemplate,remaining,completedAfterPlan}=semantic,approvals=await storage.listApprovals(ownerId,{limit:100}),oldCommit=current.currentCommit,newCommit=input.workspace.head,noMutation=failed?.result?.mutationApplied!==true&&failed?.result?.changed!==true&&!(failed?.result?.changedFiles||[]).length;
+    if(current.status!=="failed"||current.errorCode!==failureCode||!failed||!planned||!noMutation||(runtimeVersion!==undefined&&current.metadata?.selfDevelopment?.repository!==repository)||current.branch!==approvedBranch||["main","master"].includes(current.branch)||!SHA.test(oldCommit||"")||!SHA.test(newCommit||"")||completedAfterPlan||approvals.some(approval=>approval.runId===current.id)||current.metadata?.lastDeploymentId||current.metadata?.selfDevelopmentDeliveryAttestation||current.leaseOwner||current.leaseToken||remaining[0]?.type!=="apply_patch")throw new SelfDevelopmentError("hands_context_recovery_precondition_failed","Only the exact pre-mutation Hands repository-context mismatch may be recovered.");
     if(!verifyRemote||!compareRemoteEvidence)throw new SelfDevelopmentError("hands_context_verification_unavailable","Remote ancestry and evidence verification are required.",503);
     const remote=await verifyRemote({repository,branch:current.branch,requiredAncestors:[oldCommit,newCommit]});if(remote.currentTip!==newCommit||remote.ancestors?.[oldCommit]!==true||remote.ancestors?.[newCommit]!==true)throw new SelfDevelopmentError("hands_context_ancestry_mismatch","The controlled checkout is not the exact live descendant feature tip.");
-    const implementation=planned.result.implementationPlan,hasBoundPlan=Boolean(implementation?.provenance);if(hasBoundPlan)assertActiveImplementationPlan(current,implementation.files);const declaredDirty=Array.isArray(input.workspace.changedFiles)?input.workspace.changedFiles:[],replaceOnly=implementation.files.every(file=>file.operation==="replace"),expectedDirty=implementation.files.map(file=>({path:safePath(file.path),hashAlgorithm:"git_sha1",hash:gitBlobHash(file.expectedContent)})).sort((a,b)=>a.path.localeCompare(b.path)),expectedDirtyByPath=new Map(expectedDirty.map(item=>[item.path,item])),actualDirty=declaredDirty.map(item=>({path:safePath(item?.path),hashAlgorithm:item?.hashAlgorithm,hash:String(item?.hash||"").toLowerCase()})).sort((a,b)=>a.path.localeCompare(b.path)),taskOwnedDirty=input.workspace.clean===false&&["commit_mismatch","working_tree_dirty"].includes(failureCode)&&hasBoundPlan&&replaceOnly&&actualDirty.length>0&&actualDirty.length<=expectedDirty.length&&actualDirty.every(item=>{const expected=expectedDirtyByPath.get(item.path);return expected&&item.hashAlgorithm==="git_sha1"&&item.hash===expected.hash;});if((failureCode==="working_tree_dirty"&&input.workspace.clean!==false)||(input.workspace.clean===true&&declaredDirty.length)||(input.workspace.clean===false&&!taskOwnedDirty))throw new SelfDevelopmentError("hands_context_recovery_dirty_unproven","A dirty checkout is allowed only when every changed file exactly matches the active plan's pre-mutation content.",400);
+    const implementation=planned.result.implementationPlan,hasBoundPlan=Boolean(implementation?.provenance);if(hasBoundPlan)assertActiveImplementationPlan(current,implementation.files);const declaredDirty=Array.isArray(input.workspace.changedFiles)?input.workspace.changedFiles:[],replaceOnly=implementation.files.every(file=>file.operation==="replace"),expectedDirty=implementation.files.map(file=>({path:safePath(file.path),hashAlgorithm:"git_sha1",hash:gitBlobHash(file.expectedContent)})).sort((a,b)=>a.path.localeCompare(b.path)),expectedDirtyByPath=new Map(expectedDirty.map(item=>[item.path,item])),actualDirty=declaredDirty.map(item=>({path:safePath(item?.path),hashAlgorithm:item?.hashAlgorithm,hash:String(item?.hash||"").toLowerCase(),...(item?.contentHash?{contentHash:String(item.contentHash).toLowerCase()}:{})})).sort((a,b)=>a.path.localeCompare(b.path)),taskOwnedDirty=input.workspace.clean===false&&["commit_mismatch","working_tree_dirty"].includes(failureCode)&&hasBoundPlan&&replaceOnly&&actualDirty.length>0&&actualDirty.length<=expectedDirty.length&&actualDirty.every(item=>{const expected=expectedDirtyByPath.get(item.path);return expected&&item.hashAlgorithm==="git_sha1"&&item.hash===expected.hash;});
+    if(failureCode==="working_tree_dirty"&&input.workspace.clean===false&&!taskOwnedDirty){
+      const priorApply=steps.filter(step=>step.stepType==="apply_patch"&&step.status==="completed"&&stepOrdinal(step)<semantic.plannedOrdinal).at(-1),priorApplyOrdinal=stepOrdinal(priorApply),priorPlan=steps.filter(step=>["plan_implementation","plan_repair"].includes(step.stepType)&&step.status==="completed"&&stepOrdinal(step)<priorApplyOrdinal).at(-1),priorFiles=priorPlan?.result?.implementationPlan?.files,durableLineage=priorApply?.result?.taskOwnedDirtyLineage,lineageHasSourceApply=durableLineage&&Object.prototype.hasOwnProperty.call(durableLineage,"sourceApplyStepId"),canonicalSourceApplyStepId=lineageHasSourceApply?durableLineage.sourceApplyStepId:priorApply?.stepId,lineageEntries=Array.isArray(durableLineage?.entries)?durableLineage.entries.map(item=>({path:safePath(item?.path),contentHash:String(item?.contentHash||"").toLowerCase()})).sort((a,b)=>a.path.localeCompare(b.path)):[],completeLineageValid=durableLineage?.version===1&&durableLineage.taskId===current.id&&durableLineage.repository===repository&&durableLineage.branch===current.branch&&durableLineage.currentCommit===current.currentCommit&&canonicalSourceApplyStepId===priorApply?.stepId&&durableLineage.sourcePlanStepId===priorPlan?.stepId&&lineageEntries.length>0&&lineageEntries.length<=12&&new Set(lineageEntries.map(item=>item.path)).size===lineageEntries.length&&lineageEntries.every(item=>REVIEW_HASH.test(item.contentHash)&&!REPLAN_PROTECTED.test(item.path)),legacyPaths=Array.isArray(priorApply?.result?.files)?[...new Set(priorApply.result.files.map(safePath))].sort():[],appliedPaths=completeLineageValid?lineageEntries.map(item=>item.path):durableLineage==null?legacyPaths:[],priorByPath=new Map((priorFiles||[]).map(file=>[safePath(file.path),file])),lineageByPath=new Map(lineageEntries.map(item=>[item.path,item])),actualByPath=new Map(actualDirty.map(item=>[item.path,item])),entries=appliedPaths.map(path=>completeLineageValid?{...actualByPath.get(path),contentHash:lineageByPath.get(path)?.contentHash}:(()=>{const file=priorByPath.get(path);return typeof file?.content==="string"?{path,hashAlgorithm:"git_sha1",hash:gitBlobHash(file.content),contentHash:canonicalContentHash(file.content)}:null;})()),entryByPath=new Map(entries.filter(Boolean).map(item=>[item.path,item])),activePaths=[...new Set(implementation.files.map(file=>safePath(file.path)))].sort(),attestations=(await storage.listActivity(ownerId,{runId:current.id,limit:100})).filter(item=>item.action==="self_development_workspace_attested"),attestationEvent=attestations[0],attestation=attestationEvent?.metadata,attestationMatches=attestationEvent?.status==="completed"&&attestation?.attestationVersion===1&&attestation.representation==="current_verified_workspace_linked_to_historical_apply"&&attestation.historicalProvenanceClaim===false&&attestation.taskId===current.id&&attestation.taskStateVersion===current.stateVersion&&attestation.repository===repository&&attestation.branch===current.branch&&canonicalWorkspaceRoot(attestation.workspaceRoot)===canonicalWorkspaceRoot(input.workspace.root)&&attestation.productHead===current.currentCommit&&attestation.liveBranchTip===newCommit&&attestation.runtimeVersion===(runtimeVersion||null)&&typeof attestation.workerId==="string"&&Boolean(attestation.workerId.trim())&&attestation.sourceApplyStepId===priorApply?.stepId&&attestation.sourcePlanStepId===priorPlan?.stepId&&attestation.sourceApplyFingerprint===priorApply?.operationFingerprint&&exactDirtyEvidence(attestation.dirtyFiles,actualDirty)&&(!completeLineageValid||attestation.dirtyFiles.every((item,index)=>item?.contentHash===actualDirty[index]?.contentHash&&item?.contentHash===lineageEntries[index]?.contentHash)),exactPriorOutput=entries.length===appliedPaths.length&&entries.every(Boolean)&&actualDirty.length===entries.length&&actualDirty.every(item=>{const expected=entryByPath.get(item.path);return expected&&item.hashAlgorithm==="git_sha1"&&SHA.test(item.hash)&&(completeLineageValid?item.contentHash===expected.contentHash:item.hash===expected.hash);}),incompletePlan=activePaths.length<appliedPaths.length&&activePaths.every(path=>entryByPath.has(path)),scopeBound=appliedPaths.length>0&&appliedPaths.length<=12&&(completeLineageValid||appliedPaths.every(path=>(priorPlan.result.implementationPlan.evidencePaths||[]).map(safePath).includes(path)&&!REPLAN_PROTECTED.test(path))),workspaceBound=Boolean(attestationMatches);
+      if(exactPriorOutput&&incompletePlan&&scopeBound&&workspaceBound){
+        const base=current.metadata.steps.length,now=clock().toISOString(),failureEvidence={version:1,code:"repair_plan_incomplete",fingerprint:hash([current.id,current.stateVersion,priorPlan.stepId,priorApply.stepId,entries]),requiredPaths:appliedPaths,sourcePlanStepId:priorPlan.stepId,sourceApplyStepId:priorApply.stepId,mutationApplied:false},replan={...planTemplate,input:{...planTemplate.input,arguments:{...planTemplate.input.arguments,taskId:current.id,candidatePaths:appliedPaths,currentCommit:"$CURRENT_COMMIT",failureEvidence}},idempotencyIdentity:`${planTemplate.idempotencyIdentity||"self-development:plan_repair"}:complete-dirty-set:${base+1}`},continuation=[replan,...remaining],nextSteps=continuation.map((step,index)=>({...step,idempotencyIdentity:`${step.idempotencyIdentity||`self-development:${step.type}`}:partial-repair-recovery:${base+index+1}`})),activeContinuation=createActiveContinuation({task:current,startStep:base,plannedSteps:nextSteps.length,repairLimit:current.metadata?.maxRepairIterations??2,recoveryClass:"task_owned_dirty_partial_plan_replan",runtimeStartedAt:now,runtimeMinutes:15}),record={recoveryClass:"task_owned_dirty_partial_plan_replan",taskId:current.id,previousStateVersion:current.stateVersion,failedStepId:failed.stepId,incompletePlanStepId:planned.stepId,sourcePlanStepId:priorPlan.stepId,sourceApplyStepId:priorApply.stepId,sourceApplyFingerprint:priorApply.operationFingerprint,repository,currentCommit:current.currentCommit,runtimeVersion:runtimeVersion||null,branch:current.branch,workspaceRoot:input.workspace.root,requiredPaths:appliedPaths,entries,fingerprint:failureEvidence.fingerprint,mutationApplied:false,activeContinuation,recoveredAt:now},generations=(current.metadata?.implementationPlanGenerations||[]).map(item=>item.authority==="active"?{...item,authority:"superseded",supersededReason:"repair_plan_incomplete"}:item);
+        const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",currentStep:base,currentPhase:"plan_repair",nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,retryCount:0,blockedReason:null,checkpoint:{...current.checkpoint,pendingStep:null},metadata:{...current.metadata,steps:[...current.metadata.steps,...nextSteps],requiredCapability:"reasoning",autoDispatch:true,selfDevelopmentImplementationPlan:null,activeImplementationPlanGeneration:null,implementationPlanGenerations:generations,activeContinuation,continuationHistory:[...(current.metadata?.continuationHistory||[]),activeContinuation],partialRepairPlanRecoveryHistory:[...(current.metadata?.partialRepairPlanRecoveryHistory||[]),record]}},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during partial repair-plan recovery.");
+        await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_partial_repair_plan_recovery",status:"queued",summary:"A proven task-owned dirty set requires Nova to regenerate a complete bounded repair plan.",metadata:{taskId:current.id,previousStateVersion:current.stateVersion,failedStepId:failed.stepId,requiredPaths:appliedPaths,sourcePlanStepId:priorPlan.stepId,sourceApplyStepId:priorApply.stepId,mutationApplied:false,continuationGenerationId:activeContinuation.generationId}});return{task:updated,recoveredStepId:failed.stepId,requiredPaths:appliedPaths,recoveryCode:"repair_plan_incomplete",mutationApplied:false,idempotent:false};
+      }
+    }
+    if((failureCode==="working_tree_dirty"&&input.workspace.clean!==false)||(input.workspace.clean===true&&declaredDirty.length)||(input.workspace.clean===false&&!taskOwnedDirty))throw new SelfDevelopmentError("hands_context_recovery_dirty_unproven","A dirty checkout is allowed only when every changed file exactly matches the active plan's pre-mutation content.",400);
     const evidencePaths=[...new Set([...(implementation.evidencePaths||[]),...implementation.files.map(file=>file.path)].map(safePath))];if(!evidencePaths.length||evidencePaths.length>12||evidencePaths.some(path=>REPLAN_PROTECTED.test(path)))throw new SelfDevelopmentError("hands_context_evidence_invalid","Bounded implementation evidence cannot be verified.");
     const evidence=await compareRemoteEvidence({repository,paths:evidencePaths,oldCommit,newCommit}),changedPaths=evidencePaths.filter(path=>evidence[path]?.equivalent!==true),base=current.metadata.steps.length;
     const reads=changedPaths.map((path,index)=>annotation(base+index+1,"read_files","repo_read_remote",{tool:"repo_read",arguments:{path,startLine:1,endLine:1000}},`Current contents of ${path}`,"Rebound evidence is read before replanning",{retry:"safe_read"})),replan=changedPaths.length?{...planTemplate,input:{...planTemplate.input,arguments:{...planTemplate.input.arguments,taskId:current.id,candidatePaths:evidencePaths,currentCommit:newCommit}},idempotencyIdentity:`${planTemplate.idempotencyIdentity||"self-development:plan_implementation"}:hands-rebind:${newCommit}`}:null,continuation=[...reads,...(replan?[replan]:[]),...remaining],nextSteps=continuation.map((step,index)=>({...step,idempotencyIdentity:`${step.idempotencyIdentity||`self-development:${step.type}`}:hands-context-recovery:${base+index+1}`}));
-    const reboundTask={...current,currentCommit:newCommit},reboundPlan=changedPaths.length?null:hasBoundPlan?rebindEquivalentImplementationPlan({task:reboundTask,plan:implementation,evidence:implementation.files.filter(file=>file.operation==="replace").map(file=>({path:file.path,content:file.expectedContent}))}):implementation,reboundMetadata=hasBoundPlan&&reboundPlan?planLifecycleMetadata(reboundTask,reboundPlan):current.metadata,now=clock().toISOString(),activeContinuation=createActiveContinuation({task:reboundTask,startStep:base,plannedSteps:nextSteps.length,repairLimit:current.metadata?.maxRepairIterations??2,recoveryClass,runtimeStartedAt:now,runtimeMinutes:15}),record={recoveryClass,previousStateVersion:current.stateVersion,failedStepId:failed.stepId,plannedStepId:planned.stepId,semanticPlanOrdinal:semantic.plannedOrdinal,semanticApplyOrdinal:semantic.failedOrdinal,previousCurrentCommit:oldCommit,newCurrentCommit:newCommit,ancestryVerified:true,evidence:Object.fromEntries(evidencePaths.map(path=>[path,{oldBlob:evidence[path].oldSha,newBlob:evidence[path].newSha,equivalent:evidence[path].equivalent===true}])),invalidatedEvidencePaths:changedPaths,repositoryRoot:input.workspace.root,gitTopLevel:input.workspace.gitTopLevel,workingTreeClean:input.workspace.clean,taskOwnedDirtyFiles:taskOwnedDirty?actualDirty:[],previousPlanGenerationId:implementation.provenance?.generationId||null,newPlanGenerationId:reboundPlan?.provenance?.generationId||null,activeContinuation,recoveredAt:now},requiredCapability=changedPaths.length?"repo_read_remote":"repo_mutate_local",status=changedPaths.length?"queued":"waiting_for_worker";
+    const reboundTask={...current,currentCommit:newCommit},reboundPlan=changedPaths.length?null:hasBoundPlan?rebindEquivalentImplementationPlan({task:reboundTask,plan:implementation,evidence:implementation.files.filter(file=>file.operation==="replace").map(file=>({path:file.path,content:file.expectedContent}))}):implementation,reboundMetadata=hasBoundPlan&&reboundPlan?planLifecycleMetadata(reboundTask,reboundPlan):current.metadata,now=clock().toISOString(),activeContinuation=createActiveContinuation({task:reboundTask,startStep:base,plannedSteps:nextSteps.length,repairLimit:current.metadata?.maxRepairIterations??2,recoveryClass,runtimeStartedAt:now,runtimeMinutes:15}),record={recoveryClass,previousStateVersion:current.stateVersion,failedStepId:failed.stepId,plannedStepId:planned.stepId,semanticPlanOrdinal:semantic.plannedOrdinal,semanticApplyOrdinal:semantic.failedOrdinal,previousCurrentCommit:oldCommit,newCurrentCommit:newCommit,runtimeVersion:runtimeVersion||null,ancestryVerified:true,evidence:Object.fromEntries(evidencePaths.map(path=>[path,{oldBlob:evidence[path].oldSha,newBlob:evidence[path].newSha,equivalent:evidence[path].equivalent===true}])),invalidatedEvidencePaths:changedPaths,repositoryRoot:input.workspace.root,gitTopLevel:input.workspace.gitTopLevel,workingTreeClean:input.workspace.clean,taskOwnedDirtyFiles:taskOwnedDirty?actualDirty:[],previousPlanGenerationId:implementation.provenance?.generationId||null,newPlanGenerationId:reboundPlan?.provenance?.generationId||null,activeContinuation,recoveredAt:now},requiredCapability=changedPaths.length?"repo_read_remote":"repo_mutate_local",status=changedPaths.length?"queued":"waiting_for_worker";
     let updated;try{updated=await storage.updateAutonomyTask(current.id,ownerId,{status,currentStep:base,currentPhase:"hands_repository_context_recovery",currentCommit:newCommit,nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,retryCount:0,blockedReason:null,checkpoint:{...current.checkpoint,pendingStep:null},metadata:{...reboundMetadata,steps:[...current.metadata.steps,...nextSteps],requiredCapability,autoDispatch:true,selfDevelopmentImplementationPlan:changedPaths.length?null:reboundPlan,activeImplementationPlanGeneration:changedPaths.length?null:reboundPlan?.provenance?.generationId||current.metadata.activeImplementationPlanGeneration,activeContinuation,continuationHistory:[...(current.metadata?.continuationHistory||[]),activeContinuation],handsContextRecoveryHistory:[...(current.metadata.handsContextRecoveryHistory||[]),record],baseRevisionHistory:[...(current.metadata.baseRevisionHistory||[]),{previousBaseCommit:oldCommit,newBaseCommit:newCommit,previousStateVersion:current.stateVersion,ancestryVerified:true,recoveredAt:now}] }},current.stateVersion);}catch(error){const internalCode=typeof error?.code==="string"&&/^[a-z0-9_]{1,80}$/i.test(error.code)&&!SECRET.test(error.code)?error.code:"storage_error";throw new SelfDevelopmentError("hands_context_recovery_persistence_failed","Hands-context recovery could not be persisted safely.",500,{recoveryRoute,recoveryClass,stage:"persistence",operation:"update_autonomy_task",taskId:current.id,stepId:failed.stepId,stepType:failed.stepType,internalCode,mutationStarted:true,mutationCompleted:false});}if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during Hands-context recovery.");
     await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_hands_context_recovered",status,summary:"Exact pre-mutation Hands repository context and descendant task base were verified for bounded continuation.",metadata:{taskId:current.id,previousStateVersion:current.stateVersion,failedStepId:failed.stepId,previousCurrentCommit:oldCommit,newCurrentCommit:newCommit,ancestryVerified:true,invalidatedEvidencePaths:changedPaths,repositoryRoot:input.workspace.root,continuationGenerationId:activeContinuation.generationId,continuationStepBudget:activeContinuation.maxSteps}});
     return{task:updated,recoveredStepId:failed.stepId,previousCurrentCommit:oldCommit,newCurrentCommit:newCommit,invalidatedEvidencePaths:changedPaths,evidence,idempotent:false};
   }
   const recoverHandsWorkingTreeDirty=(taskId,input)=>recoverHandsCommitMismatch(taskId,input,{failureCode:"working_tree_dirty",recoveryClass:"task_owned_dirty_patch_resume",recoveryRoute:"recover-hands-working-tree-dirty"});
+  async function attestHandsWorkspace(taskId,input,actor={}){
+    const workspace=actor.workspaceProof,allowed=new Set(["expectedVersion","runtimeVersion","workerId","sourceApplyStepId","workspaceProof","workspaceProofSignature"]),workspaceKeys=new Set(["root","gitTopLevel","repository","branch","head","liveTip","clean","changedFiles"]);
+    if(!input||Object.keys(input).some(key=>!allowed.has(key))||!Number.isInteger(input.expectedVersion)||!SHA.test(input.runtimeVersion||"")||input.runtimeVersion!==runtimeVersion||typeof input.workerId!=="string"||!input.workerId.trim()||!/^\d+:apply_patch$/.test(input.sourceApplyStepId||"")||!workspace||Object.keys(workspace).some(key=>!workspaceKeys.has(key))||typeof workspace.root!=="string"||workspace.root!==workspace.gitTopLevel||workspace.repository!==repository||workspace.branch!==approvedBranch||!SHA.test(workspace.head||"")||!SHA.test(workspace.liveTip||"")||workspace.clean!==false||actor.actorType!=="scoped_local_worker")throw new SelfDevelopmentError("workspace_attestation_invalid","Exact authenticated local-worker repository proof is required.",400);
+    const current=await runtime.get(taskId);if(!current||current.taskType!=="self_development")throw new SelfDevelopmentError("task_not_found","Self-development task not found.",404);
+    if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before workspace attestation.");
+    if(current.status!=="failed"||current.currentCommit!==workspace.head||current.branch!==workspace.branch||current.metadata?.selfDevelopment?.repository!==workspace.repository||current.leaseOwner||current.leaseToken)throw new SelfDevelopmentError("workspace_attestation_precondition_failed","Only an exact failed task-bound repair state may be attested.");
+    if(!verifyRemote)throw new SelfDevelopmentError("workspace_attestation_verification_unavailable","Live branch verification is required.",503);
+    const remote=await verifyRemote({repository,branch:current.branch,requiredAncestors:[current.currentCommit]});if(remote.currentTip!==workspace.liveTip||workspace.liveTip!==current.currentCommit||remote.ancestors?.[current.currentCommit]!==true)throw new SelfDevelopmentError("workspace_attestation_remote_mismatch","Product HEAD and live branch tip must agree.");
+    const steps=await runtime.steps(current.id),apply=steps.find(step=>step.stepId===input.sourceApplyStepId&&step.stepType==="apply_patch"&&step.status==="completed"),applyOrdinal=stepOrdinal(apply),plan=steps.filter(step=>["plan_implementation","plan_repair"].includes(step.stepType)&&step.status==="completed"&&stepOrdinal(step)<applyOrdinal).sort((a,b)=>stepOrdinal(a)-stepOrdinal(b)).at(-1),files=plan?.result?.implementationPlan?.files,latestApply=steps.filter(step=>step.stepType==="apply_patch"&&step.status==="completed").sort((a,b)=>stepOrdinal(a)-stepOrdinal(b)).at(-1),focusedFailure=steps.find(step=>stepOrdinal(step)===applyOrdinal+1&&step.stepType==="run_focused_tests"&&step.status==="failed"&&step.errorCode==="test_failed"),focusedDiagnostics=focusedFailure?.result?.diagnostics,focusedPlanPaths=new Set((plan?.result?.implementationPlan?.focusedTests||[]).map(item=>safePath(typeof item==="string"?item:item.path))),focusedFailedPaths=(focusedDiagnostics?.failedFiles||[]).map(safePath),noLaterStep=focusedFailure&&!steps.some(step=>stepOrdinal(step)>stepOrdinal(focusedFailure)),durableLineage=apply?.result?.taskOwnedDirtyLineage,lineageHasSourceApply=durableLineage&&Object.prototype.hasOwnProperty.call(durableLineage,"sourceApplyStepId"),canonicalSourceApplyStepId=lineageHasSourceApply?durableLineage.sourceApplyStepId:apply?.stepId,lineageEntries=Array.isArray(durableLineage?.entries)?durableLineage.entries.map(item=>({path:safePath(item?.path),contentHash:String(item?.contentHash||"").toLowerCase()})).sort((a,b)=>a.path.localeCompare(b.path)):[],completeLineageValid=durableLineage?.version===1&&durableLineage.taskId===current.id&&durableLineage.repository===repository&&durableLineage.branch===current.branch&&durableLineage.currentCommit===current.currentCommit&&canonicalSourceApplyStepId===apply?.stepId&&durableLineage.sourcePlanStepId===plan?.stepId&&lineageEntries.length>0&&lineageEntries.length<=12&&new Set(lineageEntries.map(item=>item.path)).size===lineageEntries.length&&lineageEntries.every(item=>REVIEW_HASH.test(item.contentHash)&&!REPLAN_PROTECTED.test(item.path)),testFailedEligible=current.errorCode==="test_failed"&&apply===latestApply&&current.currentStep===applyOrdinal&&plan?.stepType==="plan_repair"&&current.repairIteration>0&&focusedFailure&&noLaterStep&&typeof focusedDiagnostics?.fingerprint==="string"&&focusedDiagnostics.fingerprint&&focusedFailedPaths.length>0&&focusedFailedPaths.every(path=>focusedPlanPaths.has(path))&&completeLineageValid,workingTreeEligible=current.errorCode==="working_tree_dirty",attestationClass=testFailedEligible?"post_apply_focused_test_failure":"pre_mutation_working_tree_dirty";
+    if(!workingTreeEligible&&!testFailedEligible)throw new SelfDevelopmentError("workspace_attestation_precondition_failed","Only exact pre-mutation dirt or an immediately post-apply bounded focused-test failure may be attested.");
+    const legacyPaths=Array.isArray(apply?.result?.files)?[...new Set(apply.result.files.map(safePath))].sort():[],byPath=new Map((files||[]).map(file=>[safePath(file.path),file])),legacyExpected=legacyPaths.map(path=>{const file=byPath.get(path);return typeof file?.content==="string"?{path,hashAlgorithm:"git_sha1",hash:gitBlobHash(file.content)}:null;}),actual=(workspace.changedFiles||[]).map(item=>({path:safePath(item?.path),hashAlgorithm:item?.hashAlgorithm,hash:String(item?.hash||"").toLowerCase(),...(item?.contentHash?{contentHash:String(item.contentHash).toLowerCase()}:{})})).sort((a,b)=>a.path.localeCompare(b.path)),dirtyExact=completeLineageValid?actual.length===lineageEntries.length&&actual.every((item,index)=>item.path===lineageEntries[index].path&&item.hashAlgorithm==="git_sha1"&&SHA.test(item.hash)&&item.contentHash===lineageEntries[index].contentHash):durableLineage==null&&workingTreeEligible&&legacyPaths.length>0&&legacyPaths.length<=12&&!legacyExpected.some(item=>!item)&&actual.length===legacyExpected.length&&actual.every((item,index)=>item.path===legacyExpected[index].path&&item.hashAlgorithm==="git_sha1"&&item.hash===legacyExpected[index].hash);
+    if(!apply||!plan||!dirtyExact)throw new SelfDevelopmentError("workspace_attestation_dirty_lineage_mismatch","Current dirty bytes do not exactly match the completed same-task apply lineage.");
+    const sameDirtyEvidence=(left,right)=>exactDirtyEvidence(left,right)&&(!completeLineageValid||left.every((item,index)=>item?.contentHash===right[index]?.contentHash)),attestations=(await storage.listActivity(ownerId,{runId:current.id,limit:100})).filter(item=>item.action==="self_development_workspace_attested"),latest=attestations[0],value=latest?.metadata,exactPrior=latest?.status==="completed"&&value?.attestationVersion===1&&value.representation==="current_verified_workspace_linked_to_historical_apply"&&value.attestationClass===attestationClass&&value.historicalProvenanceClaim===false&&value.taskId===current.id&&value.taskStateVersion===current.stateVersion&&value.repository===repository&&value.branch===current.branch&&canonicalWorkspaceRoot(value.workspaceRoot)===canonicalWorkspaceRoot(workspace.root)&&value.productHead===current.currentCommit&&value.liveBranchTip===workspace.liveTip&&value.runtimeVersion===input.runtimeVersion&&value.workerId===input.workerId.trim()&&value.sourceApplyStepId===apply.stepId&&value.sourcePlanStepId===plan.stepId&&value.sourceApplyFingerprint===apply.operationFingerprint&&sameDirtyEvidence(value.dirtyFiles,actual);if(exactPrior)return{attestation:value,idempotent:true};
+    const attestation={attestationId:randomUUID(),attestationVersion:1,representation:"current_verified_workspace_linked_to_historical_apply",attestationClass,historicalProvenanceClaim:false,taskId:current.id,taskStateVersion:current.stateVersion,repository,branch:current.branch,workspaceRoot:canonicalWorkspaceRoot(workspace.root),productHead:current.currentCommit,liveBranchTip:workspace.liveTip,runtimeVersion:input.runtimeVersion,workerId:input.workerId.trim(),sourceApplyStepId:apply.stepId,sourcePlanStepId:plan.stepId,sourceApplyFingerprint:apply.operationFingerprint,dirtyFiles:actual,supersedesAttestationId:value?.attestationId||null,attestedAt:clock().toISOString()};
+    await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_workspace_attested",status:"completed",summary:"The authenticated local worker attested the current workspace state for a completed same-task apply lineage.",metadata:attestation});return{attestation,idempotent:false};
+  }
   const recoverRepositoryContextFailure=(taskId,input)=>recoverHandsCommitMismatch(taskId,input,{failureCode:"repository_context_unproven",recoveryClass:"repository_context_descendant_rebind"});
   async function recoverPlanLifecycle(taskId,input){
     if(!input||Object.keys(input).some(key=>!["expectedVersion","workspace"].includes(key))||!Number.isInteger(input.expectedVersion)||!input.workspace||Object.keys(input.workspace).some(key=>!["root","gitTopLevel","head","clean"].includes(key))||!SHA.test(input.workspace.head||"")||input.workspace.clean!==true||input.workspace.root!==input.workspace.gitTopLevel)throw new SelfDevelopmentError("plan_lifecycle_recovery_invalid","Exact version and clean repository proof are required.",400);
@@ -2522,12 +2711,17 @@ export function createSelfDevelopmentService({
     });
     return { task: updated, repairLimitReached: false };
   }
+  function isEscalatedRepairExhaustion(current,failed,ordinal,limit){
+    if(current.repairIteration<limit)return false;
+    if(current.errorCode==="repair_limit_reached")return true;
+    return current.errorCode==="test_failed"&&failed?.stepType==="run_focused_tests"&&failed.status==="failed"&&failed.errorCode==="test_failed"&&ordinal===current.currentStep+1;
+  }
   async function requestEscalatedRepair(taskId,input){
     if(!input||Object.keys(input).some(key=>key!=="expectedVersion")||!Number.isInteger(input.expectedVersion))throw new SelfDevelopmentError("escalated_repair_request_invalid","An exact state version is required.",400);
     const current=await runtime.get(taskId);if(!current||current.taskType!=="self_development")throw new SelfDevelopmentError("task_not_found","Self-development task not found.",404);
     if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before escalated-repair approval was requested.");
     const steps=await runtime.steps(current.id),focusedFailures=steps.filter(step=>step.stepType==="run_focused_tests"&&step.status==="failed"&&step.errorCode==="test_failed"),failed=focusedFailures.at(-1),ordinal=stepOrdinal(failed),diagnostics=failed?.result?.diagnostics,counts=diagnostics?.counts||{},plan=current.metadata?.selfDevelopmentImplementationPlan,activePaths=new Set((plan?.files||[]).map(file=>safePath(file.path))),failedFiles=[...(diagnostics?.failedFiles||[])].map(safePath),priorProgress=focusedFailures.slice(0,-1).some(step=>Number(step.result?.diagnostics?.counts?.failed)>Number(counts.failed)),delivered=steps.some(step=>stepOrdinal(step)>ordinal&&["commit","review_commit","push","deploy_preview"].includes(step.stepType)&&step.status==="completed"),limit=current.metadata?.maxRepairIterations||3,fingerprint=diagnostics?.fingerprint;
-    if(current.status!=="failed"||current.errorCode!=="repair_limit_reached"||current.repairIteration<limit||!failed||ordinal!==current.currentStep+1||counts.failed!==1||!Number.isInteger(counts.tests)||counts.tests<2||counts.passed!==counts.tests-1||failedFiles.length!==1||!failedFiles.every(path=>activePaths.has(path))||!priorProgress||delivered||current.approvalState||current.leaseOwner||!fingerprint||!plan?.provenance||current.metadata?.activeImplementationPlanGeneration!==plan.provenance.generationId||plan.provenance.taskId!==current.id||plan.provenance.currentCommit!==current.currentCommit||current.metadata?.escalatedRepairHistory?.length)throw new SelfDevelopmentError("escalated_repair_precondition_failed","Only one narrowly bounded, progress-proven repair-limit exception may request approval.");
+    if(current.status!=="failed"||!isEscalatedRepairExhaustion(current,failed,ordinal,limit)||!failed||ordinal!==current.currentStep+1||counts.failed!==1||!Number.isInteger(counts.tests)||counts.tests<2||counts.passed!==counts.tests-1||failedFiles.length!==1||!failedFiles.every(path=>activePaths.has(path))||!priorProgress||delivered||current.approvalState||current.leaseOwner||!fingerprint||current.branch!==approvedBranch||current.metadata?.selfDevelopment?.repository!==repository||!plan?.provenance||current.metadata?.activeImplementationPlanGeneration!==plan.provenance.generationId||plan.provenance.taskId!==current.id||plan.provenance.currentCommit!==current.currentCommit||current.metadata?.escalatedRepairHistory?.length)throw new SelfDevelopmentError("escalated_repair_precondition_failed","Only one narrowly bounded, progress-proven repair-limit exception may request approval.");
     const arguments_={taskId:current.id,expectedVersion:current.stateVersion,branch:current.branch,currentCommit:current.currentCommit,failedStepId:failed.stepId,failureFingerprint:fingerprint,planGenerationId:plan.provenance.generationId,maxAdditionalAttempts:1},existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool==="self_development_escalated_repair"&&item.arguments?.taskId===current.id&&item.arguments?.expectedVersion===current.stateVersion&&item.arguments?.failureFingerprint===fingerprint&&["pending","approved"].includes(item.status));if(existing)return{task:current,approval:existing,idempotent:true};
     const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:current.projectId,runId:null,tool:"self_development_escalated_repair",reason:"Owner approval is required for one exact, bounded Nova repair attempt after genuine repair-limit exhaustion.",riskLevel:"SENSITIVE",arguments:arguments_});
     await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_escalated_repair_approval_requested",status:"waiting",summary:"One exact additional Nova repair attempt requires owner approval.",metadata:{taskId:current.id,approvalId:approval.id,expectedVersion:current.stateVersion,failedStepId:failed.stepId,failureFingerprint:fingerprint,maxAdditionalAttempts:1}});return{task:current,approval,idempotent:false};
@@ -2536,7 +2730,7 @@ export function createSelfDevelopmentService({
     if(!input||Object.keys(input).some(key=>!["expectedVersion","approvalId"].includes(key))||!Number.isInteger(input.expectedVersion)||typeof input.approvalId!=="string")throw new SelfDevelopmentError("escalated_repair_recovery_invalid","Exact version and approval are required.",400);
     const current=await runtime.get(taskId);if(!current||current.taskType!=="self_development")throw new SelfDevelopmentError("task_not_found","Self-development task not found.",404);const prior=current.metadata?.escalatedRepairHistory?.find(item=>item.fromStateVersion===input.expectedVersion&&item.approvalId===input.approvalId);if(prior)return{task:current,recovery:prior,idempotent:true};if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before escalated repair recovery.");
     const approval=await storage.getApproval(input.approvalId,ownerId),steps=await runtime.steps(current.id),focusedFailures=steps.filter(step=>step.stepType==="run_focused_tests"&&step.status==="failed"&&step.errorCode==="test_failed"),failed=focusedFailures.at(-1),ordinal=stepOrdinal(failed),diagnostics=failed?.result?.diagnostics,counts=diagnostics?.counts||{},plan=current.metadata?.selfDevelopmentImplementationPlan,activePaths=new Set((plan?.files||[]).map(file=>safePath(file.path))),failedFiles=[...(diagnostics?.failedFiles||[])].map(safePath),priorProgress=focusedFailures.slice(0,-1).some(step=>Number(step.result?.diagnostics?.counts?.failed)>Number(counts.failed)),delivered=steps.some(step=>stepOrdinal(step)>ordinal&&["commit","review_commit","push","deploy_preview"].includes(step.stepType)&&step.status==="completed"),args=approval?.arguments||{},limit=current.metadata?.maxRepairIterations||3;
-    if(!approval||approval.status!=="approved"||approval.tool!=="self_development_escalated_repair"||args.taskId!==current.id||args.expectedVersion!==current.stateVersion||args.branch!==current.branch||args.currentCommit!==current.currentCommit||args.failedStepId!==failed?.stepId||args.failureFingerprint!==diagnostics?.fingerprint||args.planGenerationId!==plan?.provenance?.generationId||args.maxAdditionalAttempts!==1||current.status!=="failed"||current.errorCode!=="repair_limit_reached"||current.repairIteration<limit||ordinal!==current.currentStep+1||counts.failed!==1||counts.passed!==counts.tests-1||failedFiles.length!==1||!failedFiles.every(path=>activePaths.has(path))||!priorProgress||delivered||current.approvalState||current.leaseOwner||current.metadata?.escalatedRepairHistory?.length)throw new SelfDevelopmentError("escalated_repair_recovery_precondition_failed","The approved repair-limit exception no longer matches the exact bounded failure.");
+    if(!approval||approval.status!=="approved"||approval.tool!=="self_development_escalated_repair"||args.taskId!==current.id||args.expectedVersion!==current.stateVersion||args.branch!==current.branch||args.currentCommit!==current.currentCommit||args.failedStepId!==failed?.stepId||args.failureFingerprint!==diagnostics?.fingerprint||args.planGenerationId!==plan?.provenance?.generationId||args.maxAdditionalAttempts!==1||current.status!=="failed"||!isEscalatedRepairExhaustion(current,failed,ordinal,limit)||current.branch!==approvedBranch||current.metadata?.selfDevelopment?.repository!==repository||ordinal!==current.currentStep+1||counts.failed!==1||counts.passed!==counts.tests-1||failedFiles.length!==1||!failedFiles.every(path=>activePaths.has(path))||!priorProgress||delivered||current.approvalState||current.leaseOwner||current.metadata?.escalatedRepairHistory?.length)throw new SelfDevelopmentError("escalated_repair_recovery_precondition_failed","The approved repair-limit exception no longer matches the exact bounded failure.");
     assertActiveImplementationPlan(current,plan.files);const base=current.metadata.steps.length,repairSteps=[{type:"plan_repair",input:{tool:"self_development_plan_implementation",arguments:{taskId:current.id,candidatePaths:[...activePaths],currentCommit:"$CURRENT_COMMIT",failureEvidence:diagnostics}},idempotencyIdentity:`escalated-repair-plan:${diagnostics.fingerprint}`},{type:"apply_patch",input:{tool:"repo_apply_patch",arguments:{branch:"$TASK_BRANCH",currentCommit:"$CURRENT_COMMIT",files:"$IMPLEMENTATION_FILES",planProvenance:"$IMPLEMENTATION_PLAN_PROVENANCE"}},idempotencyIdentity:`escalated-repair-patch:${diagnostics.fingerprint}`},{type:"run_focused_tests",input:{tool:"test_run",arguments:{files:"$IMPLEMENTATION_TESTS"}},idempotencyIdentity:`escalated-repair-focused:${diagnostics.fingerprint}`},{type:"run_full_tests",input:{tool:"test_run_full",arguments:{}},idempotencyIdentity:`escalated-repair-full:${diagnostics.fingerprint}`},{type:"inspect_diff",input:{tool:"repo_diff",arguments:{paths:"$IMPLEMENTATION_PATHS"}},idempotencyIdentity:`escalated-repair-diff:${diagnostics.fingerprint}`},{type:"commit",input:{tool:"git_commit",arguments:{paths:"$IMPLEMENTATION_PATHS",branch:current.branch,message:"Complete bounded Nova self-development task"}},idempotencyIdentity:`escalated-repair-commit:${diagnostics.fingerprint}`},{type:"review_commit",input:{tool:"repo_review_commit",arguments:{commitSha:"$CURRENT_COMMIT",paths:"$IMPLEMENTATION_PATHS"}},idempotencyIdentity:`escalated-repair-review:${diagnostics.fingerprint}`}],now=clock().toISOString(),activeContinuation=createActiveContinuation({task:current,startStep:base,plannedSteps:repairSteps.length,repairLimit:1,recoveryClass:"owner_approved_single_repair_extension",runtimeStartedAt:now,runtimeMinutes:15}),record={recoveryClass:"owner_approved_single_repair_extension",fromStateVersion:current.stateVersion,approvalId:approval.id,failedStepId:failed.stepId,failureFingerprint:diagnostics.fingerprint,planGenerationId:plan.provenance.generationId,previousRepairIteration:current.repairIteration,globalRepairLimit:limit,maxAdditionalAttempts:1,recoveredAt:now},metadata={...current.metadata,steps:[...current.metadata.steps,...repairSteps],requiredCapability:"reasoning",autoDispatch:true,activeContinuation,continuationHistory:[...(current.metadata?.continuationHistory||[]),activeContinuation],escalatedRepairHistory:[record]};const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",currentStep:base,currentPhase:"owner_approved_escalated_repair",nextRunAt:now,completedAt:null,errorCode:null,blockedReason:null,retryCount:0,metadata},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during escalated repair recovery.");await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_escalated_repair_recovered",status:"queued",summary:"Owner-approved single additional Nova repair attempt started.",metadata:{taskId:current.id,...record}});return{task:updated,recovery:record,idempotent:false};
   }
   async function recoverFullTestHandoffOverflow(taskId,input){
@@ -2564,23 +2758,33 @@ export function createSelfDevelopmentService({
     if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before test-runner recovery.");
     const active=current.metadata?.activeContinuation,nextStep=current.metadata?.steps?.[current.currentStep],stuckReasoning=current.status==="waiting_for_worker"&&!current.errorCode&&current.currentPhase==="test_runner_infrastructure_recovery"&&active?.recoveryClass==="post_runner_repair_evidence_rebind"&&current.metadata?.requiredCapability==="reasoning"&&nextStep?.type==="plan_repair"&&!current.leaseOwner&&!current.leaseToken&&!current.approvalState;
     if(stuckReasoning){const now=clock().toISOString(),runtimeMinutes=15,runtimeWindow={runtimeStartedAt:now,runtimeMinutes,runtimeDeadline:new Date(new Date(now).getTime()+runtimeMinutes*60000).toISOString()},record={recoveryClass:"post_runner_reasoning_dispatch_rebind",fromStateVersion:current.stateVersion,continuationGenerationId:active.generationId,recoveredAt:now},metadata={...current.metadata,activeContinuation:{...active,...runtimeWindow},testRunnerInfrastructureRecoveryHistory:[...(current.metadata.testRunnerInfrastructureRecoveryHistory||[]),record]};const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",nextRunAt:now,startedAt:now,metadata},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during reasoning-dispatch recovery.");await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_reasoning_dispatch_recovered",status:"queued",summary:"The exact evidence-bound repair continuation was rebound to server reasoning dispatch.",metadata:{taskId:current.id,...record}});return{task:updated,idempotent:false,recovery:record};}
-    const steps=await runtime.steps(current.id),failed=steps.filter(step=>step.stepType==="run_full_tests"&&step.status==="failed"&&step.errorCode==="test_failed").at(-1),latestFailed=steps.filter(step=>step.status==="failed").at(-1),evidence=failed?.result?.diagnostics,failedOrdinal=stepOrdinal(failed),latestFailedOrdinal=stepOrdinal(latestFailed),isNpmUnavailable=value=>value?.identity?.command==="npm:test"&&value?.durationMs===0&&value?.exitCode===1&&value?.stderrExcerpt==="spawn npm ENOENT"&&Array.isArray(value.failedFiles)&&value.failedFiles.length===0&&Array.isArray(value.failedTitles)&&value.failedTitles.length===0&&value?.counts&&Object.values(value.counts).every(item=>item===null),isGitUnavailable=value=>value?.identity?.command==="npm:test"&&value?.exitCode===1&&value?.errorMessage==="A validated Git executable is unavailable."&&value?.failedFiles?.includes("test/git-execution.test.js")&&value?.stdoutExcerpt?.includes("spawn git ENOENT"),isUnavailable=value=>isNpmUnavailable(value)||isGitUnavailable(value),history=current.metadata?.fullTestRepairHistory||[],matchingHistory=history.filter(item=>item.fingerprint===evidence?.fingerprint&&item.failedStepId===failed?.stepId),invalidHistory=history.filter(item=>item.fingerprint===evidence?.fingerprint&&steps.some(step=>step.stepId===item.failedStepId&&isUnavailable(step.result?.diagnostics))),plan=current.metadata?.selfDevelopmentImplementationPlan,latestFocused=steps.filter(step=>step.stepType==="run_focused_tests"&&step.status==="completed"&&stepOrdinal(step)<failedOrdinal).at(-1),focusedOrdinal=stepOrdinal(latestFocused),mutationAfterFocused=steps.some(step=>stepOrdinal(step)>focusedOrdinal&&stepOrdinal(step)<failedOrdinal&&((step.stepType==="apply_patch"&&step.status==="completed")||step.result?.mutationApplied===true||(["commit","push","deploy_preview"].includes(step.stepType)&&step.status==="completed"))),focused=Boolean(latestFocused)&&!mutationAfterFocused,direct=current.errorCode==="repair_limit_reached"&&latestFailed===failed&&failedOrdinal===current.currentStep+1&&isNpmUnavailable(evidence),contaminated=current.errorCode==="implementation_scope_violation"&&latestFailed?.stepType==="plan_repair"&&latestFailedOrdinal===current.currentStep+1&&latestFailed?.result?.diagnostics?.validationIssues?.includes("focused_test_evidence_required")&&failedOrdinal<latestFailedOrdinal&&isGitUnavailable(evidence),priorInfrastructureRecovery=(current.metadata?.testRunnerInfrastructureRecoveryHistory||[]).some(item=>item.recoveryClass==="test_runner_git_path_reclassification"&&item.fromStateVersion<current.stateVersion),repairEvidenceGap=current.errorCode==="implementation_scope_violation"&&latestFailed?.stepType==="plan_repair"&&latestFailedOrdinal===current.currentStep+1&&latestFailed?.result?.diagnostics?.validationIssues?.includes("focused_test_evidence_required")&&failedOrdinal<latestFailedOrdinal&&!isUnavailable(evidence)&&matchingHistory.length===1&&priorInfrastructureRecovery,delivered=steps.some(step=>["commit","review_commit","push","deploy_preview"].includes(step.stepType)&&step.status==="completed"&&stepOrdinal(step)>failedOrdinal);
+    const steps=await runtime.steps(current.id),failed=steps.filter(step=>step.stepType==="run_full_tests"&&step.status==="failed"&&step.errorCode==="test_failed").at(-1),latestFailed=steps.filter(step=>step.status==="failed").at(-1),evidence=failed?.result?.diagnostics,failedOrdinal=stepOrdinal(failed),latestFailedOrdinal=stepOrdinal(latestFailed),isNpmUnavailable=value=>value?.identity?.command==="npm:test"&&value?.durationMs===0&&value?.exitCode===1&&value?.stderrExcerpt==="spawn npm ENOENT"&&Array.isArray(value.failedFiles)&&value.failedFiles.length===0&&Array.isArray(value.failedTitles)&&value.failedTitles.length===0&&value?.counts&&Object.values(value.counts).every(item=>item===null),isGitUnavailable=value=>value?.identity?.command==="npm:test"&&value?.exitCode===1&&value?.errorMessage==="A validated Git executable is unavailable."&&value?.failedFiles?.includes("test/git-execution.test.js")&&value?.stdoutExcerpt?.includes("spawn git ENOENT"),isUnavailable=value=>isNpmUnavailable(value)||isGitUnavailable(value),history=current.metadata?.fullTestRepairHistory||[],matchingHistory=history.filter(item=>item.fingerprint===evidence?.fingerprint&&item.failedStepId===failed?.stepId),invalidHistory=history.filter(item=>item.fingerprint===evidence?.fingerprint&&steps.some(step=>step.stepId===item.failedStepId&&isUnavailable(step.result?.diagnostics))),plan=current.metadata?.selfDevelopmentImplementationPlan,latestFocused=steps.filter(step=>step.stepType==="run_focused_tests"&&step.status==="completed"&&stepOrdinal(step)<failedOrdinal).at(-1),focusedOrdinal=stepOrdinal(latestFocused),mutationAfterFocused=steps.some(step=>stepOrdinal(step)>focusedOrdinal&&stepOrdinal(step)<failedOrdinal&&((step.stepType==="apply_patch"&&step.status==="completed")||step.result?.mutationApplied===true||(["commit","push","deploy_preview"].includes(step.stepType)&&step.status==="completed"))),focused=Boolean(latestFocused)&&!mutationAfterFocused,direct=current.errorCode==="repair_limit_reached"&&latestFailed===failed&&failedOrdinal===current.currentStep+1&&isNpmUnavailable(evidence),contaminated=current.errorCode==="implementation_scope_violation"&&latestFailed?.stepType==="plan_repair"&&latestFailedOrdinal===current.currentStep+1&&latestFailed?.result?.diagnostics?.validationIssues?.includes("focused_test_evidence_required")&&failedOrdinal<latestFailedOrdinal&&isGitUnavailable(evidence),infrastructureHistory=current.metadata?.testRunnerInfrastructureRecoveryHistory||[],legacyInfrastructureRecovery=infrastructureHistory.some(item=>item.recoveryClass==="test_runner_git_path_reclassification"&&item.fromStateVersion<current.stateVersion),recordedFixRecovery=infrastructureHistory.some(item=>item.recoveryClass==="post_runner_repair_evidence_rebind"&&item.infrastructureFixEvidence?.branch===CONTROL_PLANE_BRANCH&&item.infrastructureFixEvidence?.minimumFixSha===FULL_TEST_EVIDENCE_EXPANSION_FIX_SHA),planDiagnostics=latestFailed?.result?.diagnostics||{},validationIssues=Array.isArray(planDiagnostics.validationIssues)?planDiagnostics.validationIssues:[],historicalEvidenceGap=validationIssues.includes("focused_test_evidence_required"),extensionHistory=current.metadata?.escalatedRepairHistory||[],extension=extensionHistory.at(-1),extensionApproval=extension?.approvalId?await storage.getApproval(extension.approvalId,ownerId):null,extensionArgs=extensionApproval?.arguments||{},consumedExtension=extensionHistory.length===1&&extension?.recoveryClass==="owner_approved_single_repair_extension"&&extension?.maxAdditionalAttempts===1&&Number.isInteger(extension?.globalRepairLimit)&&extension?.previousRepairIteration===extension.globalRepairLimit&&current.repairIteration===extension.globalRepairLimit&&extensionApproval?.status==="approved"&&extensionApproval?.tool==="self_development_escalated_repair"&&extensionArgs.taskId===current.id&&extensionArgs.expectedVersion===extension.fromStateVersion&&extensionArgs.branch===current.branch&&extensionArgs.currentCommit===current.currentCommit&&extensionArgs.failedStepId===extension.failedStepId&&extensionArgs.failureFingerprint===extension.failureFingerprint&&extensionArgs.planGenerationId===extension.planGenerationId&&extensionArgs.maxAdditionalAttempts===1,currentRejectedEvidenceGap=validationIssues.includes("focused_test_evidence_rejected")&&planDiagnostics.rejectionCode==="focused_test_evidence_rejected"&&planDiagnostics.classification==="nonexistent_invalid"&&latestFailed?.result?.message==="Focused test is not eligible for bounded evidence expansion."&&typeof planDiagnostics.proposedPath==="string"&&Array.isArray(evidence?.failedFiles)&&evidence.failedFiles.map(safePath).includes(safePath(planDiagnostics.proposedPath))&&Number.isInteger(planDiagnostics.expansionRound)&&planDiagnostics.expansionRound>0&&Number.isInteger(planDiagnostics.plannerAttempt)&&planDiagnostics.plannerAttempt>0&&current.branch===approvedBranch&&current.metadata?.selfDevelopment?.repository===REPOSITORY&&consumedExtension,lineageEligible=currentRejectedEvidenceGap&&(infrastructureHistory.length===0||recordedFixRecovery),remoteLineage=lineageEligible&&SHA.test(runtimeVersion||"")&&typeof verifyRemote==="function"?await verifyRemote({repository,branch:CONTROL_PLANE_BRANCH,requiredAncestors:[FULL_TEST_EVIDENCE_EXPANSION_FIX_SHA,runtimeVersion]}):null,historicalInfrastructureRecovery=Boolean(remoteLineage)&&remoteLineage.currentTip===runtimeVersion&&remoteLineage.ancestors?.[FULL_TEST_EVIDENCE_EXPANSION_FIX_SHA]===true&&remoteLineage.ancestors?.[runtimeVersion]===true,infrastructureRecovery=legacyInfrastructureRecovery||historicalInfrastructureRecovery,evidenceGapIssue=historicalEvidenceGap||currentRejectedEvidenceGap,contradictoryMutation=steps.some(step=>stepOrdinal(step)>failedOrdinal&&stepOrdinal(step)<=latestFailedOrdinal&&((step.stepType==="apply_patch"&&step.status==="completed")||step.result?.mutationApplied===true||(["commit","review_commit","push","deploy_preview"].includes(step.stepType)&&step.status==="completed"))),repairEvidenceGap=current.errorCode==="implementation_scope_violation"&&latestFailed?.stepType==="plan_repair"&&latestFailedOrdinal===current.currentStep+1&&evidenceGapIssue&&failedOrdinal<latestFailedOrdinal&&!isUnavailable(evidence)&&matchingHistory.length===1&&infrastructureRecovery&&!contradictoryMutation,delivered=steps.some(step=>["commit","review_commit","push","deploy_preview"].includes(step.stepType)&&step.status==="completed"&&stepOrdinal(step)>failedOrdinal);
     if(current.status!=="failed"||(!direct&&!contaminated&&!repairEvidenceGap)||!failed||(!repairEvidenceGap&&!invalidHistory.length)||!focused||delivered||current.approvalState||current.leaseOwner||!plan?.provenance||current.metadata?.activeImplementationPlanGeneration!==plan.provenance.generationId||plan.provenance.taskId!==current.id||plan.provenance.currentCommit!==current.currentCommit)throw new SelfDevelopmentError("test_runner_recovery_precondition_failed","Only an exact false repair-limit, contaminated repair plan, or its evidence-bound repair continuation may be recovered.");
     assertActiveImplementationPlan(current,plan.files);
     const invalidIds=new Set(invalidHistory.map(item=>item.failedStepId)),continuations=[...(current.metadata?.continuationHistory||[]),current.metadata?.activeContinuation].filter(Boolean),sourceContinuation=continuations.find(item=>item.startStep===failedOrdinal-1&&item.recoveryClass==="test_runner_unavailable_reclassification"),nextContinuationStart=sourceContinuation?Math.min(...continuations.map(item=>item.startStep).filter(start=>start>sourceContinuation.startStep)):Infinity,remainingEnd=contaminated&&Number.isFinite(nextContinuationStart)?nextContinuationStart:current.metadata.steps.length,remaining=repairEvidenceGap?current.metadata.steps.slice(latestFailedOrdinal-1):current.metadata.steps.slice(failedOrdinal,remainingEnd),base=current.metadata.steps.length,recoverySteps=repairEvidenceGap?remaining:[{type:"run_full_tests",input:{tool:"test_run_full",arguments:{}},idempotencyIdentity:`test-runner-infrastructure-recovery:${evidence.fingerprint}`},...remaining];
     if(recoverySteps.length>15)throw new SelfDevelopmentError("test_runner_recovery_budget_exceeded","The active test continuation exceeds its safe bound.");
-    const now=clock().toISOString(),recoveryClass=repairEvidenceGap?"post_runner_repair_evidence_rebind":isGitUnavailable(evidence)?"test_runner_git_path_reclassification":"test_runner_unavailable_reclassification",activeContinuation=createActiveContinuation({task:current,startStep:base,plannedSteps:recoverySteps.length,repairLimit:Math.min(2,current.metadata?.selfDevelopment?.repairLimit??2),recoveryClass,runtimeStartedAt:now,runtimeMinutes:15}),record={recoveryClass,fromStateVersion:current.stateVersion,failedStepId:failed.stepId,terminalFailedStepId:latestFailed.stepId,fingerprint:evidence.fingerprint,retiredRepairHistoryStepIds:[...invalidIds],recoveredAt:now},metadata={...current.metadata,steps:[...current.metadata.steps,...recoverySteps],requiredCapability:repairEvidenceGap?"reasoning":"test_local",autoDispatch:true,fullTestRepairHistory:history.filter(item=>!invalidIds.has(item.failedStepId)),activeContinuation,continuationHistory:[...(current.metadata?.continuationHistory||[]),activeContinuation],testRunnerInfrastructureRecoveryHistory:[...(current.metadata?.testRunnerInfrastructureRecoveryHistory||[]),record]};
+    const now=clock().toISOString(),recoveryClass=repairEvidenceGap?"post_runner_repair_evidence_rebind":isGitUnavailable(evidence)?"test_runner_git_path_reclassification":"test_runner_unavailable_reclassification",activeContinuation=createActiveContinuation({task:current,startStep:base,plannedSteps:recoverySteps.length,repairLimit:Math.min(2,current.metadata?.selfDevelopment?.repairLimit??2),recoveryClass,runtimeStartedAt:now,runtimeMinutes:15}),record={recoveryClass,fromStateVersion:current.stateVersion,failedStepId:failed.stepId,terminalFailedStepId:latestFailed.stepId,fingerprint:evidence.fingerprint,retiredRepairHistoryStepIds:[...invalidIds],...(historicalInfrastructureRecovery?{infrastructureFixEvidence:{branch:CONTROL_PLANE_BRANCH,minimumFixSha:FULL_TEST_EVIDENCE_EXPANSION_FIX_SHA,runtimeVersion,verifiedRemoteTip:remoteLineage.currentTip}}:{}),recoveredAt:now},metadata={...current.metadata,steps:[...current.metadata.steps,...recoverySteps],requiredCapability:repairEvidenceGap?"reasoning":"test_local",autoDispatch:true,fullTestRepairHistory:history.filter(item=>!invalidIds.has(item.failedStepId)),activeContinuation,continuationHistory:[...(current.metadata?.continuationHistory||[]),activeContinuation],testRunnerInfrastructureRecoveryHistory:[...(current.metadata?.testRunnerInfrastructureRecoveryHistory||[]),record]};
     const recoveryStatus=repairEvidenceGap?"queued":"waiting_for_worker",updated=await storage.updateAutonomyTask(current.id,ownerId,{status:recoveryStatus,currentStep:base,currentPhase:"test_runner_infrastructure_recovery",nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,blockedReason:null,retryCount:0,metadata},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during test-runner recovery.");
-    await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_test_runner_infrastructure_recovered",status:"waiting_for_worker",summary:"A false repair-limit caused by unavailable npm execution was reclassified and the bounded full-test continuation reopened.",metadata:{taskId:current.id,...record}});return{task:updated,idempotent:false,recovery:record};
+    await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_test_runner_infrastructure_recovered",status:recoveryStatus,summary:repairEvidenceGap?"The exact evidence-classification interruption was revalidated and its bounded repair continuation reopened.":"A false repair-limit caused by unavailable local test execution was reclassified and the bounded full-test continuation reopened.",metadata:{taskId:current.id,...record}});return{task:updated,idempotent:false,recovery:record};
   }
   async function resumeFullTestContinuationRuntime(taskId,input){
-    if(!input||Object.keys(input).some(key=>key!=="expectedVersion")||!Number.isInteger(input.expectedVersion))throw new SelfDevelopmentError("continuation_runtime_resume_invalid","An exact state version is required.",400);
+    const allowed=new Set(["expectedVersion","runtimeVersion","workerId","workspace"]),workspaceKeys=new Set(["root","gitTopLevel","repository","branch","head","liveTip","clean","changedFiles"]);
+    if(!input||Object.keys(input).some(key=>!allowed.has(key))||!Number.isInteger(input.expectedVersion))throw new SelfDevelopmentError("continuation_runtime_resume_invalid","An exact state version is required.",400);
     const current=await runtime.get(taskId);if(!current||current.taskType!=="self_development")throw new SelfDevelopmentError("task_not_found","Self-development task not found.",404);
     const prior=current.metadata?.continuationRuntimeResumeHistory?.find(item=>item.fromStateVersion===input.expectedVersion);if(prior)return{task:current,idempotent:true,runtimeWindow:prior.runtimeWindow};
     if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before continuation runtime repair.");
-    const recovery=current.metadata?.fullTestFailureRecoveryHistory?.at(-1),steps=await runtime.steps(current.id),executedAfterRecovery=steps.some(step=>Number.parseInt(step.stepId,10)>current.currentStep),active=current.metadata?.activeContinuation;
-    if(current.status!=="waiting_for_worker"||current.errorCode||!recovery||recovery.recoveryClass!=="structured_full_test_evidence_reconstruction"||!active||active.recoveryClass!==recovery.recoveryClass||executedAfterRecovery||current.leaseOwner||current.leaseToken||current.approvalState)throw new SelfDevelopmentError("continuation_runtime_resume_precondition_failed","Only the exact unclaimed recovered continuation may receive a fresh runtime window.");
-    const now=clock().toISOString(),runtimeMinutes=15,runtimeWindow={runtimeStartedAt:now,runtimeMinutes,runtimeDeadline:new Date(new Date(now).getTime()+runtimeMinutes*60000).toISOString()},record={recoveryClass:"stale_task_runtime_to_active_continuation",fromStateVersion:current.stateVersion,continuationGenerationId:active.generationId,runtimeWindow,resumedAt:now},metadata={...current.metadata,activeContinuation:{...active,version:2,...runtimeWindow},continuationRuntimeResumeHistory:[...(current.metadata.continuationRuntimeResumeHistory||[]),record],requiredCapability:"test_local",autoDispatch:true};
+    const active=current.metadata?.activeContinuation,recoveryClass=active?.recoveryClass,structured=recoveryClass==="structured_full_test_evidence_reconstruction",localRead=recoveryClass==="task_owned_local_read_recovery",recovery=structured?current.metadata?.fullTestFailureRecoveryHistory?.at(-1):localRead?current.metadata?.implementationPlanRecoveryHistory?.at(-1):null,steps=await runtime.steps(current.id),executedAfterRecovery=steps.some(step=>Number.parseInt(step.stepId,10)>current.currentStep),deadlineMs=new Date(active?.runtimeDeadline).getTime(),expired=Number.isFinite(deadlineMs)&&deadlineMs<=clock().getTime(),alreadyRenewed=(current.metadata?.continuationRuntimeResumeHistory||[]).some(item=>item.continuationGenerationId===active?.generationId);
+    if(current.status!=="waiting_for_worker"||current.errorCode||!recovery||!active||active.recoveryClass!==recovery.recoveryClass||!expired||alreadyRenewed||executedAfterRecovery||current.leaseOwner||current.leaseToken||current.approvalState)throw new SelfDevelopmentError("continuation_runtime_resume_precondition_failed","Only the exact expired unclaimed recovered continuation may receive one fresh runtime window.");
+    let renewalBinding=null;
+    if(localRead){
+      const workspace=input.workspace||{},partial=current.metadata?.partialRepairPlanRecoveryHistory?.at(-1),planned=current.metadata?.steps?.[current.currentStep],apply=steps.filter(step=>step.stepType==="apply_patch"&&step.status==="completed").sort((a,b)=>stepOrdinal(a)-stepOrdinal(b)).at(-1),lineage=apply?.result?.taskOwnedDirtyLineage,lineageEntries=Array.isArray(lineage?.entries)?lineage.entries.map(item=>({path:safePath(item.path),contentHash:String(item.contentHash||"").toLowerCase()})).sort((a,b)=>a.path.localeCompare(b.path)):[],partialEntries=Array.isArray(partial?.entries)?partial.entries.map(item=>({path:safePath(item.path),contentHash:String(item.contentHash||"").toLowerCase()})).sort((a,b)=>a.path.localeCompare(b.path)):[],actual=Array.isArray(workspace.changedFiles)?workspace.changedFiles.map(item=>({path:safePath(item.path),hashAlgorithm:item.hashAlgorithm,hash:String(item.hash||"").toLowerCase(),contentHash:String(item.contentHash||"").toLowerCase()})).sort((a,b)=>a.path.localeCompare(b.path)):[],remaining=[];
+      for(let index=current.currentStep;index<current.metadata.steps.length;index++){const step=current.metadata.steps[index];if(step?.type!=="read_files"||step?.input?.tool!=="repo_read_task_owned_local")break;remaining.push(safePath(step.input.arguments?.path));}
+      const continuation=(current.metadata?.continuationHistory||[]).at(-1),remote=typeof verifyRemote==="function"?await verifyRemote({repository,branch:current.branch,requiredAncestors:[current.currentCommit]}):null,exactEntries=lineageEntries.length>0&&lineageEntries.length===partialEntries.length&&lineageEntries.every((item,index)=>item.path===partialEntries[index].path&&item.contentHash===partialEntries[index].contentHash&&REVIEW_HASH.test(item.contentHash)),exactWorkspace=workspace&&Object.keys(workspace).every(key=>workspaceKeys.has(key))&&workspace.root===workspace.gitTopLevel&&canonicalWorkspaceRoot(workspace.root)===canonicalWorkspaceRoot(partial?.workspaceRoot)&&workspace.repository===repository&&workspace.repository===current.metadata?.selfDevelopment?.repository&&workspace.branch===approvedBranch&&workspace.branch===current.branch&&workspace.head===current.currentCommit&&workspace.liveTip===current.currentCommit&&workspace.clean===false&&actual.length===partialEntries.length&&actual.every((item,index)=>item.path===partialEntries[index].path&&item.hashAlgorithm==="git_sha1"&&SHA.test(item.hash)&&item.contentHash===partialEntries[index].contentHash),exactGeneration=/^[a-f0-9]{64}$/.test(active.generationId||"")&&continuation?.generationId===active.generationId&&continuation.recoveryClass===active.recoveryClass&&continuation.runtimeStartedAt===active.runtimeStartedAt&&continuation.runtimeDeadline===active.runtimeDeadline,exactLineage=lineage?.version===1&&lineage.taskId===current.id&&lineage.repository===repository&&lineage.branch===current.branch&&lineage.currentCommit===current.currentCommit&&lineage.sourcePlanStepId===partial?.sourcePlanStepId&&(lineage.sourceApplyStepId??apply?.stepId)===apply?.stepId&&apply?.stepId===partial?.sourceApplyStepId&&apply?.operationFingerprint&&recovery.sourcePlanStepId===partial.sourcePlanStepId&&recovery.sourceApplyStepId===partial.sourceApplyStepId&&recovery.fingerprint===partial.fingerprint&&recovery.previousStateVersion===current.stateVersion-1&&recovery.recoveredAt===active.runtimeStartedAt&&SHA.test(recovery.runtimeVersion||"")&&Array.isArray(recovery.readPaths)&&remaining.length>0&&remaining.every(path=>recovery.readPaths.includes(path)&&partial.requiredPaths?.includes(path))&&recovery.readPaths.every(path=>partial.requiredPaths?.includes(path)),exactRuntime=SHA.test(input.runtimeVersion||"")&&input.runtimeVersion===runtimeVersion,exactBootstrap=input.workerId===undefined,exactRemote=remote?.currentTip===current.currentCommit&&remote?.ancestors?.[current.currentCommit]===true;
+      if(current.currentPhase!=="read_files"||planned?.type!=="read_files"||planned?.input?.tool!=="repo_read_task_owned_local"||current.id!==partial?.taskId||!exactEntries||!exactWorkspace||!exactGeneration||!exactLineage||!exactRuntime||!exactBootstrap||!exactRemote)throw new SelfDevelopmentError("continuation_runtime_resume_precondition_failed","The task-owned local-read continuation no longer matches its exact workspace lineage.");
+      const priorWorkerIds=[...new Set((await storage.listActivity(ownerId,{runId:current.id,limit:100})).map(item=>item?.metadata?.workerId).filter(item=>typeof item==="string"&&item.trim()).map(item=>item.trim()))].slice(0,20);
+      renewalBinding={workerBindingState:"awaiting_worker_bind",workerId:null,rejectedPriorWorkerIds:priorWorkerIds,repository,branch:current.branch,currentCommit:current.currentCommit,workspaceRoot:canonicalWorkspaceRoot(workspace.root),sourcePlanStepId:partial.sourcePlanStepId,sourceApplyStepId:partial.sourceApplyStepId,sourceApplyFingerprint:apply.operationFingerprint,fingerprint:partial.fingerprint,runtimeVersion,remainingReadPaths:remaining,dirtyEvidenceHash:hash(actual)};
+    }
+    const now=clock().toISOString(),runtimeMinutes=15,runtimeWindow={runtimeStartedAt:now,runtimeMinutes,runtimeDeadline:new Date(new Date(now).getTime()+runtimeMinutes*60000).toISOString()},renewedContinuation={...active,version:2,...runtimeWindow},record={recoveryClass:"stale_task_runtime_to_active_continuation",sourceRecoveryClass:recoveryClass,fromStateVersion:current.stateVersion,continuationGenerationId:active.generationId,maxRenewals:1,authorizationConsumed:true,...(renewalBinding||{}),runtimeWindow,resumedAt:now},metadata={...current.metadata,activeContinuation:renewedContinuation,continuationHistory:[...(current.metadata.continuationHistory||[]),renewedContinuation],continuationRuntimeResumeHistory:[...(current.metadata.continuationRuntimeResumeHistory||[]),record],requiredCapability:localRead?"repo_read_remote":"test_local",autoDispatch:true};
     const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"waiting_for_worker",nextRunAt:now,blockedReason:null,errorCode:null,metadata},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during continuation runtime repair.");
     await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_continuation_runtime_resumed",status:"waiting_for_worker",summary:"A fresh bounded runtime window was attached to the exact recovered continuation.",metadata:{taskId:current.id,...record}});return{task:updated,idempotent:false,runtimeWindow};
   }
@@ -2604,7 +2808,183 @@ export function createSelfDevelopmentService({
     const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"waiting_for_worker",currentStep:base,currentPhase:"integrate_commit",nextRunAt:now,startedAt:now,completedAt:null,errorCode:null,blockedReason:"Waiting for deterministic reviewed integration.",approvalState:null,metadata,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during integration recovery.");
     await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_diverged_delivery_integration_recovered",status:"waiting_for_worker",summary:"The divergent approved delivery was retired and a deterministic integration review continuation opened.",metadata:{taskId:current.id,...record}});return{task:updated,recovery:record,idempotent:false};
   }
+  async function recoverApprovedContractDeliveryRuntime(taskId,input){
+    const expected=HISTORICAL_V288_APPROVAL_CONTRACT_DELIVERY;
+    if(!input||Object.keys(input).some(key=>key!=="expectedVersion")||input.expectedVersion!==expected.fromStateVersion)throw new SelfDevelopmentError("approval_contract_delivery_runtime_recovery_invalid","The exact historical state version is required.",400);
+    const current=await runtime.get(taskId);if(!current||current.taskType!=="self_development")throw new SelfDevelopmentError("task_not_found","Self-development task not found.",404);
+    const prior=current.metadata?.approvalContractDeliveryRuntimeRecoveryHistory?.find(item=>item.fromStateVersion===input.expectedVersion);
+    if(prior){if(current.stateVersion===prior.toStateVersion)return{task:current,recovery:prior,idempotent:true};throw new SelfDevelopmentError("version_conflict","The exact approval-contract runtime recovery was already superseded.");}
+    if(current.stateVersion!==input.expectedVersion)throw new SelfDevelopmentError("version_conflict","Task changed before approval-contract runtime recovery.");
+    const steps=await runtime.steps(current.id),approval=await storage.getApproval(expected.approvalId,ownerId),state=current.approvalState,review=steps.find(step=>step.stepId==="310:review_commit"),integration=steps.find(step=>step.stepId==="309:integrate_commit"),push=steps.find(step=>step.stepId==="311:push"),planned=current.metadata?.steps?.[current.currentStep],reviewResult=review?.result||{},integrationResult=integration?.result||{};
+    const exact=current.id===expected.taskId&&current.status==="queued"&&current.currentStep===expected.currentStep&&current.currentCommit===expected.commitSha&&current.branch===expected.branch&&current.metadata?.selfDevelopment?.repository===expected.repository&&!current.leaseOwner&&!current.leaseToken&&!current.metadata?.localHandoff&&!current.metadata?.approvedDeliveryRuntime&&state?.approvalId===expected.approvalId&&state?.approved===true&&state?.bindingSource==="approval_contract"&&state?.approvedStateVersion===287&&state?.deliveryStateVersion===288&&state?.repository===expected.repository&&state?.branch===expected.branch&&state?.commitSha===expected.commitSha&&state?.stepId==="311:push"&&approval?.id===expected.approvalId&&approval.status==="approved"&&approval.tool==="git_push"&&approval.runId===current.id&&approval.arguments?.repository===expected.repository&&approval.arguments?.branch===expected.branch&&approval.arguments?.commitSha===expected.commitSha&&approval.arguments?.approvedStateVersion===287&&planned?.type==="push"&&planned.input?.tool==="git_push"&&!push&&review?.status==="completed"&&reviewResult.commitSha===expected.commitSha&&reviewResult.reviewedChangeSet?.firstParentSha===expected.firstParentSha&&reviewResult.reviewedChangeSet?.secondParentSha===expected.secondParentSha&&integration?.status==="completed"&&integrationResult.commitSha===expected.commitSha&&integrationResult.firstParentSha===expected.firstParentSha&&integrationResult.secondParentSha===expected.secondParentSha&&!steps.some(step=>Number.parseInt(step.stepId,10)>expected.currentStep)&&!steps.some(step=>step.stepType==="push"&&step.status==="completed")&&!steps.some(step=>step.stepType==="deploy_preview"&&step.status==="completed");
+    if(!exact)throw new SelfDevelopmentError("approval_contract_delivery_runtime_recovery_precondition_failed","Only the exact approved, unclaimed v288 integration delivery may receive a compatibility runtime.");
+    if(!verifyRemote)throw new SelfDevelopmentError("approval_contract_delivery_runtime_verification_unavailable","Exact remote-tip verification is required.",503);
+    const remote=await verifyRemote({repository:expected.repository,branch:expected.branch,requiredAncestors:[expected.firstParentSha]});
+    if(remote?.currentTip!==expected.firstParentSha||remote?.ancestors?.[expected.firstParentSha]!==true)throw new SelfDevelopmentError("approval_contract_delivery_runtime_remote_changed","The target feature branch changed before delivery runtime recovery.");
+    const now=clock().toISOString(),toStateVersion=current.stateVersion+1,deadline=new Date(new Date(now).getTime()+expected.runtimeMinutes*60000).toISOString(),record={recoveryClass:expected.recoveryClass,fromStateVersion:current.stateVersion,toStateVersion,taskId:current.id,approvalId:expected.approvalId,approvedStateVersion:state.approvedStateVersion,deliveryStateVersion:toStateVersion,repository:expected.repository,branch:expected.branch,commitSha:expected.commitSha,firstParentSha:expected.firstParentSha,secondParentSha:expected.secondParentSha,reviewStepId:"310:review_commit",deliveryStepId:"311:push",maxAdditionalDeliverySteps:expected.maxAdditionalDeliverySteps,runtimeMinutes:expected.runtimeMinutes,startedAt:now,deadline,consumed:false},approvalState={...state,deliveryStateVersion:toStateVersion},metadata={...current.metadata,approvedDeliveryRuntime:record,approvalContractDeliveryRuntimeRecoveryHistory:[...(current.metadata?.approvalContractDeliveryRuntimeRecoveryHistory||[]),record]};
+    const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",nextRunAt:now,errorCode:null,blockedReason:null,approvalState,metadata},current.stateVersion);if(!updated)throw new SelfDevelopmentError("version_conflict","Task changed during approval-contract runtime recovery.");
+    await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"approval_contract_delivery_runtime_recovered",status:"queued",summary:"The exact approved integration delivery received one bounded runtime window.",metadata:{taskId:current.id,...record}});return{task:updated,recovery:record,idempotent:false};
+  }
+  const planningScopeOptions=(taskId,input,actor)=>({taskId,input,actor,runtime,storage,ownerId,repository,approvedBranch,runtimeVersion,verifyRemote,clock});
+  const planningScopeCall=async operation=>{try{return await operation();}catch(error){if(error.code!=="planning_scope_recovery_precondition_failed")throw error;throw Object.assign(new SelfDevelopmentError(error.code,error.message,error.statusCode||409),{safeDiagnostics:error.safeDiagnostics});}};
+  async function requestPlanningScopeRecovery(taskId,input,actor){
+    const {task,approvalArguments}=await planningScopeCall(()=>describePlanningScopeRecovery(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===PLANNING_SCOPE_RECOVERY_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:PLANNING_SCOPE_RECOVERY_TOOL,reason:"Owner approval is required for one planning-only successor using exact current evidence. No product mutation or additional repair attempt is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_planning_scope_approval_requested",status:"waiting",summary:"Exact current-read planning continuation awaits a separate owner decision.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverPlanningScopeFailure=(taskId,input,actor)=>planningScopeCall(()=>recoverPlanningScope(planningScopeOptions(taskId,input,actor)));
+  const executionScopeCall=async operation=>{try{return await operation();}catch(error){if(error.code!=="execution_scope_recovery_precondition_failed")throw error;throw Object.assign(new SelfDevelopmentError(error.code,error.message,error.statusCode||409),{safeDiagnostics:error.safeDiagnostics});}};
+  async function requestExecutionScopeRecovery(taskId,input,actor){
+    const {task,approvalArguments}=await executionScopeCall(()=>describeExecutionScopeRecovery(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===EXECUTION_SCOPE_RECOVERY_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:EXECUTION_SCOPE_RECOVERY_TOOL,reason:"Separate owner approval is required for one application of this exact validated plan and its exact focused tests. No new planning, retry, repair extension, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_execution_scope_approval_requested",status:"waiting",summary:"Exact validated-plan execution successor awaits an owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverValidatedExecutionScope=(taskId,input,actor)=>executionScopeCall(()=>recoverExecutionScope(planningScopeOptions(taskId,input,actor)));
+  const fullTestScopeCall=async operation=>{try{return await operation();}catch(error){if(error.code!=="full_test_scope_recovery_precondition_failed")throw error;throw Object.assign(new SelfDevelopmentError(error.code,error.message,error.statusCode||409),{safeDiagnostics:error.safeDiagnostics});}};
+  async function requestFullTestScopeRecovery(taskId,input,actor){
+    const {task,approvalArguments}=await fullTestScopeCall(()=>describeFullTestScopeRecovery(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===FULL_TEST_SCOPE_RECOVERY_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:FULL_TEST_SCOPE_RECOVERY_TOOL,reason:"Separate owner approval is required for exactly one full project test-suite run on the verified post-focused workspace. No product mutation, replanning, repair attempt, extension, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_full_test_scope_approval_requested",status:"waiting",summary:"One full-test-only successor awaits an owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverFullTestScopeSuccessor=(taskId,input,actor)=>fullTestScopeCall(()=>recoverFullTestScope(planningScopeOptions(taskId,input,actor)));
+  async function requestFailedFullTestRetry(taskId,input,actor){
+    const {task,approvalArguments}=await fullTestScopeCall(()=>describeFailedFullTestRetry(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===FAILED_FULL_TEST_RETRY_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:FAILED_FULL_TEST_RETRY_TOOL,reason:"Separate owner approval is required for one full-suite retry after local dependency provisioning, bound to this exact failed result and unchanged workspace. No product mutation, replanning, focused rerun, repair attempt, extension, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_failed_full_test_retry_approval_requested",status:"waiting",summary:"One dependency-preflighted full-test retry awaits an owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverFailedFullTestRetrySuccessor=(taskId,input,actor)=>fullTestScopeCall(()=>recoverFailedFullTestRetry(planningScopeOptions(taskId,input,actor)));
+  const reviewRemediationCall=async operation=>{try{return await operation();}catch(error){if(error.code!=="review_remediation_precondition_failed")throw error;throw Object.assign(new SelfDevelopmentError(error.code,error.message,error.statusCode||409),{safeDiagnostics:error.safeDiagnostics});}};
+  async function requestReviewRemediationApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeReviewRemediation(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===REVIEW_REMEDIATION_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:REVIEW_REMEDIATION_TOOL,reason:"Separate owner approval is required for one review-remediation cycle bound to structured review findings and the exact eight-file workspace. Only Nova may plan and apply one bounded remediation, run focused/full tests, and return to a non-executing review boundary. No additional repair extension, retry, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_review_remediation_approval_requested",status:"waiting",summary:"One exact review-remediation successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverReviewRemediationSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverReviewRemediation(planningScopeOptions(taskId,input,actor)));
+  async function requestRejectedReviewPlanContinuationApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeRejectedReviewPlanContinuation(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===REJECTED_REVIEW_PLAN_CONTINUATION_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:REJECTED_REVIEW_PLAN_CONTINUATION_TOOL,reason:"Separate owner approval is required for one rejected-review-plan continuation bound to the exact failed planning execution, consumed predecessor, unchanged eight-file workspace, and immutable review findings. Only Nova may produce one fresh plan, validate and apply it once, run its focused tests and one full suite, then return to independent review. No repair extension, counter reset, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_rejected_review_plan_continuation_approval_requested",status:"waiting",summary:"One exact rejected-review-plan successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverRejectedReviewPlanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverRejectedReviewPlanContinuation(planningScopeOptions(taskId,input,actor)));
+  async function requestSourceBoundReviewReplanApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeSourceBoundReviewReplan(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===SOURCE_BOUND_REVIEW_REPLAN_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:SOURCE_BOUND_REVIEW_REPLAN_TOOL,reason:"Separate owner approval is required for one source-bound review replan after the exact failed coverage validation, bound to the consumed predecessor, immutable review findings, and unchanged eight-file workspace. Only Nova may generate one fresh plan, validate and apply it once, run its selected focused tests and one full suite, then stop for fresh independent review. No repair extension, counter reset, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_source_bound_review_replan_approval_requested",status:"waiting",summary:"One exact source-bound review successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverSourceBoundReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverSourceBoundReviewReplan(planningScopeOptions(taskId,input,actor)));
+  async function requestEvidenceBoundReviewReplanApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeEvidenceBoundReviewReplan(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===EVIDENCE_BOUND_REVIEW_REPLAN_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:EVIDENCE_BOUND_REVIEW_REPLAN_TOOL,reason:"Separate owner approval is required for one evidence-bound review replan after the exact rejected source-bound planning execution. Nova alone may reread the unchanged eight-file scope, plan once, validate, apply once, run focused tests and one full suite, then stop for independent review. No repair extension, retry, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_evidence_bound_review_replan_approval_requested",status:"waiting",summary:"One exact evidence-bound review successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverEvidenceBoundReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverEvidenceBoundReviewReplan(planningScopeOptions(taskId,input,actor)));
+  async function requestImplementationContentReviewReplanApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeImplementationContentReviewReplan(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL,reason:"Separate owner approval is required for one implementation-content review replan after the exact five-file empty-content rejection. Nova alone may reread the unchanged eight-file scope, generate complete literal replacements once, validate, apply once, run focused tests and one full suite, then stop for fresh independent review. No repair extension, counter reset, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_implementation_content_review_replan_approval_requested",status:"waiting",summary:"One exact implementation-content review successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverImplementationContentReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverImplementationContentReviewReplan(planningScopeOptions(taskId,input,actor)));
+  async function requestSourceLiteralReviewReplanApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeSourceLiteralReviewReplan(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===SOURCE_LITERAL_REVIEW_REPLAN_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:SOURCE_LITERAL_REVIEW_REPLAN_TOOL,reason:"Separate owner approval is required for one source-literal review replan after the exact proposed-source excerpt rejection. Nova alone may reread the unchanged eight-file scope, plan once with literal source-bound coverage evidence, validate, apply once, run focused tests and one full suite, then stop for fresh independent review. No repair extension, counter reset, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_source_literal_review_replan_approval_requested",status:"waiting",summary:"One exact source-literal review successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverSourceLiteralReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverSourceLiteralReviewReplan(planningScopeOptions(taskId,input,actor)));
+  async function requestObservableLinkageReviewReplanApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeObservableLinkageReviewReplan(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===OBSERVABLE_LINKAGE_REVIEW_REPLAN_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:OBSERVABLE_LINKAGE_REVIEW_REPLAN_TOOL,reason:"Separate owner approval is required for one observable-linkage review replan after the exact source-bound behavioral reference rejection. Nova alone may reread the unchanged eight-file scope, plan once with a real code reference coherently exercised and asserted by the same named test, validate, apply once, run focused tests and one full suite, then stop for fresh independent review. No repair extension, counter reset, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_observable_linkage_review_replan_approval_requested",status:"waiting",summary:"One exact observable-linkage review successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverObservableLinkageReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverObservableLinkageReviewReplan(planningScopeOptions(taskId,input,actor)));
+  async function requestSemanticEvidenceReviewReplanApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeSemanticEvidenceReviewReplan(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===SEMANTIC_EVIDENCE_REVIEW_REPLAN_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:SEMANTIC_EVIDENCE_REVIEW_REPLAN_TOOL,reason:"Separate owner approval is required for one semantic-evidence review replan after Nova referenced nonexistent test identities. Nova alone may reread the unchanged eight-file scope and plan once; an unchanged test source may use only an exact existing named test, while a new named test requires an authorized complete replacement of that test file. One validated apply, focused test run and full suite may follow before fresh independent review. No repair extension, counter reset, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_semantic_evidence_review_replan_approval_requested",status:"waiting",summary:"One exact semantic-evidence review successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverSemanticEvidenceReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverSemanticEvidenceReviewReplan(planningScopeOptions(taskId,input,actor)));
+  async function requestFailedSemanticReadRecoveryApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeFailedSemanticReadRecovery(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===FAILED_SEMANTIC_READ_RECOVERY_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:FAILED_SEMANTIC_READ_RECOVERY_TOOL,reason:"Separate owner approval is required for one failed semantic-review read recovery after canonical Windows repository-root validation incorrectly rejected an in-repository path. Nova alone may reread the unchanged eight-file scope and plan once under the existing semantic-evidence contract; one validated apply, focused test run and full suite may follow before fresh independent review. No repair extension, counter reset, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_failed_semantic_read_recovery_approval_requested",status:"waiting",summary:"One exact failed-read review successor awaits an owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverFailedSemanticReadRecoverySuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverFailedSemanticReadRecovery(planningScopeOptions(taskId,input,actor)));
+  async function requestTestIdentityInventoryReviewReplanApproval(taskId,input,actor){
+    const {task,approvalArguments}=await reviewRemediationCall(()=>describeTestIdentityInventoryReviewReplan(planningScopeOptions(taskId,input,actor)));
+    const existing=(await storage.listApprovals(ownerId,{limit:100})).find(item=>item.tool===TEST_IDENTITY_INVENTORY_REPLAN_TOOL&&item.runId===task.id&&["pending","approved"].includes(item.status)&&recoveryHash(item.arguments)===recoveryHash(approvalArguments));
+    if(existing)return{taskId:task.id,stateVersion:task.stateVersion,approval:existing,idempotent:true};
+    const approval=await storage.createApproval({id:randomUUID(),ownerId,projectId:task.projectId,runId:task.id,tool:TEST_IDENTITY_INVENTORY_REPLAN_TOOL,reason:"Separate owner approval is required for one test-identity-inventory review replan after Nova again referenced a nonexistent test identity. Nova alone may reread the unchanged eight-file scope and plan once with deterministic exact current test identities bound to path and source hash; a new identity still requires an authorized complete test-file replacement. One validated apply, focused test run and full suite may follow before fresh independent review. No repair extension, counter reset, scope expansion, commit, push or deployment is authorized.",riskLevel:"SENSITIVE",arguments:approvalArguments});
+    await storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action:"self_development_test_identity_inventory_review_replan_approval_requested",status:"waiting",summary:"One exact test-identity-inventory review successor awaits a separate owner decision; the task remains unchanged.",metadata:{taskId:task.id,approvalId:approval.id,...approvalArguments}});
+    return{taskId:task.id,stateVersion:task.stateVersion,approval,idempotent:false};
+  }
+  const recoverTestIdentityInventoryReviewReplanSuccessor=(taskId,input,actor)=>reviewRemediationCall(()=>recoverTestIdentityInventoryReviewReplan(planningScopeOptions(taskId,input,actor)));
   return Object.freeze({
+    requestTestIdentityInventoryReviewReplanApproval,
+    recoverTestIdentityInventoryReviewReplan:recoverTestIdentityInventoryReviewReplanSuccessor,
+    requestFailedSemanticReadRecoveryApproval,
+    recoverFailedSemanticReadRecovery:recoverFailedSemanticReadRecoverySuccessor,
+    requestSemanticEvidenceReviewReplanApproval,
+    recoverSemanticEvidenceReviewReplan:recoverSemanticEvidenceReviewReplanSuccessor,
+    requestObservableLinkageReviewReplanApproval,
+    recoverObservableLinkageReviewReplan:recoverObservableLinkageReviewReplanSuccessor,
+    requestSourceLiteralReviewReplanApproval,
+    recoverSourceLiteralReviewReplan:recoverSourceLiteralReviewReplanSuccessor,
+    requestImplementationContentReviewReplanApproval,
+    recoverImplementationContentReviewReplan:recoverImplementationContentReviewReplanSuccessor,
+    requestEvidenceBoundReviewReplanApproval,
+    recoverEvidenceBoundReviewReplan:recoverEvidenceBoundReviewReplanSuccessor,
+    requestSourceBoundReviewReplanApproval,
+    recoverSourceBoundReviewReplan:recoverSourceBoundReviewReplanSuccessor,
+    requestRejectedReviewPlanContinuationApproval,
+    recoverRejectedReviewPlanContinuation:recoverRejectedReviewPlanSuccessor,
+    requestReviewRemediationApproval,
+    recoverReviewRemediation:recoverReviewRemediationSuccessor,
+    requestFailedFullTestRetry,
+    recoverFailedFullTestRetry:recoverFailedFullTestRetrySuccessor,
+    requestFullTestScopeRecovery,
+    recoverFullTestScope:recoverFullTestScopeSuccessor,
+    requestExecutionScopeRecovery,
+    recoverValidatedExecutionScope,
+    requestPlanningScopeRecovery,
+    recoverPlanningScopeFailure,
     structure,
     plan,
     create,
@@ -2617,13 +2997,16 @@ export function createSelfDevelopmentService({
     recoverTestRunnerInfrastructure,
     resumeFullTestContinuationRuntime,
     recoverDivergedApprovedDeliveryIntegration,
+    recoverApprovedContractDeliveryRuntime,
     replanDiscoveryOnly,
     recoverImplementationPlan,
+    recoverFailedTaskOwnedLocalRead,
     recoverImplementationSchema,
     recoverFocusedTestSchema,
     recoverStaleBasePatchConflict,
     recoverHandsCommitMismatch,
     recoverHandsWorkingTreeDirty,
+    attestHandsWorkspace,
     recoverRepositoryContextFailure,
     recoverPlanLifecycle,
     recoverFocusedTestEvidence,

@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { ApprovalRequiredError } from "../policy/action-policy.js";
-import {activeContinuationExceeded,assertActiveImplementationPlan,planLifecycleMetadata,taskRuntimeWindow} from "./self-development-plan-lifecycle.js";
+import {activeContinuationExceeded,assertActiveImplementationPlan,planLifecycleMetadata,taskRuntimeWindow,lifecycleHash} from "./self-development-plan-lifecycle.js";
 import {isExactApprovedDelivery} from "./auto-dispatch.js";
+import {PLANNING_SCOPE_RECOVERY_CLASS,validatePlanningScopeReadEvidence} from "./planning-scope-recovery.js";
+import {EXECUTION_SCOPE_RECOVERY_CLASS,validateExecutionScopeEvidence} from "./execution-scope-recovery.js";
+import {fullTestScopeDescriptor,validateFullTestScopeEvidence} from "./full-test-scope-recovery.js";
+import {reviewRemediationDescriptor,validateReviewRemediationEvidence,acceptedReviewRemediationPlanBinding} from "./review-remediation-scope.js";
 
 export const AUTONOMY_STATUSES = Object.freeze([
   "queued",
@@ -27,6 +31,7 @@ export const STEP_CAPABILITIES = Object.freeze({
   plan_implementation: "reasoning",
   plan_repair: "reasoning",
   apply_patch: "repo_mutate_local",
+  validate_patch: "repo_read_remote",
   run_focused_tests: "test_local",
   run_full_tests: "test_local",
   inspect_diff: "repo_read_remote",
@@ -55,6 +60,7 @@ const HISTORICAL_APPROVED_DELIVERY_RUNTIME=Object.freeze({...HISTORICAL_APPROVED
 const HISTORICAL_APPROVED_DELIVERY_HANDOFF=Object.freeze({...HISTORICAL_APPROVED_DELIVERY,fromStateVersion:272,deliveryStateVersion:270,failedStepId:"309:push",recoveryClass:"historical_approved_delivery_handoff_recovery",runtimeMinutes:5});
 const HISTORICAL_APPROVED_DELIVERY_HANDOFF_RUNTIME=Object.freeze({...HISTORICAL_APPROVED_DELIVERY,fromStateVersion:274,priorDeliveryStateVersion:273,failedStepId:"309:push",recoveryClass:"historical_approved_delivery_handoff_runtime_recovery",runtimeMinutes:5});
 const HISTORICAL_APPROVED_DELIVERY_WORKER_CAPABILITY_RUNTIME=Object.freeze({...HISTORICAL_APPROVED_DELIVERY,fromStateVersion:276,priorDeliveryStateVersion:275,failedStepId:"309:push",priorRecoveryClass:HISTORICAL_APPROVED_DELIVERY_HANDOFF_RUNTIME.recoveryClass,recoveryClass:"historical_approved_delivery_worker_capability_runtime_recovery",runtimeMinutes:5});
+const APPROVAL_CONTRACT_DELIVERY_RUNTIME="approval_contract_delivery_runtime";
 const MUTATING = new Set(["apply_patch", "commit", "push"]);
 const REASONING = new Set(["diagnose", "plan_patch", "inspect_failure"]);
 const RETRYABLE = new Set([
@@ -205,13 +211,18 @@ export function createWorkerRuntime({
     if (
       action === "resume" &&
       ["waiting", "blocked", "waiting_for_worker"].includes(task.status)
-    )
+    ) {
+      if(reviewRemediationDescriptor(task))
+        throw new WorkerError("review_remediation_resume_forbidden","A review-remediation generation cannot be resumed by generic task controls.",{retryable:false});
+      if(task.metadata?.planningScopeRecoveryHistory?.length)
+        throw new WorkerError("planning_scope_resume_forbidden","Planning continuation cannot be resumed or promoted to mutation by generic task controls.",{retryable:false});
       return storage.updateAutonomyTask(id, ownerId, {
         status: "queued",
         nextRunAt: iso(clock),
         blockedReason: null,
         errorCode: null,
       });
+    }
     throw new WorkerError(
       "invalid_task_transition",
       "Task control action is invalid for its state.",
@@ -238,6 +249,63 @@ export function createWorkerRuntime({
           required_inputs: planned.input || {},
           approval_required: Boolean(planned.approvalRequired),
         };
+  }
+  async function implementationCompletionIssue(task) {
+    if (
+      task.taskType !== "self_development" ||
+      task.metadata?.selfDevelopment?.intent !== "implementation"
+    )
+      return null;
+    const durable = await storage.listAutonomySteps(task.id),
+      ordinal = (item) => Number.parseInt(String(item?.stepId || ""), 10),
+      latestPlanner = durable.findLast(
+        (item) =>
+          ["plan_implementation", "plan_repair"].includes(item.stepType) &&
+          item.status === "completed",
+      ),
+      lifecycle = latestPlanner
+        ? durable.filter((item) => ordinal(item) > ordinal(latestPlanner))
+        : durable,
+      completed = (type) =>
+        lifecycle.some(
+          (item) => item.stepType === type && item.status === "completed",
+        ),
+      plannedTypes = new Set(
+        (task.metadata?.steps || []).map((item) => item.type),
+      ),
+      hasBoundPlan =
+        Boolean(task.metadata?.selfDevelopmentImplementationPlan) ||
+        Boolean(task.metadata?.selfDevelopment?.scope?.patch?.files?.length),
+      review = lifecycle.findLast(
+        (item) =>
+          item.stepType === "review_commit" && item.status === "completed",
+      ),
+      explicitReviewedNoChange = review?.result?.noChangeRequired === true,
+      missing = [];
+    if (!hasBoundPlan) missing.push("implementation_plan");
+    if (!completed("apply_patch") && !explicitReviewedNoChange)
+      missing.push("mutation_apply");
+    if (
+      plannedTypes.has("run_focused_tests") &&
+      !completed("run_focused_tests")
+    )
+      missing.push("focused_tests");
+    if (plannedTypes.has("run_full_tests") && !completed("run_full_tests"))
+      missing.push("full_tests");
+    if (!review) missing.push("review");
+    if (!missing.length) return null;
+    const scopeEmpty =
+      !task.metadata?.selfDevelopment?.scope?.patch?.files?.length &&
+      !task.metadata?.selfDevelopmentImplementationPlan;
+    return {
+      code: scopeEmpty
+        ? "implementation_scope_required"
+        : "implementation_evidence_incomplete",
+      message: scopeEmpty
+        ? "Implementation intent requires bounded implementation and test candidates before completion."
+        : `Implementation completion evidence is incomplete: ${missing.join(", ")}.`,
+      missing,
+    };
   }
   async function tick({ idempotencyKey = randomUUID() } = {}) {
     const task = await storage.claimAutonomyTask({
@@ -278,7 +346,7 @@ export function createWorkerRuntime({
     if (!(requested.status === "queued" || requested.status === "retrying" || (requested.status === "waiting" && requested.nextRunAt)) || !due)
       throw new WorkerError("task_not_eligible", "The requested task is not eligible to run.", { retryable: false });
     const planned = await next(requested);
-    const approvedDelivery = planned.next_step === "push" && requested.approvalState?.approved === true && !requested.metadata?.steps?.[requested.currentStep];
+    const approvedDelivery = planned.next_step === "push" && requested.approvalState?.approved === true && (!requested.metadata?.steps?.[requested.currentStep]||(requested.metadata.steps[requested.currentStep].type==="push"&&Boolean(requested.metadata?.approvedDeliveryRuntime)));
     const requiredCapability = requested.metadata?.requiredCapability || STEP_CAPABILITIES[planned.next_step] || planned.required_capability;
     if (!requiredCapability || !capabilities.includes(requiredCapability))
       throw new WorkerError("capability_mismatch", "This worker cannot execute the requested task step.", { retryable: false });
@@ -307,11 +375,36 @@ export function createWorkerRuntime({
     const plan = await next(task),
       type = plan.next_step,
       capability = STEP_CAPABILITIES[type] || plan.required_capability;
-    const approvedDelivery = type === "push" && task.approvalState?.approved === true && !task.metadata?.steps?.[task.currentStep];
+    if(reviewRemediationDescriptor(task))return advanceReviewRemediation(task,plan);
+    if(fullTestScopeDescriptor(task)){
+      validateFullTestScopeEvidence(task,await storage.listAutonomySteps(task.id),clock);
+      if(type!=="run_full_tests")return stop(task,"blocked","full_test_scope_step_forbidden");
+      await storage.updateAutonomyTask(task.id,ownerId,{status:"waiting_for_worker",metadata:{...task.metadata,requiredCapability:"test_local"}});
+      return{claimed:true,status:"waiting_for_worker",capability:"test_local"};
+    }
+    if(task.metadata?.activeContinuation?.recoveryClass===EXECUTION_SCOPE_RECOVERY_CLASS||task.metadata?.executionScopeRecoveryHistory?.length){
+      validateExecutionScopeEvidence(task,await storage.listAutonomySteps(task.id),clock);
+      if(type!=="apply_patch"&&type!=="run_focused_tests")return stop(task,"blocked","execution_scope_step_forbidden");
+      // A server worker may route this authority, never execute or retry its product tools.
+      await storage.updateAutonomyTask(task.id,ownerId,{status:"waiting_for_worker",metadata:{...task.metadata,requiredCapability:capability}});
+      return{claimed:true,status:"waiting_for_worker",capability};
+    }
+    if(task.metadata?.activeContinuation?.recoveryClass===PLANNING_SCOPE_RECOVERY_CLASS||task.metadata?.planningScopeRecoveryHistory?.length){
+      const proof=validatePlanningScopeReadEvidence(task,await storage.listAutonomySteps(task.id),clock);
+      if(type!=="plan_repair"&&type!=="validate_patch")return stop(task,"blocked","planning_scope_mutation_forbidden");
+      // Only the authenticated local handoff may validate actual workspace bytes.
+      if(type==="validate_patch"){
+        await storage.updateAutonomyTask(task.id,ownerId,{status:"waiting_for_worker",metadata:{...task.metadata,requiredCapability:"repo_read_remote"}});
+        return{claimed:true,status:"waiting_for_worker",capability:"repo_read_remote"};
+      }
+      if(task.currentStep!==proof.record.activeContinuation.startStep)return stop(task,"failed","planning_scope_replay_forbidden");
+    }
+    const approvedDelivery = type === "push" && task.approvalState?.approved === true && (!task.metadata?.steps?.[task.currentStep]||(task.metadata.steps[task.currentStep].type==="push"&&Boolean(task.metadata?.approvedDeliveryRuntime)));
     if (!approvedDelivery && activeContinuationExceeded(task))
       return stop(task, "failed", "max_steps_reached");
     const deliveryRuntime=approvedDelivery&&task.metadata?.approvedDeliveryRuntime,
-      deliveryRuntimeValid=Boolean(deliveryRuntime&&deliveryRuntime.recoveryClass===HISTORICAL_APPROVED_DELIVERY_RUNTIME.recoveryClass&&deliveryRuntime.taskId===task.id&&deliveryRuntime.approvalId===task.approvalState?.approvalId&&deliveryRuntime.approvedStateVersion===task.approvalState?.approvedStateVersion&&deliveryRuntime.deliveryStateVersion===task.approvalState?.deliveryStateVersion&&deliveryRuntime.repository===approvedRepository&&deliveryRuntime.branch===task.branch&&deliveryRuntime.commitSha===task.currentCommit&&deliveryRuntime.reviewStepId===`${task.currentStep}:review_commit`&&deliveryRuntime.deliveryStepId===`${task.currentStep+1}:push`&&deliveryRuntime.maxAdditionalDeliverySteps===1&&deliveryRuntime.consumed!==true&&new Date(deliveryRuntime.deadline)>clock());
+      deliveryRuntimeClassValid=deliveryRuntime?.recoveryClass===HISTORICAL_APPROVED_DELIVERY_RUNTIME.recoveryClass||deliveryRuntime?.recoveryClass===APPROVAL_CONTRACT_DELIVERY_RUNTIME||deliveryRuntime?.recoveryClass==="historical_v288_approval_contract_delivery_runtime_recovery",
+      deliveryRuntimeValid=Boolean(deliveryRuntime&&deliveryRuntimeClassValid&&deliveryRuntime.taskId===task.id&&deliveryRuntime.approvalId===task.approvalState?.approvalId&&deliveryRuntime.approvedStateVersion===task.approvalState?.approvedStateVersion&&deliveryRuntime.deliveryStateVersion===task.approvalState?.deliveryStateVersion&&deliveryRuntime.repository===approvedRepository&&deliveryRuntime.branch===task.branch&&deliveryRuntime.commitSha===task.currentCommit&&deliveryRuntime.reviewStepId===`${task.currentStep}:review_commit`&&deliveryRuntime.deliveryStepId===`${task.currentStep+1}:push`&&deliveryRuntime.maxAdditionalDeliverySteps===1&&deliveryRuntime.consumed!==true&&new Date(deliveryRuntime.deadline)>clock());
     if (taskRuntimeWindow(task,clock()).expired&&!deliveryRuntimeValid)
       return stop(task, "expired", "max_runtime_reached");
     if (!capability) return stop(task, "failed", "invalid_step_type");
@@ -402,6 +495,24 @@ export function createWorkerRuntime({
         };
       }
       if (type === "summarize") {
+        const completionIssue = await implementationCompletionIssue(task);
+        if (completionIssue) {
+          await storage.updateAutonomyStep(task.id, step.stepId, {
+            status: "failed",
+            errorCode: completionIssue.code,
+            result: redact({
+              message: completionIssue.message,
+              missing: completionIssue.missing,
+            }),
+            completedAt: iso(clock),
+          });
+          return stop(
+            task,
+            "blocked",
+            completionIssue.code,
+            completionIssue.message,
+          );
+        }
         await storage.updateAutonomyStep(task.id, step.stepId, {
           status: "completed",
           result: redact(plan.required_inputs),
@@ -527,6 +638,60 @@ export function createWorkerRuntime({
     }
   }
   async function completeEvidenceExpansion(task,step,plan,result){const expansion=result.evidenceExpansion,paths=[...new Set(expansion.paths||[])],currentPlan=task.metadata.steps[task.currentStep],inserted=paths.map((path,index)=>({type:"read_files",capability:"repo_read_remote",input:{tool:"repo_read",arguments:{path,startLine:1,endLine:1000}},expectedOutput:`Complete contents of ${path}`,successCondition:"Focused test evidence is read before execution",retryClassification:"safe_read",approvalRequired:false,idempotencyIdentity:`self-development:evidence-expansion:${expansion.attempt}:${index}:${fingerprint(task,path)}`})),replan={...currentPlan,input:{...currentPlan.input,arguments:{...currentPlan.input.arguments,candidatePaths:expansion.candidatePaths}}},metadata={...task.metadata,steps:[...task.metadata.steps.slice(0,task.currentStep+1),...inserted,replan,...task.metadata.steps.slice(task.currentStep+1)],requiredCapability:"repo_read_remote",implementationEvidenceExpansionHistory:[...(task.metadata.implementationEvidenceExpansionHistory||[]),{code:expansion.code,category:expansion.category,attempt:expansion.attempt,plannerAttempt:expansion.plannerAttempt,pathHashes:expansion.pathHashes,...(expansion.rejectedTarget?{rejectedTarget:expansion.rejectedTarget}:{}),requestedAt:iso(clock)}]};await storage.updateAutonomyStep(task.id,step.stepId,{status:"completed",result:redact({ok:true,evidenceExpansion:{code:expansion.code,category:expansion.category,attempt:expansion.attempt,pathHashes:expansion.pathHashes}}),completedAt:iso(clock)});await storage.updateAutonomyTask(task.id,ownerId,{status:"queued",currentStep:task.currentStep+1,currentPhase:"evidence_expansion",nextRunAt:iso(clock),checkpoint:{...task.checkpoint,completedSteps:[...(task.checkpoint?.completedSteps||[]),step.stepId],pendingStep:null,latestResult:redact({evidenceExpansion:{code:expansion.code,attempt:expansion.attempt,pathHashes:expansion.pathHashes}})},metadata,blockedReason:null,errorCode:null});await activity(task,"self_development_evidence_expansion_scheduled","queued","Bounded focused-test evidence reads scheduled before replanning.",{stepId:step.stepId,category:expansion.category,attempt:expansion.attempt,plannerAttempt:expansion.plannerAttempt,pathHashes:expansion.pathHashes,fileCount:paths.length,...(expansion.rejectedTarget?{rejectedTarget:expansion.rejectedTarget}:{})});}
+  async function stopReviewRemediation(task,errorCode,step,result){
+    const current=await storage.getAutonomyTask(task.id,ownerId),descriptor=reviewRemediationDescriptor(current),history=current.metadata?.[descriptor.historyKey]||[],record=history.at(-1);
+    const boundary={kind:errorCode.includes("authorization_required")?"authorization_required":"product_repair_decision",executionAuthorized:false,reviewHash:record.reviewHash,planHash:record.planHash||null,planGenerationId:record.planGenerationId||null,stepId:step?.stepId||`${current.currentStep+1}:${current.metadata.steps[current.currentStep]?.type}`,errorCode,findingsResolved:false};
+    const metadata={...current.metadata,requiredCapability:null,[descriptor.boundaryKey]:boundary,[descriptor.historyKey]:[...history.slice(0,-1),{...record,consumed:true,completedAt:iso(clock),result:"failed",boundary}]};
+    const updated=await storage.updateAutonomyTask(current.id,ownerId,{status:"blocked",nextRunAt:null,errorCode,blockedReason:"Review remediation stopped; a new owner decision is required. No retry or repair extension is authorized.",metadata,leaseOwner:null,leaseToken:null,leaseExpiresAt:null},current.stateVersion);
+    if(!updated)throw new WorkerError("version_conflict","Review-remediation task changed before its failure boundary.",{retryable:false});
+    if(step)await storage.updateAutonomyStep(task.id,step.stepId,{status:"failed",errorCode,result:redact(result||{}),completedAt:iso(clock)});
+    await activity(updated,"self_development_review_remediation_stopped","blocked","The bounded review-remediation generation stopped without retry.",{boundary});
+    return{claimed:true,status:"blocked",task:updated,errorCode};
+  }
+  async function advanceReviewRemediation(task,plan){
+    let step;
+    try{
+      const steps=await storage.listAutonomySteps(task.id),{record,history}=validateReviewRemediationEvidence(task,steps,clock),descriptor=reviewRemediationDescriptor(task),type=plan.next_step;
+      const approval=await storage.getApproval(record.approvalId,ownerId);
+      if(approval?.status!=="approved"||approval.tool!==descriptor.tool||approval.runId!==task.id||approval.ownerId!==ownerId||approval.projectId!==task.projectId||lifecycleHash(approval.arguments)!==lifecycleHash(record.approvalArguments))throw new WorkerError("review_remediation_approval_required","The exact review-remediation owner approval is required.",{retryable:false});
+      if(type!=="plan_repair"){
+        if(!["read_files","validate_patch","apply_patch","run_focused_tests","run_full_tests"].includes(type))throw new WorkerError("review_remediation_step_forbidden","This phase is outside the approved remediation generation.",{retryable:false});
+        const capability=STEP_CAPABILITIES[type];
+        await storage.updateAutonomyTask(task.id,ownerId,{status:"waiting_for_worker",metadata:{...task.metadata,requiredCapability:capability}},task.stateVersion);
+        return{claimed:true,status:"waiting_for_worker",capability};
+      }
+      if(record.planningClaimed||steps.some(item=>item.stepId===record.planStepId))throw new WorkerError("review_remediation_replay_forbidden","The single remediation planning attempt was already reserved.",{retryable:false});
+      const reserved=await storage.updateAutonomyTask(task.id,ownerId,{metadata:{...task.metadata,[descriptor.historyKey]:[...history.slice(0,-1),{...record,planningClaimed:true,planningClaimedAt:iso(clock)}]}},task.stateVersion);
+      if(!reserved)throw new WorkerError("version_conflict","Task changed before remediation planning was reserved.",{retryable:false});
+      task=reserved;
+      step=await storage.recordAutonomyStep({taskId:task.id,stepId:record.planStepId,stepType:type,capability:"reasoning",operationFingerprint:fingerprint(task,{type,input:plan.required_inputs}),input:redact(plan.required_inputs),status:"running"});
+      const tool=plan.required_inputs.tool,args=resolveTaskReferences(plan.required_inputs.arguments||{},task);
+      if(tool!=="self_development_plan_implementation")throw new WorkerError("review_remediation_step_forbidden","Only Nova's bound remediation planner is authorized.",{retryable:false});
+      const result=await toolRegistry.execute(tool,args,{runId:task.id,projectId:task.projectId,stepId:step.stepId});
+      if(result?.evidenceExpansion||!result?.implementationPlan)throw new WorkerError("review_remediation_authorization_required","Remediation planning requires owner authorization for unavailable or expanded evidence.",{retryable:false});
+      const binding=acceptedReviewRemediationPlanBinding(task,result.implementationPlan,await storage.listAutonomySteps(task.id),clock),latestHistory=task.metadata[descriptor.historyKey];
+      const metadata={...planLifecycleMetadata(task,redact(result.implementationPlan)),requiredCapability:"repo_read_remote",[descriptor.historyKey]:[...latestHistory.slice(0,-1),{...latestHistory.at(-1),...binding,planningCompleted:true,planningCompletedAt:iso(clock)}]};
+      await storage.updateAutonomyStep(task.id,step.stepId,{status:"completed",result:redact(result),completedAt:iso(clock)});
+      const updated=await storage.updateAutonomyTask(task.id,ownerId,{status:"queued",currentStep:task.currentStep+1,currentPhase:type,nextRunAt:iso(clock),checkpoint:{...task.checkpoint,completedSteps:[...(task.checkpoint?.completedSteps||[]),step.stepId],pendingStep:null,latestResult:redact(result)},metadata,blockedReason:null,errorCode:null},task.stateVersion);
+      if(!updated)throw new WorkerError("version_conflict","Task changed before accepted remediation planning was persisted.",{retryable:false});
+      return{claimed:true,status:"queued",stepType:type,result:redact(result)};
+    }catch(error){
+      const envelope=takeRejectedReviewEvidence(error);
+      let privateReference;
+      if(envelope&&step){
+        try{
+          if(envelope.taskId!==task.id||envelope.stateVersion!==task.stateVersion||envelope.executionId!==step.stepId||envelope.attempt!==step.attempt||envelope.continuationGenerationId!==task.metadata?.activeContinuation?.generationId)throw new Error("Private evidence context mismatch.");
+          const evidence=await storage.createRejectedReviewEvidence({ownerId,taskId:task.id,envelope});
+          privateReference={id:evidence.id,persisted:true};
+        }catch{
+          // Evidence-store failure never grants a retry or turns rejection into
+          // success. Do not expose storage errors or the envelope in task logs.
+          privateReference={persisted:false,code:"private_rejection_evidence_unavailable"};
+        }
+      }
+      return stopReviewRemediation(task,error.code||"unexpected_error",step,{message:String(error.message).slice(0,300),...(error.safeDiagnostics?{diagnostics:error.safeDiagnostics}:{}),...(privateReference?{rejectedReviewEvidence:privateReference}:{})});
+    }
+  }
   async function complete(task, step, result, status, nextRunAt) {
     const completed = [...(task.checkpoint?.completedSteps || []), step.stepId];
     await storage.updateAutonomyStep(task.id, step.stepId, {
@@ -615,11 +780,13 @@ export function createWorkerRuntime({
         "Task state changed after approval.",
         { retryable: false },
       );
+    const deliveryStateVersion=task.stateVersion+1,startedAt=iso(clock),deadline=iso(clock,5*60000),approvedDeliveryRuntime=exactSelfDevelopment?{recoveryClass:APPROVAL_CONTRACT_DELIVERY_RUNTIME,taskId:task.id,approvalId:pending.approvalId,approvedStateVersion:task.stateVersion,deliveryStateVersion,repository:approvedRepository,branch:task.branch,commitSha:task.currentCommit,reviewStepId:`${task.currentStep}:review_commit`,deliveryStepId:`${task.currentStep+1}:push`,maxAdditionalDeliverySteps:1,runtimeMinutes:5,startedAt,deadline,consumed:false}:null;
     return storage.updateAutonomyTask(task.id, ownerId, {
       status: "queued",
-      nextRunAt: iso(clock),
+      nextRunAt: startedAt,
       blockedReason: null,
-      approvalState: { ...pending, approved: true, deliveryStateVersion: task.stateVersion+1 },
+      approvalState: { ...pending, approved: true, deliveryStateVersion },
+      ...(approvedDeliveryRuntime?{metadata:{...task.metadata,approvedDeliveryRuntime}}:{}),
     });
   }
   async function recoverApprovedDeliveryMaxSteps(taskId,input){
@@ -744,3 +911,4 @@ function resolveTaskReferences(value, task) {
   if(value === "$IMPLEMENTATION_PATHS")return task.metadata?.selfDevelopmentImplementationPlan?.files?.map(file=>file.path);
   return value;
 }
+import {takeRejectedReviewEvidence} from "./rejected-review-evidence.js";

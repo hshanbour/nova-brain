@@ -71,11 +71,13 @@ try {
 
   $arguments='"'+$script+'" --preview-url "'+$PreviewUrl.TrimEnd('/')+'" --repository-root "'+$root+'" --runtime-version "'+$runtimeVersion+'" --git-executable "'+$git+'" --credential-helper "'+$helper+'"'
   $taskAction=New-ScheduledTaskAction -Execute $node -Argument $arguments -WorkingDirectory $root
-  $trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-  $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-  Register-ScheduledTask -TaskName $name -Action $taskAction -Trigger $trigger -Settings $settings -Description 'Versioned Nova worker runtime with an independently bound task workspace.' -Force | Out-Null
+  $logonTrigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+  $watchdogTrigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650)
+  $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+  Register-ScheduledTask -TaskName $name -Action $taskAction -Trigger @($logonTrigger,$watchdogTrigger) -Settings $settings -Description 'Versioned Nova worker runtime with an independently bound task workspace.' -Force | Out-Null
   $installedAction=(Get-ScheduledTask -TaskName $name -ErrorAction Stop).Actions | Select-Object -First 1
   if($installedAction.Execute -ne $node -or $installedAction.Arguments -notlike ('*"'+$script+'"*') -or $installedAction.Arguments -notlike ('*--repository-root "'+$root+'"*') -or $installedAction.Arguments -notlike ('*--runtime-version "'+$runtimeVersion+'"*') -or $installedAction.Arguments -notlike ('*--credential-helper "'+$helper+'"*')){throw 'The Scheduled Task immutable runtime binding could not be verified.'}
+  Start-ScheduledTask -TaskName $name
   [Console]::Out.Write('installed')
 } finally {
   if(Test-Path -LiteralPath $stagedArchive){Remove-Item -LiteralPath $stagedArchive -Force}

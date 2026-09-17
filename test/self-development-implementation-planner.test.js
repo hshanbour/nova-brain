@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {createHash} from "node:crypto";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import {
   createSelfDevelopmentImplementationPlanner,
@@ -9,6 +10,8 @@ import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
 import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA, SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION } from "../src/autonomy/self-development-implementation-contract.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { registerHandsTools } from "../src/tools/hands-runtime.js";
+import {canonicalContentHash} from "../src/autonomy/self-development-plan-lifecycle.js";
+import {focusedTestEvidenceRelevance} from "../src/autonomy/focused-test-evidence-relevance.js";
 
 const OWNER = "owner",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -144,16 +147,47 @@ test("planner and Hands share the canonical versioned patch bridge contract", ()
   assert.deepEqual(Object.keys(patch.inputSchema.properties).sort(),["branch","currentCommit","files","planProvenance"]);
 });
 test("canonical composer-style plan validates before Hands-compatible mutation", async () => {
-  const output=valid();output.files=[{path:"assets/voice-input.js",operation:"replace",content:"new adapter",reason:"bounded composer dictation",intendedChanges:["preserve editable transcription"]},{path:"test/voice-input.test.js",operation:"replace",content:"new focused tests",reason:"focused evidence",intendedChanges:["cover dictation"]}];output.focusedTests=[{path:"test/voice-input.test.js",kind:"existing"}];output.acceptanceMapping=[{criterion:"Composer dictation stays editable",files:["assets/voice-input.js","test/voice-input.test.js"]}];
+  const output=valid();output.files=[{path:"assets/voice-input.js",operation:"replace",content:"export function createVoiceInput() { return { supported: true }; }\n",reason:"bounded composer dictation",intendedChanges:["preserve editable transcription"]},{path:"test/voice-input.test.js",operation:"replace",content:"import test from 'node:test';\ntest('dictation', () => {});\n",reason:"focused evidence",intendedChanges:["cover dictation"]}];output.focusedTests=[{path:"test/voice-input.test.js",kind:"existing"}];output.acceptanceMapping=[{criterion:"Composer dictation stays editable",files:["assets/voice-input.js","test/voice-input.test.js"]}];
   const f=await fixture([output],{discovered:["assets/voice-input.js","test/voice-input.test.js"],reads:[["assets/voice-input.js","old adapter"],["test/voice-input.test.js","old focused tests"]]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:["assets/voice-input.js","test/voice-input.test.js"],currentCommit:SHA});
   assert.deepEqual(result.implementationPlan.focusedTests,[{path:"test/voice-input.test.js",kind:"existing"}]);
   assert.deepEqual(result.implementationPlan.files.map(({path,operation})=>({path,operation})),[{path:"assets/voice-input.js",operation:"replace"},{path:"test/voice-input.test.js",operation:"replace"}]);
   assert.equal(result.implementationPlan.files.every((file)=>typeof file.expectedContent==="string"),true);
 });
+const stable=value=>Array.isArray(value)?value.map(stable):value&&typeof value==="object"?Object.fromEntries(Object.keys(value).sort().map(key=>[key,stable(value[key])])):value;
+const durableHash=value=>createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+test("instructional replacement prose is rejected and regenerated before mutation",async()=>{const prose=valid();prose.files=[{path:"assets/voice-input.js",operation:"replace",content:"Replace the adapter with valid JavaScript and preserve editable transcription.",reason:"repair",intendedChanges:["repair adapter"]}];prose.focusedTests=[{path:"test/voice-input.test.js",kind:"existing"}];prose.acceptanceMapping=[{criterion:"Works",files:["assets/voice-input.js"]}];const corrected=structuredClone(prose);corrected.files[0].content="export const supported = true;\n";const f=await fixture([prose,corrected],{discovered:["assets/voice-input.js","test/voice-input.test.js"],reads:[["assets/voice-input.js","export const supported = false;\n"],["test/voice-input.test.js","import test from 'node:test';\n"]]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:["assets/voice-input.js","test/voice-input.test.js"],currentCommit:SHA});assert.equal(f.calls,2);assert.match(f.prompts[1].message,/file_0_replacement_script_not_source/);assert.equal(result.implementationPlan.files[0].content,"export const supported = true;\n");});
+
+test("partial-plan recovery regenerates every exact task-owned dirty path and rejects another partial plan",async()=>{
+  const paths=[DOC,TEST,EXTRA],contents={[DOC]:"dirty doc",[TEST]:"import test from 'node:test';\n",[EXTRA]:"import test from 'node:test';\n"},complete={files:paths.map(path=>({path,operation:"replace",content:path===DOC?"fixed doc":"import test from 'node:test';\n// repaired\n",reason:"repair",intendedChanges:["repair"]})),focusedTests:[{path:TEST,kind:"existing"}],acceptanceMapping:[{criterion:"Document is updated",files:paths}],riskLevel:"medium",summary:"Complete repair"};
+  async function prepared(outputs){const f=await fixture(outputs,{discovered:paths,reads:[],existing:paths}),task=await f.storage.getAutonomyTask("selfdev-plan",OWNER),generationId="partial-recovery-generation",entries=paths.map(path=>({path,contentHash:canonicalContentHash(contents[path])})),record={taskId:task.id,repository:"hshanbour/nova-brain",branch:BRANCH,currentCommit:SHA,fingerprint:"f".repeat(64),sourcePlanStepId:"26:plan_repair",sourceApplyStepId:"27:apply_patch",requiredPaths:paths,entries,activeContinuation:{generationId}};await f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...task.metadata,selfDevelopment:{...task.metadata.selfDevelopment,repository:"hshanbour/nova-brain"},activeContinuation:{generationId},partialRepairPlanRecoveryHistory:[record]}});await f.storage.recordAutonomyStep({taskId:task.id,stepId:record.sourcePlanStepId,stepType:"plan_repair",capability:"reasoning",operationFingerprint:"source-plan",status:"completed",result:{implementationPlan:{files:paths.map(path=>({path,content:contents[path]}))}}});await f.storage.recordAutonomyStep({taskId:task.id,stepId:record.sourceApplyStepId,stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:"source-apply",status:"completed",result:{files:paths}});return{f,failureEvidence:{code:"repair_plan_incomplete",fingerprint:record.fingerprint}};}
+  const exact=await prepared([complete]),result=await exact.f.planner.generate({taskId:"selfdev-plan",candidatePaths:paths,currentCommit:SHA,failureEvidence:exact.failureEvidence});assert.deepEqual(result.implementationPlan.files.map(file=>file.path).sort(),[...paths].sort());assert.match(exact.f.prompts[0].message,/dirty doc/);
+  const partial=structuredClone(complete);partial.files=partial.files.slice(1);partial.acceptanceMapping=[{criterion:"Document is updated",files:partial.files.map(file=>file.path)}];const rejected=await prepared([partial,partial,partial]);await assert.rejects(()=>rejected.f.planner.generate({taskId:"selfdev-plan",candidatePaths:paths,currentCommit:SHA,failureEvidence:rejected.failureEvidence}),error=>error.code==="implementation_plan_invalid"||error.code==="implementation_scope_violation");
+  for(const [field,value] of [["taskId","another-task"],["repository","another/repository"],["branch","feat/another-branch"]]){const mismatched=await prepared([complete]),task=await mismatched.f.storage.getAutonomyTask("selfdev-plan",OWNER),record={...task.metadata.partialRepairPlanRecoveryHistory[0],[field]:value};await mismatched.f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...task.metadata,partialRepairPlanRecoveryHistory:[record]}});await assert.rejects(()=>mismatched.f.planner.generate({taskId:"selfdev-plan",candidatePaths:paths,currentCommit:SHA,failureEvidence:mismatched.failureEvidence}),error=>error.code==="implementation_evidence_incomplete");}
+});
+test("v148-shaped partial recovery reads complete durable lineage when the latest apply mutated only a subset",async()=>{
+  const paths=[DOC,TEST,EXTRA],contents={[DOC]:"dirty doc",[TEST]:"import test from 'node:test';\n",[EXTRA]:"import test from 'node:test';\n"},entries=paths.map(path=>({path,contentHash:canonicalContentHash(contents[path])})).sort((a,b)=>a.path.localeCompare(b.path)),complete={files:paths.map(path=>({path,operation:"replace",content:path===DOC?"fixed doc":"import test from 'node:test';\n// repaired\n",reason:"repair",intendedChanges:["repair"]})),focusedTests:[{path:TEST,kind:"existing"}],acceptanceMapping:[{criterion:"Document is updated",files:paths}],riskLevel:"medium",summary:"Complete repair"},f=await fixture([complete],{discovered:paths,reads:[],existing:paths}),task=await f.storage.getAutonomyTask("selfdev-plan",OWNER),generationId="v148-recovery",previousStateVersion=145,sourcePlanStepId="79:plan_repair",sourceApplyStepId="80:apply_patch",sourceApplyFingerprint="source-apply",record={taskId:task.id,previousStateVersion,repository:"hshanbour/nova-brain",branch:BRANCH,currentCommit:SHA,sourcePlanStepId,sourceApplyStepId,sourceApplyFingerprint,requiredPaths:paths,entries,activeContinuation:{generationId}};record.fingerprint=durableHash([record.taskId,record.previousStateVersion,record.sourcePlanStepId,record.sourceApplyStepId,record.entries]);await f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...task.metadata,selfDevelopment:{...task.metadata.selfDevelopment,repository:"hshanbour/nova-brain"},activeContinuation:{generationId},partialRepairPlanRecoveryHistory:[record],escalatedRepairHistory:[{consumed:true,additionalAttempts:1}]}});await f.storage.recordAutonomyStep({taskId:task.id,stepId:"63:plan_repair",stepType:"plan_repair",capability:"reasoning",operationFingerprint:"carried-plan",status:"completed",result:{implementationPlan:{files:paths.slice(1).map(path=>({path,content:contents[path]}))}}});await f.storage.recordAutonomyStep({taskId:task.id,stepId:sourcePlanStepId,stepType:"plan_repair",capability:"reasoning",operationFingerprint:"source-plan",status:"completed",result:{implementationPlan:{files:[{path:DOC,content:contents[DOC]}]}}});await f.storage.recordAutonomyStep({taskId:task.id,stepId:sourceApplyStepId,stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:sourceApplyFingerprint,status:"completed",result:{files:[DOC],taskOwnedDirtyLineage:{version:1,taskId:task.id,repository:"hshanbour/nova-brain",branch:BRANCH,currentCommit:SHA,sourcePlanStepId,entries}}});const before=await f.storage.getAutonomyTask(task.id,OWNER),result=await f.planner.generate({taskId:task.id,candidatePaths:paths,currentCommit:SHA,failureEvidence:{code:"repair_plan_incomplete",fingerprint:record.fingerprint}}),after=await f.storage.getAutonomyTask(task.id,OWNER);assert.deepEqual(result.implementationPlan.files.map(file=>file.path).sort(),[...paths].sort());assert.match(f.prompts[0].message,/dirty doc/);assert.match(f.prompts[0].message,/import test from/);assert.equal(after.stateVersion,before.stateVersion);assert.deepEqual(after.metadata.escalatedRepairHistory,before.metadata.escalatedRepairHistory);
+  for(const mutate of [lineage=>{lineage.entries[0].contentHash="0".repeat(64);},lineage=>{lineage.sourcePlanStepId="78:plan_repair";}]){const broken=structuredClone(record),lineage={version:1,taskId:task.id,repository:"hshanbour/nova-brain",branch:BRANCH,currentCommit:SHA,sourcePlanStepId,entries:structuredClone(entries)};mutate(lineage);const g=await fixture([complete],{discovered:paths,reads:[],existing:paths}),t=await g.storage.getAutonomyTask("selfdev-plan",OWNER);await g.storage.updateAutonomyTask(t.id,OWNER,{metadata:{...t.metadata,selfDevelopment:{...t.metadata.selfDevelopment,repository:"hshanbour/nova-brain"},activeContinuation:{generationId},partialRepairPlanRecoveryHistory:[broken]}});await g.storage.recordAutonomyStep({taskId:t.id,stepId:sourcePlanStepId,stepType:"plan_repair",capability:"reasoning",operationFingerprint:"source-plan",status:"completed",result:{implementationPlan:{files:paths.map(path=>({path,content:contents[path]}))}}});await g.storage.recordAutonomyStep({taskId:t.id,stepId:sourceApplyStepId,stepType:"apply_patch",capability:"repo_mutate_local",operationFingerprint:sourceApplyFingerprint,status:"completed",result:{files:[DOC],taskOwnedDirtyLineage:lineage}});await assert.rejects(()=>g.planner.generate({taskId:t.id,candidatePaths:paths,currentCommit:SHA,failureEvidence:{code:"repair_plan_incomplete",fingerprint:broken.fingerprint}}),error=>error.code==="implementation_evidence_incomplete");}
+});
 test("repair planning includes a relevant previously read failing test as exact evidence",async()=>{
   const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];
   const f=await fixture([output],{discovered:[DOC,TEST,EXTRA],reads:[[DOC,"old doc"],[TEST,"old test"],[EXTRA,"exact failing test"]]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{fingerprint:"f".repeat(64),failedFiles:["test/hands-runtime.test.js",EXTRA]}}),prompt=JSON.parse(f.prompts[0].message.split("\n")[1]);
   assert.deepEqual(prompt.candidateFiles.map(item=>item.path),[DOC,TEST,EXTRA]);assert.equal(prompt.candidateFiles.at(-1).content,"exact failing test");assert.ok(result.implementationPlan.evidencePaths.includes(EXTRA));
+});
+test("authoritative full-test failure expands to an existing tracked test outside discovery inventory",async()=>{
+  const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];
+  const f=await fixture([output],{discovered:[DOC,TEST],reads:[[DOC,"old doc"],[TEST,"old test"]],existing:[DOC,TEST,EXTRA]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{version:1,fingerprint:"f".repeat(64),identity:{command:"npm:test"},failedFiles:[EXTRA]}});
+  assert.equal(result.evidenceExpansion.category,"full_test_failure_evidence");assert.deepEqual(result.evidenceExpansion.paths,[EXTRA]);assert.equal(f.calls,1);
+});
+test("authoritative focused-test failure retains bounded tracked-path expansion",async()=>{
+  const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];
+  const f=await fixture([output],{discovered:[DOC,TEST],reads:[[DOC,"old doc"],[TEST,"old test"]],existing:[DOC,TEST,EXTRA]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{version:1,fingerprint:"f".repeat(64),identity:{command:"node:test:focused"},failedFiles:[EXTRA]}});
+  assert.equal(result.evidenceExpansion.category,"focused_test_failure_evidence");assert.deepEqual(result.evidenceExpansion.paths,[EXTRA]);
+});
+test("failure-evidence expansion rejects nonexistent untracked and unrelated existing tests",async()=>{
+  for(const {failed,existing} of [{failed:[EXTRA],existing:[DOC,TEST]},{failed:["test/another.test.js"],existing:[DOC,TEST,EXTRA]}]){const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];const f=await fixture([output],{discovered:[DOC,TEST],reads:[[DOC,"old doc"],[TEST,"old test"]],existing});await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{version:1,fingerprint:"f".repeat(64),identity:{command:"npm:test"},failedFiles:failed}}),error=>error.code==="implementation_scope_violation"&&error.safeDiagnostics.proposedPath===EXTRA);}
+});
+test("Windows separators in authoritative failure evidence normalize to the tracked repository path",async()=>{
+  const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];const f=await fixture([output],{discovered:[DOC,TEST],reads:[[DOC,"old doc"],[TEST,"old test"]],existing:[DOC,TEST,EXTRA]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA,failureEvidence:{version:1,fingerprint:"f".repeat(64),identity:{command:"npm:test"},failedFiles:[EXTRA.replaceAll("/","\\")]}});assert.deepEqual(result.evidenceExpansion.paths,[EXTRA]);
 });
 test("schema-imperfect output receives safe feedback and corrects within the same evidence", async () => {
   const imperfect = {
@@ -244,6 +278,7 @@ test("missing fields, unknown paths, and protected or unread evidence fail close
   );
   const outside = valid();
   outside.files[0].path = "src/unrelated.js";
+  outside.files[0].content = "export const unrelated = true;\n";
   await assert.rejects(
     () =>
       fixture([outside]).then((f) =>
@@ -524,7 +559,7 @@ test("a planned new focused test is create-bound, content-bound, and not evidenc
 test("undiscovered existing path is not mistaken for a safe create target", async () => {
   const path = "test/planner-new.test.js";
   const output = valid();
-  output.files.push({path,operation:"create",content:"unsafe overwrite",reason:"coverage",intendedChanges:["cover"]});
+  output.files.push({path,operation:"create",content:"export const coverage = true;\n",reason:"coverage",intendedChanges:["cover"]});
   output.focusedTests = [{path,kind:"planned_new"}];
   const f = await fixture([output], {discovered:[DOC,TEST], existing:[DOC,TEST,path]});
   await assert.rejects(() => f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}), error => error.code === "operation_conflict" && error.safeDiagnostics.discovered === false && error.safeDiagnostics.requiredAction === "read_before_modify");
@@ -604,4 +639,78 @@ test("missing intended test uses bounded discovery and retains safe rejected-pat
   assert.equal(result.evidenceExpansion.attempt, 1);
   assert.equal(result.evidenceExpansion.plannerAttempt, 1);
   assert.ok(result.evidenceExpansion.paths.length <= 3);
+});
+
+test("microphone planner does not offer discovered tests rejected by the canonical relevance contract", async () => {
+  const source="assets/voice-input.js",focused="test/voice-input.test.js",unrelated="test/console-client.test.js",other="test/workspace-navigation.test.js",output=valid();
+  output.files=[{path:source,operation:"replace",content:"export const supported = true;\n",reason:"dictation",intendedChanges:["preserve draft"]}];
+  output.focusedTests=[{path:focused,kind:"existing"}];
+  output.acceptanceMapping=[{criterion:"Microphone dictation remains editable",files:[source]}];
+  const f=await fixture([output],{discovered:[source,focused,unrelated,other],reads:[[source,"export const supported = false;\n"],[focused,"import test from 'node:test';\n"]]}),task=await f.storage.getAutonomyTask("selfdev-plan",OWNER);
+  await f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...task.metadata,selfDevelopment:{userGoal:"Complete the composer microphone and editable dictation",acceptanceCriteria:["Microphone dictation remains editable"]}}});
+  const before=await f.storage.getAutonomyTask(task.id,OWNER),result=await f.planner.generate({taskId:task.id,candidatePaths:[source,focused],currentCommit:SHA}),prompt=JSON.parse(f.prompts[0].message.split("\n")[1]);
+  assert.deepEqual(prompt.availableEvidenceExpansionTests,[]);
+  assert.deepEqual(result.implementationPlan.evidencePaths,[source,focused]);
+  assert.equal(focusedTestEvidenceRelevance(unrelated,{candidatePaths:[source,focused],userGoal:before.metadata.selfDevelopment.userGoal,discoveredPaths:new Set([source,focused,unrelated,other])}).classification,"unrelated");
+  assert.deepEqual(await f.storage.getAutonomyTask(task.id,OWNER),before);
+  output.focusedTests=[{path:unrelated,kind:"existing"}];
+  await assert.rejects(()=>f.planner.generate({taskId:task.id,candidatePaths:[source,focused],currentCommit:SHA}),error=>error.code==="implementation_scope_violation"&&error.safeDiagnostics.classification==="unrelated"&&error.safeDiagnostics.proposedPath===unrelated&&error.safeDiagnostics.mutationApplied===false);
+});
+
+test("canonical relevance offers legitimate evidence and validation accepts exactly that discovery candidate", async () => {
+  const output=valid();output.focusedTests=[{path:EXTRA,kind:"existing"}];
+  const f=await fixture([output],{discovered:[DOC,TEST,EXTRA,"test/unrelated.test.js","test/voice-control.test.js"]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),prompt=JSON.parse(f.prompts[0].message.split("\n")[1]);
+  assert.deepEqual(prompt.availableEvidenceExpansionTests,[EXTRA]);
+  assert.deepEqual(result.evidenceExpansion.paths,[EXTRA]);
+  assert.equal(result.evidenceExpansion.category,"existing_file");
+  assert.equal(focusedTestEvidenceRelevance("test/console-client.test.js",{candidatePaths:["assets/api-client.js",TEST],userGoal:"Repair API client response handling",discoveredPaths:new Set(["test/console-client.test.js"])}).eligible,true,"eligibility is contextual, not a filename deny-list");
+});
+
+test("rejected structured plans retain bounded references and fingerprints without source or model prose", async () => {
+  const output=valid(),marker="private-model-prose-must-not-be-stored",unrelated="test/unrelated.test.js";
+  output.files[0].content=marker;output.files[0].reason=marker;output.files[0].intendedChanges=[marker];output.summary=marker;
+  output.focusedTests=[{path:unrelated,kind:"existing"}];
+  output.acceptanceMapping=[{criterion:marker,files:[DOC,unrelated]}];
+  const f=await fixture([output],{discovered:[DOC,TEST,unrelated]});
+  let failure;await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>{failure=error;return error.code==="implementation_scope_violation";});
+  const diagnostic=failure.safeDiagnostics,proof=diagnostic.rejectedPlanEvidence;
+  assert.equal(proof.version,1);assert.equal(proof.taskId,"selfdev-plan");assert.equal(proof.currentCommit,SHA);
+  assert.deepEqual(proof.requestedMutationPaths.map(({path,operation})=>({path,operation})),[{path:DOC,operation:"replace"}]);
+  assert.deepEqual(proof.requestedFocusedTests.map(({path,kind})=>({path,kind})),[{path:unrelated,kind:"existing"}]);
+  assert.deepEqual(proof.acceptanceMapping[0].files,[{mutationIndex:0},{focusedTestIndex:0}]);
+  assert.equal(proof.acceptanceMapping[0].criterionIndex,-1);
+  assert.match(proof.planFingerprint,/^[a-f0-9]{64}$/);assert.match(proof.evidenceFingerprint,/^[a-f0-9]{64}$/);assert.match(diagnostic.outputShapeHash,/^[a-f0-9]{64}$/);
+  assert.equal(proof.validation.classification,"unrelated");assert.equal(proof.mutationApplied,false);
+  assert.equal(JSON.stringify(diagnostic).includes(marker),false);
+  assert.ok(JSON.stringify(diagnostic).length<10000);
+});
+
+test("Worker durably records rejected plan references before any Hands mutation", async () => {
+  const output=valid(),unrelated="test/unrelated.test.js";output.focusedTests=[{path:unrelated,kind:"existing"}];
+  const f=await fixture([output],{discovered:[DOC,TEST,unrelated]}),task=await f.storage.getAutonomyTask("selfdev-plan",OWNER),calls=[];
+  await f.storage.updateAutonomyTask(task.id,OWNER,{status:"queued",metadata:{...task.metadata,steps:[{type:"plan_repair",capability:"reasoning",input:{tool:"self_development_plan_implementation",arguments:{taskId:task.id,candidatePaths:[DOC,TEST],currentCommit:SHA}},idempotencyIdentity:"invalid-repair-plan"},{type:"apply_patch",capability:"repo_mutate_local",input:{tool:"repo_apply_patch",arguments:{files:"$IMPLEMENTATION_FILES"}},idempotencyIdentity:"must-not-mutate"}]}});
+  const runtime=createWorkerRuntime({storage:f.storage,ownerId:OWNER,approvedBranch:BRANCH,capabilities:["reasoning","repo_mutate_local"],toolRegistry:{async execute(name,args){calls.push(name);assert.equal(name,"self_development_plan_implementation");return f.planner.generate(args);}}});
+  await runtime.tickTask(task.id);
+  const failed=(await f.storage.listAutonomySteps(task.id)).find(step=>step.stepType==="plan_repair"&&step.status==="failed");
+  assert.equal(failed.errorCode,"implementation_scope_violation");
+  assert.equal(failed.result.diagnostics.rejectedPlanEvidence.requestedFocusedTests[0].path,unrelated);
+  assert.equal(failed.result.diagnostics.rejectedPlanEvidence.requestedMutationPaths[0].path,DOC);
+  assert.equal(failed.result.diagnostics.mutationApplied,false);
+  assert.deepEqual(calls,["self_development_plan_implementation"]);
+  assert.equal((await runtime.get(task.id)).metadata.selfDevelopmentImplementationPlan,undefined);
+});
+
+test("rejected-plan audit evidence remains bounded even when model arrays exceed schema limits", async () => {
+  const output=valid(),marker="Bearer do-not-retain-model-secrets";
+  output.focusedTests=Array.from({length:40},(_,i)=>({path:`test/unrelated-${i}.test.js`,kind:"existing"}));
+  output.acceptanceMapping=Array.from({length:40},()=>({criterion:marker,files:Array.from({length:20},()=>DOC)}));
+  const f=await fixture([output]);
+  await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>{
+    const proof=error.safeDiagnostics.rejectedPlanEvidence;
+    assert.equal(proof.requestedFocusedTests.length,12);assert.equal(proof.omittedFocusedTestCount,28);
+    assert.equal(proof.acceptanceMapping.length,30);assert.equal(proof.omittedMappingCount,10);
+    assert.equal(proof.acceptanceMapping[0].files.length,8);assert.equal(proof.acceptanceMapping[0].omittedFileCount,12);
+    assert.equal(JSON.stringify(proof).includes(marker),false);assert.ok(JSON.stringify(proof).length<20000);
+    return error.code==="implementation_scope_violation"&&error.safeDiagnostics.mutationApplied===false;
+  });
 });
