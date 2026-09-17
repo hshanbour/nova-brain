@@ -22,11 +22,13 @@ test('composer integration starts and completes editable dictation without submi
   assert.equal(input.dir, 'rtl');
   assert.equal(button.dataset.voiceState, 'recording');
   assert.equal(button.attributes['aria-pressed'], 'true');
+  assert.equal(waveform.dataset.voiceState, 'recording');
   assert.equal(status.textContent, 'Listening…');
   button.click();
   assert.equal(voiceControl.getState(), 'complete');
   assert.equal(button.dataset.voiceState, 'complete');
   assert.equal(button.attributes['aria-pressed'], 'false');
+  assert.equal(waveform.dataset.voiceState, 'complete');
 });
 
 test('composer locale selection configures an Arabic recognizer before dictation starts', () => {

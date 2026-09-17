@@ -16,6 +16,7 @@ test('console uses the canonical composer voice contract', async () => {
   assert.doesNotMatch(consoleJs, /requestAnimationFrame\.bind|cancelAnimationFrame\.bind/);
   assert.match(voice, /recording.*processing.*complete.*error/s);
   assert.match(html, /id="composerVoiceWaveform"/);
+  assert.match(html, /id="composerVoiceWaveform" data-voice-state="idle"/);
   assert.match(html, /class="app-shell"/);
   assert.match(html, /href="#chat"/);
   assert.match(html, /href="#memory"/);
@@ -23,6 +24,8 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(html, /id="endVoiceButton"/);
   assert.match(html, /type="button"/);
   assert.match(css, /--composer-voice-amplitude/);
+  assert.match(css, /#composerVoiceWaveform\[data-voice-state="recording"\]\{display:flex\}/);
+  assert.match(css, /inset:50% 112px auto 24px/);
   assert.match(css, /height:calc\(4px \+ var\(--composer-voice-amplitude\)\)/);
   assert.doesNotMatch(css, /composer-voice-amplitude\) \* 12px/);
   assert.match(css, /\.workspace\[hidden\]\{display:none\}/);
