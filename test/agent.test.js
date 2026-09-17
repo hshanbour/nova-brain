@@ -56,6 +56,71 @@ test("agent returns a stable response and records a conversation turn", async ()
   ]);
 });
 
+test("explicit engineering intake creates a durable task before any model generation", async () => {
+  let modelCalls = 0;
+  const agent = createTestAgent({
+    modelProvider: { name: "never", async generate() { modelCalls += 1; throw new Error("model must not run"); } },
+    toolRegistry: createToolRegistry(),
+    routeDurableRequest: async ({message}) => message.startsWith("Fix Nova") ? {
+      task: { id: "selfdev_trusted", status: "queued", projectId: "nova-brain", branch: "feat/nova-brain-mvp-foundation", startingCommit: "f".repeat(40) },
+      idempotent: false,
+    } : null,
+  });
+  const result = await agent.run({ message: "Fix Nova Console routing" });
+  assert.equal(modelCalls, 0);
+  assert.equal(result.provider, "durable_runtime");
+  assert.equal(result.runStatus, "durable_task_created");
+  assert.equal(result.durableTask.id, "selfdev_trusted");
+  assert.equal(result.durableTask.status, "queued");
+});
+
+test("ordinary chat bypasses durable intake and keeps the synchronous model path", async () => {
+  let routes = 0, modelCalls = 0;
+  const agent = createTestAgent({
+    modelProvider: scriptedProvider([{ type: "final", message: "Normal chat" }], () => { modelCalls += 1; }),
+    toolRegistry: createToolRegistry(),
+    routeDurableRequest: async () => { routes += 1; return null; },
+  });
+  const result = await agent.run({ message: "How are you today?" });
+  assert.equal(routes, 1);
+  assert.equal(modelCalls, 1);
+  assert.equal(result.provider, "scripted");
+  assert.equal(result.message, "Normal chat");
+});
+
+test("default synchronous loop permits a final response on model step ten", async () => {
+  let index = 0;
+  const registry = createToolRegistry();
+  registry.register({ name: "again", async execute() { return "again"; } });
+  const provider = { name: "ten-step", async generate() { index += 1; return index === 10 ? { type: "final", message: "Done at ten" } : { type: "tool_calls", toolCalls: [{ id: `c${index}`, name: "again", arguments: {} }] }; } };
+  const result = await createTestAgent({ modelProvider: provider, toolRegistry: registry }).run({ message: "Use ten bounded rounds" });
+  assert.equal(result.steps, 10);
+  assert.equal(result.message, "Done at ten");
+});
+
+test("synchronous deadline aborts the provider and records a bounded failure", async () => {
+  let observedSignal;
+  const storage = testStorage();
+  const provider = { name: "waiting", generate({signal}) { observedSignal = signal; return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })); } };
+  const agent = createTestAgent({ storage, modelProvider: provider, toolRegistry: createToolRegistry(), deadlineMs: 10 });
+  await assert.rejects(() => agent.run({ message: "Wait" }), /synchronous deadline of 10ms/);
+  assert.equal(observedSignal.aborted, true);
+  assert.equal((await storage.listRuns(OWNER_ID))[0].status, "failed");
+});
+
+test("caller AbortSignal stops only the active synchronous run", async () => {
+  let observedSignal;
+  const storage = testStorage(), controller = new AbortController();
+  const provider = { name: "waiting", generate({signal}) { observedSignal = signal; return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })); } };
+  const agent = createTestAgent({ storage, modelProvider: provider, toolRegistry: createToolRegistry() });
+  const pending = agent.run({ message: "Stop me", signal: controller.signal });
+  while (!observedSignal) await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(new DOMException("Stopped", "AbortError"));
+  await assert.rejects(() => pending, (error) => error.name === "AbortError");
+  assert.equal(observedSignal.aborted, true);
+  assert.equal((await storage.listRuns(OWNER_ID))[0].status, "cancelled");
+});
+
 test("agent returns structured redacted tool errors for known validation failures",async()=>{const registry=createToolRegistry();registry.register({name:"self_development_create",async execute(){throw Object.assign(new Error("The requested project could not be resolved to Nova Brain."),{code:"project_not_found"});}});const agent=createTestAgent({toolRegistry:registry,modelProvider:scriptedProvider([{type:"tool_calls",toolCalls:[{id:"create-1",name:"self_development_create",arguments:{userGoal:"Improve dictation"}}]},{type:"final",message:"I need corrected project context."}])}),result=await agent.run({message:"Improve dictation",conversationId:"structured-self-development-error"});assert.deepEqual(result.toolCalls[0].error,{code:"project_not_found",message:"The requested project could not be resolved to Nova Brain."});assert.doesNotMatch(JSON.stringify(result),/password|token|stack/i);});
 
 test("unverified and non-owner voice turns cannot retrieve owner memories or prior conversation history",async()=>{

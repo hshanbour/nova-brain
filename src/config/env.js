@@ -29,7 +29,12 @@ export function readConfig(environment = process.env) {
   const maxAgentSteps = parseInteger(
     environment.NOVA_BRAIN_MAX_STEPS,
     "NOVA_BRAIN_MAX_STEPS",
-    { defaultValue: 5, min: 1, max: 10 },
+    { defaultValue: 10, min: 1, max: 10 },
+  );
+  const syncAgentDeadlineMs = parseInteger(
+    environment.NOVA_BRAIN_SYNC_DEADLINE_MS,
+    "NOVA_BRAIN_SYNC_DEADLINE_MS",
+    { defaultValue: 75_000, min: 10_000, max: 90_000 },
   );
   const maxToolCallsPerStep = parseInteger(
     environment.NOVA_BRAIN_MAX_TOOL_CALLS_PER_STEP,
@@ -85,6 +90,7 @@ export function readConfig(environment = process.env) {
     nodeEnv: environment.NODE_ENV || "development",
     modelProvider,
     maxAgentSteps,
+    syncAgentDeadlineMs,
     maxToolCallsPerStep,
     storageProvider,
     databaseUrl,

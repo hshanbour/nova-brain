@@ -26,6 +26,7 @@ const speakerFamiliarity=initialiseSpeakerFamiliarity({document});
 fetch("/api/auth/probe", { method: "POST", credentials: "same-origin" }).catch(() => {});
 fetch("/api/speakers/enroll", { method: "HEAD", credentials: "same-origin" }).catch(() => {});
 let pending = false;
+let activeSendController = null;
 let currentProfile;
 let memoryRecords = [];
 const conversationKey = "nova.activeConversationId";
@@ -135,8 +136,8 @@ function addThinking() {
 }
 
 function setPending(value) {
-  pending = value; input.disabled = value; sendButton.disabled = value;
-  sendButton.querySelector("span:first-child").textContent = value ? "Working" : "Send";
+  pending = value; input.disabled = value; sendButton.disabled = false;
+  sendButton.querySelector("span:first-child").textContent = value ? "Stop" : "Send";
 }
 
 async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,signal,prepareAssistant,context}={}) {
@@ -161,8 +162,12 @@ async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,si
 }
 
 composer.addEventListener("submit", (event) => {
-  event.preventDefault(); const message = input.value.trim(); if (!message || pending) return;
-  stopVoiceActivity(); input.value = ""; resizeInput(); sendMessage(message);
+  event.preventDefault();
+  if (pending) { activeSendController?.abort(); return; }
+  const message = input.value.trim(); if (!message) return;
+  stopVoiceActivity(); input.value = ""; resizeInput();
+  const controller = new AbortController(); activeSendController = controller;
+  sendMessage(message,{signal:controller.signal}).finally(()=>{if(activeSendController===controller)activeSendController=null;});
 });
 input.addEventListener("input", resizeInput);
 input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); composer.requestSubmit(); } });

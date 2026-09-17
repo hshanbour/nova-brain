@@ -117,7 +117,8 @@ export function createOpenAIModelProvider({ apiKey, model, fetchImpl = fetch }) 
       toolResults = [],
       continuationToken,
       systemContext,
-      responseFormat
+      responseFormat,
+      signal,
     }) {
       const requestBody = {
         model,
@@ -137,6 +138,7 @@ export function createOpenAIModelProvider({ apiKey, model, fetchImpl = fetch }) 
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json"
         },
+        signal,
         body: JSON.stringify(requestBody)
       });
 

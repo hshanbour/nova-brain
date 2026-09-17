@@ -5,6 +5,7 @@ import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
 import {
   createSelfDevelopmentService,
+  isDurableSelfDevelopmentRequest,
   isExactMissingBranchSchemaDiagnostic,
   resolveSemanticPlanApplyState,
   SELF_DEVELOPMENT_DEFAULTS,
@@ -195,6 +196,40 @@ test("target repository and feature branch are bound by default", async () => {
     value = f.service.structure(input());
   assert.equal(value.repository, "hshanbour/nova-brain");
   assert.equal(value.targetBranch, BRANCH);
+});
+test("hybrid intake classifies only explicit actionable Nova engineering requests", () => {
+  for (const message of [
+    "Fix Nova Console routing",
+    "Can you fix Nova Console routing?",
+    "Edit repository files and run implementation tests",
+    "Implement a Nova backend feature and verify a Preview",
+  ]) assert.equal(isDurableSelfDevelopmentRequest(message), true, message);
+  for (const message of [
+    "How should Nova improve the Console?",
+    "Explain the current runtime architecture",
+    "Plan a Sharp Cuts campaign",
+    "What is a Preview deployment?",
+  ]) assert.equal(isDurableSelfDevelopmentRequest(message), false, message);
+});
+test("trusted hybrid intake binds the approved project Preview to the fresh remote feature tip and stays idempotent", async () => {
+  const requests = [], freshTip = "f".repeat(40), f = await fixture({
+    verifyRemote: async (request) => { requests.push(request); return { currentTip: freshTip, ancestors: {} }; },
+  });
+  const goal = "Implement a Nova Console intake improvement";
+  const first = await f.service.createTrustedIntake(goal);
+  const duplicate = await f.service.createTrustedIntake(goal);
+  assert.equal(first.task.startingCommit, freshTip);
+  assert.equal(first.task.branch, BRANCH);
+  assert.equal(first.request.repository, "hshanbour/nova-brain");
+  assert.equal(first.request.environment, "preview");
+  assert.equal(first.idempotent, false);
+  assert.equal(duplicate.idempotent, true);
+  assert.equal(duplicate.task.id, first.task.id);
+  assert.equal((await f.storage.listAutonomyTasks(OWNER)).length, 1);
+  assert.deepEqual(requests, [
+    { repository: "hshanbour/nova-brain", branch: BRANCH, requiredAncestors: [] },
+    { repository: "hshanbour/nova-brain", branch: BRANCH, requiredAncestors: [] },
+  ]);
 });
 test("real chat-style goal resolves deployed commit project branch and safe defaults", async () => {
   const f = await fixture(),

@@ -29,6 +29,18 @@ const CAPABILITIES = Object.freeze([
 ]);
 const IMPLEMENTATION_GOAL =
   /\b(add|build|change|create|develop|fix|implement|improve|modify|update)\b/i;
+const DURABLE_INTAKE_ACTION =
+  /\b(add|build|change|create|develop|edit|fix|implement|improve|modify|refactor|restore|run|update|verify)\b/i;
+const DURABLE_INTAKE_TARGET =
+  /\b(nova|console|frontend|backend|runtime|repository|repo|codebase|source|files?|tests?|preview|deployment)\b/i;
+const CONVERSATIONAL_OR_ADVICE_REQUEST =
+  /^(?:should|how|what|why|when|where|who|explain|review|analy[sz]e|compare|recommend|tell\s+me)\b/i;
+
+export function isDurableSelfDevelopmentRequest(value) {
+  const message = typeof value === "string" ? value.trim() : "";
+  if (!message || message.length > 2000 || CONVERSATIONAL_OR_ADVICE_REQUEST.test(message)) return false;
+  return DURABLE_INTAKE_ACTION.test(message) && DURABLE_INTAKE_TARGET.test(message);
+}
 const REPLAN_PROTECTED =
   /(^|\/)(src\/(?:voice|policy|storage|autonomy)|speaker-worker|api\/index\.js|\.github|assets\/(?:voice-(?!input(?:\.|$))|speaker-))(\/|$)|ecapa|elevenlabs|voice-control|production|credential|secret|token/i;
 const TASK_DIFF_DIGESTS = Object.freeze({
@@ -894,6 +906,46 @@ export function createSelfDevelopmentService({
       idempotent: false,
       dispatch: { status: "scheduled", durable: true },
     };
+  }
+  async function createTrustedIntake(userGoal, {signal} = {}) {
+    if (!isDurableSelfDevelopmentRequest(userGoal))
+      throw new SelfDevelopmentError(
+        "invalid_input",
+        "The request is not an explicit Nova implementation task.",
+        400,
+      );
+    if (typeof verifyRemote !== "function")
+      throw new SelfDevelopmentError(
+        "repository_not_resolved",
+        "The approved Nova feature branch could not be resolved safely.",
+        503,
+      );
+    const remote = await verifyRemote({
+      repository,
+      branch: approvedBranch,
+      requiredAncestors: [],
+      ...(signal ? { signal } : {}),
+    });
+    if (!SHA.test(remote?.currentTip || ""))
+      throw new SelfDevelopmentError(
+        "repository_not_resolved",
+        "The approved Nova feature branch did not return an exact commit.",
+        503,
+      );
+    return create({
+      userGoal,
+      targetProject: "nova-brain",
+      targetBranch: approvedBranch,
+      repository,
+      environment: "preview",
+      startingCommit: remote.currentTip,
+      scope: {
+        paths: [],
+        searchTerms: [],
+        focusedTests: [],
+        patch: { files: [] },
+      },
+    });
   }
   async function get(taskId) {
     const task = await runtime.get(taskId);
@@ -2988,6 +3040,7 @@ export function createSelfDevelopmentService({
     structure,
     plan,
     create,
+    createTrustedIntake,
     get,
     repair,
     requestEscalatedRepair,

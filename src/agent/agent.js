@@ -4,6 +4,17 @@ import { ApprovalRequiredError } from "../policy/action-policy.js";
 
 export class AgentStepLimitError extends Error {}
 export class AgentToolCallLimitError extends Error {}
+export class AgentDeadlineError extends Error {
+  constructor(deadlineMs) {
+    super(`Agent exceeded the synchronous deadline of ${deadlineMs}ms.`);
+    this.name = "AgentDeadlineError";
+  }
+}
+
+function requestAbortError(reason) {
+  if (reason instanceof Error) return reason;
+  return new DOMException("The synchronous request was stopped.", "AbortError");
+}
 
 function validateModelOutput(output) {
   if (output?.type === "final" && typeof output.message === "string" && output.message) {
@@ -54,13 +65,15 @@ export function createAgent({
   ownerId,
   modelProvider,
   toolRegistry,
-  maxSteps = 5,
+  maxSteps = 10,
+  deadlineMs = 75_000,
   maxToolCallsPerStep = 4,
   historyLimit = 24,
   memoryLimit = 6,
   verifySpeakerAssertion = () => null,
   validateSpeakerProfile = async () => false,
   validateAnonymousSpeaker = async () => false,
+  routeDurableRequest = async () => null,
   logger = { info() {}, error() {} }
 }) {
   if (!storage || !ownerId || !modelProvider || !toolRegistry) {
@@ -68,13 +81,26 @@ export function createAgent({
   }
 
   return Object.freeze({
-    async run({ message, conversationId = randomUUID(), context = {}, requestId }) {
+    async run({ message, conversationId = randomUUID(), context = {}, requestId, signal }) {
+      const executionController = new AbortController();
+      const abortFromRequest = () => executionController.abort(requestAbortError(signal?.reason));
+      if (signal?.aborted) abortFromRequest();
+      else signal?.addEventListener("abort", abortFromRequest, { once: true });
+      const deadlineTimer = setTimeout(
+        () => executionController.abort(new AgentDeadlineError(deadlineMs)),
+        deadlineMs,
+      );
+      deadlineTimer.unref?.();
+      const executionSignal = executionController.signal;
+      try {
       const requestStartedAt=Date.now();
+      executionSignal.throwIfAborted();
       const conversationPromise=storage.ensureConversation({ id: conversationId, ownerId, title: message.slice(0, 120) });
       let verifiedSpeaker = context?.voice === true ? verifySpeakerAssertion(context?.speaker?.assertion) : null;
       const profileValidPromise=verifiedSpeaker?.match_status==="confirmed"?validateSpeakerProfile(verifiedSpeaker.speaker_profile_id):Promise.resolve(true);
       const anonymousValidPromise=verifiedSpeaker?.anonymous_speaker_id?validateAnonymousSpeaker(verifiedSpeaker.anonymous_speaker_id):Promise.resolve(true);
       const [conversation,profileValid,anonymousValid]=await Promise.all([conversationPromise,profileValidPromise,anonymousValidPromise]);
+      executionSignal.throwIfAborted();
       if (!conversation) throw new Error("Conversation is unavailable.");
       const contextRetrievalStartedAt=Date.now();
       if(verifiedSpeaker?.match_status==="confirmed"&&!profileValid)verifiedSpeaker=null;
@@ -88,6 +114,7 @@ export function createAgent({
         speakerRestricted ? Promise.resolve(null) : retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit })
       ]);
       const contextRetrievalCompletedAt=Date.now();
+      executionSignal.throwIfAborted();
       await Promise.all([
         storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_created", status: "completed", summary: "Execution run created." }),
         storage.appendMessage({ conversationId, ownerId, role: "user", content: message }),
@@ -99,7 +126,43 @@ export function createAgent({
       let continuationToken;
       let toolResults = [];
 
-      try { for (let step = 1; step <= maxSteps; step += 1) {
+      try {
+        const durable = speakerRestricted ? null : await routeDurableRequest({message, context: trustedContext, requestId, signal: executionSignal});
+        executionSignal.throwIfAborted();
+        if (durable?.task) {
+          const durableTask = {
+            id: durable.task.id,
+            status: durable.task.status,
+            projectId: durable.task.projectId,
+            branch: durable.task.branch,
+            startingCommit: durable.task.startingCommit,
+            idempotent: durable.idempotent === true,
+          };
+          const response = {
+            id: randomUUID(),
+            conversationId,
+            message: `Durable self-development task ${durableTask.id} is ${durableTask.status}. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`,
+            provider: "durable_runtime",
+            toolCalls: [],
+            steps: 0,
+            runId: run.id,
+            runStatus: "durable_task_created",
+            durableTask,
+            timing: {
+              contextRetrievalMs: contextRetrievalCompletedAt-contextRetrievalStartedAt,
+              preModelMs: Date.now()-requestStartedAt,
+              agentFirstResponseMs: 0,
+              agentCompleteMs: 0,
+              totalMs: Date.now()-requestStartedAt,
+            },
+          };
+          await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: response.message });
+          await storage.updateRun(run.id, ownerId, { status: "completed", currentStep: 0, result: { message: response.message, durableTask }, completedAt: new Date().toISOString() });
+          await storage.appendActivity({ ownerId, projectId: durableTask.projectId, runId: run.id, action: "durable_task_routed", status: "completed", summary: `Created durable task ${durableTask.id}.`, metadata: durableTask });
+          return response;
+        }
+        for (let step = 1; step <= maxSteps; step += 1) {
+        executionSignal.throwIfAborted();
         if(step>1)await storage.updateRun(run.id, ownerId, { status: "running", currentStep: step });
         const agentGenerationStartedAt=Date.now();
         const protectedIdentityMessage = context?.voice===true ? identityBoundaryResponse(message,trustedContext.speaker) : null;
@@ -110,8 +173,10 @@ export function createAgent({
           conversationHistory,
           tools: speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }),
           toolResults,
-          continuationToken
+          continuationToken,
+          signal: executionSignal,
         });
+        executionSignal.throwIfAborted();
         validateModelOutput(generated);
         if(speakerRestricted&&generated.type==="tool_calls")generated={type:"final",message:"I can help with general conversation, but this voice turn is not authorized to use tools or access private owner information."};
         const agentGenerationCompletedAt=Date.now();
@@ -162,7 +227,9 @@ export function createAgent({
           await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "tool_started", tool: call.name, status: "running", summary: `Started ${call.name}.` });
 
           try {
-            const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id });
+            executionSignal.throwIfAborted();
+            const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, signal: executionSignal });
+            executionSignal.throwIfAborted();
             execution.status = "completed";
             execution.result = result;
             toolResults.push({ id: call.id, output: { ok: true, result } });
@@ -190,10 +257,17 @@ export function createAgent({
 
       throw new AgentStepLimitError(`Agent exceeded the maximum of ${maxSteps} model steps.`);
       } catch (error) {
-        await storage.updateRun(run.id, ownerId, { status: "failed", error: error instanceof AgentStepLimitError || error instanceof AgentToolCallLimitError ? error.message : "Execution failed safely.", completedAt: new Date().toISOString() });
-        await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_failed", status: "failed", summary: error instanceof AgentStepLimitError || error instanceof AgentToolCallLimitError ? error.message : "Execution failed safely." });
+        const cancelled = error?.name === "AbortError";
+        const bounded = error instanceof AgentStepLimitError || error instanceof AgentToolCallLimitError || error instanceof AgentDeadlineError;
+        const summary = cancelled ? "Synchronous request stopped by the client." : bounded ? error.message : "Execution failed safely.";
+        await storage.updateRun(run.id, ownerId, { status: cancelled ? "cancelled" : "failed", error: summary, completedAt: new Date().toISOString() });
+        await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: cancelled ? "run_cancelled" : "run_failed", status: cancelled ? "cancelled" : "failed", summary });
         error.runId ||= run.id;
         throw error;
+      }
+      } finally {
+        clearTimeout(deadlineTimer);
+        signal?.removeEventListener("abort", abortFromRequest);
       }
     },
     tools: toolRegistry

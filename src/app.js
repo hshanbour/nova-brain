@@ -30,7 +30,7 @@ import { createTaskMigrationService } from "./autonomy/task-migration.js";
 import { createLocalWorkerHandoff } from "./autonomy/local-worker-handoff.js";
 import { createGithubWriteAttestation } from "./autonomy/github-write-attestation.js";
 import { createPostAttestationRecovery } from "./autonomy/post-attestation-recovery.js";
-import { createSelfDevelopmentService } from "./autonomy/self-development.js";
+import { createSelfDevelopmentService, isDurableSelfDevelopmentRequest } from "./autonomy/self-development.js";
 import { createSelfDevelopmentExpiryRecovery } from "./autonomy/self-development-expiry-recovery.js";
 import { registerSelfDevelopmentTools } from "./autonomy/self-development-tools.js";
 import { createSelfDevelopmentImplementationPlanner } from "./autonomy/self-development-implementation-planner.js";
@@ -115,12 +115,12 @@ export function createApp({
     if(!response.ok)throw new Error("Preview verification failed.");
     const value=await response.json();return{id:value.id||value.uid,url:value.url,status:value.readyState||value.state,target:value.target,sha:value.gitSource?.sha||value.meta?.githubCommitSha,branch:value.gitSource?.ref||value.meta?.githubCommitRef};
   };
-  const verifyRemote=async ({repository,branch,requiredAncestors}) => {
+  const verifyRemote=async ({repository,branch,requiredAncestors,signal}) => {
       const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"};
-      const response=await fetch(`https://api.github.com/repos/${repository}/commits/${encodeURIComponent(branch)}`,{headers});
+      const response=await fetch(`https://api.github.com/repos/${repository}/commits/${encodeURIComponent(branch)}`,{headers,signal});
       if(!response.ok)throw new Error("Remote branch verification failed.");
       const currentTip=(await response.json()).sha,ancestors={};
-      for(const required of requiredAncestors){const compared=await fetch(`https://api.github.com/repos/${repository}/compare/${required}...${currentTip}`,{headers});if(!compared.ok)throw new Error("Remote ancestry verification failed.");const value=await compared.json();ancestors[required]=["ahead","identical"].includes(value.status)&&value.merge_base_commit?.sha===required;}
+      for(const required of requiredAncestors){const compared=await fetch(`https://api.github.com/repos/${repository}/compare/${required}...${currentTip}`,{headers,signal});if(!compared.ok)throw new Error("Remote ancestry verification failed.");const value=await compared.json();ancestors[required]=["ahead","identical"].includes(value.status)&&value.merge_base_commit?.sha===required;}
       return{currentTip,ancestors};
     };
   const compareRemoteEvidence=createRemoteEvidenceComparator();
@@ -163,12 +163,17 @@ export function createApp({
     modelProvider,
     toolRegistry,
     maxSteps: config.maxAgentSteps,
+    deadlineMs: config.syncAgentDeadlineMs,
     maxToolCallsPerStep: config.maxToolCallsPerStep,
     historyLimit: config.conversationHistoryLimit,
     memoryLimit: config.memoryRetrievalLimit,
     verifySpeakerAssertion: speakerAssertions.verify,
     validateSpeakerProfile: speakerIdentity.isActiveProfile,
     validateAnonymousSpeaker: speakerIdentity.isActiveAnonymous,
+    routeDurableRequest: async ({message, context, signal}) => {
+      if (context?.voice === true || !isDurableSelfDevelopmentRequest(message)) return null;
+      return selfDevelopment.createTrustedIntake(message, {signal});
+    },
     logger,
   });
   const benchmarkProviders = createBenchmarkProviders({

@@ -11,6 +11,9 @@ test('console uses the canonical composer voice contract', async () => {
   ].map((path) => readFile(path, 'utf8')));
 
   assert.match(consoleJs, /createComposerVoiceControl/);
+  assert.match(consoleJs, /activeSendController = new AbortController|new AbortController\(\); activeSendController = controller/);
+  assert.match(consoleJs, /activeSendController\?\.abort\(\)/);
+  assert.match(consoleJs, /value \? "Stop" : "Send"/);
   assert.match(consoleJs, /composerVoiceWaveform/);
   assert.match(consoleJs, /window\.navigator\?\.mediaDevices/);
   assert.doesNotMatch(consoleJs, /requestAnimationFrame\.bind|cancelAnimationFrame\.bind/);

@@ -4,6 +4,7 @@ import { once } from "node:events";
 import {
   AgentStepLimitError,
   AgentToolCallLimitError,
+  AgentDeadlineError,
 } from "../agent/agent.js";
 import {
   ValidationError,
@@ -435,7 +436,15 @@ export function createApi({
           const input = validateAgentRequest(
             await readJsonBody(request, config.maxBodyBytes),
           );
-          const result = await agent.run({ ...input, requestId });
+          const requestController = new AbortController();
+          const abortRequest = () => requestController.abort(new DOMException("The client closed the synchronous request.", "AbortError"));
+          request.once?.("aborted", abortRequest);
+          let result;
+          try {
+            result = await agent.run({ ...input, requestId, signal: requestController.signal });
+          } finally {
+            request.removeListener?.("aborted", abortRequest);
+          }
           logger.info("Nova agent timing", {
             requestId,
             conversationId: result.conversationId,
@@ -2088,6 +2097,14 @@ export function createApi({
           error instanceof AgentToolCallLimitError
         ) {
           sendJson(response, 502, { error: error.message });
+          return;
+        }
+        if (error instanceof AgentDeadlineError) {
+          sendJson(response, 504, { error: error.message });
+          return;
+        }
+        if (error?.name === "AbortError") {
+          sendJson(response, 499, { error: "Synchronous request stopped." });
           return;
         }
 

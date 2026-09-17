@@ -5,8 +5,9 @@ import { readConfig } from "../src/config/env.js";
 test("mock provider remains the credential-free default", () => {
   const config = readConfig({});
   assert.equal(config.modelProvider, "mock");
-  assert.equal(config.maxAgentSteps, 5);
+  assert.equal(config.maxAgentSteps, 10);
   assert.equal(config.maxToolCallsPerStep, 4);
+  assert.equal(config.syncAgentDeadlineMs, 75_000);
 });
 
 test("OpenAI provider configuration requires credentials and a model", () => {
@@ -34,6 +35,8 @@ test("OpenAI provider configuration requires credentials and a model", () => {
 
 test("agent execution limits are bounded configuration values", () => {
   assert.throws(() => readConfig({ NOVA_BRAIN_MAX_STEPS: "0" }), /between 1 and 10/);
+  assert.throws(() => readConfig({ NOVA_BRAIN_MAX_STEPS: "11" }), /between 1 and 10/);
+  assert.throws(() => readConfig({ NOVA_BRAIN_SYNC_DEADLINE_MS: "90001" }), /between 10000 and 90000/);
   assert.throws(
     () => readConfig({ NOVA_BRAIN_MAX_TOOL_CALLS_PER_STEP: "11" }),
     /between 1 and 10/

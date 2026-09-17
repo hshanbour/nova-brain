@@ -219,6 +219,32 @@ test("agent endpoint validates and processes JSON input", async () => {
   );
 });
 
+test("agent endpoint propagates a disconnected request into synchronous cancellation", async () => {
+  let agentSignal;
+  const app = createApi({
+    agent: {
+      tools: { list() { return []; } },
+      run({signal}) {
+        agentSignal = signal;
+        return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      },
+    },
+    config: { allowedOrigins: [], maxBodyBytes: 64 * 1024 },
+    storage: { provider: "memory", durable: false },
+    initialize: async () => {},
+    ownerId: "owner",
+    logger: { info() {}, error() {} },
+  });
+  const req = request({ method: "POST", url: "/api/agent", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: "Stop this request" }) });
+  const res = response(), pending = app.handle(req, res);
+  while (!agentSignal) await new Promise((resolve) => setImmediate(resolve));
+  req.emit("aborted");
+  await pending;
+  assert.equal(agentSignal.aborted, true);
+  assert.equal(res.statusCode, 499);
+  assert.deepEqual(JSON.parse(res.body), { error: "Synchronous request stopped." });
+});
+
 test("API rejects malformed JSON", async () => {
   const app = createApp({ environment: {} });
   const res = response();
