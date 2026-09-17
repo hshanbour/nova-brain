@@ -240,7 +240,7 @@ export function createComposerVoiceControl(options = {}) {
     }
 
     if (errorTarget) errorTarget.textContent = lastError.message || '';
-    if (waveformTarget) waveformTarget.style.setProperty('--composer-voice-amplitude', String(amplitude || 0));
+    if (waveformTarget) waveformTarget.style.setProperty('--composer-voice-amplitude', `${Math.round((amplitude || 0) * 12)}px`);
   };
 
   controller = createVoiceInput({

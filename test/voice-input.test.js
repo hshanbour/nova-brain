@@ -80,3 +80,31 @@ test('explicit stop reaches complete when recognition ends', () => {
   assert.deepEqual(states, ['recording', 'processing', 'complete']);
   assert.equal(voice.getState(), 'complete');
 });
+
+test('samples microphone analyser levels and safely cleans up the meter', async () => {
+  let recognition;
+  let frame;
+  let cancelled = false;
+  let stopped = false;
+  let samples = 128;
+  const levels = [];
+  class Recognition { constructor() { recognition = this; } start() {} stop() { this.onend(); } }
+  class AudioContext {
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createAnalyser() { return { fftSize: 0, connect() {}, disconnect() {}, getByteTimeDomainData(values) { values.fill(samples); } }; }
+    close() {}
+  }
+  const voice = createVoiceInput({ dependencies: { SpeechRecognition: Recognition, mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop() { stopped = true; } }] }) }, AudioContext, requestAnimationFrame: (callback) => { frame = callback; return 1; }, cancelAnimationFrame: () => { cancelled = true; } }, onAmplitude: (level) => levels.push(level) });
+  voice.start('');
+  await new Promise((resolve) => setImmediate(resolve));
+  const silence = levels.at(-1);
+  samples = 160;
+  frame();
+  assert.equal(silence, 0);
+  assert.ok(levels.at(-1) > 0);
+  voice.stop();
+  assert.equal(voice.getState(), 'complete');
+  assert.equal(cancelled, true);
+  assert.equal(stopped, true);
+  assert.equal(recognition.lang, 'en-US');
+});

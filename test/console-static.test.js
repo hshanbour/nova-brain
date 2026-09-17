@@ -23,6 +23,8 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(html, /id="endVoiceButton"/);
   assert.match(html, /type="button"/);
   assert.match(css, /--composer-voice-amplitude/);
+  assert.match(css, /height:calc\(4px \+ var\(--composer-voice-amplitude\)\)/);
+  assert.doesNotMatch(css, /composer-voice-amplitude\) \* 12px/);
   assert.match(css, /\.workspace\[hidden\]\{display:none\}/);
   assert.match(consoleJs, /createVoiceV2/);
   assert.match(consoleJs, /createComposerVoiceControl/);
