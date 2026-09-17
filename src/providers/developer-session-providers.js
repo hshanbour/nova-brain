@@ -373,6 +373,36 @@ function mappedSession(payload, itemPage = null, artifactPage = null, evidenceOp
   };
 }
 
+function lifecycleItem(item) {
+  const type = boundedResultText(item?.type, 64);
+  if (!type || !["message", "command_execution", "function_call", "function_call_output"].includes(type)) return null;
+  const content = Array.isArray(item?.content) ? item.content : [];
+  const textValue = content.map((part) => typeof part?.text === "string" ? part.text : "").filter(Boolean).join("\n");
+  return {
+    id: boundedResultText(item?.id, 128),
+    turnId: boundedResultText(item?.turn_id, 128),
+    type,
+    role: boundedResultText(item?.role, 32),
+    status: boundedResultText(item?.status, 64),
+    phase: boundedResultText(item?.phase, 64),
+    createdAt: Number.isFinite(item?.created_at) ? item.created_at : null,
+    hasText: Boolean(textValue),
+    textBytes: textValue ? Buffer.byteLength(textValue, "utf8") : 0,
+    textSha256: textValue ? createHash("sha256").update(textValue).digest("hex") : null,
+  };
+}
+
+function lifecycleTurn(turn) {
+  return {
+    id: boundedResultText(turn?.id, 128),
+    status: boundedResultText(turn?.status, 64),
+    createdAt: Number.isFinite(turn?.created_at) ? turn.created_at : null,
+    startedAt: Number.isFinite(turn?.started_at) ? turn.started_at : null,
+    completedAt: Number.isFinite(turn?.completed_at) ? turn.completed_at : null,
+    error: boundedScalarRecord(turn?.error),
+  };
+}
+
 export function createAgentsApiDeveloperProvider({
   apiKey, agentId, agent, environmentTemplateId, environment, fetchImpl = globalThis.fetch,
   baseUrl = AGENTS_BASE_URL,
@@ -568,6 +598,29 @@ export function createAgentsApiDeveloperProvider({
     },
     async getStatus({ providerSessionId, afterAssistantItemId = null, requireFreshAssistantOutput = false }) {
       return retrieve(providerSessionId, { afterAssistantItemId, requireFreshAssistantOutput });
+    },
+    async inspectLifecycle({ providerSessionId }) {
+      if (!nonEmptyString(providerSessionId)) {
+        throw safeError({ stage: "agents_session_lifecycle_inspect", classification: "provider_input_invalid", payload: null, apiKey });
+      }
+      const encoded = encodeURIComponent(providerSessionId);
+      const [session, turnsPage, itemsPage] = await Promise.all([
+        request(`/agents/sessions/${encoded}`, "agents_session_retrieve"),
+        request(`/agents/sessions/${encoded}/turns?limit=${MAX_SESSION_ITEMS}&order=asc`, "agents_session_turns_list"),
+        request(`/agents/sessions/${encoded}/items?limit=${MAX_SESSION_ITEMS}&order=asc`, "agents_session_items_list"),
+      ]);
+      const turns = (Array.isArray(turnsPage?.data) ? turnsPage.data : []).slice(0, MAX_SESSION_ITEMS).map(lifecycleTurn);
+      const items = (Array.isArray(itemsPage?.data) ? itemsPage.data : []).slice(0, MAX_SESSION_ITEMS).map(lifecycleItem).filter(Boolean);
+      return {
+        providerSessionId: boundedResultText(session?.id, 128),
+        sessionStatus: boundedResultText(session?.status, 64),
+        environmentId: boundedResultText(session?.environment?.id || session?.environment_id, 128),
+        sessionError: boundedScalarRecord(session?.error),
+        turns,
+        items,
+        hasMoreTurns: turnsPage?.has_more === true,
+        hasMoreItems: itemsPage?.has_more === true,
+      };
     },
     async verifyArtifact({ providerSessionId, artifactId, expectedSha256, includeContent = false }) {
       if (!nonEmptyString(providerSessionId) || !nonEmptyString(artifactId)

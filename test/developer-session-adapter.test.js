@@ -46,6 +46,55 @@ test("approval round trip resumes the same persistent provider session and retur
   assert.deepEqual(result.events.at(-1).result, result.result);
 });
 
+test("lifecycle inspection exposes bounded turn and input identities without message content", async () => {
+  const secretInstruction = "restore console with private-token-value";
+  const provider = createAgentsApiDeveloperProvider({
+    apiKey: "test-api-key",
+    agentId: "agent-1",
+    environmentTemplateId: "env-1",
+    fetchImpl: async (url) => {
+      if (url.includes("/turns?")) return Response.json({ data: [
+        { id: "turn-initial", status: "failed", created_at: 1, started_at: 2, completed_at: 3, error: { code: "internal_error", message: "Internal failure" } },
+        { id: "turn-restoration", status: "queued", created_at: 4, started_at: null, completed_at: null, error: null },
+      ], has_more: false });
+      if (url.includes("/items?")) return Response.json({ data: [
+        { id: "input-restoration", turn_id: "turn-restoration", type: "message", role: "user", status: "completed", phase: "input", created_at: 4, content: [{ type: "input_text", text: secretInstruction }] },
+        { id: "reasoning-private", turn_id: "turn-restoration", type: "reasoning", summary: [{ text: "must not escape" }] },
+      ], has_more: false });
+      return Response.json({ id: "provider-lifecycle", status: "idle", environment: { id: "env-live" } });
+    },
+  });
+  const lifecycle = await provider.inspectLifecycle({ providerSessionId: "provider-lifecycle" });
+  assert.equal(lifecycle.providerSessionId, "provider-lifecycle");
+  assert.equal(lifecycle.turns[1].id, "turn-restoration");
+  assert.equal(lifecycle.turns[1].status, "queued");
+  assert.equal(lifecycle.items[0].id, "input-restoration");
+  assert.equal(lifecycle.items[0].turnId, "turn-restoration");
+  assert.equal(lifecycle.items[0].textBytes, Buffer.byteLength(secretInstruction));
+  assert.equal(lifecycle.items[0].textSha256, createHash("sha256").update(secretInstruction).digest("hex"));
+  assert.equal(lifecycle.items.some((item) => item.id === "reasoning-private"), false);
+  assert.doesNotMatch(JSON.stringify(lifecycle), /private-token-value|must not escape/);
+});
+
+test("adapter lifecycle inspection remains read-only and rejects provider identity substitution", async () => {
+  const store = persistentTestStore();
+  const provider = {
+    async start() { return { providerSessionId: "provider-bound", status: "idle", changedPaths: [] }; },
+    async inspectLifecycle() { return { providerSessionId: "provider-bound", sessionStatus: "idle", turns: [], items: [] }; },
+  };
+  const api = adapter(provider, store);
+  await api.startDeveloperSession(microphoneDeveloperRequest());
+  const before = await store.get("nova-session-1");
+  const lifecycle = await api.inspectDeveloperSessionLifecycle({ sessionId: "nova-session-1" });
+  assert.equal(lifecycle.providerSessionId, "provider-bound");
+  assert.deepEqual(await store.get("nova-session-1"), before);
+  provider.inspectLifecycle = async () => ({ providerSessionId: "provider-replacement", turns: [], items: [] });
+  await assert.rejects(
+    () => api.inspectDeveloperSessionLifecycle({ sessionId: "nova-session-1" }),
+    (error) => error instanceof DeveloperSessionError && error.code === "developer_provider_session_mismatch",
+  );
+});
+
 test("a new adapter instance resumes the provider session persisted by the first instance", async () => {
   const provider = createDeterministicDeveloperProvider([
     { providerSessionId: "durable-agents-session", status: "requires_action", approval: { action: "shell" }, changedPaths: [] },

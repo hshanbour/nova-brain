@@ -452,6 +452,7 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
       });
     },
     async get(sessionId) { assertPreview(); return adapterFor(passiveProvider()).getDeveloperSession({ sessionId }); },
+    async inspectLifecycle(sessionId) { assertPreview(); await boundTask(); await assertBoundRealSession(sessionId); return adapterFor(passiveProvider()).inspectDeveloperSessionLifecycle({ sessionId }); },
     async reconcile(sessionId) { assertPreview(); await boundTask(); await assertBoundRealSession(sessionId); return adapterFor(passiveProvider()).reconcileDeveloperSession({ sessionId }); },
     async materializeDependencies(sessionId, input) {
       assertPreview();

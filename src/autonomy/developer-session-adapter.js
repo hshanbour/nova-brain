@@ -340,6 +340,19 @@ export function createDeveloperSessionAdapter({ providers, sessionStore, default
       }
     },
 
+    async inspectDeveloperSessionLifecycle({ sessionId } = {}) {
+      const record = await load(sessionId);
+      const provider = providers[record.provider];
+      if (!provider || typeof provider.inspectLifecycle !== "function") {
+        fail("developer_provider_unavailable", "The developer provider does not support lifecycle inspection.");
+      }
+      const lifecycle = await provider.inspectLifecycle({ providerSessionId: record.providerSessionId });
+      if (lifecycle?.providerSessionId !== record.providerSessionId) {
+        fail("developer_provider_session_mismatch", "Lifecycle evidence does not belong to the persistent provider session.");
+      }
+      return structuredClone(lifecycle);
+    },
+
     async cancelDeveloperSession({ sessionId } = {}) {
       const record = await load(sessionId);
       if (TERMINAL.has(record.status)) return publicSession(record);

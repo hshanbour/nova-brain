@@ -90,9 +90,9 @@ function serviceFixture({ providerScript, providerOverride } = {}) {
   return { storage, provider, configurations, service };
 }
 
-function request({ body, authorized = true, url = "/api/admin/developer-sessions/real/microphone/start" }) {
+function request({ body = {}, authorized = true, method = "POST", url = "/api/admin/developer-sessions/real/microphone/start" }) {
   const stream = Readable.from([JSON.stringify(body)]);
-  stream.method = "POST";
+  stream.method = method;
   stream.url = url;
   stream.headers = { "content-type": "application/json", ...(authorized ? { authorization: `Bearer ${ADMIN}` } : {}) };
   return stream;
@@ -248,6 +248,27 @@ test("protected original-console recovery route is authenticated and distinct", 
   assert.equal(accepted.statusCode, 201);
   assert.equal(accepted.json.session.id, "original-console-recovery");
   assert.equal(calls.length, 1);
+});
+
+test("protected lifecycle diagnostic is read-only, authenticated, and session-bound", async () => {
+  const calls = [];
+  const service = {
+    async inspectLifecycle(sessionId) {
+      calls.push(sessionId);
+      return { providerSessionId: "provider-bound", sessionStatus: "idle", turns: [{ id: "turn-1", status: "queued" }], items: [] };
+    },
+  };
+  const application = api(service);
+  const url = "/api/admin/developer-sessions/real/nova-session-1/lifecycle";
+  const denied = response();
+  await application.handle(request({ authorized: false, method: "GET", url }), denied);
+  assert.equal(denied.statusCode, 401);
+  assert.equal(calls.length, 0);
+  const accepted = response();
+  await application.handle(request({ method: "GET", url }), accepted);
+  assert.equal(accepted.statusCode, 200);
+  assert.deepEqual(calls, ["nova-session-1"]);
+  assert.equal(accepted.json.lifecycle.turns[0].status, "queued");
 });
 
 test("real start materializes official inline environment files and pre-agent integrity verification", async () => {
