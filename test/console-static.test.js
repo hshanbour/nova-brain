@@ -26,6 +26,8 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(css, /--composer-voice-amplitude/);
   assert.match(css, /#composerVoiceWaveform\[data-voice-state="recording"\]\{display:flex\}/);
   assert.match(css, /inset:50% 112px auto 24px/);
+  assert.match(css, /#composerVoiceWaveform\[data-voice-state="recording"\]\{padding:0 18px/);
+  assert.match(css, /textarea\{visibility:hidden\}/);
   assert.match(css, /height:calc\(4px \+ var\(--composer-voice-amplitude\)\)/);
   assert.doesNotMatch(css, /composer-voice-amplitude\) \* 12px/);
   assert.match(css, /\.workspace\[hidden\]\{display:none\}/);
