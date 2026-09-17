@@ -16,12 +16,14 @@ test('console uses the canonical composer voice contract', async () => {
   assert.doesNotMatch(consoleJs, /requestAnimationFrame\.bind|cancelAnimationFrame\.bind/);
   assert.match(voice, /recording.*processing.*complete.*error/s);
   assert.match(html, /id="composerVoiceWaveform"/);
+  assert.match(html, /class="app-shell"/);
   assert.match(html, /href="#chat"/);
   assert.match(html, /href="#memory"/);
-  assert.match(html, /href="#voice-mode"/);
-  assert.match(html, /href="#profile"/);
+  assert.match(html, /id="voiceModeButton"/);
+  assert.match(html, /id="endVoiceButton"/);
   assert.match(html, /type="button"/);
   assert.match(css, /--composer-voice-amplitude/);
   assert.match(css, /\.workspace\[hidden\]\{display:none\}/);
-  assert.doesNotMatch(consoleJs, /requestSubmit|sendMessage/);
+  assert.match(consoleJs, /createVoiceV2/);
+  assert.match(consoleJs, /createComposerVoiceControl/);
 });
