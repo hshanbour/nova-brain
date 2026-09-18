@@ -23,6 +23,6 @@ export async function runPersistentWorkerService({baseUrl,repositoryRoot,interva
     while(!shouldStop()&&!authenticated){attempt+=1;try{await bounded(client.request("/api/admin/worker/auto-dispatch/next",{workerId:worker.workerId,branch:"feat/nova-brain-mvp-foundation"}),authTimeoutMs,"network_timeout");authenticated=true;await report({state:"authenticated",workerId:worker.workerId,lastSuccessfulPoll:new Date().toISOString(),code:null});}catch(error){if(fatalAuth(error)){await report({state:"fatal",code:safeCode(error),workerId:worker.workerId});return{started:false,reason:safeCode(error)};}await report({state:"retrying",code:safeCode(error),workerId:worker.workerId});if(!shouldStop())await delay(Math.min(30000,Math.max(1000,intervalMs*attempt)));}}
     if(!authenticated)return{started:true,stopped:true};
     if(probeOnly){let iterations=0;while(!shouldStop()&&iterations<maxIterations){iterations+=1;await report({state:iterations===1?"polling":"idle",workerId:worker.workerId,lastSuccessfulPoll:new Date().toISOString(),iterations});if(!shouldStop()&&iterations<maxIterations)await delay(intervalMs);}return{started:true,probeOnly:true,iterations};}
-    return runPersistentWorkerLoop({worker,intervalMs,delay,shouldStop,maxIterations,onState:report});
+    return await runPersistentWorkerLoop({worker,intervalMs,delay,shouldStop,maxIterations,onState:report});
   }finally{credentials?.clear?.();await report({state:"stopped"}).catch(()=>{});await instance?.release?.();}
 }
