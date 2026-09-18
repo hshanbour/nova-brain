@@ -183,14 +183,14 @@ test("review hash binds the exact commit file set and rejects unexpected files",
     await writeFile(join(f.root, "allowed.md"), "allowed\n");
     await writeFile(join(f.root, "unexpected.md"), "unexpected\n");
     const review = await f.registry.execute("repo_diff", {
-      paths: ["allowed.md"],
+      paths: ["alpha.js", "allowed.md"],
     });
     await assert.rejects(
       () =>
         f.registry.execute("git_commit", {
           branch: BRANCH,
           message: "bad",
-          paths: ["allowed.md", "unexpected.md"],
+          paths: ["alpha.js", "allowed.md", "unexpected.md"],
           reviewedChangeSet: review.reviewedChangeSet,
         }),
       (e) => e.code === "review_mismatch",
@@ -198,7 +198,7 @@ test("review hash binds the exact commit file set and rejects unexpected files",
     const committed = await f.registry.execute("git_commit", {
       branch: BRANCH,
       message: "reviewed",
-      paths: ["allowed.md"],
+      paths: ["alpha.js", "allowed.md"],
       reviewedChangeSet: review.reviewedChangeSet,
     });
     assert.deepEqual(committed.files, ["allowed.md"]);
@@ -229,6 +229,46 @@ test("commit review rejects unreviewed files and accepts the exact immutable com
     });
     assert.equal(review.commitSha, sha);
     assert.match(review.diff, /\+one/);
+    assert.deepEqual(review.files, ["one.md"]);
+    assert.deepEqual(review.reviewedChangeSet.allowedPaths, ["one.md"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("commit review derives exact coverage from the commit within the approved planner scope", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(join(f.root, "one.md"), "one\n");
+    await run("git", ["add", "one.md"], { cwd: f.root });
+    await run("git", ["commit", "-m", "one"], { cwd: f.root });
+    const sha = (await run("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
+    const review = await f.registry.execute("repo_review_commit", {
+      commitSha: sha,
+      paths: ["alpha.js", "one.md"],
+    });
+    assert.deepEqual(review.approvedPaths, ["alpha.js", "one.md"]);
+    assert.deepEqual(review.files, ["one.md"]);
+    assert.deepEqual(review.reviewedChangeSet.allowedPaths, ["one.md"]);
+    assert.deepEqual(review.reviewedChangeSet.entries.map((entry) => entry.path), ["one.md"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("commit review reports exact unexpected files when planner scope omits a changed path", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(join(f.root, "one.md"), "one\n");
+    await writeFile(join(f.root, "two.md"), "two\n");
+    await run("git", ["add", "one.md", "two.md"], { cwd: f.root });
+    await run("git", ["commit", "-m", "two files"], { cwd: f.root });
+    const sha = (await run("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
+    await assert.rejects(
+      () => f.registry.execute("repo_review_commit", { commitSha: sha, paths: ["one.md"] }),
+      (error) => error.code === "unreviewed_commit_file" &&
+        JSON.stringify(error.safeDiagnostics.unexpectedPaths) === JSON.stringify(["two.md"]),
+    );
   } finally {
     await f.close();
   }

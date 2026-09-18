@@ -861,15 +861,22 @@ export function registerHandsTools(
           .split(/\r?\n/)
           .filter(Boolean)
           .sort();
-        if (JSON.stringify(files) !== JSON.stringify(allowed))
+        if (!files.length)
+          fail(
+            "commit_review_failed",
+            "The exact commit does not contain a reviewable change-set.",
+          );
+        for (const path of files) safe(root, path);
+        const unexpected = files.filter((path) => !allowed.includes(path));
+        if (unexpected.length)
           fail(
             "unreviewed_commit_file",
             "Commit contains files outside the bounded review.",
-            { files },
+            { files, allowedPaths: allowed, unexpectedPaths: unexpected },
           );
         const numstat = await gitCommand(
           root,
-          ["diff", "--numstat", firstParentSha || `${commitSha}^`, commitSha, "--", ...allowed],
+          ["diff", "--numstat", firstParentSha || `${commitSha}^`, commitSha, "--", ...files],
           { runner: commandRunner },
         );
         if (
@@ -883,13 +890,13 @@ export function registerHandsTools(
           );
         const shown = await gitCommand(
           root,
-          ["diff", "--find-renames", firstParentSha || `${commitSha}^`, commitSha, "--", ...allowed],
+          ["diff", "--find-renames", firstParentSha || `${commitSha}^`, commitSha, "--", ...files],
           { runner: commandRunner },
         );
         if (shown.exitCode)
           fail("commit_review_failed", "Exact commit review failed.");
         const entries = [];
-        for (const path of allowed) {
+        for (const path of files) {
           const blob = await gitCommand(
             root,
             ["rev-parse", `${commitSha}:${path}`],
@@ -901,7 +908,7 @@ export function registerHandsTools(
             contentHash: blob.exitCode ? null : blob.stdout.trim(),
           });
         }
-        const manifest = { allowedPaths: allowed, entries, commitSha, ...(firstParentSha ? { firstParentSha, secondParentSha } : {}) },
+        const manifest = { allowedPaths: files, entries, commitSha, ...(firstParentSha ? { firstParentSha, secondParentSha } : {}) },
           reviewHash = createHash("sha256")
             .update(JSON.stringify(manifest))
             .digest("hex");
@@ -912,6 +919,7 @@ export function registerHandsTools(
             exitCode: 0,
             commitSha,
             files,
+            approvedPaths: allowed,
             diff: shown.stdout.slice(0, 100_000),
             truncated: shown.stdout.length > 100_000,
             reviewedChangeSet: { ...manifest, reviewHash },
@@ -1471,7 +1479,7 @@ process.stdout.write(JSON.stringify({resolved:true,packages}));`;
             ok: true,
             commitSha: sha,
             branch: requested,
-            files: paths,
+            files: committed,
             reviewHash: reviewedChangeSet?.reviewHash,
           },
           context,
