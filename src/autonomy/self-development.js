@@ -631,9 +631,13 @@ export function createSelfDevelopmentService({
         { retry: "safe_read" },
       );
     const files = request.scope.patch.files,
+      proposedPaths = new Set(files.map((file) => file.path)),
+      evidence =
+        request.intent === "implementation" ? evidenceCandidates(request) : null,
       candidates =
-        request.intent === "implementation" && !files.length
-          ? evidenceCandidates(request)
+        evidence &&
+        (!files.length || evidence.every((path) => proposedPaths.has(path)))
+          ? evidence
           : null;
     if (candidates) {
       appendEvidenceBoundImplementation({
@@ -655,7 +659,7 @@ export function createSelfDevelopmentService({
       "Plan stays within declared scope",
       { retry: "new_evidence_required" },
     );
-    if (files.length) {
+    if (files.length && !candidates) {
       if (request.riskLevel === "high")
         add(
           "authorize_protected_change",

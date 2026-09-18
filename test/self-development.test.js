@@ -363,6 +363,31 @@ test("safe implementation and test candidates use the evidence-bound worker flow
     true,
   );
 });
+test("caller-proposed patch bytes cannot bypass the evidence-bound implementation planner", async () => {
+  const f = await fixture(),
+    created = await f.service.create({
+      userGoal: "Implement a harmless console improvement",
+      scope: {
+        paths: ["assets/console.js"],
+        searchTerms: ["console"],
+        patch: { files: [
+          { path: "assets/console.js", content: "caller supplied source bytes" },
+          { path: "test/console-static.test.js", content: "caller supplied test bytes" },
+        ] },
+        focusedTests: ["test/console-static.test.js"],
+      },
+    }),
+    types = created.plan.map((step) => step.type),
+    planner = created.plan.find((step) => step.type === "plan_implementation"),
+    apply = created.plan.find((step) => step.type === "apply_patch");
+  assert.equal(types.includes("plan_patch"), false);
+  assert.equal(types.filter((type) => type === "apply_patch").length, 1);
+  assert.equal(planner.input.tool, "self_development_plan_implementation");
+  assert.deepEqual(planner.input.arguments.candidatePaths, ["assets/console.js", "test/console-static.test.js"]);
+  assert.equal(apply.input.arguments.files, "$IMPLEMENTATION_FILES");
+  assert.equal(JSON.stringify(created.plan).includes("caller supplied source bytes"), false);
+  assert.equal(JSON.stringify(created.plan).includes("caller supplied test bytes"), false);
+});
 test("unsafe or incomplete candidates fail closed at implementation scope", async () => {
   const f = await fixture(),
     created = await f.service.create({
