@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { ApprovalRequiredError } from "../policy/action-policy.js";
-import {activeContinuationExceeded,assertActiveImplementationPlan,planLifecycleMetadata,taskRuntimeWindow,lifecycleHash} from "./self-development-plan-lifecycle.js";
+import {activeContinuationExceeded,assertActiveImplementationPlan,canonicalContentHash,planLifecycleMetadata,taskRuntimeWindow,lifecycleHash} from "./self-development-plan-lifecycle.js";
 import {isExactApprovedDelivery} from "./auto-dispatch.js";
 import {PLANNING_SCOPE_RECOVERY_CLASS,validatePlanningScopeReadEvidence} from "./planning-scope-recovery.js";
 import {EXECUTION_SCOPE_RECOVERY_CLASS,validateExecutionScopeEvidence} from "./execution-scope-recovery.js";
@@ -36,6 +36,7 @@ export const STEP_CAPABILITIES = Object.freeze({
   run_full_tests: "test_local",
   inspect_diff: "repo_read_remote",
   review_commit: "repo_read_remote",
+  review_no_change: "reasoning",
   commit: "repo_mutate_local",
   integrate_commit: "repo_mutate_local",
   request_push_approval: "github_write",
@@ -275,12 +276,39 @@ export function createWorkerRuntime({
       ),
       hasBoundPlan =
         Boolean(task.metadata?.selfDevelopmentImplementationPlan) ||
+        Boolean(task.metadata?.selfDevelopmentNoChangeCandidate) ||
         Boolean(task.metadata?.selfDevelopment?.scope?.patch?.files?.length),
       review = lifecycle.findLast(
         (item) =>
-          item.stepType === "review_commit" && item.status === "completed",
+          ["review_commit", "review_no_change"].includes(item.stepType) && item.status === "completed",
       ),
-      explicitReviewedNoChange = review?.result?.noChangeRequired === true,
+      reviewed = review?.result?.reviewedNoChange,
+      candidate = task.metadata?.selfDevelopmentNoChangeCandidate,
+      reviewedFocused = lifecycle.find((item) => item.stepId === reviewed?.focusedStepId),
+      reviewedFull = lifecycle.find((item) => item.stepId === reviewed?.fullStepId),
+      explicitReviewedNoChange = Boolean(
+        review?.stepType === "review_no_change" &&
+        review?.result?.noChangeRequired === true &&
+        reviewed?.version === 1 &&
+        candidate?.version === 1 &&
+        reviewed.taskId === task.id &&
+        reviewed.currentCommit === task.currentCommit &&
+        reviewed.decisionHash === candidate.decisionHash &&
+        latestPlanner?.result?.noChangeCandidate?.decisionHash === candidate.decisionHash &&
+        lifecycleHash(reviewed.evidenceEntries) === lifecycleHash(candidate.evidenceEntries) &&
+        reviewedFocused?.stepType === "run_focused_tests" && reviewedFocused.status === "completed" &&
+        reviewedFull?.stepType === "run_full_tests" && reviewedFull.status === "completed" &&
+        !lifecycle.some((item) => ["apply_patch", "commit", "push", "deploy_preview"].includes(item.stepType) || item.result?.mutationApplied === true) &&
+        reviewed.reviewHash === lifecycleHash({
+          version: reviewed.version,
+          taskId: reviewed.taskId,
+          currentCommit: reviewed.currentCommit,
+          decisionHash: reviewed.decisionHash,
+          evidenceEntries: reviewed.evidenceEntries,
+          focusedStepId: reviewed.focusedStepId,
+          fullStepId: reviewed.fullStepId,
+        }),
+      ),
       missing = [];
     if (!hasBoundPlan) missing.push("implementation_plan");
     if (!completed("apply_patch") && !explicitReviewedNoChange)
@@ -296,7 +324,8 @@ export function createWorkerRuntime({
     if (!missing.length) return null;
     const scopeEmpty =
       !task.metadata?.selfDevelopment?.scope?.patch?.files?.length &&
-      !task.metadata?.selfDevelopmentImplementationPlan;
+      !task.metadata?.selfDevelopmentImplementationPlan &&
+      !task.metadata?.selfDevelopmentNoChangeCandidate;
     return {
       code: scopeEmpty
         ? "implementation_scope_required"
@@ -306,6 +335,34 @@ export function createWorkerRuntime({
         : `Implementation completion evidence is incomplete: ${missing.join(", ")}.`,
       missing,
     };
+  }
+  async function completeNoChangePlanning(task, step, result) {
+    const candidate=result?.noChangeCandidate, durable=await storage.listAutonomySteps(task.id), reads=new Map();
+    for(const item of durable.filter(item=>item.stepType==="read_files"&&item.status==="completed")){
+      const path=item.result?.path||item.input?.arguments?.path;
+      if(path&&typeof item.result?.content==="string"&&!item.result?.truncated)reads.set(path,{content:item.result.content,stepId:item.stepId});
+    }
+    const entries=Array.isArray(candidate?.evidenceEntries)?candidate.evidenceEntries:[],request=task.metadata?.selfDevelopment||{},expectedPaths=[...new Set([...(request.scope?.paths||[]),...(request.scope?.focusedTests||[])])].sort(),mappedCriteria=new Set((candidate?.acceptanceMapping||[]).map(item=>item.criterion));
+    const valid=candidate?.version===1&&candidate.taskId===task.id&&candidate.currentCommit===task.currentCommit&&candidate.intent==="implementation"&&candidate.goalHash===lifecycleHash(JSON.stringify(request.userGoal))&&candidate.decisionHash===lifecycleHash({...candidate,decisionHash:undefined})&&entries.length>=2&&JSON.stringify(entries.map(item=>item.path).sort())===JSON.stringify(expectedPaths)&&entries.some(item=>!item.path.startsWith("test/"))&&entries.some(item=>item.path.startsWith("test/"))&&entries.every(item=>reads.get(item.path)?.stepId===item.readStepId&&canonicalContentHash(reads.get(item.path)?.content)===item.contentHash)&&Array.isArray(candidate.focusedTests)&&candidate.focusedTests.length>0&&candidate.focusedTests.every(test=>test.kind==="existing"&&entries.some(item=>item.path===test.path))&&Array.isArray(candidate.acceptanceMapping)&&candidate.acceptanceMapping.length>0&&(request.acceptanceCriteria||[]).every(criterion=>mappedCriteria.has(criterion));
+    if(!valid)throw new WorkerError("implementation_evidence_incomplete","The no-change proposal is not bound to complete current implementation evidence.",{retryable:false});
+    const base=task.currentStep+1, following=task.metadata.steps.slice(task.currentStep+1), summary=following.find(item=>item.type==="summarize")||{type:"summarize",input:{summary:"Nova self-development task completed with independently reviewed no-change evidence."}}, templates=[
+      {type:"run_focused_tests",input:{tool:"test_run",arguments:{files:candidate.focusedTests.map(test=>test.path),timeoutMs:180000}},idempotencyIdentity:`no-change:focused:${candidate.decisionHash}`},
+      {type:"run_full_tests",input:{tool:"test_run_full",arguments:{timeoutMs:180000}},idempotencyIdentity:`no-change:full:${candidate.decisionHash}`},
+      {type:"review_no_change",input:{decisionHash:candidate.decisionHash},idempotencyIdentity:`no-change:review:${candidate.decisionHash}`},
+      {...summary,idempotencyIdentity:`no-change:summary:${candidate.decisionHash}`},
+    ];
+    await storage.updateAutonomyStep(task.id,step.stepId,{status:"completed",result:redact(result),completedAt:iso(clock)});
+    await storage.updateAutonomyTask(task.id,ownerId,{status:"queued",currentStep:base,currentPhase:"plan_implementation",nextRunAt:iso(clock),checkpoint:{...task.checkpoint,completedSteps:[...(task.checkpoint?.completedSteps||[]),step.stepId],pendingStep:null,latestResult:redact(result)},metadata:{...task.metadata,steps:[...task.metadata.steps.slice(0,base),...templates],selfDevelopmentNoChangeCandidate:redact(candidate),requiredCapability:"test_local"},blockedReason:null,errorCode:null});
+    await activity(task,"self_development_no_change_verification_scheduled","queued","Bounded tests and independent no-change review scheduled.",{stepId:step.stepId,decisionHash:candidate.decisionHash,evidencePaths:entries.map(item=>item.path)});
+  }
+  async function reviewNoChange(task, step, plan) {
+    const candidate=task.metadata?.selfDevelopmentNoChangeCandidate, durable=await storage.listAutonomySteps(task.id), planner=durable.findLast(item=>item.stepType==="plan_implementation"&&item.status==="completed"&&item.result?.noChangeCandidate?.decisionHash===candidate?.decisionHash), plannerOrdinal=Number.parseInt(planner?.stepId||"",10), after=durable.filter(item=>Number.parseInt(item.stepId,10)>plannerOrdinal), focused=after.findLast(item=>item.stepType==="run_focused_tests"&&item.status==="completed"), full=after.findLast(item=>item.stepType==="run_full_tests"&&item.status==="completed"), verified=item=>item?.result?.ok===true&&(item.result.exitCode===undefined||item.result.exitCode===0)&&Number(item.result?.failed||item.result?.counts?.failed||0)===0, mutated=after.some(item=>["apply_patch","commit","push","deploy_preview"].includes(item.stepType)||item.result?.mutationApplied===true), decisionExact=plan.required_inputs?.decisionHash===candidate?.decisionHash;
+    if(!planner||!verified(focused)||!verified(full)||mutated||!decisionExact||task.metadata?.selfDevelopment?.intent!=="implementation")throw new WorkerError("implementation_evidence_incomplete","Independent no-change review requires the exact plan, successful verification, and a mutation-free lifecycle.",{retryable:false});
+    const reviewedNoChange={version:1,taskId:task.id,currentCommit:task.currentCommit,decisionHash:candidate.decisionHash,evidenceEntries:candidate.evidenceEntries,focusedStepId:focused.stepId,fullStepId:full.stepId};
+    reviewedNoChange.reviewHash=lifecycleHash(reviewedNoChange);
+    const result={ok:true,noChangeRequired:true,reviewedNoChange};
+    await complete(task,step,result,"queued",iso(clock));
+    return result;
   }
   async function tick({ idempotencyKey = randomUUID() } = {}) {
     const task = await storage.claimAutonomyTask({
@@ -525,6 +582,10 @@ export function createWorkerRuntime({
           plan.required_inputs.summary || "Task completed.",
         );
       }
+      if(type==="review_no_change"){
+        const result=await reviewNoChange(task,step,plan);
+        return{claimed:true,status:"queued",stepType:type,result:redact(result)};
+      }
       if (type === "retry_repair") {
         const limit = Math.max(
           1,
@@ -562,6 +623,7 @@ export function createWorkerRuntime({
         approvalId: task.approvalState?.approvalId,
       });
       if(["plan_implementation","plan_repair"].includes(type)&&result?.evidenceExpansion){await completeEvidenceExpansion(task,step,plan,result);return{claimed:true,status:"queued",stepType:type,result:redact(result)};}
+      if(type==="plan_implementation"&&result?.noChangeCandidate){await completeNoChangePlanning(task,step,result);return{claimed:true,status:"queued",stepType:type,result:redact(result)};}
       await complete(task, step, result, approvedDelivery?"completed":"queued", approvedDelivery?null:iso(clock));
       return {
         claimed: true,

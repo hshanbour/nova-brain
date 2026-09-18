@@ -139,6 +139,16 @@ test("canonical valid structured output produces the Hands replacement represent
     strict: true,
   });
 });
+test("an unchanged evidence-bound plan becomes a bounded no-change candidate",async()=>{
+  const output=valid();output.files[0].content="old doc";
+  const f=await fixture([output]),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA});
+  assert.equal(result.implementationPlan,undefined);
+  assert.equal(result.noChangeCandidate.intent,"implementation");
+  assert.deepEqual(result.noChangeCandidate.evidenceEntries.map(item=>item.path),[DOC,TEST]);
+  assert.ok(result.noChangeCandidate.evidenceEntries.every(item=>/^[a-f0-9]{64}$/.test(item.contentHash)&&item.readStepId));
+  assert.deepEqual(result.noChangeCandidate.focusedTests,[{path:TEST,kind:"existing"}]);
+  assert.match(result.noChangeCandidate.decisionHash,/^[a-f0-9]{64}$/);
+});
 test("planner and Hands share the canonical versioned patch bridge contract", () => {
   const registry=createToolRegistry();registerHandsTools(registry,{root:process.cwd(),environment:{VERCEL:"",NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH}});
   const patch=registry.list().find((tool)=>tool.name==="repo_apply_patch");

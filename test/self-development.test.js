@@ -14,7 +14,7 @@ import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { registerSelfDevelopmentTools } from "../src/autonomy/self-development-tools.js";
 import { ApprovalRequiredError } from "../src/policy/action-policy.js";
 import { createAgent } from "../src/agent/agent.js";
-import {bindImplementationPlan,planLifecycleMetadata} from "../src/autonomy/self-development-plan-lifecycle.js";
+import {bindImplementationPlan,canonicalContentHash,lifecycleHash,planLifecycleMetadata} from "../src/autonomy/self-development-plan-lifecycle.js";
 
 const OWNER = "owner",
   SHA = "a".repeat(40),
@@ -281,6 +281,38 @@ test("implementation completion guard rejects missing lifecycle evidence", async
   assert.equal(task.errorCode, "implementation_evidence_incomplete");
   assert.match(task.resultSummary, /mutation_apply/);
   assert.match(task.resultSummary, /review/);
+});
+test("valid evidence-bound independently reviewed no-change lifecycle completes without mutation or delivery",async()=>{
+  let f;
+  const contents={"docs/no-change.md":"already satisfied\n","test/no-change.test.js":"import test from 'node:test';\ntest('already satisfied',()=>{});\n"};
+  f=await fixture({execute:async(name,args)=>{
+    if(name==="repo_list")return{ok:true,files:Object.keys(contents)};
+    if(name==="repo_search")return{ok:true,matches:Object.keys(contents)};
+    if(name==="repo_read")return{ok:true,path:args.path,content:contents[args.path],truncated:false};
+    if(name==="self_development_plan_implementation"){
+      const steps=await f.storage.listAutonomySteps(args.taskId);
+      const entries=Object.keys(contents).map(path=>{const read=steps.findLast(step=>step.stepType==="read_files"&&(step.result?.path||step.input?.arguments?.path)===path);return{path,contentHash:canonicalContentHash(contents[path]),readStepId:read.stepId};});
+      const base={version:1,taskId:args.taskId,currentCommit:SHA,intent:"implementation",summary:"The requested behavior is already present.",goalHash:lifecycleHash(JSON.stringify("Implement the already satisfied bounded behavior")),evidenceHash:lifecycleHash(entries.map(({path,contentHash})=>({path,contentHash}))),evidenceEntries:entries,focusedTests:[{path:"test/no-change.test.js",kind:"existing"}],acceptanceMapping:[{criterion:"Already-satisfied behavior remains verified",files:["docs/no-change.md"]},{criterion:"No unrelated files change",files:["docs/no-change.md"]},{criterion:"Preview remains the only deployment target",files:["docs/no-change.md"]}],plannerAttempt:1};
+      return{ok:true,noChangeCandidate:{...base,decisionHash:lifecycleHash(base)}};
+    }
+    if(name==="test_run"||name==="test_run_full")return{ok:true,exitCode:0,passed:1,failed:0};
+    throw new Error(`unexpected tool ${name}`);
+  }});
+  const created=await f.service.create({userGoal:"Implement the already satisfied bounded behavior",acceptanceCriteria:["Already-satisfied behavior remains verified","No unrelated files change","Preview remains the only deployment target"],scope:{paths:Object.keys(contents),searchTerms:["already satisfied"],patch:{files:[]},focusedTests:["test/no-change.test.js"]}});
+  for(let index=0;index<20&&!new Set(["completed","failed","blocked"]).has((await f.runtime.get(created.task.id)).status);index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`no-change-${index}`});
+  const task=await f.runtime.get(created.task.id),steps=await f.runtime.steps(created.task.id),review=steps.find(step=>step.stepType==="review_no_change");
+  assert.equal(task.status,"completed",JSON.stringify({errorCode:task.errorCode,resultSummary:task.resultSummary,steps:steps.map(({stepId,stepType,status,errorCode,result})=>({stepId,stepType,status,errorCode,result}))}));
+  assert.equal(review.result.noChangeRequired,true);
+  assert.match(review.result.reviewedNoChange.reviewHash,/^[a-f0-9]{64}$/);
+  assert.equal(steps.some(step=>["apply_patch","commit","push","deploy_preview"].includes(step.stepType)),false);
+  assert.deepEqual(steps.filter(step=>step.stepType.includes("test")).map(step=>step.status),["completed","completed"]);
+});
+test("a bare no-change boolean cannot satisfy the implementation completion invariant",async()=>{
+  const f=await fixture(),created=await f.service.create(input()),summary=created.plan.find(step=>step.type==="summarize");
+  await f.storage.recordAutonomyStep({taskId:created.task.id,stepId:"1:review_no_change",stepType:"review_no_change",capability:"reasoning",operationFingerprint:"unbound",status:"completed",result:{noChangeRequired:true}});
+  await f.storage.updateAutonomyTask(created.task.id,OWNER,{currentStep:0,metadata:{...created.task.metadata,steps:[summary],selfDevelopmentNoChangeCandidate:{version:1,decisionHash:"f".repeat(64)}}});
+  await f.runtime.tickTask(created.task.id,{idempotencyKey:"unbound-no-change"});
+  const task=await f.runtime.get(created.task.id);assert.equal(task.status,"blocked");assert.equal(task.errorCode,"implementation_evidence_incomplete");
 });
 test("analysis-only intent may complete discovery-only", async () => {
   const f = await fixture(),
