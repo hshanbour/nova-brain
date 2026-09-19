@@ -21,6 +21,95 @@ const OWNER = "owner",
   NEW_SHA = "c".repeat(40),
   BRANCH = SELF_DEVELOPMENT_DEFAULTS.branch,
   DELIVERY_FIX = "58ab99b426fed92d8e36e8493718b4fc62935d08";
+const EXACT_MICROPHONE_IMPLEMENTATION_PROMPT = `Finish the unfinished microphone recording UI / waveform work in your own Nova Console.
+
+This is a real implementation task. Use durable self-development and continue through:
+
+inspect → plan → edit → test → review → Preview verification
+
+Do not stop at planning or summarizing.
+
+Preserve all working functionality:
+- Arabic dictation
+- English dictation
+- mixed Arabic/English
+- microphone capture
+- draft preservation
+- composer restore
+- Voice V2
+- speaker recognition / owner identity
+- Memory/context
+- text Chat
+- Projects / Activity / Tools / Approvals / Voice Benchmark
+- durable runtime and worker
+
+GOAL
+
+Improve only the recording UI and waveform.
+
+Waveform:
+- substantially increase bar count
+- tighter spacing
+- dense modern appearance
+- use real microphone/Web Audio analyser data
+- smooth responsive motion
+- avoid fake random animation
+- avoid all bars moving identically
+- use sensible FFT/smoothing/bin mapping/amplitude scaling
+- keep it lightweight
+
+Recording surface:
+- hide composer draft text visually while recording without deleting it
+- make waveform dominant and centered
+- reserve a clean control zone
+- do not render bars behind mic/stop controls
+- restore normal composer exactly after recording
+- preserve transcription insertion
+
+Mic / stop control:
+- polish the active state
+- keep Nova branding and green accent
+- do not redesign the whole Console
+
+Use the previously discussed ChatGPT-like recording interaction only as a visual-quality reference:
+dense narrow bars, smooth live response, clean control area, no ghost text.
+Do not copy proprietary implementation.
+
+IMPLEMENTATION
+
+Inspect the existing microphone/analyser/composer code first.
+Reuse what works.
+Choose the fastest, simplest, safest, lowest-maintenance solution.
+Prefer a focused refinement over a rewrite.
+
+TEST
+
+Verify:
+- mic starts/stops
+- waveform visible and reacts to real audio
+- waveform is much denser and smoother
+- bars never overlap controls
+- draft text hidden only during recording
+- composer restores correctly
+- Arabic/English/mixed dictation still works
+- Voice V2 and speaker recognition still work
+- no Console or responsive regression
+
+DELIVERY
+
+Create a Preview only.
+Do not modify Main or Production.
+
+At the end report:
+- task ID
+- files changed
+- tests/results
+- commit SHA
+- Preview URL
+- exact UI/waveform changes
+- anything requiring approval
+
+Do NOT start Live Activity, right-side work pane, black background, route persistence, or project-selection UX in this task.`;
 const input = (overrides = {}) => ({
   userGoal: "Improve a harmless developer document from natural language",
   startingCommit: SHA,
@@ -203,6 +292,7 @@ test("hybrid intake classifies only explicit actionable Nova engineering request
     "Can you fix Nova Console routing?",
     "Edit repository files and run implementation tests",
     "Implement a Nova backend feature and verify a Preview",
+    "Finish the Nova microphone waveform UI and run its tests",
   ]) assert.equal(isDurableSelfDevelopmentRequest(message), true, message);
   for (const message of [
     "How should Nova improve the Console?",
@@ -210,6 +300,54 @@ test("hybrid intake classifies only explicit actionable Nova engineering request
     "Plan a Sharp Cuts campaign",
     "What is a Preview deployment?",
   ]) assert.equal(isDurableSelfDevelopmentRequest(message), false, message);
+});
+test("exact long microphone implementation request routes durable before model generation and remains idempotent", async () => {
+  assert.equal(EXACT_MICROPHONE_IMPLEMENTATION_PROMPT.length, 2494);
+  assert.equal(
+    isDurableSelfDevelopmentRequest(EXACT_MICROPHONE_IMPLEMENTATION_PROMPT),
+    true,
+  );
+  assert.equal(
+    isDurableSelfDevelopmentRequest(
+      `Implement the Nova Console waveform.${" Do not redesign the Console.".repeat(100)}`,
+    ),
+    true,
+  );
+  const f = await fixture();
+  assert.equal(
+    f.service.structure({
+      userGoal: "Finish the Nova microphone waveform UI and run its tests",
+    }).intent,
+    "implementation",
+  );
+  let modelCalls = 0;
+  const agent = createAgent({
+    storage: f.storage,
+    ownerId: OWNER,
+    modelProvider: {
+      name: "must-not-run",
+      async generate() {
+        modelCalls += 1;
+        throw new Error("model generation must not run for durable intake");
+      },
+    },
+    toolRegistry: createToolRegistry(),
+    maxSteps: 10,
+    routeDurableRequest: async ({ message, signal }) =>
+      isDurableSelfDevelopmentRequest(message)
+        ? f.service.createTrustedIntake(message, { signal })
+        : null,
+  });
+  const routed = await agent.run({ message: EXACT_MICROPHONE_IMPLEMENTATION_PROMPT });
+  assert.equal(routed.provider, "durable_runtime");
+  assert.equal(routed.runStatus, "durable_task_created");
+  assert.equal(modelCalls, 0);
+  const replay = await f.service.createTrustedIntake(
+    EXACT_MICROPHONE_IMPLEMENTATION_PROMPT,
+  );
+  assert.equal(replay.idempotent, true);
+  assert.equal(replay.task.id, routed.durableTask.id);
+  assert.equal((await f.storage.listAutonomyTasks(OWNER)).length, 1);
 });
 test("trusted hybrid intake binds the approved project Preview to the fresh remote feature tip and stays idempotent", async () => {
   const requests = [], freshTip = "f".repeat(40), f = await fixture({

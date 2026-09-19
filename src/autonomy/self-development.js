@@ -27,10 +27,10 @@ const CAPABILITIES = Object.freeze([
   "vercel_preview",
   "scheduler",
 ]);
-const IMPLEMENTATION_GOAL =
-  /\b(add|build|change|create|develop|fix|implement|improve|modify|update)\b/i;
+const DURABLE_INTAKE_MAX_LENGTH = 4_000;
 const DURABLE_INTAKE_ACTION =
-  /\b(add|build|change|create|develop|edit|fix|implement|improve|modify|refactor|restore|run|update|verify)\b/i;
+  /\b(add|build|change|create|develop|edit|finish|fix|implement|improve|modify|refactor|restore|run|update|verify)\b/i;
+const IMPLEMENTATION_GOAL = DURABLE_INTAKE_ACTION;
 const DURABLE_INTAKE_TARGET =
   /\b(nova|console|frontend|backend|runtime|repository|repo|codebase|source|files?|tests?|preview|deployment)\b/i;
 const CONVERSATIONAL_OR_ADVICE_REQUEST =
@@ -38,7 +38,7 @@ const CONVERSATIONAL_OR_ADVICE_REQUEST =
 
 export function isDurableSelfDevelopmentRequest(value) {
   const message = typeof value === "string" ? value.trim() : "";
-  if (!message || message.length > 2000 || CONVERSATIONAL_OR_ADVICE_REQUEST.test(message)) return false;
+  if (!message || message.length > DURABLE_INTAKE_MAX_LENGTH || CONVERSATIONAL_OR_ADVICE_REQUEST.test(message)) return false;
   return DURABLE_INTAKE_ACTION.test(message) && DURABLE_INTAKE_TARGET.test(message);
 }
 const REPLAN_PROTECTED =
@@ -236,7 +236,11 @@ export function createSelfDevelopmentService({
   if (!runtime || !storage || !ownerId)
     throw new Error("Self-development dependencies are required.");
   function structure(input) {
-    const userGoal = boundedText(input?.userGoal || input?.goal, "user_goal"),
+    const userGoal = boundedText(
+        input?.userGoal || input?.goal,
+        "user_goal",
+        DURABLE_INTAKE_MAX_LENGTH,
+      ),
       targetBranch = input?.targetBranch || approvedBranch,
       targetRepository = input?.repository || repository,
       environment = input?.environment || "preview";
