@@ -116,7 +116,7 @@ export function createApp({
     const value=await response.json();return{id:value.id||value.uid,url:value.url,status:value.readyState||value.state,target:value.target,sha:value.gitSource?.sha||value.meta?.githubCommitSha,branch:value.gitSource?.ref||value.meta?.githubCommitRef};
   };
   const verifyRemote=async ({repository,branch,requiredAncestors,signal}) => {
-      const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"};
+      const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28",...(environment.NOVA_BRAIN_GITHUB_TOKEN?{Authorization:`Bearer ${environment.NOVA_BRAIN_GITHUB_TOKEN}`}:{})};
       const response=await fetch(`https://api.github.com/repos/${repository}/commits/${encodeURIComponent(branch)}`,{headers,signal});
       if(!response.ok)throw new Error("Remote branch verification failed.");
       const currentTip=(await response.json()).sha,ancestors={};

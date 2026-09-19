@@ -813,8 +813,37 @@ export function createSelfDevelopmentService({
     );
     return Object.freeze(steps);
   }
-  async function create(input) {
-    const request = structure(input),
+  async function resolveTrustedProductCommit({ signal } = {}) {
+    if (typeof verifyRemote !== "function")
+      throw new SelfDevelopmentError(
+        "repository_not_resolved",
+        "The approved Nova feature branch could not be resolved safely.",
+        503,
+      );
+    const remote = await verifyRemote({
+      repository,
+      branch: approvedBranch,
+      requiredAncestors: [],
+      ...(signal ? { signal } : {}),
+    });
+    if (!SHA.test(remote?.currentTip || ""))
+      throw new SelfDevelopmentError(
+        "repository_not_resolved",
+        "The approved Nova feature branch did not return an exact commit.",
+        503,
+      );
+    return remote.currentTip;
+  }
+  async function create(input, { signal } = {}) {
+    const parsed = structure(input),
+      request = Object.freeze({
+        ...parsed,
+        targetProject: "nova-brain",
+        targetBranch: approvedBranch,
+        repository,
+        environment: "preview",
+        startingCommit: await resolveTrustedProductCommit({ signal }),
+      }),
       fingerprint = requestFingerprint(request),
       taskId = `selfdev_${fingerprint.slice(0, 32)}`,
       steps = plan(request, taskId),
@@ -918,38 +947,15 @@ export function createSelfDevelopmentService({
         "The request is not an explicit Nova implementation task.",
         400,
       );
-    if (typeof verifyRemote !== "function")
-      throw new SelfDevelopmentError(
-        "repository_not_resolved",
-        "The approved Nova feature branch could not be resolved safely.",
-        503,
-      );
-    const remote = await verifyRemote({
-      repository,
-      branch: approvedBranch,
-      requiredAncestors: [],
-      ...(signal ? { signal } : {}),
-    });
-    if (!SHA.test(remote?.currentTip || ""))
-      throw new SelfDevelopmentError(
-        "repository_not_resolved",
-        "The approved Nova feature branch did not return an exact commit.",
-        503,
-      );
     return create({
       userGoal,
-      targetProject: "nova-brain",
-      targetBranch: approvedBranch,
-      repository,
-      environment: "preview",
-      startingCommit: remote.currentTip,
       scope: {
         paths: [],
         searchTerms: [],
         focusedTests: [],
         patch: { files: [] },
       },
-    });
+    }, { signal });
   }
   async function get(taskId) {
     const task = await runtime.get(taskId);

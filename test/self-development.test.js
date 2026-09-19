@@ -114,7 +114,7 @@ async function fixture({
     currentCommit,
     runtimeVersion,
     clock: () => new Date(now),
-    verifyRemote,
+    verifyRemote: verifyRemote || (async () => ({ currentTip: currentCommit, ancestors: {} })),
     compareRemoteEvidence,
     verifyDeployment,
     resolvePathState,
@@ -230,6 +230,44 @@ test("trusted hybrid intake binds the approved project Preview to the fresh remo
     { repository: "hshanbour/nova-brain", branch: BRANCH, requiredAncestors: [] },
     { repository: "hshanbour/nova-brain", branch: BRANCH, requiredAncestors: [] },
   ]);
+});
+test("all durable creation paths bind the fresh product tip instead of the integration runtime SHA", async () => {
+  const runtimeSha = "1".repeat(40), productTip = "2".repeat(40), requests = [], f = await fixture({
+    currentCommit: runtimeSha,
+    runtimeVersion: runtimeSha,
+    verifyRemote: async (request) => { requests.push(request); return { currentTip: productTip, ancestors: {} }; },
+  });
+  const created = await f.service.create(input({ startingCommit: runtimeSha }));
+  assert.equal(created.task.startingCommit, productTip);
+  assert.equal(created.task.currentCommit, productTip);
+  assert.equal(created.request.startingCommit, productTip);
+  assert.notEqual(created.task.startingCommit, runtimeSha);
+  assert.deepEqual(requests, [{ repository: "hshanbour/nova-brain", branch: BRANCH, requiredAncestors: [] }]);
+});
+test("durable creation refreshes stale feature tips and keeps same-tip retries idempotent", async () => {
+  const firstTip = "3".repeat(40), freshTip = "4".repeat(40), tips = [firstTip, freshTip, freshTip], f = await fixture({
+    currentCommit: "1".repeat(40),
+    verifyRemote: async () => ({ currentTip: tips.shift(), ancestors: {} }),
+  });
+  const request = input({ startingCommit: firstTip });
+  const stale = await f.service.create(request), refreshed = await f.service.create(request), duplicate = await f.service.create(request);
+  assert.equal(stale.task.startingCommit, firstTip);
+  assert.equal(refreshed.task.startingCommit, freshTip);
+  assert.notEqual(refreshed.task.id, stale.task.id);
+  assert.equal(duplicate.task.id, refreshed.task.id);
+  assert.equal(duplicate.idempotent, true);
+  assert.equal((await f.storage.listAutonomyTasks(OWNER)).length, 2);
+});
+test("durable creation rejects untrusted product context and ignores a valid client SHA override", async () => {
+  const productTip = "5".repeat(40), f = await fixture({
+    currentCommit: "1".repeat(40),
+    verifyRemote: async () => ({ currentTip: productTip, ancestors: {} }),
+  });
+  await rejects(f.service.create(input({ repository: "other/repository" })), "repository_not_resolved");
+  await rejects(f.service.create(input({ targetBranch: "main" })), "branch_not_allowed");
+  await rejects(f.service.create(input({ environment: "production" })), "production_target_forbidden");
+  const created = await f.service.create(input({ startingCommit: "9".repeat(40) }));
+  assert.equal(created.task.startingCommit, productTip);
 });
 test("real chat-style goal resolves deployed commit project branch and safe defaults", async () => {
   const f = await fixture(),
@@ -960,6 +998,8 @@ test("chat tool contract requires only a natural-language goal and schedules dur
     .list()
     .find((item) => item.name === "self_development_create");
   assert.deepEqual(tool.inputSchema.required, ["userGoal"]);
+  for (const field of ["repository", "targetProject", "targetBranch", "environment", "startingCommit"])
+    assert.equal(tool.inputSchema.properties[field], undefined);
   const result = await registry.execute("self_development_create", {
     userGoal: "Inspect the composer dictation integration",
   });
