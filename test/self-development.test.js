@@ -1291,6 +1291,37 @@ test("new scope-blocked implementation task reuses discovery-only replan in plac
   assert.ok(result.continuationSteps.includes("plan_implementation"));
   assert.ok(result.continuationSteps.includes("review_commit"));
 });
+test("empty implementation scope resolves bounded source and test candidates from durable discovery", async () => {
+  const existing = new Set(["test/voice-input.test.js"]), f = await fixture({
+    resolvePathState: async (path, commit) => ({existsInCommit: commit === SHA && existing.has(path)}),
+    execute(name) {
+      if (name === "repo_list") return {ok:true,files:["assets/voice-input.js","assets/console.js","src/autonomy/worker-runtime.js","docs/unrelated.md"],truncated:true};
+      if (name === "repo_search") return {ok:true,matches:[]};
+      return {ok:true};
+    },
+  }), created = await f.service.create({userGoal:EXACT_MICROPHONE_IMPLEMENTATION_PROMPT});
+  assert.equal(f.calls.find((call) => call.name === "repo_search"), undefined);
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`automatic-scope-${index}`});
+  const blocked=await f.runtime.get(created.task.id);
+  assert.equal(blocked.errorCode,"implementation_scope_required");
+  assert.equal(f.calls.find((call)=>call.name==="repo_search").args.query,"microphone");
+  const result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+  assert.equal(result.task.id,blocked.id);
+  assert.equal(result.task.status,"queued");
+  assert.deepEqual(result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths,["assets/console.js","assets/voice-input.js","test/voice-input.test.js"]);
+  assert.equal(result.task.metadata.discoveryOnlyReplanHistory.at(-1).scopeSource,"automatic_durable_discovery");
+  assert.ok(result.continuationSteps.includes("plan_implementation"));
+  assert.equal(result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths.includes("src/autonomy/worker-runtime.js"),false);
+  assert.equal(result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths.includes("docs/unrelated.md"),false);
+});
+test("automatic discovery scope fails closed without relevant tests or with only protected candidates",async()=>{
+  for(const files of [["assets/voice-input.js"],["src/autonomy/worker-runtime.js","test/self-development.test.js"]]){
+    const f=await fixture({execute(name){if(name==="repo_list")return{ok:true,files};if(name==="repo_search")return{ok:true,matches:[]};return{ok:true};}}),created=await f.service.create({userGoal:EXACT_MICROPHONE_IMPLEMENTATION_PROMPT});
+    for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`closed-${files[0]}-${index}`});
+    const blocked=await f.runtime.get(created.task.id);
+    await rejects(f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion}),"replan_scope_empty");
+  }
+});
 test("replan preserves completed checkpoints and resets only the bounded runtime window", async () => {
   const f = await completedDiscoveryFixture(),
     checkpoint = f.task.checkpoint,

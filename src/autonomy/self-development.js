@@ -43,6 +43,23 @@ export function isDurableSelfDevelopmentRequest(value) {
 }
 const REPLAN_PROTECTED =
   /(^|\/)(src\/(?:voice|policy|storage|autonomy)|speaker-worker|api\/index\.js|\.github|assets\/(?:voice-(?!input(?:\.|$))|speaker-))(\/|$)|ecapa|elevenlabs|voice-control|production|credential|secret|token/i;
+const DISCOVERY_STOP_WORDS = new Set([
+  "about", "after", "again", "against", "also", "another", "before", "current",
+  "existing", "finish", "from", "have", "implementation", "implement", "into",
+  "make", "modify", "must", "only", "preserve", "repair", "request", "should",
+  "task", "that", "their", "there", "these", "this", "through", "using", "verify",
+  "with", "without", "work", "working", "your",
+]);
+const DISCOVERY_TOKEN_ALIASES = Object.freeze({
+  microphone: ["microphone", "mic", "voice", "audio", "speech", "input"],
+  mic: ["microphone", "mic", "voice", "audio", "speech", "input"],
+  waveform: ["waveform", "audio", "voice", "amplitude", "level"],
+  recording: ["recording", "record", "voice", "audio", "input"],
+  dictation: ["dictation", "speech", "voice", "input"],
+  console: ["console", "composer", "frontend", "ui"],
+  composer: ["composer", "console", "input", "frontend", "ui"],
+  frontend: ["frontend", "console", "ui"],
+});
 const TASK_DIFF_DIGESTS = Object.freeze({
   git_sha1: /^[a-f0-9]{40}$/i,
   sha256: /^[a-f0-9]{64}$/i,
@@ -141,6 +158,27 @@ const safePath = (value) => {
       400,
     );
   return path;
+};
+const discoveryTokens = (value) => {
+  const tokens = String(value || "").toLowerCase().match(/[a-z0-9]+/g) || [], expanded = new Set();
+  for (const token of tokens) {
+    if (token.length < 3 || DISCOVERY_STOP_WORDS.has(token)) continue;
+    expanded.add(token);
+    for (const alias of DISCOVERY_TOKEN_ALIASES[token] || []) expanded.add(alias);
+  }
+  return expanded;
+};
+const discoverySearchQuery = (request) => {
+  const explicit = request.scope.searchTerms?.find((term) => typeof term === "string" && term.trim());
+  if (explicit) return explicit.trim().slice(0, 120);
+  const tokens = [...discoveryTokens(request.userGoal)];
+  return (tokens.find((token) => DISCOVERY_TOKEN_ALIASES[token]) || tokens[0] || request.userGoal).slice(0, 120);
+};
+const discoveryPath = (value) => {
+  const path = typeof value === "string" ? value : value?.path;
+  if (typeof path !== "string") return null;
+  const normalized = path.replaceAll("\\", "/");
+  return /^[a-z0-9._/-]+$/i.test(normalized) && normalized.includes("/") && !normalized.startsWith("/") && !normalized.includes("..") && !SECRET.test(normalized) ? normalized : null;
 };
 export const isExactMissingBranchSchemaDiagnostic = (diagnostic, {stepType, templateTool}={}) =>
   (diagnostic?.tool === "repo_apply_patch" ||
@@ -439,6 +477,46 @@ export function createSelfDevelopmentService({
       return null;
     return candidates;
   };
+  const resolveDiscoveryCandidates = async (request, steps) => {
+    const discovered = new Set();
+    for (const step of steps.filter((item) => item.status === "completed" && ["inspect_repo", "search_code"].includes(item.stepType))) {
+      const values = step.stepType === "inspect_repo"
+        ? [...(step.result?.files || []), ...(step.result?.items || [])]
+        : [...(step.result?.matches || []), ...(step.result?.files || []), ...(step.result?.items || [])];
+      for (const value of values) {
+        const path = discoveryPath(value);
+        if (path) discovered.add(path);
+      }
+    }
+    const goal = discoveryTokens(request.userGoal), score = (path) => {
+      const tokens = discoveryTokens(path);
+      let value = 0;
+      for (const token of tokens) if (goal.has(token)) value += token.length > 5 ? 3 : 1;
+      return value;
+    }, safe = (path) => !REPLAN_PROTECTED.test(path) && /\.(?:c?js|mjs|ts|tsx|jsx|css|html|md)$/i.test(path);
+    const sources = [...discovered]
+      .filter((path) => !path.startsWith("test/") && safe(path) && score(path) > 0)
+      .sort((a, b) => score(b) - score(a) || a.localeCompare(b)).slice(0, 6);
+    if (!sources.length) return null;
+    const sourceTokens = new Set(sources.flatMap((path) => [...discoveryTokens(path)]));
+    const testScore = (path) => score(path) + [...discoveryTokens(path)].filter((token) => sourceTokens.has(token)).length * 2;
+    const tests = [...discovered]
+      .filter((path) => path.startsWith("test/") && safe(path) && testScore(path) > 0)
+      .sort((a, b) => testScore(b) - testScore(a) || a.localeCompare(b)).slice(0, 6);
+    if (!tests.length && typeof resolvePathState === "function") {
+      const inferred = [];
+      for (const source of sources) {
+        const stem = source.split("/").at(-1).replace(/\.(?:c?js|mjs|ts|tsx|jsx|css|html|md)$/i, "");
+        inferred.push(`test/${stem}.test.js`, `test/${stem}-static.test.js`, `test/composer-${stem}.integration.test.js`);
+      }
+      for (const path of [...new Set(inferred)].slice(0, 18)) {
+        const state = await resolvePathState(path, request.startingCommit);
+        if (state?.existsInCommit && !REPLAN_PROTECTED.test(path)) tests.push(path);
+        if (tests.length >= 6) break;
+      }
+    }
+    return tests.length ? [...new Set([...sources, ...tests])].slice(0, 12) : null;
+  };
   const appendEvidenceBoundImplementation = ({
     steps,
     base = 0,
@@ -597,7 +675,7 @@ export function createSelfDevelopmentService({
     add(
       "inspect_repo",
       "repo_read_remote",
-      { tool: "repo_list", arguments: { path: root, limit: 100 } },
+      { tool: "repo_list", arguments: { path: root, limit: 250 } },
       "Bounded repository inventory",
       "Repository paths returned",
       { retry: "safe_read" },
@@ -608,10 +686,7 @@ export function createSelfDevelopmentService({
       {
         tool: "repo_search",
         arguments: {
-          query: (request.scope.searchTerms[0] || request.userGoal).slice(
-            0,
-            120,
-          ),
+          query: discoverySearchQuery(request),
           path: root,
           limit: 100,
         },
@@ -1070,17 +1145,18 @@ export function createSelfDevelopmentService({
         "Recovery runtime budget must be an integer from 15 to 90 minutes.",
         400,
       );
+    const resolvedCandidatePaths = input.candidatePaths ?? await resolveDiscoveryCandidates(request, steps);
     if (
-      !Array.isArray(input.candidatePaths) ||
-      input.candidatePaths.length < 2 ||
-      input.candidatePaths.length > 12
+      !Array.isArray(resolvedCandidatePaths) ||
+      resolvedCandidatePaths.length < 2 ||
+      resolvedCandidatePaths.length > 12
     )
       throw new SelfDevelopmentError(
         "replan_scope_empty",
         "Implementation recovery requires 2-12 evidence candidate files.",
         400,
       );
-    const candidates = [...new Set(input.candidatePaths.map(safePath))];
+    const candidates = [...new Set(resolvedCandidatePaths.map(safePath))];
     const inventory = new Set(
       steps
         .filter(
@@ -1164,6 +1240,7 @@ export function createSelfDevelopmentService({
         previousCompletedAt: current.completedAt,
         evidenceStepIds,
         candidatePaths: candidates,
+        scopeSource: input.candidatePaths ? "explicit_durable_evidence" : "automatic_durable_discovery",
         scopeHash,
         createdAt: now,
       };

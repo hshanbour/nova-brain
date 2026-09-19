@@ -52,7 +52,10 @@ export function createPersistentLocalWorker({client,root,branch="feat/nova-brain
       throw error;
     }
   }
-  async function runOnce(){const found=await client.request("/api/admin/worker/auto-dispatch/next",{workerId,branch});if(!found.dispatched)return{worked:false};const task=found.task;if(!task||task.branch!==branch)throw Object.assign(new Error("Dispatch binding is invalid."),{code:"invalid_dispatch"});if(task.mode==="local_handoff")return handoff(task);const result=await client.request(`/api/autonomy/worker/tasks/${encodeURIComponent(task.id)}/tick`,{idempotencyKey:`auto:${task.id}:${task.stateVersion}`});return{worked:true,taskId:task.id,status:result.status,stepType:result.stepType};}
+  async function runOnce(){const found=await client.request("/api/admin/worker/auto-dispatch/next",{workerId,branch});if(!found.dispatched)return{worked:false};const task=found.task;if(!task||task.branch!==branch)throw Object.assign(new Error("Dispatch binding is invalid."),{code:"invalid_dispatch"});if(task.mode==="local_handoff")return handoff(task);const result=await client.request(`/api/autonomy/worker/tasks/${encodeURIComponent(task.id)}/tick`,{idempotencyKey:`auto:${task.id}:${task.stateVersion}`});if(result.status==="blocked"&&result.task?.errorCode==="implementation_scope_required"){
+    const replanned=await client.request(`/api/admin/self-development/tasks/${encodeURIComponent(task.id)}/replan-discovery-only`,{expectedVersion:result.task.stateVersion});
+    return{worked:true,taskId:task.id,status:replanned.task.status,stepType:"automatic_discovery_replan"};
+  }return{worked:true,taskId:task.id,status:result.status,stepType:result.stepType};}
   return Object.freeze({workerId,runOnce});
 }
 
