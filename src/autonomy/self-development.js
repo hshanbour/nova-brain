@@ -60,6 +60,9 @@ const DISCOVERY_TOKEN_ALIASES = Object.freeze({
   composer: ["composer", "console", "input", "frontend", "ui"],
   frontend: ["frontend", "console", "ui"],
 });
+const DISCOVERY_DOCUMENTATION_TERMS = new Set([
+  "doc", "docs", "documentation", "markdown", "readme",
+]);
 const TASK_DIFF_DIGESTS = Object.freeze({
   git_sha1: /^[a-f0-9]{40}$/i,
   sha256: /^[a-f0-9]{64}$/i,
@@ -159,8 +162,25 @@ const safePath = (value) => {
     );
   return path;
 };
+const rawDiscoveryTokens = (value) =>
+  String(value || "").toLowerCase().match(/[a-z0-9]+/g) || [];
+const discoveryGoalText = (value) => {
+  const kept = [];
+  let preservationBlock = false;
+  for (const rawLine of String(value || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (/^preserve(?:\s+all\b[^:]*)?:?$/i.test(line) || /^do not regress:?$/i.test(line)) {
+      preservationBlock = true;
+      continue;
+    }
+    if (preservationBlock && /^[A-Z][A-Z\s/_-]{2,}:?$/.test(line)) preservationBlock = false;
+    if (preservationBlock || /^(?:do not|don't|must not|no unrelated)\b/i.test(line)) continue;
+    kept.push(rawLine);
+  }
+  return kept.join("\n");
+};
 const discoveryTokens = (value) => {
-  const tokens = String(value || "").toLowerCase().match(/[a-z0-9]+/g) || [], expanded = new Set();
+  const tokens = rawDiscoveryTokens(value), expanded = new Set();
   for (const token of tokens) {
     if (token.length < 3 || DISCOVERY_STOP_WORDS.has(token)) continue;
     expanded.add(token);
@@ -478,25 +498,44 @@ export function createSelfDevelopmentService({
     return candidates;
   };
   const resolveDiscoveryCandidates = async (request, steps) => {
-    const discovered = new Set();
+    const discovered = new Set(), searched = new Set();
     for (const step of steps.filter((item) => item.status === "completed" && ["inspect_repo", "search_code"].includes(item.stepType))) {
       const values = step.stepType === "inspect_repo"
         ? [...(step.result?.files || []), ...(step.result?.items || [])]
         : [...(step.result?.matches || []), ...(step.result?.files || []), ...(step.result?.items || [])];
       for (const value of values) {
         const path = discoveryPath(value);
-        if (path) discovered.add(path);
+        if (path) {
+          discovered.add(path);
+          if (step.stepType === "search_code") searched.add(path);
+        }
       }
     }
-    const goal = discoveryTokens(request.userGoal), score = (path) => {
-      const tokens = discoveryTokens(path);
-      let value = 0;
-      for (const token of tokens) if (goal.has(token)) value += token.length > 5 ? 3 : 1;
+    const goalText = discoveryGoalText(request.userGoal), goal = discoveryTokens(goalText), goalCounts = new Map(), goalRaw = rawDiscoveryTokens(goalText);
+    for (const token of goalRaw) {
+      if (token.length >= 3 && !DISCOVERY_STOP_WORDS.has(token))
+        goalCounts.set(token, Math.min(3, (goalCounts.get(token) || 0) + 1));
+    }
+    const documentationRequested = [...goalCounts].some(([token]) => DISCOVERY_DOCUMENTATION_TERMS.has(token));
+    const score = (path) => {
+      if (/^(?:docs?\/|readme(?:\.|$))/i.test(path) && !documentationRequested) return 0;
+      const tokens = [...new Set(rawDiscoveryTokens(path).filter((token) => token.length >= 3 && !DISCOVERY_STOP_WORDS.has(token)))];
+      let value = 0, semanticMatches = 0;
+      for (const token of tokens) {
+        const count = goalCounts.get(token) || 0;
+        if (count) value += count * (token.length > 5 ? 5 : 3);
+        else if (goal.has(token)) { value += 3; semanticMatches += 1; }
+      }
+      if (semanticMatches >= 2) value += 3;
+      if (searched.has(path)) value += 6;
       return value;
     }, safe = (path) => !REPLAN_PROTECTED.test(path) && /\.(?:c?js|mjs|ts|tsx|jsx|css|html|md)$/i.test(path);
-    const sources = [...discovered]
+    const rankedSources = [...discovered]
       .filter((path) => !path.startsWith("test/") && safe(path) && score(path) > 0)
-      .sort((a, b) => score(b) - score(a) || a.localeCompare(b)).slice(0, 6);
+      .sort((a, b) => score(b) - score(a) || a.localeCompare(b));
+    const strongest = rankedSources.length ? score(rankedSources[0]) : 0,
+      minimumConfidence = Math.max(4, Math.ceil(strongest * 0.35)),
+      sources = rankedSources.filter((path) => score(path) >= minimumConfidence).slice(0, 6);
     if (!sources.length) return null;
     const sourceTokens = new Set(sources.flatMap((path) => [...discoveryTokens(path)]));
     const testScore = (path) => score(path) + [...discoveryTokens(path)].filter((token) => sourceTokens.has(token)).length * 2;

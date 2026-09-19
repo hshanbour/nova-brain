@@ -1314,6 +1314,32 @@ test("empty implementation scope resolves bounded source and test candidates fro
   assert.equal(result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths.includes("src/autonomy/worker-runtime.js"),false);
   assert.equal(result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths.includes("docs/unrelated.md"),false);
 });
+test("automatic discovery ranks owning microphone modules above preservation-context matches",async()=>{
+  const existing=new Set(["test/voice-input.test.js","test/console-static.test.js"]),files=[
+    "assets/console.css","assets/console.js","assets/voice-input.js",
+    "docs/worker-runtime-live-acceptance.md","docs/self-development-live-acceptance.md",
+    "src/identity/initial-context.js","src/memory/context-retriever.js",
+  ],f=await fixture({
+    resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&existing.has(path)}),
+    execute(name){if(name==="repo_list")return{ok:true,files,truncated:true};if(name==="repo_search")return{ok:true,matches:[]};return{ok:true};},
+  }),created=await f.service.create({userGoal:EXACT_MICROPHONE_IMPLEMENTATION_PROMPT});
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`ranked-scope-${index}`});
+  const blocked=await f.runtime.get(created.task.id),result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion}),paths=result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths;
+  assert.ok(paths.includes("assets/voice-input.js"));
+  assert.ok(paths.includes("test/voice-input.test.js"));
+  assert.ok(paths.includes("assets/console.css"));
+  assert.ok(paths.includes("assets/console.js"));
+  assert.equal(paths.some(path=>path.startsWith("docs/")||path.startsWith("src/identity/")||path.startsWith("src/memory/")),false,JSON.stringify(paths));
+});
+test("automatic discovery uses the same evidence ranking for a generic future implementation",async()=>{
+  const existing=new Set(["test/validation.test.js"]),f=await fixture({
+    resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&existing.has(path)}),
+    execute(name){if(name==="repo_list")return{ok:true,files:["src/http/validation.js","src/http/body.js","src/memory/relevance.js","docs/validation.md"],truncated:true};if(name==="repo_search")return{ok:true,matches:[{path:"src/http/validation.js"},{path:"docs/validation.md"}]};return{ok:true};},
+  }),created=await f.service.create({userGoal:"Improve request validation in the HTTP validation module and add focused validation tests."});
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`generic-ranked-scope-${index}`});
+  const blocked=await f.runtime.get(created.task.id),result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion}),paths=result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths;
+  assert.deepEqual(paths,["src/http/validation.js","test/validation.test.js"]);
+});
 test("automatic discovery scope fails closed without relevant tests or with only protected candidates",async()=>{
   for(const files of [["assets/voice-input.js"],["src/autonomy/worker-runtime.js","test/self-development.test.js"]]){
     const f=await fixture({execute(name){if(name==="repo_list")return{ok:true,files};if(name==="repo_search")return{ok:true,matches:[]};return{ok:true};}}),created=await f.service.create({userGoal:EXACT_MICROPHONE_IMPLEMENTATION_PROMPT});
