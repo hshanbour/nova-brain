@@ -1317,11 +1317,14 @@ test("empty implementation scope resolves bounded source and test candidates fro
 test("automatic discovery ranks owning microphone modules above preservation-context matches",async()=>{
   const existing=new Set(["test/voice-input.test.js","test/console-static.test.js"]),files=[
     "assets/console.css","assets/console.js","assets/voice-input.js",
+    "assets/voice-benchmark.js","assets/voice-capture.js","assets/voice-v2.js",
+    "test/composer-voice-console.integration.test.js","test/composer-dictation.test.js",
+    "test/console-client.test.js","test/console-static.test.js","test/voice-input.test.js","test/self-development.test.js",
     "docs/worker-runtime-live-acceptance.md","docs/self-development-live-acceptance.md",
     "src/identity/initial-context.js","src/memory/context-retriever.js",
   ],f=await fixture({
     resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&existing.has(path)}),
-    execute(name){if(name==="repo_list")return{ok:true,files,truncated:true};if(name==="repo_search")return{ok:true,matches:[]};return{ok:true};},
+    execute(name){if(name==="repo_list")return{ok:true,files,truncated:true};if(name==="repo_search")return{ok:true,matches:[{path:"assets/console.js"},{path:"assets/voice-input.js"},{path:"test/voice-input.test.js"},{path:"test/self-development.test.js"}]};return{ok:true};},
   }),created=await f.service.create({userGoal:EXACT_MICROPHONE_IMPLEMENTATION_PROMPT});
   for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`ranked-scope-${index}`});
   const blocked=await f.runtime.get(created.task.id),result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion}),paths=result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths;
@@ -1329,6 +1332,7 @@ test("automatic discovery ranks owning microphone modules above preservation-con
   assert.ok(paths.includes("test/voice-input.test.js"));
   assert.ok(paths.includes("assets/console.css"));
   assert.ok(paths.includes("assets/console.js"));
+  assert.equal(paths.includes("test/self-development.test.js"),false,JSON.stringify(paths));
   assert.equal(paths.some(path=>path.startsWith("docs/")||path.startsWith("src/identity/")||path.startsWith("src/memory/")),false,JSON.stringify(paths));
 });
 test("automatic discovery uses the same evidence ranking for a generic future implementation",async()=>{

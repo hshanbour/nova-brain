@@ -538,9 +538,14 @@ export function createSelfDevelopmentService({
       sources = rankedSources.filter((path) => score(path) >= minimumConfidence).slice(0, 6);
     if (!sources.length) return null;
     const sourceTokens = new Set(sources.flatMap((path) => [...discoveryTokens(path)]));
-    const testScore = (path) => score(path) + [...discoveryTokens(path)].filter((token) => sourceTokens.has(token)).length * 2;
+    const sourceAssociations = (path) => [...discoveryTokens(path)].filter((token) => sourceTokens.has(token)).length;
+    const testScore = (path) => score(path) + sourceAssociations(path) * 2;
     const tests = [...discovered]
-      .filter((path) => path.startsWith("test/") && safe(path) && testScore(path) > 0)
+      // A search hit can be incidental (for example, a runtime test containing
+      // a quoted product prompt). Focused tests must also be related by path to
+      // at least one selected implementation source before they become
+      // mutation-authoritative planner evidence.
+      .filter((path) => path.startsWith("test/") && safe(path) && sourceAssociations(path) > 0 && testScore(path) > 0)
       .sort((a, b) => testScore(b) - testScore(a) || a.localeCompare(b)).slice(0, 6);
     if (!tests.length && typeof resolvePathState === "function") {
       const inferred = [];
