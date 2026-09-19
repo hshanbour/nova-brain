@@ -597,6 +597,54 @@ test("identical chat create retries return the same durable task", async () => {
   assert.equal(retry.task.id, first.task.id);
   assert.equal((await f.storage.listAutonomyTasks(OWNER)).length, 1);
 });
+test("active completed approval-bound and blocked requests preserve existing idempotency",async()=>{
+  for(const status of ["queued","completed","waiting_for_approval","blocked"]){
+    const f=await fixture(),request={userGoal:`Implement the same ${status} Nova Console improvement`},first=await f.service.create(request);
+    const existing=await f.storage.updateAutonomyTask(first.task.id,OWNER,{status,...(status==="waiting_for_approval"?{approvalState:{approvalId:"approval",approved:false}}:{}),...(status==="blocked"?{blockedReason:"Protected recovery is required.",errorCode:"implementation_scope_required"}:{}),...(["completed"].includes(status)?{completedAt:"2026-01-01T00:00:00.000Z"}:{})});
+    const replay=await f.service.create(request);
+    assert.equal(replay.idempotent,true,status);
+    assert.equal(replay.task.id,existing.id,status);
+    assert.equal(replay.task.stateVersion,existing.stateVersion,status);
+    assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,1,status);
+  }
+});
+test("failed task creates one deterministic audit-linked successor at the trusted feature tip",async()=>{
+  const freshTip="8".repeat(40),f=await fixture({verifyRemote:async()=>({currentTip:freshTip,ancestors:{}})}),request={userGoal:"Implement a deterministic Nova Console retry"},root=await f.service.create(request);
+  assert.equal(root.task.id,`selfdev_${root.task.metadata.selfDevelopmentRequestFingerprint.slice(0,32)}`);
+  const failed=await f.storage.updateAutonomyTask(root.task.id,OWNER,{status:"failed",errorCode:"implementation_evidence_incomplete",completedAt:"2026-01-01T00:01:00.000Z"}),before=await f.storage.getAutonomyTask(root.task.id,OWNER),successor=await f.service.create(request),replay=await f.service.create(request),after=await f.storage.getAutonomyTask(root.task.id,OWNER);
+  assert.notEqual(successor.task.id,root.task.id);
+  assert.equal(successor.idempotent,false);
+  assert.equal(replay.idempotent,true);
+  assert.equal(replay.task.id,successor.task.id);
+  assert.equal(successor.task.startingCommit,freshTip);
+  assert.equal(successor.task.metadata.rootRequestFingerprint,root.task.metadata.selfDevelopmentRequestFingerprint);
+  assert.equal(successor.task.metadata.selfDevelopmentRequestFingerprint,root.task.metadata.selfDevelopmentRequestFingerprint);
+  assert.equal(successor.task.metadata.supersedesTaskId,root.task.id);
+  assert.equal(successor.task.metadata.retryContractVersion,"self-development-terminal-retry-v1");
+  assert.deepEqual(successor.task.metadata.predecessorTerminal,{status:"failed",stateVersion:failed.stateVersion,completedAt:failed.completedAt,errorCode:failed.errorCode});
+  assert.deepEqual(after,before);
+  assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,2);
+});
+test("cancelled task creates one deterministic successor without changing its audit record",async()=>{
+  const f=await fixture(),request={userGoal:"Implement a cancelled Nova Console retry"},root=await f.service.create(request),cancelled=await f.runtime.control(root.task.id,"cancel"),before=await f.storage.getAutonomyTask(root.task.id,OWNER),successor=await f.service.create(request),replay=await f.service.create(request),after=await f.storage.getAutonomyTask(root.task.id,OWNER);
+  assert.equal(cancelled.status,"cancelled");
+  assert.notEqual(successor.task.id,root.task.id);
+  assert.equal(replay.task.id,successor.task.id);
+  assert.equal(successor.task.metadata.supersedesTaskId,root.task.id);
+  assert.deepEqual(successor.task.metadata.predecessorTerminal,{status:"cancelled",stateVersion:cancelled.stateVersion,completedAt:cancelled.completedAt,errorCode:null});
+  assert.deepEqual(after,before);
+  assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,2);
+});
+test("concurrent terminal retries converge on one deterministic successor",async()=>{
+  const f=await fixture(),request={userGoal:"Implement one concurrent Nova Console retry"},root=await f.service.create(request);
+  await f.storage.updateAutonomyTask(root.task.id,OWNER,{status:"failed",errorCode:"test_failed",completedAt:"2026-01-01T00:01:00.000Z"});
+  let arrivals=0,claimed=false,release;const both=new Promise(resolve=>{release=resolve;}),runtime={...f.runtime,async create(input){arrivals+=1;if(arrivals===2)release();await both;if(claimed)throw Object.assign(new Error("duplicate task"),{code:"duplicate_task"});claimed=true;return f.runtime.create(input);}},service=createSelfDevelopmentService({runtime,storage:f.storage,ownerId:OWNER,currentCommit:SHA,verifyRemote:async()=>({currentTip:SHA,ancestors:{}})});
+  const [left,right]=await Promise.all([service.create(request),service.create(request)]),tasks=await f.storage.listAutonomyTasks(OWNER);
+  assert.equal(left.task.id,right.task.id);
+  assert.equal([left.idempotent,right.idempotent].filter(Boolean).length,1);
+  assert.equal(tasks.length,2);
+  assert.equal(tasks.filter(task=>task.metadata?.supersedesTaskId===root.task.id).length,1);
+});
 test("known Nova project aliases resolve but unrelated projects fail before Postgres", async () => {
   const f = await fixture();
   for (const targetProject of [

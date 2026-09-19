@@ -128,6 +128,31 @@ export class SelfDevelopmentError extends Error {
 }
 const hash = (value) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const TERMINAL_RETRY_CONTRACT_VERSION = "self-development-terminal-retry-v1",
+  TERMINAL_RETRY_STATUSES = new Set(["failed", "cancelled"]),
+  MAX_TERMINAL_RETRY_DEPTH = 32;
+const terminalSuccessorIdentity = (rootRequestFingerprint, predecessor) => {
+  const successorFingerprint = hash({
+    version: TERMINAL_RETRY_CONTRACT_VERSION,
+    rootRequestFingerprint,
+    predecessorTaskId: predecessor.id,
+    predecessorTerminalStateVersion: predecessor.stateVersion,
+  });
+  return Object.freeze({
+    taskId: `selfdev_${successorFingerprint.slice(0, 32)}`,
+    metadata: Object.freeze({
+      rootRequestFingerprint,
+      supersedesTaskId: predecessor.id,
+      retryContractVersion: TERMINAL_RETRY_CONTRACT_VERSION,
+      predecessorTerminal: Object.freeze({
+        status: predecessor.status,
+        stateVersion: predecessor.stateVersion,
+        completedAt: predecessor.completedAt || null,
+        errorCode: predecessor.errorCode || null,
+      }),
+    }),
+  });
+};
 const gitBlobHash = (value) => {
   const content=Buffer.from(String(value??""),"utf8");
   return createHash("sha1").update(Buffer.from(`blob ${content.length}\0`)).update(content).digest("hex");
@@ -968,25 +993,50 @@ export function createSelfDevelopmentService({
         startingCommit: await resolveTrustedProductCommit({ signal }),
       }),
       fingerprint = requestFingerprint(request),
-      taskId = `selfdev_${fingerprint.slice(0, 32)}`,
-      steps = plan(request, taskId),
-      prior = await runtime.get(taskId);
-    if (prior) {
+      rootTaskId = `selfdev_${fingerprint.slice(0, 32)}`;
+    let taskId = rootTaskId,
+      predecessor = null,
+      successorMetadata = null;
+    for (let depth = 0; depth <= MAX_TERMINAL_RETRY_DEPTH; depth += 1) {
+      const prior = await runtime.get(taskId);
+      if (!prior) break;
+      const rootFingerprint =
+        prior.metadata?.rootRequestFingerprint ||
+        prior.metadata?.selfDevelopmentRequestFingerprint;
       if (
-        prior.metadata?.selfDevelopmentRequestFingerprint !== fingerprint
+        rootFingerprint !== fingerprint ||
+        (predecessor &&
+          (prior.metadata?.supersedesTaskId !== predecessor.id ||
+            prior.metadata?.retryContractVersion !==
+              TERMINAL_RETRY_CONTRACT_VERSION ||
+            prior.metadata?.predecessorTerminal?.status !==
+              predecessor.status ||
+            prior.metadata?.predecessorTerminal?.stateVersion !==
+              predecessor.stateVersion))
       )
         throw new SelfDevelopmentError(
           "durable_task_create_failed",
           "Existing task identity does not match this request.",
         );
-      return {
-        request,
-        plan: prior.metadata.steps,
-        task: prior,
-        idempotent: true,
-        dispatch: { status: "scheduled", durable: true },
-      };
+      if (!TERMINAL_RETRY_STATUSES.has(prior.status))
+        return {
+          request,
+          plan: prior.metadata.steps,
+          task: prior,
+          idempotent: true,
+          dispatch: { status: "scheduled", durable: true },
+        };
+      if (depth === MAX_TERMINAL_RETRY_DEPTH)
+        throw new SelfDevelopmentError(
+          "durable_task_create_failed",
+          "Terminal task retry depth is exhausted.",
+        );
+      predecessor = prior;
+      const successor = terminalSuccessorIdentity(fingerprint, predecessor);
+      taskId = successor.taskId;
+      successorMetadata = successor.metadata;
     }
+    const steps = plan(request, taskId);
     let task;
     try {
       task = await runtime.create({
@@ -1005,6 +1055,7 @@ export function createSelfDevelopmentService({
           maxRepairIterations: request.maxRepairIterations,
           selfDevelopment: request,
           selfDevelopmentRequestFingerprint: fingerprint,
+          ...(successorMetadata || {}),
           repairHistory: [],
           autoDispatch: true,
         },
@@ -1012,7 +1063,17 @@ export function createSelfDevelopmentService({
     } catch (error) {
       const concurrent = await runtime.get(taskId).catch(() => null);
       if (
-        concurrent?.metadata?.selfDevelopmentRequestFingerprint === fingerprint
+        (concurrent?.metadata?.rootRequestFingerprint ||
+          concurrent?.metadata?.selfDevelopmentRequestFingerprint) ===
+          fingerprint &&
+        (!predecessor ||
+          (concurrent.metadata?.supersedesTaskId === predecessor.id &&
+            concurrent.metadata?.retryContractVersion ===
+              TERMINAL_RETRY_CONTRACT_VERSION &&
+            concurrent.metadata?.predecessorTerminal?.status ===
+              predecessor.status &&
+            concurrent.metadata?.predecessorTerminal?.stateVersion ===
+              predecessor.stateVersion))
       )
         return {
           request,
