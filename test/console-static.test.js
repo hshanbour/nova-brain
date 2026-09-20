@@ -28,7 +28,9 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(html, /type="button"/);
   assert.match(css, /--composer-voice-amplitude/);
   assert.match(css, /#composerVoiceWaveform\[data-voice-state="recording"\]\{display:flex\}/);
-  assert.match(css, /inset:50% 112px auto 24px/);
+  assert.match(css, /\.composer textarea,#composerVoiceWaveform\{grid-column:1;grid-row:1/);
+  assert.match(css, /\.composer-actions\{grid-column:2;grid-row:1/);
+  assert.doesNotMatch(css, /inset:50% 112px auto 24px/);
   assert.match(css, /#composerVoiceWaveform\[data-voice-state="recording"\]\{padding:0 18px/);
   assert.match(css, /textarea\{visibility:hidden\}/);
   assert.match(css, /height:calc\(4px \+ var\(--composer-voice-amplitude\)\)/);
@@ -36,4 +38,5 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(css, /\.workspace\[hidden\]\{display:none\}/);
   assert.match(consoleJs, /createVoiceV2/);
   assert.match(consoleJs, /createComposerVoiceControl/);
+  assert.match(consoleJs, /voiceControl\.commit\(\); stopVoiceActivity\(\); input\.value = ""/);
 });

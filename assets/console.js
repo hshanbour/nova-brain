@@ -165,7 +165,7 @@ composer.addEventListener("submit", (event) => {
   event.preventDefault();
   if (pending) { activeSendController?.abort(); return; }
   const message = input.value.trim(); if (!message) return;
-  stopVoiceActivity(); input.value = ""; resizeInput();
+  voiceControl.commit(); stopVoiceActivity(); input.value = ""; resizeInput();
   const controller = new AbortController(); activeSendController = controller;
   sendMessage(message,{signal:controller.signal}).finally(()=>{if(activeSendController===controller)activeSendController=null;});
 });
