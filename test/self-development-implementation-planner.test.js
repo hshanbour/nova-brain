@@ -5,13 +5,14 @@ import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import {
   createSelfDevelopmentImplementationPlanner,
   SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA,
+  SELF_DEVELOPMENT_PLANNER_PROTECTED,
 } from "../src/autonomy/self-development-implementation-planner.js";
 import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
 import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA, SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION } from "../src/autonomy/self-development-implementation-contract.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { registerHandsTools } from "../src/tools/hands-runtime.js";
 import {canonicalContentHash} from "../src/autonomy/self-development-plan-lifecycle.js";
-import {focusedTestEvidenceRelevance} from "../src/autonomy/focused-test-evidence-relevance.js";
+import {focusedTestEvidenceRelevance,focusedTestSourceRelationship} from "../src/autonomy/focused-test-evidence-relevance.js";
 
 const OWNER = "owner",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -674,6 +675,33 @@ test("canonical relevance offers legitimate evidence and validation accepts exac
   assert.deepEqual(result.evidenceExpansion.paths,[EXTRA]);
   assert.equal(result.evidenceExpansion.category,"existing_file");
   assert.equal(focusedTestEvidenceRelevance("test/console-client.test.js",{candidatePaths:["assets/api-client.js",TEST],userGoal:"Repair API client response handling",discoveredPaths:new Set(["test/console-client.test.js"])}).eligible,true,"eligibility is contextual, not a filename deny-list");
+});
+
+test("microphone planning keeps preservation suites outside complete mutation-authoritative evidence",async()=>{
+  const sources=["assets/console.js","assets/console.css","assets/voice-input.js"],tests=["test/composer-voice-console.integration.test.js","test/console-static.test.js","test/voice-input.test.js"],preservation=["assets/voice-benchmark.js","assets/voice-capture.js","assets/voice-v2.js","test/voice-mode.test.js","test/voice-v2.test.js","test/speaker-identity.test.js"],candidates=[...sources,...tests],contents=new Map([
+    [sources[0],"export const composer = true;\n".repeat(900)],
+    [sources[1],".composer { display: flex; }\n".repeat(700)],
+    [sources[2],"export const waveform = true;\n".repeat(500)],
+    [tests[0],"import test from 'node:test';\n".repeat(80)],
+    [tests[1],"import test from 'node:test';\n".repeat(80)],
+    [tests[2],"import test from 'node:test';\n".repeat(80)],
+  ]),output={summary:"Update the analyser-driven composer waveform",files:[{path:sources[2],operation:"replace",content:"export const waveform = 'wide';\n",reason:"real amplitude UI",intendedChanges:["widen live waveform"]}],focusedTests:[{path:tests[2],kind:"existing"}],acceptanceMapping:[{criterion:"Live waveform remains responsive",files:[sources[2]]}],riskLevel:"medium"};
+  const f=await fixture([output],{discovered:[...candidates,...preservation],reads:[...contents],existing:[...candidates,...preservation]}),task=await f.storage.getAutonomyTask("selfdev-plan",OWNER);
+  await f.storage.updateAutonomyTask(task.id,OWNER,{metadata:{...task.metadata,selfDevelopment:{userGoal:"Improve the microphone waveform while preserving Voice V2 and speaker identity",acceptanceCriteria:["Live waveform remains responsive"]}}});
+  const result=await f.planner.generate({taskId:task.id,candidatePaths:candidates,currentCommit:SHA}),prompt=JSON.parse(f.prompts[0].message.split("\n")[1]),serialized=JSON.stringify(prompt.candidateFiles);
+  assert.ok(serialized.length<180000,serialized.length);
+  assert.deepEqual(prompt.candidateFiles.map(item=>item.path),candidates);
+  assert.equal(prompt.availableEvidenceExpansionTests.includes("test/voice-v2.test.js"),false);
+  assert.equal(prompt.availableEvidenceExpansionTests.includes("test/speaker-identity.test.js"),false);
+  assert.ok(result.implementationPlan.provenance);
+  assert.deepEqual(result.implementationPlan.evidencePaths,candidates);
+  assert.match(result.implementationPlan.provenance.evidenceGenerationId,/^[a-f0-9]{64}$/);
+  assert.deepEqual(result.implementationPlan.provenance.mutationPreconditions.map(item=>item.path),[sources[2]]);
+  assert.equal(SELF_DEVELOPMENT_PLANNER_PROTECTED.test("assets/voice-v2.js"),true);
+  assert.equal(SELF_DEVELOPMENT_PLANNER_PROTECTED.test("assets/voice-input.js"),false);
+  assert.equal(focusedTestSourceRelationship("test/voice-v2.test.js",sources).related,false);
+  assert.equal(focusedTestSourceRelationship("test/speaker-identity.test.js",sources).related,false);
+  assert.equal(focusedTestEvidenceRelevance("test/console-static.test.js",{candidatePaths:sources,userGoal:"microphone waveform",discoveredPaths:new Set(["test/console-static.test.js"])}).eligible,true);
 });
 
 test("rejected structured plans retain bounded references and fingerprints without source or model prose", async () => {

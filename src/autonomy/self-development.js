@@ -7,6 +7,7 @@ import {describeFullTestScopeRecovery,recoverFullTestScope,FULL_TEST_SCOPE_RECOV
 import {describeReviewRemediation,recoverReviewRemediation,REVIEW_REMEDIATION_TOOL,describeRejectedReviewPlanContinuation,recoverRejectedReviewPlanContinuation,REJECTED_REVIEW_PLAN_CONTINUATION_TOOL,describeSourceBoundReviewReplan,recoverSourceBoundReviewReplan,SOURCE_BOUND_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
 import {recoveryHash} from "./failed-local-read-recovery.js";
 import {describeEvidenceBoundReviewReplan,recoverEvidenceBoundReviewReplan,EVIDENCE_BOUND_REVIEW_REPLAN_TOOL,describeImplementationContentReviewReplan,recoverImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL,describeSourceLiteralReviewReplan,recoverSourceLiteralReviewReplan,SOURCE_LITERAL_REVIEW_REPLAN_TOOL,describeObservableLinkageReviewReplan,recoverObservableLinkageReviewReplan,OBSERVABLE_LINKAGE_REVIEW_REPLAN_TOOL,describeSemanticEvidenceReviewReplan,recoverSemanticEvidenceReviewReplan,SEMANTIC_EVIDENCE_REVIEW_REPLAN_TOOL,describeFailedSemanticReadRecovery,recoverFailedSemanticReadRecovery,FAILED_SEMANTIC_READ_RECOVERY_TOOL,describeTestIdentityInventoryReviewReplan,recoverTestIdentityInventoryReviewReplan,TEST_IDENTITY_INVENTORY_REPLAN_TOOL} from "./review-remediation-scope.js";
+import {focusedTestSourceRelationship} from "./focused-test-evidence-relevance.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -42,7 +43,7 @@ export function isDurableSelfDevelopmentRequest(value) {
   return DURABLE_INTAKE_ACTION.test(message) && DURABLE_INTAKE_TARGET.test(message);
 }
 const REPLAN_PROTECTED =
-  /(^|\/)(src\/(?:voice|policy|storage|autonomy)|speaker-worker|api\/index\.js|\.github|assets\/(?:voice-(?!input(?:\.|$))|speaker-))(\/|$)|ecapa|elevenlabs|voice-control|production|credential|secret|token/i;
+  /(^|\/)(?:src\/(?:voice|policy|storage|autonomy)(?:\/|$)|speaker-worker(?:\/|$)|api\/index\.js$|\.github(?:\/|$)|assets\/(?:voice-(?!input(?:\.|$))|speaker-)[^/]*(?:\/|$))|ecapa|elevenlabs|voice-control|production|credential|secret|token/i;
 const DISCOVERY_STOP_WORDS = new Set([
   "about", "after", "again", "against", "also", "another", "before", "current",
   "existing", "finish", "from", "have", "implementation", "implement", "into",
@@ -562,15 +563,14 @@ export function createSelfDevelopmentService({
       minimumConfidence = Math.max(4, Math.ceil(strongest * 0.35)),
       sources = rankedSources.filter((path) => score(path) >= minimumConfidence).slice(0, 6);
     if (!sources.length) return null;
-    const sourceTokens = new Set(sources.flatMap((path) => [...discoveryTokens(path)]));
-    const sourceAssociations = (path) => [...discoveryTokens(path)].filter((token) => sourceTokens.has(token)).length;
-    const testScore = (path) => score(path) + sourceAssociations(path) * 2;
+    const sourceAssociation = (path) => focusedTestSourceRelationship(path, sources);
+    const testScore = (path) => score(path) + sourceAssociation(path).matchedTokens.length * 2;
     const tests = [...discovered]
       // A search hit can be incidental (for example, a runtime test containing
       // a quoted product prompt). Focused tests must also be related by path to
       // at least one selected implementation source before they become
       // mutation-authoritative planner evidence.
-      .filter((path) => path.startsWith("test/") && safe(path) && sourceAssociations(path) > 0 && testScore(path) > 0)
+      .filter((path) => path.startsWith("test/") && safe(path) && sourceAssociation(path).related && testScore(path) > 0)
       .sort((a, b) => testScore(b) - testScore(a) || a.localeCompare(b)).slice(0, 6);
     if (!tests.length && typeof resolvePathState === "function") {
       const inferred = [];

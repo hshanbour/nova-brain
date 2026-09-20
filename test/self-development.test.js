@@ -1380,6 +1380,7 @@ test("automatic discovery ranks owning microphone modules above preservation-con
   assert.ok(paths.includes("test/voice-input.test.js"));
   assert.ok(paths.includes("assets/console.css"));
   assert.ok(paths.includes("assets/console.js"));
+  assert.equal(paths.some(path=>["assets/voice-benchmark.js","assets/voice-capture.js","assets/voice-v2.js","test/voice-mode.test.js","test/voice-v2.test.js","test/speaker-identity.test.js"].includes(path)),false,JSON.stringify(paths));
   assert.equal(paths.includes("test/self-development.test.js"),false,JSON.stringify(paths));
   assert.equal(paths.some(path=>path.startsWith("docs/")||path.startsWith("src/identity/")||path.startsWith("src/memory/")),false,JSON.stringify(paths));
 });
