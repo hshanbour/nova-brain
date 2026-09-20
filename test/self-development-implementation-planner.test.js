@@ -153,7 +153,7 @@ test("an unchanged evidence-bound plan becomes a bounded no-change candidate",as
 test("planner and Hands share the canonical versioned patch bridge contract", () => {
   const registry=createToolRegistry();registerHandsTools(registry,{root:process.cwd(),environment:{VERCEL:"",NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH}});
   const patch=registry.list().find((tool)=>tool.name==="repo_apply_patch");
-  assert.equal(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION,"1");
+  assert.equal(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION,"2");
   assert.deepEqual(patch.inputSchema,SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA);
   assert.deepEqual(Object.keys(patch.inputSchema.properties).sort(),["branch","currentCommit","files","planProvenance"]);
 });
@@ -163,6 +163,28 @@ test("canonical composer-style plan validates before Hands-compatible mutation",
   assert.deepEqual(result.implementationPlan.focusedTests,[{path:"test/voice-input.test.js",kind:"existing"}]);
   assert.deepEqual(result.implementationPlan.files.map(({path,operation})=>({path,operation})),[{path:"assets/voice-input.js",operation:"replace"},{path:"test/voice-input.test.js",operation:"replace"}]);
   assert.equal(result.implementationPlan.files.every((file)=>typeof file.expectedContent==="string"),true);
+});
+test("canonical planner separates focused-test verification from mutation acceptance",async()=>{
+  const source="assets/voice-input.js",changedTest="test/voice-input.test.js",staticTest="test/console-static.test.js",integrationTest="test/composer-voice-console.integration.test.js",clientTest="test/console-client.test.js",paths=[source,changedTest,staticTest,integrationTest,clientTest],output={summary:"Refine the analyser-driven microphone waveform",files:[
+    {path:source,operation:"replace",content:"export const waveform = 'dense';\n",reason:"refine live waveform",intendedChanges:["render denser real amplitude bars"]},
+    {path:changedTest,operation:"replace",content:"import test from 'node:test';\ntest('dense waveform', () => {});\n",reason:"cover analyser behavior",intendedChanges:["verify denser waveform"]},
+    {path:staticTest,operation:"replace",content:"import test from 'node:test';\ntest('recording layout', () => {});\n",reason:"cover recording layout",intendedChanges:["verify control clearance"]},
+  ],focusedTests:[{path:changedTest,kind:"existing"},{path:integrationTest,kind:"existing"},{path:staticTest,kind:"existing"},{path:clientTest,kind:"existing"}],acceptanceMapping:[
+    {criterion:"Waveform is dense and responsive",files:[source,changedTest,staticTest]},
+    {criterion:"Recording controls remain clear",files:[source,staticTest]},
+    {criterion:"Console behavior remains intact",files:[changedTest,integrationTest,staticTest,clientTest]},
+  ],riskLevel:"medium"};
+  const reads=paths.map(path=>[path,path.startsWith("test/")?"import test from 'node:test';\n": "export const waveform = 'old';\n"]),f=await fixture([output],{discovered:paths,reads}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:paths,currentCommit:SHA}),plan=result.implementationPlan;
+  assert.deepEqual(plan.files.map(file=>file.path),[source,changedTest,staticTest]);
+  assert.deepEqual(plan.acceptanceMapping,[
+    {criterion:"Waveform is dense and responsive",files:[source,changedTest,staticTest]},
+    {criterion:"Recording controls remain clear",files:[source,staticTest]},
+    {criterion:"Console behavior remains intact",files:[changedTest,staticTest],tests:[integrationTest,clientTest]},
+  ]);
+  assert.deepEqual(plan.focusedTests,output.focusedTests);
+  assert.equal(plan.provenance.mutationPreconditions.some(item=>item.path===integrationTest||item.path===clientTest),false);
+  assert.deepEqual(plan.provenance.mutationPreconditions.map(item=>item.path),[source,changedTest,staticTest]);
+  assert.match(plan.provenance.generationId,/^[a-f0-9]{64}$/);
 });
 const stable=value=>Array.isArray(value)?value.map(stable):value&&typeof value==="object"?Object.fromEntries(Object.keys(value).sort().map(key=>[key,stable(value[key])])):value;
 const durableHash=value=>createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
@@ -335,8 +357,14 @@ test("acceptance mapping cannot substitute an unmodified test file", async () =>
     (e) => e.code === "implementation_plan_invalid",
   );
 });
+test("acceptance verification still rejects tests outside the selected focused-test contract",async()=>{
+  const output=valid();output.acceptanceMapping[0].tests=[EXTRA];
+  const f=await fixture([output]);
+  await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>error.code==="implementation_plan_invalid"&&error.safeDiagnostics.validationIssues.includes("acceptance_mapping_test_invalid"));
+});
 test("durable Worker passes only the validated Nova patch to Hands", async () => {
-  const f = await fixture(),
+  const output=valid();output.acceptanceMapping[0].files=[DOC,TEST];
+  const f = await fixture([output]),
     generated = await f.planner.generate({
       taskId: "selfdev-plan",
       candidatePaths: [DOC, TEST],
@@ -365,6 +393,15 @@ test("durable Worker passes only the validated Nova patch to Hands", async () =>
           },
           idempotencyIdentity: "apply",
         },
+        {
+          type: "run_focused_tests",
+          capability: "test_local",
+          input: {
+            tool: "test_run",
+            arguments: { files: "$IMPLEMENTATION_TESTS" },
+          },
+          idempotencyIdentity: "focused",
+        },
       ],
       selfDevelopment: {
         userGoal: "Update harmless documentation",
@@ -376,24 +413,26 @@ test("durable Worker passes only the validated Nova patch to Hands", async () =>
     storage: f.storage,
     ownerId: OWNER,
     approvedBranch: BRANCH,
-    capabilities: ["reasoning", "repo_mutate_local"],
+    capabilities: ["reasoning", "repo_mutate_local", "test_local"],
     toolRegistry: {
       async execute(name, args) {
         calls.push({ name, args });
-        return name === "self_development_plan_implementation"
-          ? generated
-          : { ok: true, files: args.files.map((x) => x.path) };
+        if(name === "self_development_plan_implementation")return generated;
+        return name === "repo_apply_patch"?{ok:true,files:args.files.map((x)=>x.path)}:{ok:true,passed:1,failed:0};
       },
     },
   });
   await runtime.tickTask("selfdev-plan", { idempotencyKey: "plan" });
   await runtime.tickTask("selfdev-plan", { idempotencyKey: "apply" });
+  await runtime.tickTask("selfdev-plan", { idempotencyKey: "focused" });
   assert.deepEqual(
     calls.map((x) => x.name),
-    ["self_development_plan_implementation", "repo_apply_patch"],
+    ["self_development_plan_implementation", "repo_apply_patch", "test_run"],
   );
   assert.equal(calls[1].args.files[0].content, "new doc");
   assert.equal(calls[1].args.files[0].operation, "replace");
+  assert.deepEqual(calls[2].args.files,[TEST]);
+  assert.deepEqual(generated.implementationPlan.acceptanceMapping,[{criterion:"Document is updated",files:[DOC],tests:[TEST]}]);
 });
 test("relevant unread focused test expands evidence, is read, and replans before Hands", async () => {
   const first = valid();
@@ -715,7 +754,8 @@ test("rejected structured plans retain bounded references and fingerprints witho
   assert.equal(proof.version,1);assert.equal(proof.taskId,"selfdev-plan");assert.equal(proof.currentCommit,SHA);
   assert.deepEqual(proof.requestedMutationPaths.map(({path,operation})=>({path,operation})),[{path:DOC,operation:"replace"}]);
   assert.deepEqual(proof.requestedFocusedTests.map(({path,kind})=>({path,kind})),[{path:unrelated,kind:"existing"}]);
-  assert.deepEqual(proof.acceptanceMapping[0].files,[{mutationIndex:0},{focusedTestIndex:0}]);
+  assert.deepEqual(proof.acceptanceMapping[0].files,[{mutationIndex:0}]);
+  assert.deepEqual(proof.acceptanceMapping[0].tests,[{focusedTestIndex:0}]);
   assert.equal(proof.acceptanceMapping[0].criterionIndex,-1);
   assert.match(proof.planFingerprint,/^[a-f0-9]{64}$/);assert.match(proof.evidenceFingerprint,/^[a-f0-9]{64}$/);assert.match(diagnostic.outputShapeHash,/^[a-f0-9]{64}$/);
   assert.equal(proof.validation.classification,"unrelated");assert.equal(proof.mutationApplied,false);

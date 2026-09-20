@@ -1,4 +1,4 @@
-export const SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION = "1";
+export const SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA_VERSION = "2";
 
 // Single server/worker boundary for a validated implementation plan.
 export const SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA = Object.freeze({
