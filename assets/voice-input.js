@@ -7,6 +7,7 @@ export const MICROPHONE_LANGUAGES = Object.freeze([
 const languages = new Set(MICROPHONE_LANGUAGES.map(({ code }) => code));
 const states = new Set(['idle', 'recording', 'processing', 'complete', 'error']);
 const root = typeof window === 'undefined' ? {} : window;
+const WAVEFORM_BAR_COUNT = 64;
 
 const base = (dependencies = {}) => ({
   SpeechRecognition: root.SpeechRecognition || root.webkitSpeechRecognition,
@@ -30,7 +31,8 @@ export function createVoiceInput(options = {}) {
     onState: options.onState || (() => {}),
     onText: options.onText || (() => {}),
     onError: options.onError || (() => {}),
-    onAmplitude: options.onAmplitude || (() => {})
+    onAmplitude: options.onAmplitude || (() => {}),
+    onSpectrum: options.onSpectrum || (() => {})
   };
 
   let language = options.language || dependencies.storage?.getItem?.('nova-composer-language') || 'en-US';
@@ -58,6 +60,10 @@ export function createVoiceInput(options = {}) {
     callbacks.onAmplitude(Math.max(0, Math.min(1, value || 0)));
   };
 
+  const publishSpectrum = (levels = []) => {
+    callbacks.onSpectrum(levels.map((value) => Math.max(0, Math.min(1, value || 0))));
+  };
+
   const clearMeter = () => {
     if (frame) dependencies.cancelAnimationFrame(frame);
     frame = undefined;
@@ -70,6 +76,7 @@ export function createVoiceInput(options = {}) {
     source = undefined;
     analyser = undefined;
     publishAmplitude(0);
+    publishSpectrum([]);
   };
 
   const finish = (next) => {
@@ -102,13 +109,17 @@ export function createVoiceInput(options = {}) {
       source = context.createMediaStreamSource(stream);
       analyser = context.createAnalyser();
       analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = .72;
       source.connect(analyser);
 
       const samples = new Uint8Array(analyser.fftSize);
+      const frequencies = new Uint8Array(analyser.frequencyBinCount);
+      const smoothedBars = Array.from({ length: WAVEFORM_BAR_COUNT }, () => 0);
       let smooth = 0;
       const tick = () => {
         if (id !== token || state !== 'recording') return;
         analyser.getByteTimeDomainData(samples);
+        analyser.getByteFrequencyData(frequencies);
 
         let sum = 0;
         for (const value of samples) {
@@ -120,12 +131,25 @@ export function createVoiceInput(options = {}) {
         const target = raw < .012 ? 0 : Math.min(1, raw * 8);
         smooth += (target - smooth) * (target > smooth ? .42 : .16);
         publishAmplitude(smooth < .008 ? 0 : smooth);
+
+        const levels = smoothedBars.map((previous, index) => {
+          const start = Math.floor((index / WAVEFORM_BAR_COUNT) * frequencies.length);
+          const end = Math.max(start + 1, Math.floor(((index + 1) / WAVEFORM_BAR_COUNT) * frequencies.length));
+          let peak = 0;
+          for (let bin = start; bin < end; bin += 1) peak = Math.max(peak, frequencies[bin] || 0);
+          const measured = peak / 255;
+          const next = previous + (measured - previous) * (measured > previous ? .46 : .18);
+          smoothedBars[index] = next < .012 ? 0 : next;
+          return smoothedBars[index];
+        });
+        publishSpectrum(levels);
         frame = dependencies.requestAnimationFrame(tick);
       };
 
       tick();
     } catch {
       publishAmplitude(0);
+      publishSpectrum([]);
     }
   };
 
@@ -137,8 +161,6 @@ export function createVoiceInput(options = {}) {
     finalText = '';
     stopped = false;
     const id = ++token;
-    // Recognition instances retain their language configuration. Always create
-    // one at start so a locale change cannot reuse an English-configured instance.
     recognition = new Recognition();
     recognition.lang = language;
     recognition.continuous = true;
@@ -167,6 +189,7 @@ export function createVoiceInput(options = {}) {
 
     setState('recording');
     publishAmplitude(0);
+    publishSpectrum([]);
     meter(id);
 
     try {
@@ -197,8 +220,6 @@ export function createVoiceInput(options = {}) {
       language = next;
       dependencies.storage?.setItem?.('nova-composer-language', next);
 
-      // A running recognizer cannot reliably change language. Retire it so the
-      // next start creates an instance configured with the selected locale.
       if (recognition) {
         token += 1;
         recognition.abort?.();
@@ -221,6 +242,28 @@ export function createComposerVoiceControl(options = {}) {
 
   let controller;
   let lastError = '';
+  let spectrum = [];
+
+  const ensureWaveformBars = () => {
+    const documentRef = waveformTarget?.ownerDocument;
+    if (!waveformTarget || !documentRef?.createElement) return [];
+    const bars = Array.from({ length: WAVEFORM_BAR_COUNT }, () => documentRef.createElement('span'));
+    waveformTarget.replaceChildren(...bars);
+    return bars;
+  };
+
+  const bars = ensureWaveformBars();
+  const renderBars = (state) => {
+    if (!waveformTarget) return;
+    const active = state === 'recording';
+    const nodes = bars.length ? bars : [...(waveformTarget.children || [])];
+    nodes.forEach((bar, index) => {
+      const level = active ? spectrum[index] || 0 : 0;
+      bar.style.height = `${active ? 5 + Math.round(level * 34) : 5}px`;
+      bar.style.opacity = active ? `${.42 + level * .58}` : '.42';
+    });
+  };
+
   const render = (state, error = lastError, amplitude = 0) => {
     lastError = error || '';
     button.dataset.voiceState = state;
@@ -240,7 +283,11 @@ export function createComposerVoiceControl(options = {}) {
     }
 
     if (errorTarget) errorTarget.textContent = lastError.message || '';
-    if (waveformTarget) { waveformTarget.dataset.voiceState = state; waveformTarget.style.setProperty('--composer-voice-amplitude', `${Math.round((amplitude || 0) * 12)}px`); }
+    if (waveformTarget) {
+      waveformTarget.dataset.voiceState = state;
+      waveformTarget.style.setProperty('--composer-voice-amplitude', `${Math.round((amplitude || 0) * 12)}px`);
+      renderBars(state);
+    }
   };
 
   controller = createVoiceInput({
@@ -253,7 +300,11 @@ export function createComposerVoiceControl(options = {}) {
       resizeInput?.();
     },
     onError: (error) => render('error', error, 0),
-    onAmplitude: (amplitude) => render(controller.getState(), lastError, amplitude)
+    onAmplitude: (amplitude) => render(controller.getState(), lastError, amplitude),
+    onSpectrum: (levels) => {
+      spectrum = levels;
+      render(controller.getState(), lastError);
+    }
   });
 
   const click = () => {
