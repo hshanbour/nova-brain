@@ -483,6 +483,47 @@ test("valid evidence-bound independently reviewed no-change lifecycle completes 
   assert.equal(steps.some(step=>["apply_patch","commit","push","deploy_preview"].includes(step.stepType)),false);
   assert.deepEqual(steps.filter(step=>step.stepType.includes("test")).map(step=>step.status),["completed","completed"]);
 });
+async function automaticReplanNoChange({alterEntries=(entries)=>entries}={}){
+  let f;const goal="Implement the already satisfied console status behavior",criteria=["Existing console status remains verified","No unrelated files change","Preview remains the only deployment target"],contents={"assets/console.js":"export const status = 'ready';\n","test/console-static.test.js":"import test from 'node:test';\ntest('status',()=>{});\n"};
+  f=await fixture({execute:async(name,args)=>{
+    if(name==="repo_list")return{ok:true,files:Object.keys(contents)};
+    if(name==="repo_search")return{ok:true,matches:Object.keys(contents)};
+    if(name==="repo_read")return{ok:true,path:args.path,content:contents[args.path],truncated:false};
+    if(name==="self_development_plan_implementation"){
+      const steps=await f.storage.listAutonomySteps(args.taskId),entries=args.candidatePaths.map(path=>{const read=steps.findLast(item=>item.stepType==="read_files"&&(item.result?.path||item.input?.arguments?.path)===path);return{path,contentHash:canonicalContentHash(contents[path]),readStepId:read.stepId};}),boundEntries=alterEntries(structuredClone(entries));
+      const base={version:1,taskId:args.taskId,currentCommit:SHA,intent:"implementation",summary:"The requested behavior is already present.",goalHash:lifecycleHash(JSON.stringify(goal)),evidenceHash:lifecycleHash(entries.map(({path,contentHash})=>({path,contentHash}))),evidenceEntries:boundEntries,focusedTests:[{path:"test/console-static.test.js",kind:"existing"}],acceptanceMapping:criteria.map(criterion=>({criterion,files:["assets/console.js"],tests:["test/console-static.test.js"]})),plannerAttempt:1};
+      return{ok:true,noChangeCandidate:{...base,decisionHash:lifecycleHash(base)}};
+    }
+    if(name==="test_run"||name==="test_run_full")return{ok:true,exitCode:0,passed:1,failed:0};
+    throw new Error(`unexpected tool ${name}`);
+  }});
+  const created=await f.service.create({userGoal:goal,acceptanceCriteria:criteria});
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`automatic-no-change-discovery-${index}`});
+  const blocked=await f.runtime.get(created.task.id);assert.equal(blocked.errorCode,"implementation_scope_required");
+  const replanned=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+  for(let index=0;index<20&&!new Set(["completed","failed","blocked"]).has((await f.runtime.get(created.task.id)).status);index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`automatic-no-change-continuation-${index}`});
+  return{f,created,replanned,task:await f.runtime.get(created.task.id),steps:await f.runtime.steps(created.task.id)};
+}
+test("automatic replan binds a complete no-change decision to its exact discovered candidate scope",async()=>{
+  const {replanned,task,steps}=await automaticReplanNoChange(),paths=["assets/console.js","test/console-static.test.js"];
+  assert.deepEqual(replanned.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths,paths);
+  assert.deepEqual(steps.find(step=>step.stepType==="plan_implementation").input.arguments.candidatePaths,paths);
+  assert.equal(task.status,"completed");
+  assert.deepEqual(steps.find(step=>step.stepType==="review_no_change").result.reviewedNoChange.evidenceEntries.map(entry=>entry.path),paths);
+  assert.equal(steps.some(step=>["apply_patch","commit","push","deploy_preview"].includes(step.stepType)),false);
+});
+for(const [name,alterEntries] of [
+  ["missing candidate",entries=>entries.slice(0,1)],
+  ["wrong content hash",entries=>entries.map((entry,index)=>index?{...entry,contentHash:"f".repeat(64)}:entry)],
+  ["wrong read-step binding",entries=>entries.map((entry,index)=>index?{...entry,readStepId:"999:read_files"}:entry)],
+  ["unrelated extra evidence",entries=>[...entries,{path:"docs/unrelated.md",contentHash:"e".repeat(64),readStepId:"998:read_files"}]],
+])test(`automatic replan no-change validation fails closed for ${name}`,async()=>{
+  const {task,steps}=await automaticReplanNoChange({alterEntries});
+  assert.equal(task.status,"failed");
+  assert.equal(task.errorCode,"implementation_evidence_incomplete");
+  assert.equal(steps.find(step=>step.stepType==="plan_implementation").status,"failed");
+  assert.equal(steps.some(step=>["apply_patch","run_focused_tests","run_full_tests","review_no_change","commit","push","deploy_preview"].includes(step.stepType)),false);
+});
 test("a bare no-change boolean cannot satisfy the implementation completion invariant",async()=>{
   const f=await fixture(),created=await f.service.create(input()),summary=created.plan.find(step=>step.type==="summarize");
   await f.storage.recordAutonomyStep({taskId:created.task.id,stepId:"1:review_no_change",stepType:"review_no_change",capability:"reasoning",operationFingerprint:"unbound",status:"completed",result:{noChangeRequired:true}});
