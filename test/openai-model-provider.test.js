@@ -101,6 +101,28 @@ test("OpenAI provider failures do not expose response bodies or API keys", async
   );
 });
 
+test("OpenAI provider preserves bounded structured upstream diagnostics", async () => {
+  const provider = createOpenAIModelProvider({
+    apiKey: "secret-key",
+    model: "gpt-test",
+    async fetchImpl() {
+      return { ok: false, status: 400, async text() { return JSON.stringify({ error: { message: "Invalid schema. Missing 'tests'. sk-secret-value", type: "invalid_request_error", param: "text.format.schema", code: "invalid_json_schema" } }); } };
+    }
+  });
+  await assert.rejects(() => provider.generate({
+    message: "structured", conversationHistory: [], context: {}, tools: [],
+    responseFormat: { name: "bounded_plan", schema: { type:"object", properties:{ok:{type:"boolean"}}, required:["ok"], additionalProperties:false }, strict:true }
+  }), error => {
+    assert.deepEqual(error.safeDiagnostics, {
+      stage:"openai_response", endpoint:"/v1/responses", requestMode:"responses_json_schema", model:"gpt-test", responseFormatName:"bounded_plan",
+      upstreamStatus:400, upstreamErrorType:"invalid_request_error", upstreamErrorCode:"invalid_json_schema", upstreamErrorParam:"text.format.schema",
+      upstreamErrorMessage:"Invalid schema. Missing 'tests'. [redacted]", rejectedSchemaField:"tests"
+    });
+    assert.doesNotMatch(JSON.stringify(error), /secret-value/);
+    return true;
+  });
+});
+
 test("OpenAI provider forwards the active synchronous AbortSignal", async () => {
   const controller = new AbortController();
   let receivedSignal;
@@ -117,6 +139,8 @@ test("OpenAI provider forwards the active synchronous AbortSignal", async () => 
 });
 
 test("OpenAI provider sends a strict Responses JSON schema when requested",async()=>{let body;const schema={type:"object",properties:{ok:{type:"boolean"}},required:["ok"],additionalProperties:false},provider=createOpenAIModelProvider({apiKey:"test-secret",model:"test-model",async fetchImpl(_url,options){body=JSON.parse(options.body);return jsonResponse({id:"structured",output:[{type:"message",content:[{type:"output_text",text:'{"ok":true}'}]}]});}}),result=await provider.generate({message:"structured",conversationHistory:[],context:{},tools:[],responseFormat:{name:"bounded_plan",schema,strict:true}});assert.deepEqual(body.text.format,{type:"json_schema",name:"bounded_plan",schema,strict:true});assert.deepEqual(result,{type:"final",message:'{"ok":true}'});});
+
+test("strict Responses schemas fail locally before an invalid provider request",async()=>{let calls=0;const provider=createOpenAIModelProvider({apiKey:"test-secret",model:"test-model",async fetchImpl(){calls++;return jsonResponse({});}});await assert.rejects(()=>provider.generate({message:"structured",conversationHistory:[],context:{},tools:[],responseFormat:{name:"invalid",schema:{type:"object",properties:{requiredValue:{type:"string"},optionalValue:{type:"string"}},required:["requiredValue"],additionalProperties:false},strict:true}}),/require every property.*response_format\.invalid/);assert.equal(calls,0);});
 
 test("tool definitions default to non-strict and support no, optional, and required arguments", () => {
   const definitions = [

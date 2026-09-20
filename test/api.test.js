@@ -1240,6 +1240,8 @@ test("API logs bounded structured OpenAI diagnostics while returning a generic e
   assert.match(res.headers.get("x-request-id"), /^[0-9a-f-]{36}$/);
   assert.equal(entries[0][1].upstreamStatus, 400);
   assert.equal(entries[0][1].runId, "run-safe-id");
+  assert.equal(entries[0][1].diagnostics.upstreamStatus, 400);
+  assert.equal(entries[0][1].diagnostics.upstreamErrorMessage, "invalid schema [redacted]");
   assert.equal(JSON.stringify(entries).includes("sk-secret-value"), false);
 });
 test("create-conflict recovery is exact-task and scoped-worker protected", async () => {

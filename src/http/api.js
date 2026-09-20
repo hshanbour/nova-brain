@@ -2116,6 +2116,7 @@ export function createApi({
           requestId,
           runId: error?.runId,
           detail: error?.safeDetail,
+          diagnostics: error?.safeDiagnostics,
         });
         sendJson(response, 500, { error: "Internal server error" });
       }
