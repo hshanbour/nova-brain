@@ -103,6 +103,7 @@ export async function createReviewRemediationFixture(t,{failingFocused=false,fai
   const mutationPaths=subset?PLANNING_PATHS.filter(path=>!path.endsWith(".css")&&path!=="index.html"):PLANNING_PATHS;
   if(subset)for(const path of PLANNING_PATHS.filter(path=>!mutationPaths.includes(path)))candidate.after.set(path,base.afterContents.get(path));
   const planner=createSelfDevelopmentImplementationPlanner({storage,ownerId,runtimeVersion,clock,modelProvider:{async generate(request){
+    if(request.responseFormat?.name==="nova_self_development_preservation_assessment")return{type:"final",message:JSON.stringify({status:"preserved",unrelatedRemovals:[],intentionalRemovals:[]})};
     const prompt=JSON.parse(request.message.split("\n")[1]);prompts.push(structuredClone(prompt));
     const proposed={summary:"Synthetic Nova-generated same-eight-file review candidate",files:mutationPaths.map(path=>({path,operation:"replace",content:candidate.after.get(path),reason:"Synthetic isolated review lifecycle probe",intendedChanges:["Update the synthetic candidate"]})),focusedTests:EXECUTION_TEST_PATHS.map(path=>({path,kind:"existing"})),acceptanceMapping:(prompt.acceptanceCriteria||[]).map(criterion=>({criterion,files:mutationPaths})),reviewCoverage:candidate.coverage.map(({sourceHash,...mapping})=>mapping),riskLevel:"low"};
     return {type:"final",message:JSON.stringify(output?output(proposed,prompt):proposed)};

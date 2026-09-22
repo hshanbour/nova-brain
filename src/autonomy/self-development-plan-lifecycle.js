@@ -9,8 +9,9 @@ export const canonicalContentHash=value=>lifecycleHash(canonicalContent(value));
 export function bindImplementationPlan({task,plan,evidence,readStepIds=[],plannerAttempt=1}){
   const evidenceGenerationId=lifecycleHash({taskId:task.id,currentCommit:task.currentCommit,evidence:evidence.map(item=>({path:item.path,contentHash:canonicalContentHash(item.content)})),readStepIds});
   const mutationPreconditions=plan.files.map(file=>({path:file.path,operation:file.operation,...(file.operation==="replace"?{expectedContentHash:canonicalContentHash(file.expectedContent)}:{})}));
-  const generationId=lifecycleHash({taskId:task.id,currentCommit:task.currentCommit,startingCommit:task.startingCommit||null,evidenceGenerationId,planHash:plan.planHash,mutationPreconditions,plannerAttempt});
-  return Object.freeze({version:IMPLEMENTATION_PLAN_PROVENANCE_VERSION,generationId,authority:"active",taskId:task.id,currentCommit:task.currentCommit,startingCommit:task.startingCommit||null,evidenceGenerationId,plannerAttempt,mutationPreconditions});
+  const preservationAssessmentHash=plan.preservationAssessment?.assessmentHash||null;
+  const generationId=lifecycleHash({taskId:task.id,currentCommit:task.currentCommit,startingCommit:task.startingCommit||null,evidenceGenerationId,planHash:plan.planHash,preservationAssessmentHash,mutationPreconditions,plannerAttempt});
+  return Object.freeze({version:IMPLEMENTATION_PLAN_PROVENANCE_VERSION,generationId,authority:"active",taskId:task.id,currentCommit:task.currentCommit,startingCommit:task.startingCommit||null,evidenceGenerationId,preservationAssessmentHash,plannerAttempt,mutationPreconditions});
 }
 
 export function rebindEquivalentImplementationPlan({task,plan,evidence,readStepIds=[]}){
@@ -32,7 +33,8 @@ export function assertActiveImplementationPlan(task,files,{allowPlanningOnly=fal
   if(provenance.planningOnly===true&&!allowPlanningOnly)fail("planning_scope_mutation_forbidden","A planning-only generation cannot authorize product mutation.");
   if(provenance.taskId!==task.id||provenance.currentCommit!==task.currentCommit)fail("implementation_plan_stale","The implementation plan is not bound to the exact task commit.");
   if(provenance.startingCommit!==(task.startingCommit||null))fail("implementation_plan_stale","The implementation plan is not bound to the exact task starting commit.");
-  const generationId=lifecycleHash({taskId:task.id,currentCommit:task.currentCommit,startingCommit:task.startingCommit||null,evidenceGenerationId:provenance.evidenceGenerationId,planHash:plan.planHash,mutationPreconditions:provenance.mutationPreconditions,plannerAttempt:provenance.plannerAttempt});
+  if(Object.prototype.hasOwnProperty.call(provenance,"preservationAssessmentHash")&&provenance.preservationAssessmentHash!==(plan.preservationAssessment?.assessmentHash||null))fail("implementation_plan_evidence_mismatch","The preservation assessment changed after planning.");
+  const generationId=lifecycleHash({taskId:task.id,currentCommit:task.currentCommit,startingCommit:task.startingCommit||null,evidenceGenerationId:provenance.evidenceGenerationId,planHash:plan.planHash,...(Object.prototype.hasOwnProperty.call(provenance,"preservationAssessmentHash")?{preservationAssessmentHash:provenance.preservationAssessmentHash||null}:{}),mutationPreconditions:provenance.mutationPreconditions,plannerAttempt:provenance.plannerAttempt});
   if(generationId!==provenance.generationId)fail("implementation_plan_evidence_mismatch","Implementation-plan evidence, plan result, or mutation preconditions changed after planning.");
   if(task.metadata?.activeImplementationPlanGeneration!==provenance.generationId||active.length!==1||active[0].generationId!==provenance.generationId)fail("implementation_plan_superseded","The implementation plan is not the unique active generation.");
   if(!Array.isArray(files)||!Array.isArray(provenance.mutationPreconditions))fail("implementation_plan_precondition_mismatch","Implementation files do not match the active plan preconditions.");

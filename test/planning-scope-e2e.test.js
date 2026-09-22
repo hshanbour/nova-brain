@@ -66,6 +66,7 @@ async function fixture(t,{output}={}){
   const prompts=[],executions=[],requests=[];
   const hooks={claim:()=>{},execution:()=>{}};
   const planner=createSelfDevelopmentImplementationPlanner({storage,ownerId,runtimeVersion,clock,modelProvider:{async generate(request){
+    if(request.responseFormat?.name==="nova_self_development_preservation_assessment")return{type:"final",message:JSON.stringify({status:"preserved",unrelatedRemovals:[],intentionalRemovals:[]})};
     const prompt=JSON.parse(request.message.split("\n")[1]);prompts.push(prompt);
     const value=output?output(prompt):{
       summary:"Synthetic same-scope replacement for pre-mutation verification only",

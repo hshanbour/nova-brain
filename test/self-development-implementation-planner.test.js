@@ -6,6 +6,7 @@ import {
   createSelfDevelopmentImplementationPlanner,
   SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA,
   SELF_DEVELOPMENT_NO_CHANGE_ASSESSMENT_SCHEMA,
+  SELF_DEVELOPMENT_PRESERVATION_ASSESSMENT_SCHEMA,
   SELF_DEVELOPMENT_PLANNER_PROTECTED,
 } from "../src/autonomy/self-development-implementation-planner.js";
 import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
@@ -45,6 +46,7 @@ async function fixture(
       [TEST, "old test"],
     ],
     existing = discovered,
+    preservationAssessment = {status:"preserved",unrelatedRemovals:[],intentionalRemovals:[]},
   } = {},
 ) {
   const storage = createInMemoryStorage();
@@ -95,6 +97,7 @@ async function fixture(
   const modelProvider = {
       async generate(input) {
         prompts.push(input);
+        if(input.responseFormat?.name==="nova_self_development_preservation_assessment")return{type:"final",message:JSON.stringify(preservationAssessment)};
         const output = outputs[Math.min(calls++, outputs.length - 1)];
         return output?.type
           ? output
@@ -141,6 +144,8 @@ test("canonical valid structured output produces the Hands replacement represent
     strict: true,
   });
   assert.equal(f.prompts[0].stage,"planner");
+  assert.equal(f.prompts[1].responseFormat.name,"nova_self_development_preservation_assessment");
+  assert.equal(result.implementationPlan.preservationAssessment.status,"preserved");
 });
 test("planner records stage-bound provider usage without changing the canonical plan",async()=>{const usage={model:"strong",stage:"planner",serviceTier:"default",inputTokens:1000,cachedInputTokens:800,outputTokens:200,reasoningTokens:50,totalTokens:1200},output={type:"final",message:JSON.stringify(valid()),providerUsage:usage},f=await fixture([output]),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA});assert.deepEqual(result.providerUsage,[usage]);assert.equal(result.implementationPlan.files[0].path,DOC);});
 test("an unchanged evidence-bound plan becomes a bounded no-change candidate",async()=>{
@@ -185,7 +190,39 @@ test("canonical composer-style plan validates before Hands-compatible mutation",
   assert.deepEqual(result.implementationPlan.files.map(({path,operation})=>({path,operation})),[{path:"assets/voice-input.js",operation:"replace"},{path:"test/voice-input.test.js",operation:"replace"}]);
   assert.equal(result.implementationPlan.files.every((file)=>typeof file.expectedContent==="string"),true);
 });
-test("planner v2 response schemas are strict-compatible at every object level",()=>{const visit=(schema,path)=>{if(schema?.type==="object"){assert.equal(schema.additionalProperties,false,path);assert.deepEqual([...schema.required].sort(),Object.keys(schema.properties).sort(),path);for(const [name,child] of Object.entries(schema.properties))visit(child,`${path}.${name}`);}if(schema?.type==="array")visit(schema.items,`${path}[]`);};visit(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA,"plan");visit(SELF_DEVELOPMENT_NO_CHANGE_ASSESSMENT_SCHEMA,"noChangeAssessment");assert.equal(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA.properties.acceptanceMapping.items.properties.tests.minItems,0);});
+test("planner v2 response schemas are strict-compatible at every object level",()=>{const visit=(schema,path)=>{if(schema?.type==="object"){assert.equal(schema.additionalProperties,false,path);assert.deepEqual([...schema.required].sort(),Object.keys(schema.properties).sort(),path);for(const [name,child] of Object.entries(schema.properties))visit(child,`${path}.${name}`);}if(schema?.type==="array")visit(schema.items,`${path}[]`);};visit(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA,"plan");visit(SELF_DEVELOPMENT_NO_CHANGE_ASSESSMENT_SCHEMA,"noChangeAssessment");visit(SELF_DEVELOPMENT_PRESERVATION_ASSESSMENT_SCHEMA,"preservationAssessment");assert.equal(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA.properties.acceptanceMapping.items.properties.tests.minItems,0);});
+
+test("independent preservation review rejects destructive simplification inside authorized files",async()=>{
+  const output=valid();output.files[0].content="export function liveActivity() { return true; }\n";
+  const baseline="export function voiceMode() { return true; }\nexport function conversationHistory() { return true; }\n";
+  const f=await fixture([output],{reads:[[DOC,baseline],[TEST,"import test from 'node:test';\ntest('existing regression', () => {});\n"]],preservationAssessment:{status:"blocked",unrelatedRemovals:[{path:DOC,behavior:"Existing voice mode behavior",baselineExcerpt:"export function voiceMode() { return true; }"}],intentionalRemovals:[]}});
+  await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>error.code==="implementation_preservation_violation"&&error.safeDiagnostics.validationIssues.includes("unrelated_baseline_behavior_removed")&&error.safeDiagnostics.affectedPaths[0]===DOC);
+});
+
+test("preservation review rejects weakened regression coverage even when the test file is authorized",async()=>{
+  const output=valid();output.files=[{path:TEST,operation:"replace",content:"import test from 'node:test';\ntest('new feature', () => {});\n",reason:"new coverage",intendedChanges:["add feature coverage"]}];output.focusedTests=[{path:TEST,kind:"existing"}];output.acceptanceMapping=[{criterion:"Document is updated",files:[TEST],tests:[TEST]}];
+  const baseline="import test from 'node:test';\ntest('voice remains available', () => {});\ntest('history remains available', () => {});\n";
+  const f=await fixture([output],{reads:[[DOC,"old doc"],[TEST,baseline]],preservationAssessment:{status:"blocked",unrelatedRemovals:[{path:TEST,behavior:"Voice regression assertion",baselineExcerpt:"test('voice remains available', () => {});"}],intentionalRemovals:[]}});
+  await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>error.code==="implementation_preservation_violation");
+});
+
+test("explicit criterion-bound intentional removal remains possible",async()=>{
+  const output=valid();output.files[0].content="retained behavior\n";
+  const baseline="deprecated behavior\nretained behavior\n",assessment={status:"intentional_removal_justified",unrelatedRemovals:[],intentionalRemovals:[{path:DOC,behavior:"Deprecated behavior",baselineExcerpt:"deprecated behavior",criterion:"Document is updated"}]};
+  const f=await fixture([output],{reads:[[DOC,baseline],[TEST,"old test"]],preservationAssessment:assessment}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA});
+  assert.equal(result.implementationPlan.preservationAssessment.status,"intentional_removal_justified");
+  assert.equal(result.implementationPlan.preservationAssessment.intentionalRemovals.length,1);
+});
+
+test("preservation review remains bound to the original task baseline during later planning",async()=>{
+  const output=valid();output.files[0].content="repaired feature\n";
+  const f=await fixture([output],{reads:[[DOC,"original healthy behavior\n"],[TEST,"old test"]]});
+  await f.storage.recordAutonomyStep({taskId:"selfdev-plan",stepId:"later:read_files",stepType:"read_files",capability:"repo_read_remote",operationFingerprint:"later",status:"completed",input:{arguments:{path:DOC}},result:{path:DOC,content:"damaged intermediate bytes\n",truncated:false}});
+  await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA});
+  const prompt=JSON.parse(f.prompts.find(item=>item.responseFormat?.name==="nova_self_development_preservation_assessment").message.split("\n")[1]);
+  assert.equal(prompt.files[0].baseline,"original healthy behavior\n");
+  assert.equal(prompt.files[0].proposed,"repaired feature\n");
+});
 test("canonical planner separates focused-test verification from mutation acceptance",async()=>{
   const source="assets/voice-input.js",changedTest="test/voice-input.test.js",staticTest="test/console-static.test.js",integrationTest="test/composer-voice-console.integration.test.js",clientTest="test/console-client.test.js",paths=[source,changedTest,staticTest,integrationTest,clientTest],output={summary:"Refine the analyser-driven microphone waveform",files:[
     {path:source,operation:"replace",content:"export const waveform = 'dense';\n",reason:"refine live waveform",intendedChanges:["render denser real amplitude bars"]},

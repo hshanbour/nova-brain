@@ -60,6 +60,7 @@ export async function createExecutionScopeFixture(t,{failingFocusedTest=false,re
   };
   registerHandsTools(hands,{root,environment:{NOVA_BRAIN_DEVELOPMENT_BRANCH:branch},storage,ownerId,commandRunner});
   const planner=createSelfDevelopmentImplementationPlanner({storage,ownerId,runtimeVersion:seed.runtimeVersion,clock,modelProvider:{async generate(request){
+    if(request.responseFormat?.name==="nova_self_development_preservation_assessment")return{type:"final",message:JSON.stringify({status:"preserved",unrelatedRemovals:[],intentionalRemovals:[]})};
     const prompt=JSON.parse(request.message.split("\n")[1]);prompts.push(prompt);
     return{type:"final",message:JSON.stringify({summary:"Synthetic Nova-owned eight-file plan",files:PLANNING_PATHS.map(path=>({path,operation:"replace",content:afterContents.get(path),reason:"Synthetic scoped acceptance",intendedChanges:["Replace synthetic fixture marker"]})),focusedTests:EXECUTION_TEST_PATHS.map(path=>({path,kind:"existing"})),acceptanceMapping:[{criterion:prompt.acceptanceCriteria[0],files:PLANNING_PATHS}],riskLevel:"low"})};
   }}});
