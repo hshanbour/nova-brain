@@ -88,6 +88,8 @@ test("ordinary chat bypasses durable intake and keeps the synchronous model path
   assert.equal(result.message, "Normal chat");
 });
 
+test("ordinary chat binds the chat stage and durably records provider token usage",async()=>{const storage=testStorage(),observed=[];const usage={model:"economical",stage:"chat",serviceTier:"default",inputTokens:100,cachedInputTokens:80,outputTokens:10,reasoningTokens:2,totalTokens:110},agent=createTestAgent({storage,modelProvider:scriptedProvider([{type:"final",message:"Measured",providerUsage:usage}],input=>observed.push(input)),toolRegistry:createToolRegistry()});await agent.run({message:"Hello",conversationId:"usage-chat"});assert.equal(observed[0].stage,"chat");const [run]=await storage.listRuns(OWNER_ID);assert.deepEqual(run.result.providerUsage,[usage]);});
+
 test("default synchronous loop permits a final response on model step ten", async () => {
   let index = 0;
   const registry = createToolRegistry();

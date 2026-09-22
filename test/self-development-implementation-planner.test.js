@@ -140,7 +140,9 @@ test("canonical valid structured output produces the Hands replacement represent
     schema: SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA,
     strict: true,
   });
+  assert.equal(f.prompts[0].stage,"planner");
 });
+test("planner records stage-bound provider usage without changing the canonical plan",async()=>{const usage={model:"strong",stage:"planner",serviceTier:"default",inputTokens:1000,cachedInputTokens:800,outputTokens:200,reasoningTokens:50,totalTokens:1200},output={type:"final",message:JSON.stringify(valid()),providerUsage:usage},f=await fixture([output]),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA});assert.deepEqual(result.providerUsage,[usage]);assert.equal(result.implementationPlan.files[0].path,DOC);});
 test("an unchanged evidence-bound plan becomes a bounded no-change candidate",async()=>{
   const output=valid();output.files[0].content="already satisfied\n";const assessment={status:"already_satisfied",evidence:[{criterion:"Document is updated",path:DOC,excerpt:"already satisfied"}],unresolvedPrerequisites:[]};
   const f=await fixture([output,assessment],{reads:[[DOC,"already satisfied\n"],[TEST,"old test"]]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA});
@@ -150,6 +152,7 @@ test("an unchanged evidence-bound plan becomes a bounded no-change candidate",as
   assert.ok(result.noChangeCandidate.evidenceEntries.every(item=>/^[a-f0-9]{64}$/.test(item.contentHash)&&item.readStepId));
   assert.deepEqual(result.noChangeCandidate.focusedTests,[{path:TEST,kind:"existing"}]);
   assert.match(result.noChangeCandidate.decisionHash,/^[a-f0-9]{64}$/);
+  assert.equal(f.prompts[1].stage,"no_change");
 });
 test("unchanged output with an unresolved prerequisite becomes a blocked planning outcome",async()=>{
   const output=valid();output.files[0].content="old doc";output.summary="Required API contract is unproven.";const assessment={status:"blocked",evidence:[],unresolvedPrerequisites:["Existing task status API contract is unproven"]};

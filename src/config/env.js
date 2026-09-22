@@ -5,6 +5,21 @@ import {
 
 const SUPPORTED_MODEL_PROVIDERS = new Set(["mock", "openai"]);
 const SUPPORTED_STORAGE_PROVIDERS = new Set(["auto", "memory", "postgres"]);
+const SUPPORTED_OPENAI_SERVICE_TIERS = new Set(["default", "flex"]);
+const SUPPORTED_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
+
+function parseOptionalReasoningEffort(value, name) {
+  if (value === undefined || value === "") return null;
+  if (!SUPPORTED_REASONING_EFFORTS.has(value)) {
+    throw new Error(`${name} must be one of: ${[...SUPPORTED_REASONING_EFFORTS].join(", ")}.`);
+  }
+  return value;
+}
+
+function parseOptionalInteger(value, name, { min, max }) {
+  if (value === undefined || value === "") return null;
+  return parseInteger(value, name, { defaultValue: null, min, max });
+}
 
 function parseOrigins(value) {
   if (!value) return [];
@@ -86,6 +101,25 @@ export function readConfig(environment = process.env) {
     );
   }
 
+  const openAIServiceTier = environment.NOVA_BRAIN_OPENAI_SERVICE_TIER || "default";
+  if (!SUPPORTED_OPENAI_SERVICE_TIERS.has(openAIServiceTier)) {
+    throw new Error("NOVA_BRAIN_OPENAI_SERVICE_TIER must be default or flex.");
+  }
+  const openAIModel = environment.OPENAI_MODEL || null;
+  const openAIRoute = (stage, prefix) => Object.freeze({
+    model: environment[`NOVA_BRAIN_${prefix}_MODEL`] || openAIModel,
+    reasoningEffort: parseOptionalReasoningEffort(
+      environment[`NOVA_BRAIN_${prefix}_REASONING_EFFORT`],
+      `NOVA_BRAIN_${prefix}_REASONING_EFFORT`,
+    ),
+    maxOutputTokens: parseOptionalInteger(
+      environment[`NOVA_BRAIN_${prefix}_MAX_OUTPUT_TOKENS`],
+      `NOVA_BRAIN_${prefix}_MAX_OUTPUT_TOKENS`,
+      { min: 256, max: 128_000 },
+    ),
+    stage,
+  });
+
   return Object.freeze({
     nodeEnv: environment.NODE_ENV || "development",
     modelProvider,
@@ -103,7 +137,13 @@ export function readConfig(environment = process.env) {
     localWorkerToken: environment.NOVA_LOCAL_WORKER_TOKEN || null,
     openAI: Object.freeze({
       apiKey: environment.OPENAI_API_KEY || null,
-      model: environment.OPENAI_MODEL || null,
+      model: openAIModel,
+      serviceTier: openAIServiceTier,
+      routes: Object.freeze({
+        chat: openAIRoute("chat", "CHAT"),
+        planner: openAIRoute("planner", "PLANNER"),
+        noChange: openAIRoute("no_change", "NO_CHANGE"),
+      }),
     }),
     integrations: Object.freeze({
       githubConfigured: Boolean(

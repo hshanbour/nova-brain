@@ -123,6 +123,7 @@ export function createAgent({
       const baseSystemContext = speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker) : buildSystemContext(retrieved);
       const systemContext = context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext;
       const toolExecutions = [];
+      const providerUsage = [];
       let continuationToken;
       let toolResults = [];
 
@@ -175,7 +176,12 @@ export function createAgent({
           toolResults,
           continuationToken,
           signal: executionSignal,
+          stage: "chat",
         });
+        if (generated.providerUsage) {
+          providerUsage.push(generated.providerUsage);
+          await storage.updateRun(run.id, ownerId, { status: "running", currentStep: step, result: { providerUsage } });
+        }
         executionSignal.throwIfAborted();
         validateModelOutput(generated);
         if(speakerRestricted&&generated.type==="tool_calls")generated={type:"final",message:"I can help with general conversation, but this voice turn is not authorized to use tools or access private owner information."};
@@ -195,7 +201,7 @@ export function createAgent({
           };
 
           await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: response.message });
-          await storage.updateRun(run.id, ownerId, { status: "completed", currentStep: step, result: { message: response.message }, completedAt: new Date().toISOString() });
+          await storage.updateRun(run.id, ownerId, { status: "completed", currentStep: step, result: { message: response.message, providerUsage }, completedAt: new Date().toISOString() });
           await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_completed", status: "completed", summary: "Nova completed the execution run." });
 
           response.timing.totalMs=Date.now()-requestStartedAt;
@@ -238,7 +244,7 @@ export function createAgent({
             if (error instanceof ApprovalRequiredError) {
               const approvalMessage = `Owner approval is required before Nova can run ${call.name}.`;
               execution.status = "waiting_for_approval"; execution.approvalId = error.approval.id; toolExecutions.push(execution);
-              await storage.updateRun(run.id, ownerId, { status: "waiting_for_approval", currentStep: step });
+              await storage.updateRun(run.id, ownerId, { status: "waiting_for_approval", currentStep: step, result: { providerUsage } });
               await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: approvalMessage });
               return { id: randomUUID(), conversationId, message: approvalMessage, provider: modelProvider.name, toolCalls: toolExecutions, steps: step, runId: run.id, runStatus: "waiting_for_approval", approval: error.approval };
             }

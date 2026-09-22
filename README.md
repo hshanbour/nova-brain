@@ -137,6 +137,8 @@ OPENAI_MODEL=
 
 Set the actual values locally in an ignored environment file or in Vercel Project Settings. Never commit an API key. Startup fails clearly if either required OpenAI value is missing. Automated tests use a fake HTTP transport and never make paid API calls. See the [official OpenAI function-calling guide](https://developers.openai.com/api/docs/guides/function-calling).
 
+Nova pins Responses requests to the standard `default` service tier unless `NOVA_BRAIN_OPENAI_SERVICE_TIER=flex` is explicitly configured; premium/fast tiers are rejected. Optional `NOVA_BRAIN_CHAT_*`, `NOVA_BRAIN_PLANNER_*`, and `NOVA_BRAIN_NO_CHANGE_*` variables can independently select a model, reasoning effort, and maximum output tokens. Unset stage values inherit `OPENAI_MODEL` and the provider default reasoning/output limits. Successful calls record bounded model, stage, service-tier, input, cached-input, output, reasoning, and total token counts in durable run or planner-step results; prompts and provider response bodies are not recorded as usage telemetry.
+
 ## Bounded agent loop
 
 Each request can take at most `NOVA_BRAIN_MAX_STEPS` model steps (default `5`, allowed `1-10`). A model step may return a final answer or request registered tools. Tool requests are executed only by name through the registry, and their structured results are returned to the provider for the next step. At most `NOVA_BRAIN_MAX_TOOL_CALLS_PER_STEP` tools may be requested in one step (default `4`, allowed `1-10`).
