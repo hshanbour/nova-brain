@@ -64,6 +64,14 @@ export const SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA=Object.freeze({
   }
 });
 
+export const SELF_DEVELOPMENT_NO_CHANGE_ASSESSMENT_SCHEMA=Object.freeze({
+  type:"object",additionalProperties:false,required:["status","evidence","unresolvedPrerequisites"],properties:{
+    status:{type:"string",enum:["changes_required","already_satisfied","blocked"]},
+    evidence:{type:"array",minItems:0,maxItems:30,items:{type:"object",additionalProperties:false,required:["criterion","path","excerpt"],properties:{criterion:{type:"string",minLength:1,maxLength:500},path:{type:"string",minLength:1,maxLength:240},excerpt:{type:"string",minLength:1,maxLength:2000}}}},
+    unresolvedPrerequisites:{type:"array",minItems:0,maxItems:12,items:{type:"string",minLength:1,maxLength:300}}
+  }
+});
+
 // This is a review acceptance contract, not a product implementation recipe.
 // Each constraint must be tied to literal observable test evidence. A later
 // independent review still decides whether those tests actually resolve it.
@@ -95,6 +103,13 @@ export const REVIEW_REMEDIATION_INPUT_DISTINCTIONS=Object.freeze({
 
 export function createSelfDevelopmentImplementationPlanner({modelProvider,storage,ownerId,resolvePathState,runtimeVersion,clock=()=>new Date()}={}){
   if(!modelProvider||!storage||!ownerId)throw new Error("Self-development implementation planner dependencies are required.");
+  async function assessNoChange({task,request,evidence,acceptanceMapping,summary}){
+    const generated=await modelProvider.generate({message:`Assess whether the current implementation positively satisfies every acceptance criterion. Byte-identical replacement output, existing mappings, or passing tests are not sufficient by themselves. If any required contract, dependency, or evidence is missing or unproven, return blocked and identify the unresolved prerequisite. Use already_satisfied only with a literal current-source excerpt from a mapped candidate path for every criterion.\n${JSON.stringify({taskId:task.id,currentCommit:task.currentCommit,userGoal:request.userGoal,acceptanceCriteria:request.acceptanceCriteria,candidateFiles:evidence,acceptanceMapping,proposedSummary:summary})}`,conversationHistory:[],context:{},tools:[],responseFormat:{name:"nova_self_development_no_change_assessment",schema:SELF_DEVELOPMENT_NO_CHANGE_ASSESSMENT_SCHEMA,strict:true},systemContext:"You are Nova's no-change semantic verifier. Return exactly the requested schema. This is a fail-closed verification step, not an implementation plan. Never infer satisfaction from unchanged bytes, an acceptance mapping, or test success alone. already_satisfied requires literal observable current-source evidence for every criterion. blocked is required whenever a contract, dependency, or evidence needed to establish satisfaction is missing or unproven. Do not return source outside the bounded excerpts and never return secrets."});
+    if(generated?.type!=="final")throw plannerError("implementation_plan_invalid","No-change assessment requires a final structured result.",["no_change_assessment_final_required"]);
+    const parsed=parse(generated.message),value=parsed.value,keys=new Set(["status","evidence","unresolvedPrerequisites"]);
+    if(parsed.issues||!value||typeof value!=="object"||Array.isArray(value)||Object.keys(value).some(key=>!keys.has(key))||!["changes_required","already_satisfied","blocked"].includes(value.status)||!Array.isArray(value.evidence)||value.evidence.length>30||value.evidence.some(item=>!item||typeof item!=="object"||Array.isArray(item)||Object.keys(item).some(key=>!["criterion","path","excerpt"].includes(key))||typeof item.criterion!=="string"||!item.criterion.trim()||typeof item.path!=="string"||!item.path.trim()||typeof item.excerpt!=="string"||!item.excerpt.trim()||item.excerpt.length>2000)||!Array.isArray(value.unresolvedPrerequisites)||value.unresolvedPrerequisites.length>12||value.unresolvedPrerequisites.some(item=>typeof item!=="string"||!item.trim()||item.length>300))throw plannerError("implementation_plan_invalid","No-change assessment does not match the bounded semantic schema.",["no_change_assessment_invalid"]);
+    return{status:value.status,evidence:value.evidence.map(item=>({criterion:item.criterion.slice(0,500),path:safePath(item.path),excerpt:item.excerpt.slice(0,2000)})),unresolvedPrerequisites:value.unresolvedPrerequisites.map(item=>item.slice(0,300))};
+  }
   async function generate({taskId,candidatePaths,currentCommit,failureEvidence}){
     if(typeof taskId!=="string"||!Array.isArray(candidatePaths)||candidatePaths.length<2||candidatePaths.length>21||!SHA.test(currentCommit||""))throw plannerError("implementation_plan_invalid","Exact task, commit, and bounded candidate paths are required.");
     const task=await storage.getAutonomyTask(taskId,ownerId);if(!task||task.taskType!=="self_development"||task.currentCommit!==currentCommit||task.branch!=="feat/nova-brain-mvp-foundation")throw plannerError("implementation_plan_precondition_failed","Implementation planning task binding changed.");
@@ -166,7 +181,22 @@ export function createSelfDevelopmentImplementationPlanner({modelProvider,storag
       const criteria=[...new Set(request.acceptanceCriteria||[])],mapped=new Set(acceptanceMapping.map(item=>item.criterion));
       if(criteria.some(criterion=>!mapped.has(criterion)))throw plannerError("implementation_plan_invalid","A no-change decision must explicitly cover every acceptance criterion.",["no_change_acceptance_evidence_incomplete"]);
       const evidenceEntries=candidates.map(path=>({path,contentHash:canonicalContentHash(reads.get(path)),readStepId:readStepIds.get(path)}));
-      const noChangeCandidate={version:1,taskId:task.id,currentCommit:task.currentCommit,intent:"implementation",summary:plan.summary,goalHash:plan.goalHash,evidenceHash:plan.evidenceHash,evidenceEntries,focusedTests:tests,acceptanceMapping,plannerAttempt};
+      const assessment=await assessNoChange({task,request,evidence,acceptanceMapping,summary:plan.summary});
+      if(assessment.status==="blocked"){
+        if(!assessment.unresolvedPrerequisites.length)throw plannerError("implementation_plan_invalid","A blocked planning outcome must identify an unresolved prerequisite.",["blocked_prerequisite_required"]);
+        const planningBlocked={version:1,taskId:task.id,currentCommit:task.currentCommit,intent:"implementation",code:"implementation_prerequisite_unresolved",goalHash:plan.goalHash,evidenceHash:plan.evidenceHash,evidenceEntries,blockedCriterionIndexes:criteria.map((criterion,index)=>assessment.evidence.some(item=>item.criterion===criterion)?null:index).filter(index=>index!==null),unresolvedPrerequisiteFingerprints:assessment.unresolvedPrerequisites.map(item=>hash(item)),plannerAttempt};
+        return{ok:true,planningBlocked:{...planningBlocked,decisionHash:hash(planningBlocked)}};
+      }
+      if(assessment.status!=="already_satisfied"||assessment.unresolvedPrerequisites.length)throw plannerError("implementation_plan_invalid","Unchanged files require a positive already-satisfied assessment or a blocked prerequisite outcome.",["no_change_positive_satisfaction_required"]);
+      const proofByCriterion=new Map(criteria.map(criterion=>[criterion,[]]));
+      for(const item of assessment.evidence){
+        const mapping=acceptanceMapping.find(entry=>entry.criterion===item.criterion),allowed=new Set([...(mapping?.files||[]),...(mapping?.tests||[])]),content=reads.get(item.path);
+        if(!proofByCriterion.has(item.criterion)||!allowed.has(item.path)||typeof content!=="string"||!content.includes(item.excerpt))throw plannerError("implementation_plan_invalid","No-change satisfaction evidence must be a literal excerpt from a mapped current candidate file.",["no_change_satisfaction_evidence_invalid"]);
+        proofByCriterion.get(item.criterion).push({path:item.path,excerpt:item.excerpt,excerptHash:hash(item.excerpt)});
+      }
+      if([...proofByCriterion.values()].some(items=>!items.length))throw plannerError("implementation_plan_invalid","A no-change decision requires positive current-code evidence for every acceptance criterion.",["no_change_satisfaction_evidence_incomplete"]);
+      const satisfactionEvidence=criteria.flatMap(criterion=>proofByCriterion.get(criterion).map(item=>({criterion,criterionHash:hash(criterion),...item})));
+      const noChangeCandidate={version:1,taskId:task.id,currentCommit:task.currentCommit,intent:"implementation",satisfactionStatus:"already_satisfied",summary:plan.summary,goalHash:plan.goalHash,evidenceHash:plan.evidenceHash,evidenceEntries,satisfactionEvidence,unresolvedPrerequisites:[],focusedTests:tests,acceptanceMapping,plannerAttempt};
       return{ok:true,noChangeCandidate:{...noChangeCandidate,decisionHash:hash(noChangeCandidate)}};
     }
     return{ok:true,implementationPlan:plan};

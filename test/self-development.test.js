@@ -468,7 +468,7 @@ test("valid evidence-bound independently reviewed no-change lifecycle completes 
     if(name==="self_development_plan_implementation"){
       const steps=await f.storage.listAutonomySteps(args.taskId);
       const entries=Object.keys(contents).map(path=>{const read=steps.findLast(step=>step.stepType==="read_files"&&(step.result?.path||step.input?.arguments?.path)===path);return{path,contentHash:canonicalContentHash(contents[path]),readStepId:read.stepId};});
-      const base={version:1,taskId:args.taskId,currentCommit:SHA,intent:"implementation",summary:"The requested behavior is already present.",goalHash:lifecycleHash(JSON.stringify("Implement the already satisfied bounded behavior")),evidenceHash:lifecycleHash(entries.map(({path,contentHash})=>({path,contentHash}))),evidenceEntries:entries,focusedTests:[{path:"test/no-change.test.js",kind:"existing"}],acceptanceMapping:[{criterion:"Already-satisfied behavior remains verified",files:["docs/no-change.md"]},{criterion:"No unrelated files change",files:["docs/no-change.md"]},{criterion:"Preview remains the only deployment target",files:["docs/no-change.md"]}],plannerAttempt:1};
+      const criteria=["Already-satisfied behavior remains verified","No unrelated files change","Preview remains the only deployment target"],excerpt="already satisfied",base={version:1,taskId:args.taskId,currentCommit:SHA,intent:"implementation",satisfactionStatus:"already_satisfied",summary:"The requested behavior is already present.",goalHash:lifecycleHash(JSON.stringify("Implement the already satisfied bounded behavior")),evidenceHash:lifecycleHash(entries.map(({path,contentHash})=>({path,contentHash}))),evidenceEntries:entries,satisfactionEvidence:criteria.map(criterion=>({criterion,criterionHash:lifecycleHash(criterion),path:"docs/no-change.md",excerpt,excerptHash:lifecycleHash(excerpt)})),unresolvedPrerequisites:[],focusedTests:[{path:"test/no-change.test.js",kind:"existing"}],acceptanceMapping:criteria.map(criterion=>({criterion,files:["docs/no-change.md"]})),plannerAttempt:1};
       return{ok:true,noChangeCandidate:{...base,decisionHash:lifecycleHash(base)}};
     }
     if(name==="test_run"||name==="test_run_full")return{ok:true,exitCode:0,passed:1,failed:0};
@@ -483,6 +483,25 @@ test("valid evidence-bound independently reviewed no-change lifecycle completes 
   assert.equal(steps.some(step=>["apply_patch","commit","push","deploy_preview"].includes(step.stepType)),false);
   assert.deepEqual(steps.filter(step=>step.stepType.includes("test")).map(step=>step.status),["completed","completed"]);
 });
+test("an evidence-bound unresolved prerequisite stops at a blocked planning boundary",async()=>{
+  let f;const goal="Implement a bounded UI behavior",criterion="The UI behavior is visible",contents={"assets/example.js":"export const ready = false;\n","test/example.test.js":"import test from 'node:test';\n"};
+  f=await fixture({execute:async(name,args)=>{
+    if(name==="repo_list")return{ok:true,files:Object.keys(contents)};
+    if(name==="repo_search")return{ok:true,matches:Object.keys(contents)};
+    if(name==="repo_read")return{ok:true,path:args.path,content:contents[args.path],truncated:false};
+    if(name==="self_development_plan_implementation"){
+      const steps=await f.storage.listAutonomySteps(args.taskId),entries=Object.keys(contents).map(path=>{const read=steps.findLast(step=>step.stepType==="read_files"&&(step.result?.path||step.input?.arguments?.path)===path);return{path,contentHash:canonicalContentHash(contents[path]),readStepId:read.stepId};}),base={version:1,taskId:args.taskId,currentCommit:SHA,intent:"implementation",code:"implementation_prerequisite_unresolved",goalHash:lifecycleHash(JSON.stringify(goal)),evidenceHash:lifecycleHash(entries.map(({path,contentHash})=>({path,contentHash}))),evidenceEntries:entries,blockedCriterionIndexes:[0],unresolvedPrerequisiteFingerprints:[lifecycleHash("Required API contract is unproven")],plannerAttempt:1};
+      return{ok:true,planningBlocked:{...base,decisionHash:lifecycleHash(base)}};
+    }
+    throw new Error(`unexpected tool ${name}`);
+  }});
+  const created=await f.service.create({userGoal:goal,acceptanceCriteria:[criterion],scope:{paths:Object.keys(contents),searchTerms:["bounded"],patch:{files:[]},focusedTests:["test/example.test.js"]}});
+  for(let index=0;index<12&&!new Set(["completed","failed","blocked"]).has((await f.runtime.get(created.task.id)).status);index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`blocked-planning-${index}`});
+  const task=await f.runtime.get(created.task.id),steps=await f.runtime.steps(created.task.id);
+  assert.equal(task.status,"blocked");assert.equal(task.errorCode,"implementation_prerequisite_unresolved");assert.match(task.blockedReason,/required contract, dependency, or evidence/);
+  assert.equal(steps.find(step=>step.stepType==="plan_implementation").status,"completed");
+  assert.equal(steps.some(step=>["run_focused_tests","run_full_tests","apply_patch","commit","push","deploy_preview"].includes(step.stepType)),false);
+});
 async function automaticReplanNoChange({alterEntries=(entries)=>entries}={}){
   let f;const goal="Implement the already satisfied console status behavior",criteria=["Existing console status remains verified","No unrelated files change","Preview remains the only deployment target"],contents={"assets/console.js":"export const status = 'ready';\n","test/console-static.test.js":"import test from 'node:test';\ntest('status',()=>{});\n"};
   f=await fixture({execute:async(name,args)=>{
@@ -491,7 +510,7 @@ async function automaticReplanNoChange({alterEntries=(entries)=>entries}={}){
     if(name==="repo_read")return{ok:true,path:args.path,content:contents[args.path],truncated:false};
     if(name==="self_development_plan_implementation"){
       const steps=await f.storage.listAutonomySteps(args.taskId),entries=args.candidatePaths.map(path=>{const read=steps.findLast(item=>item.stepType==="read_files"&&(item.result?.path||item.input?.arguments?.path)===path);return{path,contentHash:canonicalContentHash(contents[path]),readStepId:read.stepId};}),boundEntries=alterEntries(structuredClone(entries));
-      const base={version:1,taskId:args.taskId,currentCommit:SHA,intent:"implementation",summary:"The requested behavior is already present.",goalHash:lifecycleHash(JSON.stringify(goal)),evidenceHash:lifecycleHash(entries.map(({path,contentHash})=>({path,contentHash}))),evidenceEntries:boundEntries,focusedTests:[{path:"test/console-static.test.js",kind:"existing"}],acceptanceMapping:criteria.map(criterion=>({criterion,files:["assets/console.js"],tests:["test/console-static.test.js"]})),plannerAttempt:1};
+      const excerpt="export const status = 'ready';",base={version:1,taskId:args.taskId,currentCommit:SHA,intent:"implementation",satisfactionStatus:"already_satisfied",summary:"The requested behavior is already present.",goalHash:lifecycleHash(JSON.stringify(goal)),evidenceHash:lifecycleHash(entries.map(({path,contentHash})=>({path,contentHash}))),evidenceEntries:boundEntries,satisfactionEvidence:criteria.map(criterion=>({criterion,criterionHash:lifecycleHash(criterion),path:"assets/console.js",excerpt,excerptHash:lifecycleHash(excerpt)})),unresolvedPrerequisites:[],focusedTests:[{path:"test/console-static.test.js",kind:"existing"}],acceptanceMapping:criteria.map(criterion=>({criterion,files:["assets/console.js"],tests:["test/console-static.test.js"]})),plannerAttempt:1};
       return{ok:true,noChangeCandidate:{...base,decisionHash:lifecycleHash(base)}};
     }
     if(name==="test_run"||name==="test_run_full")return{ok:true,exitCode:0,passed:1,failed:0};

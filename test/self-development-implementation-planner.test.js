@@ -5,6 +5,7 @@ import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import {
   createSelfDevelopmentImplementationPlanner,
   SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA,
+  SELF_DEVELOPMENT_NO_CHANGE_ASSESSMENT_SCHEMA,
   SELF_DEVELOPMENT_PLANNER_PROTECTED,
 } from "../src/autonomy/self-development-implementation-planner.js";
 import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
@@ -141,14 +142,31 @@ test("canonical valid structured output produces the Hands replacement represent
   });
 });
 test("an unchanged evidence-bound plan becomes a bounded no-change candidate",async()=>{
-  const output=valid();output.files[0].content="old doc";
-  const f=await fixture([output]),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA});
+  const output=valid();output.files[0].content="already satisfied\n";const assessment={status:"already_satisfied",evidence:[{criterion:"Document is updated",path:DOC,excerpt:"already satisfied"}],unresolvedPrerequisites:[]};
+  const f=await fixture([output,assessment],{reads:[[DOC,"already satisfied\n"],[TEST,"old test"]]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA});
   assert.equal(result.implementationPlan,undefined);
   assert.equal(result.noChangeCandidate.intent,"implementation");
   assert.deepEqual(result.noChangeCandidate.evidenceEntries.map(item=>item.path),[DOC,TEST]);
   assert.ok(result.noChangeCandidate.evidenceEntries.every(item=>/^[a-f0-9]{64}$/.test(item.contentHash)&&item.readStepId));
   assert.deepEqual(result.noChangeCandidate.focusedTests,[{path:TEST,kind:"existing"}]);
   assert.match(result.noChangeCandidate.decisionHash,/^[a-f0-9]{64}$/);
+});
+test("unchanged output with an unresolved prerequisite becomes a blocked planning outcome",async()=>{
+  const output=valid();output.files[0].content="old doc";output.summary="Required API contract is unproven.";const assessment={status:"blocked",evidence:[],unresolvedPrerequisites:["Existing task status API contract is unproven"]};
+  const f=await fixture([output,assessment]),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA});
+  assert.equal(result.noChangeCandidate,undefined);
+  assert.equal(result.planningBlocked.code,"implementation_prerequisite_unresolved");
+  assert.equal(result.planningBlocked.unresolvedPrerequisiteFingerprints.length,1);
+});
+test("unchanged bytes and acceptance mappings cannot prove no-change without positive current-code evidence",async()=>{
+  const output=valid();output.files[0].content="old doc";const assessment={status:"already_satisfied",evidence:[],unresolvedPrerequisites:[]};
+  const f=await fixture([output,assessment]);
+  await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>error.code==="implementation_plan_invalid"&&error.safeDiagnostics.validationIssues.includes("no_change_satisfaction_evidence_incomplete"));
+});
+test("no-change proof must be a literal excerpt from the mapped current evidence",async()=>{
+  const output=valid();output.files[0].content="old doc";const assessment={status:"already_satisfied",evidence:[{criterion:"Document is updated",path:DOC,excerpt:"not present"}],unresolvedPrerequisites:[]};
+  const f=await fixture([output,assessment]);
+  await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>error.code==="implementation_plan_invalid"&&error.safeDiagnostics.validationIssues.includes("no_change_satisfaction_evidence_invalid"));
 });
 test("planner and Hands share the canonical versioned patch bridge contract", () => {
   const registry=createToolRegistry();registerHandsTools(registry,{root:process.cwd(),environment:{VERCEL:"",NOVA_BRAIN_DEVELOPMENT_BRANCH:BRANCH}});
@@ -164,7 +182,7 @@ test("canonical composer-style plan validates before Hands-compatible mutation",
   assert.deepEqual(result.implementationPlan.files.map(({path,operation})=>({path,operation})),[{path:"assets/voice-input.js",operation:"replace"},{path:"test/voice-input.test.js",operation:"replace"}]);
   assert.equal(result.implementationPlan.files.every((file)=>typeof file.expectedContent==="string"),true);
 });
-test("planner v2 response schema is strict-compatible at every object level",()=>{const visit=(schema,path)=>{if(schema?.type==="object"){assert.equal(schema.additionalProperties,false,path);assert.deepEqual([...schema.required].sort(),Object.keys(schema.properties).sort(),path);for(const [name,child] of Object.entries(schema.properties))visit(child,`${path}.${name}`);}if(schema?.type==="array")visit(schema.items,`${path}[]`);};visit(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA,"plan");assert.equal(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA.properties.acceptanceMapping.items.properties.tests.minItems,0);});
+test("planner v2 response schemas are strict-compatible at every object level",()=>{const visit=(schema,path)=>{if(schema?.type==="object"){assert.equal(schema.additionalProperties,false,path);assert.deepEqual([...schema.required].sort(),Object.keys(schema.properties).sort(),path);for(const [name,child] of Object.entries(schema.properties))visit(child,`${path}.${name}`);}if(schema?.type==="array")visit(schema.items,`${path}[]`);};visit(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA,"plan");visit(SELF_DEVELOPMENT_NO_CHANGE_ASSESSMENT_SCHEMA,"noChangeAssessment");assert.equal(SELF_DEVELOPMENT_IMPLEMENTATION_PLAN_SCHEMA.properties.acceptanceMapping.items.properties.tests.minItems,0);});
 test("canonical planner separates focused-test verification from mutation acceptance",async()=>{
   const source="assets/voice-input.js",changedTest="test/voice-input.test.js",staticTest="test/console-static.test.js",integrationTest="test/composer-voice-console.integration.test.js",clientTest="test/console-client.test.js",paths=[source,changedTest,staticTest,integrationTest,clientTest],output={summary:"Refine the analyser-driven microphone waveform",files:[
     {path:source,operation:"replace",content:"export const waveform = 'dense';\n",reason:"refine live waveform",intendedChanges:["render denser real amplitude bars"]},
