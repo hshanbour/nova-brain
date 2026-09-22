@@ -33,9 +33,9 @@ test("OpenAI provider configuration requires credentials and a model", () => {
   assert.equal(config.openAI.model, "test-model");
   assert.equal(config.openAI.serviceTier, "default");
   assert.deepEqual(config.openAI.routes, {
-    chat: { model: "test-model", reasoningEffort: null, maxOutputTokens: null, stage: "chat" },
+    chat: { model: "gpt-6-luna", reasoningEffort: "none", maxOutputTokens: null, stage: "chat" },
     planner: { model: "test-model", reasoningEffort: null, maxOutputTokens: null, stage: "planner" },
-    noChange: { model: "test-model", reasoningEffort: null, maxOutputTokens: null, stage: "no_change" },
+    noChange: { model: "gpt-6-luna", reasoningEffort: "none", maxOutputTokens: null, stage: "no_change" },
   });
 });
 
@@ -53,10 +53,30 @@ test("OpenAI stage routing is explicit, bounded, and excludes premium service ti
   assert.deepEqual(config.openAI.routes.chat, { model: "economical-model", reasoningEffort: "low", maxOutputTokens: 2048, stage: "chat" });
   assert.equal(config.openAI.routes.planner.model, "strong-model");
   assert.equal(config.openAI.routes.noChange.model, "economical-model");
+  assert.equal(config.openAI.routes.noChange.reasoningEffort, "none");
   assert.equal(config.openAI.serviceTier, "flex");
   assert.throws(() => readConfig({ NOVA_BRAIN_MODEL_PROVIDER:"openai", OPENAI_API_KEY:"key", OPENAI_MODEL:"model", NOVA_BRAIN_OPENAI_SERVICE_TIER:"priority" }), /default or flex/);
   assert.throws(() => readConfig({ NOVA_BRAIN_MODEL_PROVIDER:"openai", OPENAI_API_KEY:"key", OPENAI_MODEL:"model", NOVA_BRAIN_CHAT_REASONING_EFFORT:"extreme" }), /must be one of/);
   assert.throws(() => readConfig({ NOVA_BRAIN_MODEL_PROVIDER:"openai", OPENAI_API_KEY:"key", OPENAI_MODEL:"model", NOVA_BRAIN_CHAT_MAX_OUTPUT_TOKENS:"255" }), /between 256 and 128000/);
+});
+
+test("economical defaults do not downgrade planner or explicit stage overrides", () => {
+  const config = readConfig({
+    NOVA_BRAIN_MODEL_PROVIDER: "openai",
+    OPENAI_API_KEY: "test-key",
+    OPENAI_MODEL: "strong-model",
+    NOVA_BRAIN_CHAT_MODEL: "chat-override",
+    NOVA_BRAIN_CHAT_REASONING_EFFORT: "medium",
+    NOVA_BRAIN_NO_CHANGE_MODEL: "no-change-override",
+    NOVA_BRAIN_NO_CHANGE_REASONING_EFFORT: "low",
+  });
+
+  assert.equal(config.openAI.routes.chat.model, "chat-override");
+  assert.equal(config.openAI.routes.chat.reasoningEffort, "medium");
+  assert.equal(config.openAI.routes.noChange.model, "no-change-override");
+  assert.equal(config.openAI.routes.noChange.reasoningEffort, "low");
+  assert.equal(config.openAI.routes.planner.model, "strong-model");
+  assert.equal(config.openAI.routes.planner.reasoningEffort, null);
 });
 
 test("agent execution limits are bounded configuration values", () => {

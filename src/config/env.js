@@ -106,12 +106,20 @@ export function readConfig(environment = process.env) {
     throw new Error("NOVA_BRAIN_OPENAI_SERVICE_TIER must be default or flex.");
   }
   const openAIModel = environment.OPENAI_MODEL || null;
-  const openAIRoute = (stage, prefix) => Object.freeze({
-    model: environment[`NOVA_BRAIN_${prefix}_MODEL`] || openAIModel,
-    reasoningEffort: parseOptionalReasoningEffort(
-      environment[`NOVA_BRAIN_${prefix}_REASONING_EFFORT`],
-      `NOVA_BRAIN_${prefix}_REASONING_EFFORT`,
-    ),
+  const openAIRoute = (
+    stage,
+    prefix,
+    { defaultModel = openAIModel, defaultReasoningEffort = null } = {},
+  ) => Object.freeze({
+    model: environment[`NOVA_BRAIN_${prefix}_MODEL`] || defaultModel,
+    reasoningEffort:
+      environment[`NOVA_BRAIN_${prefix}_REASONING_EFFORT`] === undefined ||
+      environment[`NOVA_BRAIN_${prefix}_REASONING_EFFORT`] === ""
+        ? defaultReasoningEffort
+        : parseOptionalReasoningEffort(
+            environment[`NOVA_BRAIN_${prefix}_REASONING_EFFORT`],
+            `NOVA_BRAIN_${prefix}_REASONING_EFFORT`,
+          ),
     maxOutputTokens: parseOptionalInteger(
       environment[`NOVA_BRAIN_${prefix}_MAX_OUTPUT_TOKENS`],
       `NOVA_BRAIN_${prefix}_MAX_OUTPUT_TOKENS`,
@@ -140,9 +148,15 @@ export function readConfig(environment = process.env) {
       model: openAIModel,
       serviceTier: openAIServiceTier,
       routes: Object.freeze({
-        chat: openAIRoute("chat", "CHAT"),
+        chat: openAIRoute("chat", "CHAT", {
+          defaultModel: "gpt-6-luna",
+          defaultReasoningEffort: "none",
+        }),
         planner: openAIRoute("planner", "PLANNER"),
-        noChange: openAIRoute("no_change", "NO_CHANGE"),
+        noChange: openAIRoute("no_change", "NO_CHANGE", {
+          defaultModel: "gpt-6-luna",
+          defaultReasoningEffort: "none",
+        }),
       }),
     }),
     integrations: Object.freeze({
