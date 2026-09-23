@@ -1148,13 +1148,13 @@ export function createSelfDevelopmentService({
     if(!structuredIntake?.specify)throw new SelfDevelopmentError("structured_intake_unavailable","Chat-native durable intake is unavailable.",503);
     let specification;
     try{specification=await structuredIntake.specify(userGoal,{signal});}
-    catch(error){throw new SelfDevelopmentError(error?.code||"structured_intake_invalid","Nova could not establish a safe durable task specification.",409);}
+    catch(error){throw new SelfDevelopmentError(error?.code||"structured_intake_invalid","Nova could not establish a safe durable task specification.",409,error?.safeDiagnostics);}
     if(specification.status!=="ready")return{clarificationRequired:true,message:specification.clarificationQuestion||"The implementation request requires clarification.",providerUsage:specification.providerUsage||null};
     return create({
       userGoal:specification.objective,
       acceptanceCriteria:specification.acceptanceCriteria,
       constraints:specification.constraints,
-      intake:{version:1,sourceRequestHash:hash(userGoal.trim()),specificationHash:specification.specificationHash,providerUsage:specification.providerUsage||null},
+      intake:{version:1,sourceRequestHash:hash(userGoal.trim()),specificationHash:specification.specificationHash,providerUsage:specification.providerUsage||null,scopeNormalization:specification.scopeNormalization||{discardedExplicitPaths:0,discardedFocusedTests:0}},
       scope: {
         paths: specification.explicitPaths,
         searchTerms: specification.searchTerms,

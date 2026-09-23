@@ -14,8 +14,18 @@ test("explicit paths are accepted only when verbatim in the user request",async(
   const goal="Implement the card in assets/console.js and verify test/console-static.test.js";
   const valid=createSelfDevelopmentIntake({modelProvider:provider([ready({explicitPaths:["assets/console.js"],focusedTests:["test/console-static.test.js"]})])});
   assert.deepEqual((await valid.specify(goal)).explicitPaths,["assets/console.js"]);
-  const invented=createSelfDevelopmentIntake({modelProvider:provider([ready({explicitPaths:["assets/invented.js"]})])});
-  await assert.rejects(()=>invented.specify(goal),error=>error.code==="structured_intake_invalid");
+  const invented=createSelfDevelopmentIntake({modelProvider:provider([ready({explicitPaths:["assets/invented.js"],focusedTests:["test/invented.test.js"]})])}),result=await invented.specify(goal);
+  assert.deepEqual(result.explicitPaths,[]);assert.deepEqual(result.focusedTests,[]);assert.deepEqual(result.scopeNormalization,{discardedExplicitPaths:1,discardedFocusedTests:1});
+});
+
+test("clear filename-free implementation request discards untrusted path guesses and remains discovery-only ready",async()=>{
+  const goal="Implement a tiny accessibility improvement in Nova Console: make the New conversation control expose a keyboard-shortcut hint to assistive technology, preserve all existing behavior, add or update a focused regression test, and stop before any push or deployment.",intake=createSelfDevelopmentIntake({modelProvider:provider([ready({objective:"Add an accessible keyboard shortcut hint to the New conversation control.",acceptanceCriteria:["Assistive technology can discover the keyboard shortcut hint.","Existing New conversation behavior remains unchanged.","A focused regression test covers the hint."],constraints:[{type:"preserve",requirement:"Preserve all existing behavior."},{type:"boundary",requirement:"Stop before push or deployment."}],explicitPaths:["assets/console.js"],focusedTests:["test/console-static.test.js"],searchTerms:["New conversation","keyboard shortcut","aria-keyshortcuts"]})])}),result=await intake.specify(goal);
+  assert.equal(result.status,"ready");assert.deepEqual(result.explicitPaths,[]);assert.deepEqual(result.focusedTests,[]);assert.deepEqual(result.scopeNormalization,{discardedExplicitPaths:1,discardedFocusedTests:1});
+});
+
+test("invalid ready and clarification semantics still fail closed with a bounded reason",async()=>{
+  const intake=createSelfDevelopmentIntake({modelProvider:provider([ready({clarificationQuestion:"Which control?"})])});
+  await assert.rejects(()=>intake.specify("Implement the Console card"),error=>error.code==="structured_intake_invalid"&&error.safeDiagnostics?.reason==="status_question_mismatch");
 });
 
 test("scope resolution can only narrow repository-evidenced candidates and covers constraints",async()=>{
