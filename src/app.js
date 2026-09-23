@@ -30,7 +30,7 @@ import { createTaskMigrationService } from "./autonomy/task-migration.js";
 import { createLocalWorkerHandoff } from "./autonomy/local-worker-handoff.js";
 import { createGithubWriteAttestation } from "./autonomy/github-write-attestation.js";
 import { createPostAttestationRecovery } from "./autonomy/post-attestation-recovery.js";
-import { createSelfDevelopmentService, isDurableSelfDevelopmentRequest } from "./autonomy/self-development.js";
+import { createSelfDevelopmentService, isDurableSelfDevelopmentRequest, parseExistingTaskControlRequest, validateExistingTaskControlRequest } from "./autonomy/self-development.js";
 import { createSelfDevelopmentIntake } from "./autonomy/self-development-intake.js";
 import { createSelfDevelopmentExpiryRecovery } from "./autonomy/self-development-expiry-recovery.js";
 import { registerSelfDevelopmentTools } from "./autonomy/self-development-tools.js";
@@ -172,6 +172,11 @@ export function createApp({
     verifySpeakerAssertion: speakerAssertions.verify,
     validateSpeakerProfile: speakerIdentity.isActiveProfile,
     validateAnonymousSpeaker: speakerIdentity.isActiveAnonymous,
+    routeExistingTaskRequest: async ({message}) => {
+      const request=parseExistingTaskControlRequest(message);
+      if(!request)return null;
+      return validateExistingTaskControlRequest(request,await workerRuntime.get(request.taskId));
+    },
     routeDurableRequest: async ({message, context, signal}) => {
       if (context?.voice === true || !isDurableSelfDevelopmentRequest(message)) return null;
       return selfDevelopment.createTrustedIntake(message, {signal});

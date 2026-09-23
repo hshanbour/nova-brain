@@ -6,6 +6,8 @@ import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
 import {
   createSelfDevelopmentService,
   isDurableSelfDevelopmentRequest,
+  parseExistingTaskControlRequest,
+  validateExistingTaskControlRequest,
   isExactMissingBranchSchemaDiagnostic,
   resolveSemanticPlanApplyState,
   SELF_DEVELOPMENT_DEFAULTS,
@@ -305,6 +307,27 @@ test("hybrid intake classifies only explicit actionable Nova engineering request
     "Plan a Sharp Cuts campaign",
     "What is a Preview deployment?",
   ]) assert.equal(isDurableSelfDevelopmentRequest(message), false, message);
+});
+test("existing-task continuation is recognized before new-work intake without honoring negated controls", () => {
+  const id="selfdev_c9fc28effbd72350c86c67abe4d69e36",message=`Resume the same expired scope-rediscovery task by invoking self_development_scope_recover exactly once with taskId ${id} and expectedVersion 37.\n\nThis is the protected pre-action runtime resume for its already reserved 1/1 recovery attempt.\n\nKeep the same task ID and discovery-only zero-mutation authority.\n\nDo not create a successor.`,route=parseExistingTaskControlRequest(message);
+  assert.deepEqual(route,{route:"existing_task_control",taskId:id,action:"recovery",requestedVerb:"resume",expectedVersion:37});
+  assert.equal(isDurableSelfDevelopmentRequest(message),true,"the historical new-task classifier reproduces the intercepted route");
+  assert.equal(parseExistingTaskControlRequest(`Do not retry task ${id}. Implement a separate Nova Console fix.`),null);
+  const approvalMessage=`Approve task ${id}. Do not create a new Nova task.`;
+  assert.equal(parseExistingTaskControlRequest(approvalMessage).action,"approval");
+  assert.equal(isDurableSelfDevelopmentRequest(approvalMessage),true,"task-bound approval must preempt the same negated-create collision");
+  assert.equal(parseExistingTaskControlRequest(`Clarify task ${id}. Do not create a new Nova task.`).action,"clarification");
+});
+test("existing-task continuation validation fails closed for missing, stale, and ineligible tasks", () => {
+  const id="selfdev_c9fc28effbd72350c86c67abe4d69e36",request=parseExistingTaskControlRequest(`Recover task ${id} with expectedVersion 37.`),task={id,taskType:"self_development",status:"expired",stateVersion:37,currentPhase:"scope_rediscovery",errorCode:"max_runtime_reached"};
+  assert.deepEqual(validateExistingTaskControlRequest(request,task).task,{id,status:"expired",stateVersion:37,currentPhase:"scope_rediscovery",errorCode:"max_runtime_reached"});
+  assert.throws(()=>validateExistingTaskControlRequest(request,null),error=>error.code==="existing_task_not_found");
+  assert.throws(()=>validateExistingTaskControlRequest(request,{...task,stateVersion:38}),error=>error.code==="existing_task_stale_version");
+  assert.throws(()=>validateExistingTaskControlRequest(request,{...task,status:"running"}),error=>error.code==="existing_task_control_ineligible");
+  const approval=parseExistingTaskControlRequest(`Approve task ${id}.`);
+  assert.equal(validateExistingTaskControlRequest(approval,{...task,status:"waiting_for_approval"}).action,"approval");
+  assert.throws(()=>validateExistingTaskControlRequest(approval,{...task,status:"blocked"}),error=>error.code==="existing_task_control_ineligible");
+  assert.throws(()=>parseExistingTaskControlRequest(`Resume ${id} and selfdev_00000000000000000000000000000000.`),error=>error.code==="existing_task_reference_ambiguous");
 });
 test("exact long microphone implementation request routes durable before model generation and remains idempotent", async () => {
   assert.equal(EXACT_MICROPHONE_IMPLEMENTATION_PROMPT.length, 2494);

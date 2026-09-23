@@ -62,7 +62,7 @@ function safeToolError(error, name) {
     "repository_not_allowed", "branch_not_allowed", "project_not_found",
     "production_target_forbidden", "invalid_scope", "scope_too_large",
     "invalid_runtime_budget", "invalid_repair_limit",
-    "durable_task_create_failed", "storage_error"
+    "durable_task_create_failed", "storage_error", "task_control_tool_forbidden"
   ]);
   if (allowed.has(error?.code)) {
     return { code: error.code, message: String(error.message || "Tool request failed safely.").slice(0, 300) };
@@ -73,6 +73,12 @@ function safeToolError(error, name) {
 function toolErrorSummary(error, name) {
   return typeof error === "string" ? error : `${name} failed: ${error.code}.`;
 }
+
+const EXISTING_TASK_CONTROL_TOOLS = new Set([
+  "self_development_get",
+  "self_development_scope_recover",
+]);
+const taskControlTools=route=>new Set(route?.action==="recovery"?[...EXISTING_TASK_CONTROL_TOOLS]:["self_development_get"]);
 
 function toolActivityMetadata(name,args,error){
   if(name!=="self_development_scope_recover")return undefined;
@@ -94,6 +100,7 @@ export function createAgent({
   verifySpeakerAssertion = () => null,
   validateSpeakerProfile = async () => false,
   validateAnonymousSpeaker = async () => false,
+  routeExistingTaskRequest = async () => null,
   routeDurableRequest = async () => null,
   logger = { info() {}, error() {} }
 }) {
@@ -142,14 +149,21 @@ export function createAgent({
         storage.updateRun(run.id,ownerId,{status:"running",currentStep:1})
       ]);
       const baseSystemContext = speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker) : buildSystemContext(retrieved);
-      const systemContext = context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext;
+      let systemContext = context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext;
       const toolExecutions = [];
       const providerUsage = [];
       let continuationToken;
       let toolResults = [];
 
       try {
-        const durable = speakerRestricted ? null : await routeDurableRequest({message, context: trustedContext, requestId, signal: executionSignal});
+        const existingTaskRoute=speakerRestricted?null:await routeExistingTaskRequest({message,context:trustedContext,requestId,signal:executionSignal});
+        if(existingTaskRoute){
+          const task=existingTaskRoute.task;
+          systemContext=`${systemContext}\n\nEXISTING DURABLE TASK CONTROL: This turn targets exactly task ${task.id} at stateVersion ${task.stateVersion}, status ${task.status}, phase ${task.currentPhase||"unknown"}. Do not create a task or broaden authority. Use only the exposed task-bound tools, preserve exact task/version CAS, and fail closed if the requested transition is ineligible.`;
+          await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"existing_task_control_routed",status:"completed",summary:"Existing durable task control routed to the bounded Chat tool path.",metadata:{route:existingTaskRoute.route,action:existingTaskRoute.action,taskId:task.id,status:task.status,stateVersion:task.stateVersion,expectedVersion:existingTaskRoute.expectedVersion}});
+        }
+        const allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
+        const durable = speakerRestricted||existingTaskRoute ? null : await routeDurableRequest({message, context: trustedContext, requestId, signal: executionSignal});
         executionSignal.throwIfAborted();
         if(durable?.clarificationRequired===true){
           if(durable.providerUsage)providerUsage.push(durable.providerUsage);
@@ -201,7 +215,7 @@ export function createAgent({
           context:trustedContext,
           systemContext,
           conversationHistory,
-          tools: speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }),
+          tools: speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>!allowedTaskTools||allowedTaskTools.has(tool.name)),
           toolResults,
           continuationToken,
           signal: executionSignal,
@@ -263,6 +277,7 @@ export function createAgent({
 
           try {
             executionSignal.throwIfAborted();
+            if(allowedTaskTools&&!allowedTaskTools.has(call.name))throw Object.assign(new Error("Existing-task control cannot invoke this tool."),{code:"task_control_tool_forbidden"});
             const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, signal: executionSignal });
             executionSignal.throwIfAborted();
             execution.status = "completed";

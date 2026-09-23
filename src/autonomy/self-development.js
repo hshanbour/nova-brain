@@ -43,11 +43,120 @@ const DURABLE_INTAKE_TARGET =
   /\b(nova|console|frontend|backend|runtime|repository|repo|codebase|source|files?|tests?|preview|deployment)\b/i;
 const CONVERSATIONAL_OR_ADVICE_REQUEST =
   /^(?:should|how|what|why|when|where|who|explain|review|analy[sz]e|compare|recommend|tell\s+me)\b/i;
+const SELF_DEVELOPMENT_TASK_REFERENCE = /\bselfdev_[a-f0-9]{32}\b/gi;
+const EXISTING_TASK_CONTROL_CLAUSE =
+  /(?:^|[\r\n.!?])\s*(?:please\s+)?(continue|recover|resume|retry|approve|reject|clarify|answer|respond|provide|cancel|pause|stop)\b/i;
+const EXPECTED_TASK_VERSION =
+  /\b(?:expected\s*version|expectedVersion)\s*(?::|=|#)?\s*(\d+)\b/i;
 
 export function isDurableSelfDevelopmentRequest(value) {
   const message = typeof value === "string" ? value.trim() : "";
   if (!message || message.length > DURABLE_INTAKE_MAX_LENGTH || CONVERSATIONAL_OR_ADVICE_REQUEST.test(message)) return false;
   return DURABLE_INTAKE_ACTION.test(message) && DURABLE_INTAKE_TARGET.test(message);
+}
+export function parseExistingTaskControlRequest(value) {
+  const message = typeof value === "string" ? value.trim() : "";
+  if (!message) return null;
+  const taskIds = [...new Set(message.match(SELF_DEVELOPMENT_TASK_REFERENCE) || [])];
+  const action = message.match(EXISTING_TASK_CONTROL_CLAUSE)?.[1]?.toLowerCase();
+  if (!action || taskIds.length === 0) return null;
+  if (taskIds.length !== 1)
+    throw new SelfDevelopmentError(
+      "existing_task_reference_ambiguous",
+      "Existing-task control requires exactly one durable task ID.",
+      400,
+    );
+  const versionMatch = message.match(EXPECTED_TASK_VERSION);
+  const expectedVersion = versionMatch ? Number(versionMatch[1]) : null;
+  if (versionMatch && !Number.isSafeInteger(expectedVersion))
+    throw new SelfDevelopmentError(
+      "existing_task_version_invalid",
+      "Existing-task control requires a valid expectedVersion.",
+      400,
+    );
+  const actionClass=["recover","resume","retry"].includes(action)
+    ? "recovery"
+    : action === "continue"
+      ? "continue"
+      : ["approve","reject"].includes(action)
+        ? "approval"
+        : ["clarify","answer","respond","provide"].includes(action)
+          ? "clarification"
+          : "control";
+  return Object.freeze({
+    route: "existing_task_control",
+    taskId: taskIds[0],
+    action: actionClass,
+    requestedVerb: action,
+    expectedVersion,
+  });
+}
+export function validateExistingTaskControlRequest(request, task) {
+  if (!request) return null;
+  if (!task || task.taskType !== "self_development" || task.id !== request.taskId)
+    throw new SelfDevelopmentError(
+      "existing_task_not_found",
+      "The referenced durable task was not found.",
+      404,
+    );
+  if (
+    request.expectedVersion !== null &&
+    task.stateVersion !== request.expectedVersion
+  )
+    throw new SelfDevelopmentError(
+      "existing_task_stale_version",
+      "The referenced durable task changed before this control request.",
+      409,
+    );
+  if (
+    request.action === "recovery" &&
+    !["blocked", "failed", "expired", "paused"].includes(task.status)
+  )
+    throw new SelfDevelopmentError(
+      "existing_task_control_ineligible",
+      "The referenced durable task is not at a recoverable boundary.",
+      409,
+    );
+  if (
+    request.action === "continue" &&
+    ["completed", "cancelled"].includes(task.status)
+  )
+    throw new SelfDevelopmentError(
+      "existing_task_control_ineligible",
+      "The referenced durable task is already terminal.",
+      409,
+    );
+  if (request.action === "approval" && task.status !== "waiting_for_approval")
+    throw new SelfDevelopmentError(
+      "existing_task_control_ineligible",
+      "The referenced durable task is not waiting for approval.",
+      409,
+    );
+  if (request.action === "clarification" && task.status !== "blocked")
+    throw new SelfDevelopmentError(
+      "existing_task_control_ineligible",
+      "The referenced durable task is not waiting for clarification.",
+      409,
+    );
+  if (
+    request.action === "control" &&
+    ["completed", "failed", "cancelled", "expired"].includes(task.status)
+  )
+    throw new SelfDevelopmentError(
+      "existing_task_control_ineligible",
+      "The referenced durable task is already terminal.",
+      409,
+    );
+  return Object.freeze({
+    ...request,
+    task: Object.freeze({
+      id: task.id,
+      status: task.status,
+      stateVersion: task.stateVersion,
+      currentPhase: task.currentPhase || null,
+      errorCode: task.errorCode || null,
+    }),
+  });
 }
 const REPLAN_PROTECTED =
   /(^|\/)(?:src\/(?:voice|policy|storage|autonomy)(?:\/|$)|speaker-worker(?:\/|$)|api\/index\.js$|\.github(?:\/|$)|assets\/(?:voice-(?!input(?:\.|$))|speaker-)[^/]*(?:\/|$))|ecapa|elevenlabs|voice-control|production|credential|secret|token/i;

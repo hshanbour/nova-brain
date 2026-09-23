@@ -91,6 +91,36 @@ test("ordinary chat bypasses durable intake and keeps the synchronous model path
   assert.equal(result.provider, "scripted");
   assert.equal(result.message, "Normal chat");
 });
+test("existing-task continuation bypasses new-task intake and exposes only bounded task tools",async()=>{
+  const storage=testStorage(),registry=createToolRegistry(),observed=[],id="selfdev_c9fc28effbd72350c86c67abe4d69e36";let durableRoutes=0,recoveries=0;
+  registry.register({name:"self_development_get",available:true,async execute(){return{id};}});
+  registry.register({name:"self_development_scope_recover",available:true,async execute(input){recoveries+=1;assert.deepEqual(input,{taskId:id,expectedVersion:37});return{task:{id,status:"queued",stateVersion:38}};}});
+  registry.register({name:"self_development_create",available:true,async execute(){throw new Error("must remain unavailable to task control");}});
+  const agent=createTestAgent({storage,toolRegistry:registry,routeExistingTaskRequest:async()=>({route:"existing_task_control",action:"recovery",expectedVersion:37,task:{id,status:"expired",stateVersion:37,currentPhase:"scope_rediscovery",errorCode:"max_runtime_reached"}}),routeDurableRequest:async()=>{durableRoutes+=1;throw new Error("new-task intake must not run");},modelProvider:scriptedProvider([{type:"tool_calls",toolCalls:[{id:"recover",name:"self_development_scope_recover",arguments:{taskId:id,expectedVersion:37}}]},{type:"final",message:"Same task resumed."}],input=>observed.push(input))});
+  const result=await agent.run({message:`Resume task ${id} with expectedVersion 37.`});
+  assert.equal(durableRoutes,0);assert.equal(recoveries,1);assert.equal(result.message,"Same task resumed.");
+  assert.deepEqual(observed[0].tools.map(tool=>tool.name).sort(),["self_development_get","self_development_scope_recover"]);
+  assert.match(observed[0].systemContext,/Do not create a task or broaden authority/);
+  assert.equal((await storage.listAutonomyTasks(OWNER_ID)).length,0);
+  assert.equal((await storage.listActivity(OWNER_ID,{runId:result.runId})).some(item=>item.action==="existing_task_control_routed"),true);
+});
+test("existing-task control cannot execute a broader tool even if a provider requests it",async()=>{
+  const registry=createToolRegistry(),id="selfdev_c9fc28effbd72350c86c67abe4d69e36";let creations=0;
+  registry.register({name:"self_development_get",available:true,async execute(){return{id};}});
+  registry.register({name:"self_development_scope_recover",available:true,async execute(){return{ok:true};}});
+  registry.register({name:"self_development_create",available:true,async execute(){creations+=1;return{task:{id:"new"}};}});
+  const agent=createTestAgent({toolRegistry:registry,routeExistingTaskRequest:async()=>({route:"existing_task_control",action:"recovery",expectedVersion:37,task:{id,status:"expired",stateVersion:37,currentPhase:"scope_rediscovery",errorCode:"max_runtime_reached"}}),routeDurableRequest:async()=>{throw new Error("must not run");},modelProvider:scriptedProvider([{type:"tool_calls",toolCalls:[{id:"unsafe",name:"self_development_create",arguments:{userGoal:"broaden"}}]},{type:"final",message:"Stopped safely."}])});
+  const result=await agent.run({message:`Recover task ${id} with expectedVersion 37.`});
+  assert.equal(creations,0);assert.equal(result.toolCalls[0].status,"failed");assert.equal(result.toolCalls[0].error.code,"task_control_tool_forbidden");
+});
+test("task-bound approval or clarification routing cannot inherit recovery authority",async()=>{
+  const registry=createToolRegistry(),id="selfdev_c9fc28effbd72350c86c67abe4d69e36",observed=[];let durableRoutes=0;
+  registry.register({name:"self_development_get",available:true,async execute(){return{id};}});
+  registry.register({name:"self_development_scope_recover",available:true,async execute(){throw new Error("must not be exposed");}});
+  const agent=createTestAgent({toolRegistry:registry,routeExistingTaskRequest:async()=>({route:"existing_task_control",action:"approval",expectedVersion:null,task:{id,status:"waiting_for_approval",stateVersion:40,currentPhase:"approval",errorCode:null}}),routeDurableRequest:async()=>{durableRoutes+=1;throw new Error("must not run");},modelProvider:scriptedProvider([{type:"final",message:"Use the existing approval boundary."}],input=>observed.push(input))});
+  const result=await agent.run({message:`Approve task ${id}. Do not create a new Nova task.`});
+  assert.equal(result.message,"Use the existing approval boundary.");assert.equal(durableRoutes,0);assert.deepEqual(observed[0].tools.map(tool=>tool.name),["self_development_get"]);
+});
 
 test("ordinary chat binds the chat stage and durably records provider token usage",async()=>{const storage=testStorage(),observed=[];const usage={model:"economical",stage:"chat",serviceTier:"default",inputTokens:100,cachedInputTokens:80,outputTokens:10,reasoningTokens:2,totalTokens:110},agent=createTestAgent({storage,modelProvider:scriptedProvider([{type:"final",message:"Measured",providerUsage:usage}],input=>observed.push(input)),toolRegistry:createToolRegistry()});await agent.run({message:"Hello",conversationId:"usage-chat"});assert.equal(observed[0].stage,"chat");const [run]=await storage.listRuns(OWNER_ID);assert.deepEqual(run.result.providerUsage,[usage]);});
 
