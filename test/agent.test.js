@@ -258,6 +258,30 @@ test("agent contains tool execution errors and continues", async () => {
   assert.equal(JSON.stringify(result).includes("secret detail"), false);
 });
 
+test("scope recovery exposes and persists only bounded failure diagnostics", async () => {
+  const storage = testStorage(), registry = createToolRegistry(), input = { taskId: "selfdev_safe", expectedVersion: 34 };
+  registry.register({ name: "self_development_scope_recover", async execute() {
+    throw Object.assign(new Error("secret resolver response"), { code: "structured_scope_invalid", safeDiagnostics: { boundary: "semantic_validation", reason: "candidate_role_missing", recoveryTransitionScheduled: false, recoveryAttemptConsumed: false, apiKey: "never-persist" } });
+  } });
+  const provider = {
+    name: "scope-recovery-errors",
+    async generate(value) {
+      if(!value.toolResults.length)return { type: "tool_calls", toolCalls: [{ id: "recover", name: "self_development_scope_recover", arguments: input }] };
+      assert.deepEqual(value.toolResults, [{ id: "recover", output: { ok: false, error: { code: "unresolved_evidence_unavailable", message: "Structured scope recovery failed safely.", diagnostics: { boundary: "semantic_validation", reason: "candidate_role_missing", recoveryTransitionScheduled: false, recoveryAttemptConsumed: false } } } }]);
+      assert.equal(JSON.stringify(value.toolResults).includes("never-persist"), false);
+      return { type: "final", message: "Recovery stopped safely." };
+    }
+  };
+  const result = await createTestAgent({ storage, toolRegistry: registry, modelProvider: provider }).run({ message: "Recover exact task", conversationId: "scope-recovery-error" });
+  assert.equal(result.toolCalls[0].error.code, "unresolved_evidence_unavailable");
+  const activity = await storage.listActivity(OWNER_ID, { runId: result.runId, limit: 10 });
+  const started = activity.find(item => item.action === "tool_started"), failed = activity.find(item => item.action === "tool_failed");
+  assert.deepEqual(started.metadata, input);
+  assert.equal(failed.metadata.error.code, "unresolved_evidence_unavailable");
+  assert.equal(JSON.stringify(activity).includes("never-persist"), false);
+  assert.equal(JSON.stringify(activity).includes("secret resolver response"), false);
+});
+
 test("agent enforces its maximum model-step limit", async () => {
   let executions = 0;
   const registry = createToolRegistry();

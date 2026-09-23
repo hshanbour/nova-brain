@@ -43,6 +43,20 @@ function validateModelOutput(output) {
 
 function safeToolError(error, name) {
   if (error?.message === `Unknown tool: ${name}`) return error.message;
+  if(name==="self_development_scope_recover"){
+    const codes={
+      version_conflict:"stale_version",
+      discovery_replan_precondition_failed:"ineligible_state",
+      structured_scope_recovery_exhausted:"recovery_exhausted",
+      structured_scope_invalid:"unresolved_evidence_unavailable",
+      structured_intake_invalid:"unresolved_evidence_unavailable",
+      replan_scope_empty:"unresolved_evidence_unavailable",
+      OPENAI_UPSTREAM_ERROR:"recovery_transition_failed",
+    },code=codes[error?.code]||(error?.code==="scope_recovery_invalid"?"invalid_input":"recovery_transition_failed"),
+      allowedDiagnostics=new Set(["boundary","reason","stage","endpoint","requestMode","model","responseFormatName","upstreamStatus","upstreamErrorType","upstreamErrorCode","upstreamErrorParam","rejectedSchemaField","recoveryTransitionScheduled","recoveryAttemptConsumed"]),diagnostics={};
+    for(const [key,value] of Object.entries(error?.safeDiagnostics||{}))if(allowedDiagnostics.has(key)&&(value===null||["string","number","boolean"].includes(typeof value)))diagnostics[key]=value;
+    return{code,message:"Structured scope recovery failed safely.",...(Object.keys(diagnostics).length?{diagnostics}:{})};
+  }
   const allowed = new Set([
     "invalid_input", "schema_mismatch", "repository_not_resolved",
     "repository_not_allowed", "branch_not_allowed", "project_not_found",
@@ -58,6 +72,13 @@ function safeToolError(error, name) {
 
 function toolErrorSummary(error, name) {
   return typeof error === "string" ? error : `${name} failed: ${error.code}.`;
+}
+
+function toolActivityMetadata(name,args,error){
+  if(name!=="self_development_scope_recover")return undefined;
+  const metadata={taskId:String(args?.taskId||"").slice(0,100),expectedVersion:Number.isInteger(args?.expectedVersion)?args.expectedVersion:null};
+  if(error&&typeof error==="object")metadata.error=error;
+  return metadata;
 }
 
 export function createAgent({
@@ -238,7 +259,7 @@ export function createAgent({
             name: call.name,
             arguments: call.arguments
           };
-          await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "tool_started", tool: call.name, status: "running", summary: `Started ${call.name}.` });
+          await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "tool_started", tool: call.name, status: "running", summary: `Started ${call.name}.`, metadata:toolActivityMetadata(call.name,call.arguments) });
 
           try {
             executionSignal.throwIfAborted();
@@ -262,7 +283,7 @@ export function createAgent({
               id: call.id,
               output: { ok: false, error: execution.error }
             });
-            await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "tool_failed", tool: call.name, status: "failed", summary: toolErrorSummary(execution.error, call.name) });
+            await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "tool_failed", tool: call.name, status: "failed", summary: toolErrorSummary(execution.error, call.name), metadata:toolActivityMetadata(call.name,call.arguments,execution.error) });
           }
 
           toolExecutions.push(execution);

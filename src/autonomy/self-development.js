@@ -1416,7 +1416,7 @@ export function createSelfDevelopmentService({
     let resolvedCandidatePaths = input.candidatePaths ?? await resolveDiscoveryCandidates(request, steps),scopeResolution=null;
     if(!input.candidatePaths&&resolvedCandidatePaths&&structuredIntake?.resolveScope){
       try{scopeResolution=await structuredIntake.resolveScope({request,candidatePaths:resolvedCandidatePaths});}
-      catch(error){throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409);}
+      catch(error){throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409,{...error?.safeDiagnostics,recoveryTransitionScheduled:false,recoveryAttemptConsumed:false});}
       if(scopeResolution.status!=="resolved"){
         const now=clock().toISOString(),concepts=structuredScopeRecoveryConcepts(scopeResolution),attempt=scopeRecoveryHistory.length+1;
         if(attempt<=STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS&&concepts.length){

@@ -1586,13 +1586,14 @@ test("discovery gives every structured concept an independent bounded escaped re
   assert.equal(result.continuationSteps.includes("deploy_preview"),false);
   assert.deepEqual(scopeInput.request.constraints.map(item=>item.enforcements),[["preservation_assessment"],["omit_git_push","omit_preview_deploy"]]);
 });
-async function structuredScopeRecoveryFixture({resolveSecond=true}={}){
+async function structuredScopeRecoveryFixture({resolveSecond=true,recoveryError=null}={}){
   let resolutionCalls=0;
   const scopeCalls=[],searchCalls=[],structuredIntake={
     async specify(userGoal){return{version:1,status:"ready",intent:"implementation",objective:userGoal,acceptanceCriteria:["Chat shows durable task progress.","Existing Console behavior remains intact."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["console activity"],clarificationQuestion:"",specificationHash:"9".repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:20,outputTokens:10}};},
     async resolveScope(input){
       scopeCalls.push(input);
       resolutionCalls+=1;
+      if(recoveryError)throw recoveryError;
       if(resolutionCalls===1||!resolveSecond)return{version:2,status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[{category:"existing_contract",concepts:["task status api client","approval cancellation client"]},{category:"focused_test",concepts:["console activity regression"]}],decisionHash:String(resolutionCalls).repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:30,outputTokens:15}};
       assert.ok(input.candidatePaths.includes("assets/api-client.js"),JSON.stringify(input.candidatePaths));
       assert.ok(input.candidatePaths.includes("test/console-client.test.js"));
@@ -1644,6 +1645,27 @@ test("structured unresolved scope schedules one same-task read-only rediscovery 
   assert.equal(recovery.providerUsage.model,"gpt-6-luna");
   assert.equal(result.task.metadata.structuredScopeResolution.providerUsage.inputTokens,30);
   await rejects(f.service.replanDiscoveryOnly(f.blocked.id,{expectedVersion:version}),"version_conflict");
+});
+test("pre-transition structured resolver failure preserves the sole recovery attempt",async()=>{
+  const failure=Object.assign(new Error("private provider detail"),{code:"structured_intake_invalid",safeDiagnostics:{boundary:"schema_parse",reason:"invalid_json"}}),f=await structuredScopeRecoveryFixture({recoveryError:failure}),before=f.blocked;
+  await assert.rejects(()=>f.service.recoverStructuredScope(before.id,{expectedVersion:before.stateVersion}),error=>error.code==="structured_intake_invalid"&&error.safeDiagnostics?.recoveryTransitionScheduled===false&&error.safeDiagnostics?.recoveryAttemptConsumed===false);
+  const after=await f.runtime.get(before.id);
+  assert.equal(after.stateVersion,before.stateVersion);
+  assert.equal(after.status,"blocked");
+  assert.equal(after.currentPhase,before.currentPhase);
+  assert.deepEqual(after.metadata.structuredScopeRecoveryHistory||[],[]);
+  assert.equal((await f.runtime.steps(after.id)).some(step=>step.stepType==="scope_rediscovery"),false);
+});
+test("historical version-one unresolved scope metadata remains recoverable on the same task",async()=>{
+  const f=await structuredScopeRecoveryFixture(),historical=await f.storage.updateAutonomyTask(f.blocked.id,OWNER,{metadata:{...f.blocked.metadata,structuredScopeResolution:{version:1,status:"blocked",unresolvedPrerequisiteFingerprints:["a".repeat(64)]},structuredScopeRecoveryHistory:[]}},f.blocked.stateVersion);
+  const result=await f.service.recoverStructuredScope(historical.id,{expectedVersion:historical.stateVersion});
+  assert.equal(result.task.id,historical.id);
+  assert.equal(result.task.startingCommit,historical.startingCommit);
+  assert.equal(result.task.currentPhase,"scope_rediscovery");
+  assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"discovery_only");
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,[]);
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,[]);
+  assert.deepEqual(result.task.metadata.structuredScopeRecoveryHistory[0].concepts,["task status api client","approval cancellation client","console activity regression"]);
 });
 test("bounded rediscovery may freeze only newly repository-evidenced scope before canonical planning",async()=>{
   const f=await structuredScopeRecoveryFixture(),first=await f.service.replanDiscoveryOnly(f.blocked.id,{expectedVersion:f.blocked.stateVersion});
