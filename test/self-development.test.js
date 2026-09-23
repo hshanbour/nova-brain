@@ -210,7 +210,7 @@ async function fixture({
     resolvePathState,
     structuredIntake: structuredIntake || {
       async specify(userGoal){return{version:1,status:"ready",intent:"implementation",objective:userGoal,acceptanceCriteria:["Implement the requested behavior safely."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["console"],clarificationQuestion:"",specificationHash:"1".repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:10,outputTokens:10}};},
-      async resolveScope({candidatePaths}){return{version:1,status:"resolved",sourcePaths:candidatePaths.filter(path=>!path.startsWith("test/")),testPaths:candidatePaths.filter(path=>path.startsWith("test/")),constraintCoverage:[],unresolvedPrerequisites:[],decisionHash:"2".repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:10,outputTokens:10}};},
+      async resolveScope({candidatePaths}){return{version:2,status:"resolved",sourcePaths:candidatePaths.filter(path=>!path.startsWith("test/")),testPaths:candidatePaths.filter(path=>path.startsWith("test/")),constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[],decisionHash:"2".repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:10,outputTokens:10}};},
     },
   });
   return {
@@ -1463,7 +1463,7 @@ test("discovery-only replan preserves canonical implementation intent across neu
               status: "resolved",
               sourcePaths: ["assets/console.js"],
               testPaths: ["test/console-client.test.js"],
-              unresolvedPrerequisites: [],
+              unresolvedEvidence: [],
               constraintCoverage: [{ constraint: "Preserve existing behavior.", paths: ["assets/console.js"] }],
               decisionHash: "6".repeat(64),
             };
@@ -1541,9 +1541,9 @@ test("discovery gives every structured concept an independent bounded escaped re
         clarificationQuestion:"",specificationHash:"7".repeat(64),
       };},
       async resolveScope(input){scopeInput=input;return{
-        version:1,status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-client.test.js","test/console-static.test.js"],
+        version:2,status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-client.test.js","test/console-static.test.js"],
         constraintCoverage:[],constraintBindings:[{constraintIndex:0,type:"preserve",enforcements:["preservation_assessment"]},{constraintIndex:1,type:"boundary",enforcements:["omit_git_push","omit_preview_deploy"]}],
-        unresolvedPrerequisites:[],decisionHash:"8".repeat(64),
+        unresolvedEvidence:[],decisionHash:"8".repeat(64),
       };},
     },
     execute(name,args){
@@ -1585,6 +1585,110 @@ test("discovery gives every structured concept an independent bounded escaped re
   assert.equal(result.continuationSteps.includes("push"),false);
   assert.equal(result.continuationSteps.includes("deploy_preview"),false);
   assert.deepEqual(scopeInput.request.constraints.map(item=>item.enforcements),[["preservation_assessment"],["omit_git_push","omit_preview_deploy"]]);
+});
+async function structuredScopeRecoveryFixture({resolveSecond=true}={}){
+  let resolutionCalls=0;
+  const scopeCalls=[],searchCalls=[],structuredIntake={
+    async specify(userGoal){return{version:1,status:"ready",intent:"implementation",objective:userGoal,acceptanceCriteria:["Chat shows durable task progress.","Existing Console behavior remains intact."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["console activity"],clarificationQuestion:"",specificationHash:"9".repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:20,outputTokens:10}};},
+    async resolveScope(input){
+      scopeCalls.push(input);
+      resolutionCalls+=1;
+      if(resolutionCalls===1||!resolveSecond)return{version:2,status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[{category:"existing_contract",concepts:["task status api client","approval cancellation client"]},{category:"focused_test",concepts:["console activity regression"]}],decisionHash:String(resolutionCalls).repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:30,outputTokens:15}};
+      assert.ok(input.candidatePaths.includes("assets/api-client.js"),JSON.stringify(input.candidatePaths));
+      assert.ok(input.candidatePaths.includes("test/console-client.test.js"));
+      return{version:2,status:"resolved",sourcePaths:["assets/console.js","assets/api-client.js"],testPaths:["test/console-client.test.js","test/console-static.test.js"],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[],decisionHash:"f".repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:35,outputTokens:12}};
+    },
+  };
+  const f=await fixture({
+    structuredIntake,
+    resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&["assets/console.js","assets/api-client.js","test/console-client.test.js","test/console-static.test.js"].includes(path)}),
+    execute(name,args){
+      if(name==="repo_list")return{ok:true,files:["assets/console.js","src/autonomy/worker-runtime.js","test/console-static.test.js"]};
+      if(name==="repo_search"){
+        searchCalls.push(args);
+        if(resolutionCalls>0)return{ok:true,matches:[{path:"assets/api-client.js"},{path:"test/console-client.test.js"},{path:"test/console-static.test.js"}]};
+        return{ok:true,matches:[{path:"assets/console.js"},{path:"test/console-static.test.js"}]};
+      }
+      return{ok:true};
+    },
+  }),created=await f.service.createTrustedIntake("Implement Console live activity task status approval and cancellation behavior");
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`scope-recovery-initial-${index}`});
+  const blocked=await f.runtime.get(created.task.id);
+  assert.equal(blocked.errorCode,"implementation_scope_required");
+  return{...f,created,blocked,scopeCalls,searchCalls,get resolutionCalls(){return resolutionCalls;}};
+}
+async function executeScheduledScopeRediscovery(f){
+  for(let index=0;index<20;index++){
+    const task=await f.runtime.get(f.created.task.id);
+    if(task.status==="blocked"||task.status==="failed"||task.status==="completed")return task;
+    await f.runtime.tickTask(task.id,{idempotencyKey:`scope-recovery-${index}`});
+  }
+  return f.runtime.get(f.created.task.id);
+}
+test("structured unresolved scope schedules one same-task read-only rediscovery with zero authority",async()=>{
+  const f=await structuredScopeRecoveryFixture(),startingCommit=f.blocked.startingCommit,version=f.blocked.stateVersion;
+  const result=await f.service.replanDiscoveryOnly(f.blocked.id,{expectedVersion:version});
+  assert.equal(result.task.id,f.blocked.id);
+  assert.equal(result.task.startingCommit,startingCommit);
+  assert.equal(result.task.metadata.selfDevelopment.intent,"implementation");
+  assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"discovery_only");
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,[]);
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,[]);
+  assert.equal(result.task.currentPhase,"scope_rediscovery");
+  assert.ok(result.continuationSteps.every(type=>["search_code","plan_patch","summarize"].includes(type)));
+  assert.equal(result.continuationSteps.some(type=>["read_files","plan_implementation","apply_patch","commit","push","deploy_preview"].includes(type)),false);
+  const recovery=result.task.metadata.structuredScopeRecoveryHistory[0];
+  assert.equal(recovery.attempt,1);assert.equal(recovery.maxAttempts,1);assert.equal(recovery.startingCommit,startingCommit);
+  assert.deepEqual(recovery.unresolvedEvidence.map(item=>item.category),["existing_contract","focused_test"]);
+  assert.deepEqual(recovery.concepts,["task status api client","approval cancellation client","console activity regression"]);
+  assert.equal(recovery.providerUsage.model,"gpt-6-luna");
+  assert.equal(result.task.metadata.structuredScopeResolution.providerUsage.inputTokens,30);
+  await rejects(f.service.replanDiscoveryOnly(f.blocked.id,{expectedVersion:version}),"version_conflict");
+});
+test("bounded rediscovery may freeze only newly repository-evidenced scope before canonical planning",async()=>{
+  const f=await structuredScopeRecoveryFixture(),first=await f.service.replanDiscoveryOnly(f.blocked.id,{expectedVersion:f.blocked.stateVersion});
+  const afterRestart=await executeScheduledScopeRediscovery(f);
+  assert.equal(afterRestart.status,"blocked");assert.equal(afterRestart.errorCode,"implementation_scope_required");
+  assert.equal(afterRestart.metadata.selfDevelopment.scopeAuthority,"discovery_only");
+  assert.equal((await f.runtime.steps(afterRestart.id)).some(step=>["plan_implementation","apply_patch"].includes(step.stepType)),false);
+  const resolved=await f.service.replanDiscoveryOnly(afterRestart.id,{expectedVersion:afterRestart.stateVersion});
+  assert.equal(resolved.task.id,first.task.id);
+  assert.equal(resolved.task.startingCommit,f.blocked.startingCommit);
+  assert.equal(resolved.task.currentCommit,f.blocked.currentCommit);
+  assert.equal(resolved.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
+  assert.deepEqual(resolved.task.metadata.selfDevelopment.scope.paths,["assets/console.js","assets/api-client.js"]);
+  assert.deepEqual(resolved.task.metadata.selfDevelopment.scope.focusedTests,["test/console-client.test.js","test/console-static.test.js"]);
+  assert.equal(resolved.task.metadata.structuredScopeRecoveryHistory[0].status,"resolved");
+  assert.ok(resolved.continuationSteps.indexOf("read_files")<resolved.continuationSteps.indexOf("plan_implementation"));
+  assert.ok(f.scopeCalls[1].candidatePaths.includes("assets/api-client.js"));
+  assert.equal(resolved.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths.includes("src/autonomy/worker-runtime.js"),false);
+});
+test("a second unresolved scope result exhausts recovery without a rediscovery loop",async()=>{
+  const f=await structuredScopeRecoveryFixture({resolveSecond:false});
+  await f.service.replanDiscoveryOnly(f.blocked.id,{expectedVersion:f.blocked.stateVersion});
+  const rediscovered=await executeScheduledScopeRediscovery(f),exhausted=await f.service.replanDiscoveryOnly(rediscovered.id,{expectedVersion:rediscovered.stateVersion});
+  assert.equal(exhausted.task.status,"blocked");assert.equal(exhausted.task.errorCode,"structured_scope_recovery_exhausted");
+  assert.equal(exhausted.task.metadata.requiredCapability,null);
+  assert.equal(exhausted.task.metadata.structuredScopeRecoveryHistory.length,1);
+  assert.equal(exhausted.task.metadata.structuredScopeRecoveryHistory[0].status,"exhausted");
+  await rejects(f.service.replanDiscoveryOnly(exhausted.task.id,{expectedVersion:exhausted.task.stateVersion}),"discovery_replan_precondition_failed");
+});
+test("normal Chat continuation tool targets the exact blocked task idempotently",async()=>{
+  const f=await structuredScopeRecoveryFixture(),registry=createToolRegistry();
+  registerSelfDevelopmentTools(registry,{service:f.service});
+  const names=registry.list().map(tool=>tool.name);assert.ok(names.includes("self_development_scope_recover"));
+  const input={taskId:f.blocked.id,expectedVersion:f.blocked.stateVersion};
+  let turn=0;
+  const agent=createAgent({storage:f.storage,ownerId:OWNER,toolRegistry:registry,modelProvider:{name:"scope-recovery-chat",async generate({toolResults}){
+    if(turn++===0)return{type:"tool_calls",toolCalls:[{id:"recover-scope",name:"self_development_scope_recover",arguments:input}]};
+    assert.equal(toolResults[0].output.result.task.id,f.blocked.id);
+    return{type:"final",message:"One bounded read-only discovery pass is continuing on the same task."};
+  }}});
+  const chat=await agent.run({message:"Continue with one safe bounded discovery pass.",conversationId:"scope-recovery-chat"}),first=chat.toolCalls[0].result,second=await registry.execute("self_development_scope_recover",input);
+  assert.match(chat.message,/same task/);assert.equal(first.task.id,f.blocked.id);assert.equal(first.idempotent,false);
+  assert.equal(second.task.id,f.blocked.id);assert.equal(second.idempotent,true);
+  assert.equal(second.task.stateVersion,first.task.stateVersion);
+  assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,1);
 });
 test("automatic discovery ranks owning microphone modules above preservation-context matches",async()=>{
   const existing=new Set(["test/voice-input.test.js","test/console-static.test.js"]),files=[

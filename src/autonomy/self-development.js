@@ -79,6 +79,7 @@ const DISCOVERY_MAX_QUERIES = 8;
 const DISCOVERY_RESULTS_PER_QUERY = 24;
 const DISCOVERY_MAX_ALTERNATIVES_PER_QUERY = 10;
 const DISCOVERY_MAX_QUERY_LENGTH = 180;
+const STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS = 1;
 const CONSTRAINT_ENFORCEMENTS = new Set(["scope_selection","preservation_assessment","omit_git_push","omit_preview_deploy","existing_delivery_approval"]);
 const legacyConstraintEnforcements=type=>type==="preserve"?["preservation_assessment"]:["scope_selection"];
 const constraintEnforcements=item=>item?.enforcements||legacyConstraintEnforcements(item?.type);
@@ -647,6 +648,79 @@ export function createSelfDevelopmentService({
       }
     }
     return tests.length ? [...new Set([...sources, ...tests])].slice(0, 12) : null;
+  };
+  const structuredScopeMetadata = (resolution, extra = {}) => ({
+    version: resolution.version,
+    status: resolution.status,
+    decisionHash: resolution.decisionHash,
+    providerUsage: resolution.providerUsage || null,
+    unresolvedEvidence: (resolution.unresolvedEvidence || []).map((item) => ({
+      category: item.category,
+      concepts: [...item.concepts],
+    })),
+    unresolvedEvidenceFingerprints: (resolution.unresolvedEvidence || []).map(hash),
+    constraintCoverage: resolution.constraintCoverage,
+    constraintBindings: resolution.constraintBindings,
+    ...extra,
+  });
+  const structuredScopeRecoveryConcepts = (resolution) => [
+    ...new Set(
+      (resolution.unresolvedEvidence || [])
+        .flatMap((item) => item.concepts || [])
+        .map((item) => String(item).trim())
+        .filter((item) => item.length >= 2 && item.length <= 80 && /^[a-z0-9][a-z0-9 _-]*$/i.test(item)),
+    ),
+  ].slice(0, DISCOVERY_MAX_QUERIES);
+  const appendScopeRediscovery = ({ steps, base, request, concepts }) => {
+    const recoveryRequest = {
+      ...request,
+      scope: { ...request.scope, searchTerms: concepts },
+    };
+    for (const [index, search] of discoverySearches(recoveryRequest).entries())
+      steps.push(
+        annotation(
+          base + steps.length + 1,
+          "search_code",
+          "repo_read_remote",
+          {
+            tool: "repo_search",
+            arguments: {
+              query: search.query,
+              mode: search.mode,
+              path: request.scope.inspectPath || ".",
+              limit: DISCOVERY_RESULTS_PER_QUERY,
+            },
+          },
+          `Additional repository evidence for unresolved scope concept ${index + 1}`,
+          "Read-only recovery evidence returned",
+          { retry: "safe_read" },
+        ),
+      );
+    steps.push(
+      annotation(
+        base + steps.length + 1,
+        "plan_patch",
+        "reasoning",
+        {
+          goal: request.userGoal,
+          acceptanceCriteria: request.acceptanceCriteria,
+          scope: [],
+        },
+        "Bounded rediscovery decision",
+        "Recovery remains discovery-only",
+        { retry: "new_evidence_required" },
+      ),
+      annotation(
+        base + steps.length + 2,
+        "summarize",
+        "reasoning",
+        { summary: "Nova self-development bounded scope rediscovery completed." },
+        "Durable recovery checkpoint",
+        "Scope must be resolved before implementation",
+        { retry: "not_retryable" },
+      ),
+    );
+    return steps;
   };
   const appendEvidenceBoundImplementation = ({
     steps,
@@ -1265,6 +1339,7 @@ export function createSelfDevelopmentService({
       );
     const request = current.metadata?.selfDevelopment,
       steps = await runtime.steps(current.id),
+      scopeRecoveryHistory = current.metadata?.structuredScopeRecoveryHistory || [],
       completedTypes = steps
         .filter((step) => step.status === "completed")
         .map((step) => step.stepType),
@@ -1289,7 +1364,13 @@ export function createSelfDevelopmentService({
         ["inspect_repo", "search_code", "plan_patch"].every((type) =>
           completedTypes.includes(type),
         ) &&
-        failedScopeSummary);
+        failedScopeSummary) ||
+      (current.status === "blocked" &&
+        current.errorCode === "structured_scope_unresolved" &&
+        scopeRecoveryHistory.length === 0 &&
+        ["inspect_repo", "search_code", "plan_patch"].every((type) =>
+          completedTypes.includes(type),
+        ));
     const hasDeliveryEvidence =
       steps.some((step) =>
         [
@@ -1313,6 +1394,8 @@ export function createSelfDevelopmentService({
       persistedIntent(request, current.objective) !== "implementation" ||
       request?.scope?.patch?.files?.length ||
       request?.scope?.paths?.length ||
+      request?.scope?.focusedTests?.length ||
+      scopeRecoveryHistory.length > STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS ||
       hasDeliveryEvidence
     )
       throw new SelfDevelopmentError(
@@ -1335,9 +1418,20 @@ export function createSelfDevelopmentService({
       try{scopeResolution=await structuredIntake.resolveScope({request,candidatePaths:resolvedCandidatePaths});}
       catch(error){throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409);}
       if(scopeResolution.status!=="resolved"){
-        const now=clock().toISOString(),blocked=await storage.updateAutonomyTask(current.id,ownerId,{status:"blocked",currentPhase:"scope_resolution",errorCode:"structured_scope_unresolved",blockedReason:"Nova could not establish a safe mutation-authoritative scope.",completedAt:now,metadata:{...current.metadata,structuredScopeResolution:{version:scopeResolution.version,status:"blocked",decisionHash:scopeResolution.decisionHash,providerUsage:scopeResolution.providerUsage||null,unresolvedPrerequisiteFingerprints:(scopeResolution.unresolvedPrerequisites||[]).map(hash),constraintCoverage:scopeResolution.constraintCoverage,constraintBindings:scopeResolution.constraintBindings}}},current.stateVersion);
+        const now=clock().toISOString(),concepts=structuredScopeRecoveryConcepts(scopeResolution),attempt=scopeRecoveryHistory.length+1;
+        if(attempt<=STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS&&concepts.length){
+          const base=current.metadata.steps.length,continuation=[];
+          appendScopeRediscovery({steps:continuation,base,request,concepts});
+          const record={version:1,attempt,maxAttempts:STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS,fromStateVersion:current.stateVersion,startingCommit:current.startingCommit,currentCommit:current.currentCommit,decisionHash:scopeResolution.decisionHash,candidatePathsHash:hash(resolvedCandidatePaths),unresolvedEvidence:(scopeResolution.unresolvedEvidence||[]).map(item=>({category:item.category,concepts:[...item.concepts]})),unresolvedEvidenceFingerprints:(scopeResolution.unresolvedEvidence||[]).map(hash),concepts,conceptsHash:hash(concepts),providerUsage:scopeResolution.providerUsage||null,continuationStepIds:continuation.map(step=>step.id),status:"scheduled",createdAt:now};
+          const recovered=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",currentStep:base,currentPhase:"scope_rediscovery",nextRunAt:now,completedAt:null,errorCode:null,blockedReason:null,retryCount:0,maxSteps:Math.min(100,Math.max(current.maxSteps,base+continuation.length+request.maxRepairIterations*6)),metadata:{...current.metadata,steps:[...current.metadata.steps,...continuation],requiredCapability:"repo_read_remote",autoDispatch:true,structuredScopeResolution:structuredScopeMetadata(scopeResolution,{recoveryAttempt:attempt}),structuredScopeRecoveryHistory:[...scopeRecoveryHistory,record]}},current.stateVersion);
+          if(!recovered)throw new SelfDevelopmentError("version_conflict","Task changed during bounded scope rediscovery scheduling.");
+          await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_scope_rediscovery_scheduled",status:"queued",summary:"Nova scheduled one bounded read-only scope rediscovery pass.",metadata:{taskId:current.id,decisionHash:scopeResolution.decisionHash,attempt,maxAttempts:STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS,conceptsHash:record.conceptsHash,continuationStepIds:record.continuationStepIds}});
+          return{task:recovered,evidenceStepIds:[],scopeHash:null,continuationSteps:continuation.map(step=>step.type),scopeRecovery:record};
+        }
+        const exhausted=scopeRecoveryHistory.length>=STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS,errorCode=exhausted?"structured_scope_recovery_exhausted":"structured_scope_unresolved",blockedReason=exhausted?"Nova exhausted the single bounded scope rediscovery pass without establishing safe authority.":"Nova could not establish a safe mutation-authoritative scope or bounded recovery concepts.";
+        const blocked=await storage.updateAutonomyTask(current.id,ownerId,{status:"blocked",currentPhase:"scope_resolution",errorCode,blockedReason,completedAt:now,metadata:{...current.metadata,requiredCapability:null,structuredScopeResolution:structuredScopeMetadata(scopeResolution,{recoveryAttempt:scopeRecoveryHistory.length,recoveryExhausted:exhausted}),structuredScopeRecoveryHistory:scopeRecoveryHistory.map((item,index)=>index===scopeRecoveryHistory.length-1?{...item,status:"exhausted",exhaustedAt:now}:item)}},current.stateVersion);
         if(!blocked)throw new SelfDevelopmentError("version_conflict","Task changed during structured scope resolution.");
-        await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_scope_resolution_blocked",status:"blocked",summary:"A safe mutation-authoritative scope could not be established.",metadata:{taskId:current.id,decisionHash:scopeResolution.decisionHash}});
+        await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:exhausted?"self_development_scope_rediscovery_exhausted":"self_development_scope_resolution_blocked",status:"blocked",summary:blockedReason,metadata:{taskId:current.id,decisionHash:scopeResolution.decisionHash,recoveryAttempt:scopeRecoveryHistory.length,recoveryExhausted:exhausted}});
         return{task:blocked,evidenceStepIds:[],scopeHash:null,continuationSteps:[]};
       }
       resolvedCandidatePaths=[...scopeResolution.sourcePaths,...scopeResolution.testPaths];
@@ -1477,7 +1571,8 @@ export function createSelfDevelopmentService({
             ...(current.metadata.discoveryOnlyReplanHistory || []),
             replanRecord,
           ],
-          ...(scopeResolution?{structuredScopeResolution:{version:scopeResolution.version,decisionHash:scopeResolution.decisionHash,providerUsage:scopeResolution.providerUsage||null,constraintCoverage:scopeResolution.constraintCoverage,constraintBindings:scopeResolution.constraintBindings}}:{}),
+          ...(scopeResolution?{structuredScopeResolution:structuredScopeMetadata(scopeResolution,{recoveryAttempt:scopeRecoveryHistory.length})}:{}),
+          ...(scopeRecoveryHistory.length?{structuredScopeRecoveryHistory:scopeRecoveryHistory.map((item,index)=>index===scopeRecoveryHistory.length-1?{...item,status:"resolved",resolvedAt:now,resolvedDecisionHash:scopeResolution?.decisionHash||null}:item)}:{}),
         },
       },
       current.stateVersion,
@@ -1510,6 +1605,44 @@ export function createSelfDevelopmentService({
       scopeHash,
       continuationSteps: continuation.map((step) => step.type),
     };
+  }
+  async function recoverStructuredScope(taskId, input = {}) {
+    const allowed = new Set(["expectedVersion", "runtimeBudgetMinutes"]);
+    if (
+      Object.keys(input).some((key) => !allowed.has(key)) ||
+      !Number.isInteger(input.expectedVersion)
+    )
+      throw new SelfDevelopmentError(
+        "scope_recovery_invalid",
+        "An exact blocked task version is required.",
+        400,
+      );
+    const idempotentRecovery = async () => {
+      const task = await runtime.get(taskId),
+        recovery = task?.metadata?.structuredScopeRecoveryHistory?.at(-1);
+      if (
+        task?.status === "queued" &&
+        task.currentPhase === "scope_rediscovery" &&
+        recovery?.status === "scheduled" &&
+        recovery.fromStateVersion === input.expectedVersion
+      )
+        return { task, scopeRecovery: recovery, idempotent: true };
+      return null;
+    };
+    const replay = await idempotentRecovery();
+    if (replay) return replay;
+    try {
+      return {
+        ...(await replanDiscoveryOnly(taskId, input)),
+        idempotent: false,
+      };
+    } catch (error) {
+      if (error?.code === "version_conflict") {
+        const raced = await idempotentRecovery();
+        if (raced) return raced;
+      }
+      throw error;
+    }
   }
   async function recoverImplementationPlan(taskId, input) {
     if (
@@ -3343,6 +3476,7 @@ export function createSelfDevelopmentService({
     recoverDivergedApprovedDeliveryIntegration,
     recoverApprovedContractDeliveryRuntime,
     replanDiscoveryOnly,
+    recoverStructuredScope,
     recoverImplementationPlan,
     recoverFailedTaskOwnedLocalRead,
     recoverImplementationSchema,

@@ -41,21 +41,32 @@ test("analysis-only intent remains a structured non-mutation classification",asy
 });
 
 test("scope resolution can only narrow repository-evidenced candidates and covers constraints",async()=>{
-  const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:["assets/console.js"]}],unresolvedPrerequisites:[]}])}),request={userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"exclude",requirement:"No Voice",enforcements:["scope_selection"]}]},result=await intake.resolveScope({request,candidatePaths:["assets/console.js","assets/voice-input.js","test/console-static.test.js"]});
+  const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:["assets/console.js"]}],unresolvedEvidence:[]}])}),request={userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"exclude",requirement:"No Voice",enforcements:["scope_selection"]}]},result=await intake.resolveScope({request,candidatePaths:["assets/console.js","assets/voice-input.js","test/console-static.test.js"]});
   assert.deepEqual([...result.sourcePaths,...result.testPaths],["assets/console.js","test/console-static.test.js"]);
-  const broaden=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/new.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:[]}],unresolvedPrerequisites:[]}])});
+  const broaden=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/new.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:[]}],unresolvedEvidence:[]}])});
   await assert.rejects(()=>broaden.resolveScope({request,candidatePaths:["assets/console.js","test/console-static.test.js"]}),error=>error.code==="structured_scope_invalid");
 });
 
 test("unresolvable scope is represented as a bounded blocked decision",async()=>{
-  const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[{constraintIndex:0,disposition:"blocked",evidencePaths:[]}],unresolvedPrerequisites:["No relevant focused test was discovered."]}])}),result=await intake.resolveScope({request:{userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"boundary",requirement:"Frontend only",enforcements:["scope_selection"]}]},candidatePaths:["assets/console.js","test/api.test.js"]});
-  assert.equal(result.status,"blocked");assert.equal(result.unresolvedPrerequisites.length,1);
+  const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[{constraintIndex:0,disposition:"blocked",evidencePaths:[]}],unresolvedEvidence:[{category:"focused_test",concepts:["console activity test"]}]}])}),result=await intake.resolveScope({request:{userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"boundary",requirement:"Frontend only",enforcements:["scope_selection"]}]},candidatePaths:["assets/console.js","test/api.test.js"]});
+  assert.equal(result.status,"blocked");assert.deepEqual(result.unresolvedEvidence,[{category:"focused_test",concepts:["console activity test"]}]);assert.equal(result.version,2);
+});
+test("scope recovery evidence is typed, bounded, and cannot grant path authority",async()=>{
+  const request={userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[]},candidates=["assets/console.js","test/console-static.test.js"];
+  for(const unresolvedEvidence of [
+    [{category:"focused_test",concepts:["assets/api-client.js"]}],
+    [{category:"unknown",concepts:["task status client"]}],
+    [{category:"existing_contract",concepts:["task status client", "x".repeat(81)]}],
+  ]){
+    const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[],unresolvedEvidence}])});
+    await assert.rejects(()=>intake.resolveScope({request,candidatePaths:candidates}),error=>error.code==="structured_scope_invalid");
+  }
 });
 test("scope resolution delegates preservation and delivery constraints to their bound runtime owners",async()=>{
   const calls=[],constraints=[
     {type:"preserve",requirement:"Preserve existing behavior.",enforcements:["preservation_assessment"]},
     {type:"boundary",requirement:"Stop before push or deployment.",enforcements:["omit_git_push","omit_preview_deploy"]},
-  ],intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[],unresolvedPrerequisites:[]}],calls)}),result=await intake.resolveScope({request:{userGoal:"Implement",acceptanceCriteria:["Works"],constraints},candidatePaths:["assets/console.js","test/console-static.test.js"]});
+  ],intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[],unresolvedEvidence:[]}],calls)}),result=await intake.resolveScope({request:{userGoal:"Implement",acceptanceCriteria:["Works"],constraints},candidatePaths:["assets/console.js","test/console-static.test.js"]});
   assert.equal(result.status,"resolved");
   assert.deepEqual(result.constraintCoverage,[]);
   assert.deepEqual(result.constraintBindings.map(item=>item.enforcements),[["preservation_assessment"],["omit_git_push","omit_preview_deploy"]]);
