@@ -320,7 +320,7 @@ export function createSelfDevelopmentService({
 } = {}) {
   if (!runtime || !storage || !ownerId)
     throw new Error("Self-development dependencies are required.");
-  function structure(input) {
+  function structure(input, { canonicalIntent } = {}) {
     const userGoal = boundedText(
         input?.userGoal || input?.goal,
         "user_goal",
@@ -468,7 +468,8 @@ export function createSelfDevelopmentService({
         400,
       );
     const intake=input.intake===undefined?null:input.intake;
-    if(intake!==null&&(!intake||intake.version!==1||!REVIEW_HASH.test(intake.sourceRequestHash||"")||!REVIEW_HASH.test(intake.specificationHash||"")))throw new SelfDevelopmentError("invalid_input","Trusted intake binding is invalid.",400);
+    if(intake!==null&&(!intake||intake.version!==1||!REVIEW_HASH.test(intake.sourceRequestHash||"")||!REVIEW_HASH.test(intake.specificationHash||"")||(intake.canonicalIntent!==undefined&&!['implementation','analysis_only'].includes(intake.canonicalIntent))))throw new SelfDevelopmentError("invalid_input","Trusted intake binding is invalid.",400);
+    if(canonicalIntent!==undefined&&(!intake||!['implementation','analysis_only'].includes(canonicalIntent)||intake.canonicalIntent!==canonicalIntent))throw new SelfDevelopmentError("invalid_input","Trusted canonical intent binding is invalid.",400);
     const protectedPaths = [...paths, ...patchFiles.map((x) => x.path)].filter(
         (path) => PROTECTED.test(path),
       ),
@@ -509,9 +510,9 @@ export function createSelfDevelopmentService({
       runtimeBudgetMinutes,
       status: "structured",
       startingCommit,
-      intent: IMPLEMENTATION_GOAL.test(userGoal)
+      intent: canonicalIntent ?? (IMPLEMENTATION_GOAL.test(userGoal)
         ? "implementation"
-        : "analysis_only",
+        : "analysis_only"),
     });
   }
   const requestFingerprint = (request) => {
@@ -996,8 +997,8 @@ export function createSelfDevelopmentService({
       );
     return remote.currentTip;
   }
-  async function create(input, { signal } = {}) {
-    const parsed = structure(input),
+  async function create(input, { signal, canonicalIntent } = {}) {
+    const parsed = structure(input, { canonicalIntent }),
       request = Object.freeze({
         ...parsed,
         targetProject: "nova-brain",
@@ -1149,19 +1150,20 @@ export function createSelfDevelopmentService({
     let specification;
     try{specification=await structuredIntake.specify(userGoal,{signal});}
     catch(error){throw new SelfDevelopmentError(error?.code||"structured_intake_invalid","Nova could not establish a safe durable task specification.",409,error?.safeDiagnostics);}
+    if(specification.intent!=="implementation")throw new SelfDevelopmentError("structured_intake_intent_conflict","Deterministic durable routing and structured intake intent did not agree.",409,{boundary:"canonical_intent",deterministicIntent:"implementation",structuredIntent:specification.intent||null});
     if(specification.status!=="ready")return{clarificationRequired:true,message:specification.clarificationQuestion||"The implementation request requires clarification.",providerUsage:specification.providerUsage||null};
     return create({
       userGoal:specification.objective,
       acceptanceCriteria:specification.acceptanceCriteria,
       constraints:specification.constraints,
-      intake:{version:1,sourceRequestHash:hash(userGoal.trim()),specificationHash:specification.specificationHash,providerUsage:specification.providerUsage||null,scopeNormalization:specification.scopeNormalization||{discardedExplicitPaths:0,discardedFocusedTests:0}},
+      intake:{version:1,sourceRequestHash:hash(userGoal.trim()),specificationHash:specification.specificationHash,canonicalIntent:specification.intent,providerUsage:specification.providerUsage||null,scopeNormalization:specification.scopeNormalization||{discardedExplicitPaths:0,discardedFocusedTests:0}},
       scope: {
         paths: specification.explicitPaths,
         searchTerms: specification.searchTerms,
         focusedTests: specification.focusedTests,
         patch: { files: [] },
       },
-    }, { signal });
+    }, { signal, canonicalIntent: specification.intent });
   }
   async function get(taskId) {
     const task = await runtime.get(taskId);

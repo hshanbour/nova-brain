@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import {createSelfDevelopmentIntake,SELF_DEVELOPMENT_INTAKE_SCHEMAS} from "../src/autonomy/self-development-intake.js";
 
 const provider=(outputs,calls=[])=>({async generate(input){calls.push(input);return{type:"final",message:JSON.stringify(outputs.shift()),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:100,cachedInputTokens:0,outputTokens:40,reasoningTokens:0,totalTokens:140}};}});
-const ready=(extra={})=>({status:"ready",objective:"Implement the Console card",acceptanceCriteria:["The card updates in place."],constraints:[{type:"exclude",requirement:"Do not touch Voice."}],explicitPaths:[],focusedTests:[],searchTerms:["console activity"],clarificationQuestion:"",...extra});
+const ready=(extra={})=>({status:"ready",intent:"implementation",objective:"Implement the Console card",acceptanceCriteria:["The card updates in place."],constraints:[{type:"exclude",requirement:"Do not touch Voice."}],explicitPaths:[],focusedTests:[],searchTerms:["console activity"],clarificationQuestion:"",...extra});
 
 test("chat-native intake returns a strict structured specification and telemetry",async()=>{
   const calls=[],intake=createSelfDevelopmentIntake({modelProvider:provider([ready()],calls)}),result=await intake.specify("Implement a Console card without changing Voice");
-  assert.equal(result.status,"ready");assert.deepEqual(result.constraints,[{type:"exclude",requirement:"Do not touch Voice."}]);assert.equal(result.providerUsage.model,"gpt-6-luna");assert.equal(calls[0].stage,"intake");assert.equal(calls[0].responseFormat.strict,true);assert.deepEqual(calls[0].responseFormat.schema,SELF_DEVELOPMENT_INTAKE_SCHEMAS.intake);
+  assert.equal(result.status,"ready");assert.equal(result.intent,"implementation");assert.deepEqual(result.constraints,[{type:"exclude",requirement:"Do not touch Voice."}]);assert.equal(result.providerUsage.model,"gpt-6-luna");assert.equal(calls[0].stage,"intake");assert.equal(calls[0].responseFormat.strict,true);assert.deepEqual(calls[0].responseFormat.schema,SELF_DEVELOPMENT_INTAKE_SCHEMAS.intake);
 });
 
 test("explicit paths are accepted only when verbatim in the user request",async()=>{
@@ -26,6 +26,18 @@ test("clear filename-free implementation request discards untrusted path guesses
 test("invalid ready and clarification semantics still fail closed with a bounded reason",async()=>{
   const intake=createSelfDevelopmentIntake({modelProvider:provider([ready({clarificationQuestion:"Which control?"})])});
   await assert.rejects(()=>intake.specify("Implement the Console card"),error=>error.code==="structured_intake_invalid"&&error.safeDiagnostics?.reason==="status_question_mismatch");
+});
+
+test("structured intent is independent from normalized objective wording",async()=>{
+  const intake=createSelfDevelopmentIntake({modelProvider:provider([ready({objective:"Make the requested Console behavior accessible."})])}),result=await intake.specify("Implement the requested Console accessibility behavior");
+  assert.equal(result.intent,"implementation");
+  assert.match(result.objective,/^Make\b/);
+  assert.equal(SELF_DEVELOPMENT_INTAKE_SCHEMAS.intake.required.includes("intent"),true);
+});
+
+test("analysis-only intent remains a structured non-mutation classification",async()=>{
+  const intake=createSelfDevelopmentIntake({modelProvider:provider([ready({intent:"analysis_only",objective:"Compare the existing Console options."})])}),result=await intake.specify("Analyze the existing Console options only");
+  assert.equal(result.intent,"analysis_only");
 });
 
 test("scope resolution can only narrow repository-evidenced candidates and covers constraints",async()=>{
