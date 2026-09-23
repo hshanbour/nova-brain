@@ -32,6 +32,13 @@ const DURABLE_INTAKE_MAX_LENGTH = 4_000;
 const DURABLE_INTAKE_ACTION =
   /\b(add|build|change|create|develop|edit|finish|fix|implement|improve|modify|refactor|restore|run|update|verify)\b/i;
 const IMPLEMENTATION_GOAL = DURABLE_INTAKE_ACTION;
+const persistedIntent = (request, legacyText = "") => {
+  if (["implementation", "analysis_only"].includes(request?.intent))
+    return request.intent;
+  return IMPLEMENTATION_GOAL.test(legacyText || request?.userGoal || "")
+    ? "implementation"
+    : "analysis_only";
+};
 const DURABLE_INTAKE_TARGET =
   /\b(nova|console|frontend|backend|runtime|repository|repo|codebase|source|files?|tests?|preview|deployment)\b/i;
 const CONVERSATIONAL_OR_ADVICE_REQUEST =
@@ -510,9 +517,7 @@ export function createSelfDevelopmentService({
       runtimeBudgetMinutes,
       status: "structured",
       startingCommit,
-      intent: canonicalIntent ?? (IMPLEMENTATION_GOAL.test(userGoal)
-        ? "implementation"
-        : "analysis_only"),
+      intent: canonicalIntent ?? persistedIntent(null, userGoal),
     });
   }
   const requestFingerprint = (request) => {
@@ -1254,7 +1259,7 @@ export function createSelfDevelopmentService({
       current.branch !== approvedBranch ||
       request?.targetBranch !== approvedBranch ||
       request?.environment !== "preview" ||
-      !IMPLEMENTATION_GOAL.test(current.objective || request?.userGoal || "") ||
+      persistedIntent(request, current.objective) !== "implementation" ||
       request?.scope?.patch?.files?.length ||
       request?.scope?.paths?.length ||
       hasDeliveryEvidence
@@ -1409,7 +1414,7 @@ export function createSelfDevelopmentService({
           ...current.metadata,
           selfDevelopment: {
             ...request,
-            intent: request.intent || "implementation",
+            intent: persistedIntent(request, current.objective),
             scopeAuthority: "resolved_discovery",
             scope:{...request.scope,paths:candidates.filter(path=>!path.startsWith("test/")),focusedTests:candidates.filter(path=>path.startsWith("test/"))},
           },

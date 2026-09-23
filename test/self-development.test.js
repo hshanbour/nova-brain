@@ -1431,6 +1431,77 @@ test("new scope-blocked implementation task reuses discovery-only replan in plac
   assert.ok(result.continuationSteps.includes("plan_implementation"));
   assert.ok(result.continuationSteps.includes("review_commit"));
 });
+test("discovery-only replan preserves canonical implementation intent across neutral display prose", async () => {
+  for (const objective of [
+    "Make the Console control accessible.",
+    "Ensure assistive technology receives the shortcut hint.",
+    "Provide the requested accessible Console behavior.",
+  ]) {
+    let scopeRequest;
+    const f = await fixture({
+        structuredIntake: {
+          async specify() {
+            return {
+              version: 1,
+              status: "ready",
+              intent: "implementation",
+              objective,
+              acceptanceCriteria: ["The shortcut hint is exposed."],
+              constraints: [{ type: "preserve", requirement: "Preserve existing behavior." }],
+              explicitPaths: [],
+              focusedTests: [],
+              searchTerms: ["shortcut hint"],
+              clarificationQuestion: "",
+              specificationHash: "5".repeat(64),
+              scopeNormalization: { discardedExplicitPaths: 0, discardedFocusedTests: 0 },
+            };
+          },
+          async resolveScope(input) {
+            scopeRequest = input.request;
+            return {
+              version: 1,
+              status: "resolved",
+              sourcePaths: ["assets/console.js"],
+              testPaths: ["test/console-client.test.js"],
+              unresolvedPrerequisites: [],
+              constraintCoverage: [{ constraint: "Preserve existing behavior.", paths: ["assets/console.js"] }],
+              decisionHash: "6".repeat(64),
+            };
+          },
+        },
+        execute(name) {
+          if (name === "repo_list") return { ok: true, files: ["assets/console.js", "test/console-client.test.js"] };
+          if (name === "repo_search") return { ok: true, matches: [{ path: "assets/console.js" }, { path: "test/console-client.test.js" }] };
+          return { ok: true };
+        },
+      }),
+      created = await f.service.createTrustedIntake("Implement the Console accessibility improvement");
+    for (let index = 0; index < created.plan.length; index++)
+      await f.runtime.tickTask(created.task.id, { idempotencyKey: `canonical-intent-${index}` });
+    const blocked = await f.runtime.get(created.task.id);
+    assert.equal(blocked.metadata.selfDevelopment.intent, "implementation");
+    const result = await f.service.replanDiscoveryOnly(blocked.id, { expectedVersion: blocked.stateVersion });
+    assert.equal(scopeRequest.intent, "implementation");
+    assert.equal(result.task.metadata.selfDevelopment.intent, "implementation");
+    assert.equal(result.task.metadata.selfDevelopment.scopeAuthority, "resolved_discovery");
+    assert.ok(result.continuationSteps.includes("plan_implementation"));
+  }
+});
+test("discovery-only replan cannot elevate persisted analysis intent from implementation prose", async () => {
+  const f = await completedDiscoveryFixture(), current = await f.runtime.get(f.task.id);
+  await f.storage.updateAutonomyTask(current.id, OWNER, {
+    objective: "Implement an unauthorized change",
+    metadata: {
+      ...current.metadata,
+      selfDevelopment: { ...current.metadata.selfDevelopment, intent: "analysis_only" },
+    },
+  });
+  const updated = await f.runtime.get(current.id);
+  await rejects(
+    f.service.replanDiscoveryOnly(updated.id, { ...f.input, expectedVersion: updated.stateVersion }),
+    "discovery_replan_precondition_failed",
+  );
+});
 test("empty implementation scope resolves bounded source and test candidates from durable discovery", async () => {
   const existing = new Set(["test/voice-input.test.js"]), f = await fixture({
     resolvePathState: async (path, commit) => ({existsInCommit: commit === SHA && existing.has(path)}),
