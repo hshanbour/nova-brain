@@ -9,7 +9,7 @@ const parse=result=>{
   try{return JSON.parse(result.message);}catch{throw Object.assign(new Error("Structured intake returned invalid JSON."),{code:"structured_intake_invalid",safeDiagnostics:{boundary:"schema_parse",reason:"invalid_json"}});}
 };
 const text=(value,max)=>typeof value==="string"&&value.trim()&&value.length<=max;
-const path=value=>typeof value==="string"&&value.length<=240&&/^[a-z0-9._/-]+$/i.test(value)&&value.includes("/")&&!value.startsWith("/")&&!value.includes("..");
+const path=value=>typeof value==="string"&&value.length<=240&&/^[a-z0-9._/-]+$/i.test(value)&&!value.startsWith("/")&&!value.includes("..")&&(value.includes("/")||/^[a-z0-9][a-z0-9._-]*\.[a-z0-9]+$/i.test(value));
 const semanticError=reason=>Object.assign(new Error("Structured intake failed bounded semantic validation."),{code:"structured_intake_invalid",safeDiagnostics:{boundary:"semantic_validation",reason}});
 const enforcements=item=>item?.enforcements||(item?.type==="preserve"?["preservation_assessment"]:["scope_selection"]);
 const validConstraintBinding=item=>{

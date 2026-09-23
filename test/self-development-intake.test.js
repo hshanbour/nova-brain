@@ -11,11 +11,11 @@ test("chat-native intake returns a strict structured specification and telemetry
 });
 
 test("explicit paths are accepted only when verbatim in the user request",async()=>{
-  const goal="Implement the card in assets/console.js and verify test/console-static.test.js";
-  const valid=createSelfDevelopmentIntake({modelProvider:provider([ready({explicitPaths:["assets/console.js"],focusedTests:["test/console-static.test.js"]})])});
-  assert.deepEqual((await valid.specify(goal)).explicitPaths,["assets/console.js"]);
-  const invented=createSelfDevelopmentIntake({modelProvider:provider([ready({explicitPaths:["assets/invented.js"],focusedTests:["test/invented.test.js"]})])}),result=await invented.specify(goal);
-  assert.deepEqual(result.explicitPaths,[]);assert.deepEqual(result.focusedTests,[]);assert.deepEqual(result.scopeNormalization,{discardedExplicitPaths:1,discardedFocusedTests:1});
+  const goal="Implement the card in index.html and assets/console.js and verify test/console-static.test.js";
+  const valid=createSelfDevelopmentIntake({modelProvider:provider([ready({explicitPaths:["index.html","assets/console.js"],focusedTests:["test/console-static.test.js"]})])});
+  assert.deepEqual((await valid.specify(goal)).explicitPaths,["index.html","assets/console.js"]);
+  const invented=createSelfDevelopmentIntake({modelProvider:provider([ready({explicitPaths:["invented.html","assets/invented.js"],focusedTests:["test/invented.test.js"]})])}),result=await invented.specify(goal);
+  assert.deepEqual(result.explicitPaths,[]);assert.deepEqual(result.focusedTests,[]);assert.deepEqual(result.scopeNormalization,{discardedExplicitPaths:2,discardedFocusedTests:1});
 });
 
 test("clear filename-free implementation request discards untrusted path guesses and remains discovery-only ready",async()=>{

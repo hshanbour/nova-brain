@@ -1527,9 +1527,9 @@ test("empty implementation scope resolves bounded source and test candidates fro
   assert.equal(result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths.includes("src/autonomy/worker-runtime.js"),false);
   assert.equal(result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths.includes("docs/unrelated.md"),false);
 });
-test("discovery searches all structured concepts in one bounded escaped repository scan",async()=>{
+test("discovery gives every structured concept an independent bounded escaped repository scan",async()=>{
   const goal="Implement a tiny accessibility improvement in Nova Console: make the New conversation control expose a keyboard-shortcut hint to assistive technology, preserve all existing behavior, add or update a focused regression test, and stop before any push or deployment.";
-  let scopeInput;
+  let scopeInput;const searchCalls=[];
   const f=await fixture({
     structuredIntake:{
       async specify(){return{
@@ -1547,15 +1547,15 @@ test("discovery searches all structured concepts in one bounded escaped reposito
       };},
     },
     execute(name,args){
-      if(name==="repo_list")return{ok:true,files:["assets/console.js","assets/voice-input.js","src/http/api.js","test/console-client.test.js","test/console-static.test.js","test/voice-input.test.js"]};
+      if(name==="repo_list")return{ok:true,files:["index.html","assets/console.js","assets/console.css","assets/voice-input.js","src/http/api.js","test/console-client.test.js","test/console-static.test.js","test/voice-input.test.js"]};
       if(name==="repo_search"){
+        searchCalls.push(args);
         assert.equal(args.mode,"regex");
-        assert.ok(args.query.length<=280);
-        assert.match(args.query,/new conversation control/);
-        assert.match(args.query,/keyboard shortcut hint/);
-        assert.match(args.query,/conversation/);
-        assert.ok(args.query.includes("chat\\.\\*loading"));
-        return{ok:true,matches:[{path:"assets/console.js"},{path:"test/console-client.test.js"},{path:"test/console-static.test.js"}]};
+        assert.ok(args.query.length<=180);
+        assert.equal(args.limit,24);
+        if(args.query.includes("new conversation control"))return{ok:true,matches:[{path:"index.html"},{path:"assets/console.js"}]};
+        if(args.query.includes("focused regression test"))return{ok:true,matches:[{path:"test/console-client.test.js"},{path:"test/console-static.test.js"}]};
+        return{ok:true,matches:Array.from({length:24},()=>({path:"README.md"}))};
       }
       return{ok:true};
     },
@@ -1564,7 +1564,17 @@ test("discovery searches all structured concepts in one bounded escaped reposito
   const blocked=await f.runtime.get(created.task.id);
   assert.equal(blocked.errorCode,"implementation_scope_required");
   const result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
-  assert.deepEqual(scopeInput.candidatePaths,["assets/console.js","test/console-client.test.js","test/console-static.test.js"]);
+  assert.equal(searchCalls.length,5);
+  assert.match(searchCalls[0].query,/new conversation control/);
+  assert.match(searchCalls[1].query,/keyboard shortcut hint/);
+  assert.match(searchCalls[2].query,/assistive technology accessibility/);
+  assert.match(searchCalls[3].query,/focused regression test/);
+  assert.ok(searchCalls[4].query.includes("chat\\.\\*loading"));
+  assert.ok(scopeInput.candidatePaths.includes("index.html"),JSON.stringify(scopeInput.candidatePaths));
+  assert.ok(scopeInput.candidatePaths.includes("assets/console.js"));
+  assert.ok(scopeInput.candidatePaths.includes("test/console-client.test.js"));
+  assert.ok(scopeInput.candidatePaths.includes("test/console-static.test.js"));
+  assert.equal(scopeInput.candidatePaths.length<=12,true);
   assert.equal(scopeInput.candidatePaths.includes("assets/voice-input.js"),false);
   assert.equal(scopeInput.candidatePaths.includes("src/http/api.js"),false);
   assert.equal(scopeInput.candidatePaths.includes("test/voice-input.test.js"),false);
