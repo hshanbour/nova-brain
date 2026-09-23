@@ -73,6 +73,10 @@ test("explicit engineering intake creates a durable task before any model genera
   assert.equal(result.durableTask.id, "selfdev_trusted");
   assert.equal(result.durableTask.status, "queued");
 });
+test("unsafe durable intake asks one bounded clarification without creating a task or entering chat generation",async()=>{
+  let modelCalls=0;const storage=testStorage(),usage={model:"gpt-6-luna",stage:"intake",inputTokens:20,outputTokens:8},agent=createTestAgent({storage,modelProvider:{name:"never",async generate(){modelCalls+=1;throw new Error("chat model must not run");}},toolRegistry:createToolRegistry(),routeDurableRequest:async()=>({clarificationRequired:true,message:"Which account is authorized?",providerUsage:usage})}),result=await agent.run({message:"Update the customer account",conversationId:"clarify"});
+  assert.equal(modelCalls,0);assert.equal(result.runStatus,"clarification_required");assert.equal(result.provider,"durable_intake");assert.equal(result.message,"Which account is authorized?");assert.equal((await storage.listAutonomyTasks(OWNER_ID)).length,0);const [run]=await storage.listRuns(OWNER_ID);assert.deepEqual(run.result.providerUsage,[usage]);
+});
 
 test("ordinary chat bypasses durable intake and keeps the synchronous model path", async () => {
   let routes = 0, modelCalls = 0;

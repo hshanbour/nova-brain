@@ -315,6 +315,7 @@ export function createSelfDevelopmentService({
   compareRemoteEvidence,
   verifyDeployment,
   resolvePathState,
+  structuredIntake,
   clock = () => new Date(),
 } = {}) {
   if (!runtime || !storage || !ownerId)
@@ -437,6 +438,13 @@ export function createSelfDevelopmentService({
         "Too many acceptance criteria were supplied.",
         400,
       );
+    if (input.constraints !== undefined && !Array.isArray(input.constraints))
+      throw new SelfDevelopmentError("invalid_input", "Structured constraints must be an array.", 400);
+    const constraints=(input.constraints||[]).map(item=>{
+      if(!item||typeof item!=="object"||Array.isArray(item)||!["preserve","exclude","boundary"].includes(item.type))throw new SelfDevelopmentError("invalid_input","Each structured constraint must have a supported type and requirement.",400);
+      return{type:item.type,requirement:boundedText(item.requirement,"constraint",500)};
+    });
+    if(constraints.length>12)throw new SelfDevelopmentError("invalid_input","Too many structured constraints were supplied.",400);
     if (
       input.maxRepairIterations !== undefined &&
       (!Number.isInteger(input.maxRepairIterations) ||
@@ -459,6 +467,8 @@ export function createSelfDevelopmentService({
         "Runtime budget must be an integer from 15 to 120 minutes.",
         400,
       );
+    const intake=input.intake===undefined?null:input.intake;
+    if(intake!==null&&(!intake||intake.version!==1||!REVIEW_HASH.test(intake.sourceRequestHash||"")||!REVIEW_HASH.test(intake.specificationHash||"")))throw new SelfDevelopmentError("invalid_input","Trusted intake binding is invalid.",400);
     const protectedPaths = [...paths, ...patchFiles.map((x) => x.path)].filter(
         (path) => PROTECTED.test(path),
       ),
@@ -482,6 +492,9 @@ export function createSelfDevelopmentService({
         focusedTests,
       }),
       acceptanceCriteria,
+      constraints,
+      scopeAuthority: paths.length || patchFiles.length || focusedTests.length ? "explicit" : "discovery_only",
+      ...(intake?{intake:clean(intake)}:{}),
       riskLevel,
       protectedPaths,
       requiredCapabilities: CAPABILITIES,
@@ -502,6 +515,7 @@ export function createSelfDevelopmentService({
     });
   }
   const requestFingerprint = (request) => {
+    if(request.intake?.sourceRequestHash)return hash({version:"chat-native-durable-intake-v1",sourceRequestHash:request.intake.sourceRequestHash,targetProject:request.targetProject,targetBranch:request.targetBranch,repository:request.repository,environment:request.environment,startingCommit:request.startingCommit,maxRepairIterations:request.maxRepairIterations,runtimeBudgetMinutes:request.runtimeBudgetMinutes,approvalBoundaries:request.approvalBoundaries});
     const identity = { ...request };
     delete identity.intent;
     return hash(identity);
@@ -1131,12 +1145,20 @@ export function createSelfDevelopmentService({
         "The request is not an explicit Nova implementation task.",
         400,
       );
+    if(!structuredIntake?.specify)throw new SelfDevelopmentError("structured_intake_unavailable","Chat-native durable intake is unavailable.",503);
+    let specification;
+    try{specification=await structuredIntake.specify(userGoal,{signal});}
+    catch(error){throw new SelfDevelopmentError(error?.code||"structured_intake_invalid","Nova could not establish a safe durable task specification.",409);}
+    if(specification.status!=="ready")return{clarificationRequired:true,message:specification.clarificationQuestion||"The implementation request requires clarification.",providerUsage:specification.providerUsage||null};
     return create({
-      userGoal,
+      userGoal:specification.objective,
+      acceptanceCriteria:specification.acceptanceCriteria,
+      constraints:specification.constraints,
+      intake:{version:1,sourceRequestHash:hash(userGoal.trim()),specificationHash:specification.specificationHash,providerUsage:specification.providerUsage||null},
       scope: {
-        paths: [],
-        searchTerms: [],
-        focusedTests: [],
+        paths: specification.explicitPaths,
+        searchTerms: specification.searchTerms,
+        focusedTests: specification.focusedTests,
         patch: { files: [] },
       },
     }, { signal });
@@ -1250,7 +1272,18 @@ export function createSelfDevelopmentService({
         "Recovery runtime budget must be an integer from 15 to 90 minutes.",
         400,
       );
-    const resolvedCandidatePaths = input.candidatePaths ?? await resolveDiscoveryCandidates(request, steps);
+    let resolvedCandidatePaths = input.candidatePaths ?? await resolveDiscoveryCandidates(request, steps),scopeResolution=null;
+    if(!input.candidatePaths&&resolvedCandidatePaths&&structuredIntake?.resolveScope){
+      try{scopeResolution=await structuredIntake.resolveScope({request,candidatePaths:resolvedCandidatePaths});}
+      catch(error){throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409);}
+      if(scopeResolution.status!=="resolved"){
+        const now=clock().toISOString(),blocked=await storage.updateAutonomyTask(current.id,ownerId,{status:"blocked",currentPhase:"scope_resolution",errorCode:"structured_scope_unresolved",blockedReason:"Nova could not establish a safe mutation-authoritative scope.",completedAt:now,metadata:{...current.metadata,structuredScopeResolution:{version:scopeResolution.version,status:"blocked",decisionHash:scopeResolution.decisionHash,providerUsage:scopeResolution.providerUsage||null,unresolvedPrerequisiteFingerprints:(scopeResolution.unresolvedPrerequisites||[]).map(hash),constraintCoverage:scopeResolution.constraintCoverage}}},current.stateVersion);
+        if(!blocked)throw new SelfDevelopmentError("version_conflict","Task changed during structured scope resolution.");
+        await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_scope_resolution_blocked",status:"blocked",summary:"A safe mutation-authoritative scope could not be established.",metadata:{taskId:current.id,decisionHash:scopeResolution.decisionHash}});
+        return{task:blocked,evidenceStepIds:[],scopeHash:null,continuationSteps:[]};
+      }
+      resolvedCandidatePaths=[...scopeResolution.sourcePaths,...scopeResolution.testPaths];
+    }
     if (
       !Array.isArray(resolvedCandidatePaths) ||
       resolvedCandidatePaths.length < 2 ||
@@ -1375,6 +1408,8 @@ export function createSelfDevelopmentService({
           selfDevelopment: {
             ...request,
             intent: request.intent || "implementation",
+            scopeAuthority: "resolved_discovery",
+            scope:{...request.scope,paths:candidates.filter(path=>!path.startsWith("test/")),focusedTests:candidates.filter(path=>path.startsWith("test/"))},
           },
           steps: [...current.metadata.steps, ...continuation],
           requiredCapability: "repo_read_remote",
@@ -1383,6 +1418,7 @@ export function createSelfDevelopmentService({
             ...(current.metadata.discoveryOnlyReplanHistory || []),
             replanRecord,
           ],
+          ...(scopeResolution?{structuredScopeResolution:{version:scopeResolution.version,decisionHash:scopeResolution.decisionHash,providerUsage:scopeResolution.providerUsage||null,constraintCoverage:scopeResolution.constraintCoverage}}:{}),
         },
       },
       current.stateVersion,

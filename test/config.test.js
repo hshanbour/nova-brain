@@ -34,6 +34,7 @@ test("OpenAI provider configuration requires credentials and a model", () => {
   assert.equal(config.openAI.serviceTier, "default");
   assert.deepEqual(config.openAI.routes, {
     chat: { model: "gpt-6-luna", reasoningEffort: "none", maxOutputTokens: null, stage: "chat" },
+    intake: { model: "gpt-6-luna", reasoningEffort: "none", maxOutputTokens: null, stage: "intake" },
     planner: { model: "test-model", reasoningEffort: null, maxOutputTokens: null, stage: "planner" },
     noChange: { model: "gpt-6-luna", reasoningEffort: "none", maxOutputTokens: null, stage: "no_change" },
   });

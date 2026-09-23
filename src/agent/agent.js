@@ -130,6 +130,14 @@ export function createAgent({
       try {
         const durable = speakerRestricted ? null : await routeDurableRequest({message, context: trustedContext, requestId, signal: executionSignal});
         executionSignal.throwIfAborted();
+        if(durable?.clarificationRequired===true){
+          if(durable.providerUsage)providerUsage.push(durable.providerUsage);
+          const response={id:randomUUID(),conversationId,message:durable.message,provider:"durable_intake",toolCalls:[],steps:0,runId:run.id,runStatus:"clarification_required"};
+          await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
+          await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:{message:response.message,providerUsage},completedAt:new Date().toISOString()});
+          await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"durable_intake_clarification_required",status:"blocked",summary:"Durable intake requires one user decision."});
+          return response;
+        }
         if (durable?.task) {
           const durableTask = {
             id: durable.task.id,

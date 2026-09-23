@@ -153,6 +153,7 @@ async function fixture({
   compareRemoteEvidence,
   verifyDeployment,
   resolvePathState,
+  structuredIntake,
   currentCommit = SHA,
   runtimeVersion,
 } = {}) {
@@ -207,6 +208,10 @@ async function fixture({
     compareRemoteEvidence,
     verifyDeployment,
     resolvePathState,
+    structuredIntake: structuredIntake || {
+      async specify(userGoal){return{version:1,status:"ready",objective:userGoal,acceptanceCriteria:["Implement the requested behavior safely."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["console"],clarificationQuestion:"",specificationHash:"1".repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:10,outputTokens:10}};},
+      async resolveScope({candidatePaths}){return{version:1,status:"resolved",sourcePaths:candidatePaths.filter(path=>!path.startsWith("test/")),testPaths:candidatePaths.filter(path=>path.startsWith("test/")),constraintCoverage:[],unresolvedPrerequisites:[],decisionHash:"2".repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:10,outputTokens:10}};},
+    },
   });
   return {
     storage,
@@ -368,6 +373,14 @@ test("trusted hybrid intake binds the approved project Preview to the fresh remo
     { repository: "hshanbour/nova-brain", branch: BRANCH, requiredAncestors: [] },
     { repository: "hshanbour/nova-brain", branch: BRANCH, requiredAncestors: [] },
   ]);
+});
+test("chat-native intake persists explicit scope constraints criteria and usage before worker execution",async()=>{
+  const f=await fixture({structuredIntake:{async specify(){return{version:1,status:"ready",objective:"Implement Live Activity",acceptanceCriteria:["One card updates in place."],constraints:[{type:"exclude",requirement:"Do not touch Voice."}],explicitPaths:["assets/console.js"],focusedTests:["test/console-static.test.js"],searchTerms:["console activity"],clarificationQuestion:"",specificationHash:"3".repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:50,outputTokens:20}};}}}),result=await f.service.createTrustedIntake("Implement Live Activity in assets/console.js and test/console-static.test.js without touching Voice");
+  assert.deepEqual(result.request.scope.paths,["assets/console.js"]);assert.deepEqual(result.request.scope.focusedTests,["test/console-static.test.js"]);assert.equal(result.request.scopeAuthority,"explicit");assert.deepEqual(result.request.constraints,[{type:"exclude",requirement:"Do not touch Voice."}]);assert.equal(result.request.intake.providerUsage.stage,"intake");assert.equal(result.plan.some(step=>step.type==="apply_patch"),true);
+});
+test("chat-native intake clarification fails closed without creating a task",async()=>{
+  const f=await fixture({structuredIntake:{async specify(){return{status:"clarification_required",clarificationQuestion:"Which customer account is authorized?"};}}});
+  const result=await f.service.createTrustedIntake("Update the Nova backend for the customer");assert.equal(result.clarificationRequired,true);assert.equal(result.message,"Which customer account is authorized?");assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,0);
 });
 test("all durable creation paths bind the fresh product tip instead of the integration runtime SHA", async () => {
   const runtimeSha = "1".repeat(40), productTip = "2".repeat(40), requests = [], f = await fixture({

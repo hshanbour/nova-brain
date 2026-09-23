@@ -152,6 +152,10 @@ export function readConfig(environment = process.env) {
           defaultModel: "gpt-6-luna",
           defaultReasoningEffort: "none",
         }),
+        intake: openAIRoute("intake", "INTAKE", {
+          defaultModel: "gpt-6-luna",
+          defaultReasoningEffort: "none",
+        }),
         planner: openAIRoute("planner", "PLANNER"),
         noChange: openAIRoute("no_change", "NO_CHANGE", {
           defaultModel: "gpt-6-luna",

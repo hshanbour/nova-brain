@@ -31,6 +31,7 @@ import { createLocalWorkerHandoff } from "./autonomy/local-worker-handoff.js";
 import { createGithubWriteAttestation } from "./autonomy/github-write-attestation.js";
 import { createPostAttestationRecovery } from "./autonomy/post-attestation-recovery.js";
 import { createSelfDevelopmentService, isDurableSelfDevelopmentRequest } from "./autonomy/self-development.js";
+import { createSelfDevelopmentIntake } from "./autonomy/self-development-intake.js";
 import { createSelfDevelopmentExpiryRecovery } from "./autonomy/self-development-expiry-recovery.js";
 import { registerSelfDevelopmentTools } from "./autonomy/self-development-tools.js";
 import { createSelfDevelopmentImplementationPlanner } from "./autonomy/self-development-implementation-planner.js";
@@ -137,7 +138,8 @@ export function createApp({
   registerWorkerTools(toolRegistry, { runtime: workerRuntime, taskMigration });
   const implementationPlanner=createSelfDevelopmentImplementationPlanner({modelProvider,storage,ownerId:OWNER_ID,runtimeVersion:environment.VERCEL_GIT_COMMIT_SHA,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
   toolRegistry.register({name:"self_development_plan_implementation",description:"Generate one evidence-bound structured implementation or repair plan for the exact durable Self-Development task.",category:"autonomy",capability:"reasoning",riskLevel:"READ_ONLY",available:true,configurationStatus:"ready",inputSchema:{type:"object",properties:{taskId:{type:"string"},candidatePaths:{type:"array"},currentCommit:{type:"string"},failureEvidence:{type:"object"}},required:["taskId","candidatePaths","currentCommit"],additionalProperties:false},execute:input=>implementationPlanner.generate(input)});
-  const selfDevelopment=createSelfDevelopmentService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,currentCommit:environment.VERCEL_GIT_COMMIT_SHA,runtimeVersion:environment.VERCEL_GIT_COMMIT_SHA,verifyRemote,compareRemoteEvidence,verifyDeployment,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
+  const structuredIntake=createSelfDevelopmentIntake({modelProvider});
+  const selfDevelopment=createSelfDevelopmentService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,currentCommit:environment.VERCEL_GIT_COMMIT_SHA,runtimeVersion:environment.VERCEL_GIT_COMMIT_SHA,verifyRemote,compareRemoteEvidence,verifyDeployment,structuredIntake,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
   const selfDevelopmentExpiryRecovery=createSelfDevelopmentExpiryRecovery({storage,ownerId:OWNER_ID,verifyDeployment});
   registerSelfDevelopmentTools(toolRegistry,{service:selfDevelopment});
   const speakerAssertions = createSpeakerAssertions({

@@ -1,5 +1,5 @@
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-const OPENAI_STAGES = new Set(["chat", "planner", "no_change"]);
+const OPENAI_STAGES = new Set(["chat", "intake", "planner", "no_change"]);
 
 function tokenCount(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
@@ -154,6 +154,7 @@ export function createOpenAIModelProvider({ apiKey, model, routes = {}, serviceT
 
   const configuredRoutes = Object.freeze({
     chat: routes.chat || { model, stage: "chat" },
+    intake: routes.intake || { model, stage: "intake" },
     planner: routes.planner || { model, stage: "planner" },
     no_change: routes.noChange || routes.no_change || { model, stage: "no_change" },
   });
