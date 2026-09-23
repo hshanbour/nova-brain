@@ -71,6 +71,10 @@ const DISCOVERY_TOKEN_ALIASES = Object.freeze({
 const DISCOVERY_DOCUMENTATION_TERMS = new Set([
   "doc", "docs", "documentation", "markdown", "readme",
 ]);
+const DISCOVERY_QUERY_STOP_WORDS = new Set([
+  ...DISCOVERY_STOP_WORDS,
+  "control", "focused", "regression", "technology",
+]);
 const TASK_DIFF_DIGESTS = Object.freeze({
   git_sha1: /^[a-f0-9]{40}$/i,
   sha256: /^[a-f0-9]{64}$/i,
@@ -221,11 +225,37 @@ const discoveryTokens = (value) => {
   }
   return expanded;
 };
-const discoverySearchQuery = (request) => {
-  const explicit = request.scope.searchTerms?.find((term) => typeof term === "string" && term.trim());
-  if (explicit) return explicit.trim().slice(0, 120);
-  const tokens = [...discoveryTokens(request.userGoal)];
-  return (tokens.find((token) => DISCOVERY_TOKEN_ALIASES[token]) || tokens[0] || request.userGoal).slice(0, 120);
+const regexEscape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const discoverySearch = (request) => {
+  const phrases = (request.scope.searchTerms || [])
+    .filter((term) => typeof term === "string" && term.trim())
+    .slice(0, 8)
+    .map((term) => term.trim());
+  const source = (phrases.length ? phrases : [request.userGoal || ""]).join(" "), atoms = [];
+  for (const token of rawDiscoveryTokens(source)) {
+    if (token.length < 4 || DISCOVERY_QUERY_STOP_WORDS.has(token)) continue;
+    atoms.push(token, ...(DISCOVERY_TOKEN_ALIASES[token] || []));
+  }
+  const normalizedPhrases = [...new Set(phrases.map((value) => value.toLowerCase()))],
+    normalizedAtoms = [...new Set(atoms.map((value) => value.toLowerCase()))],
+    selected = [],
+    seen = new Set();
+  let length = 0;
+  const add = (alternative, budget = 280) => {
+    const escaped = regexEscape(alternative);
+    if (!escaped || seen.has(escaped) || selected.length >= 16 || length + escaped.length + (selected.length ? 1 : 0) > budget) return;
+    selected.push(escaped);
+    seen.add(escaped);
+    length += escaped.length + (selected.length > 1 ? 1 : 0);
+  };
+  // Preserve a bounded exact phrase signal while reserving capacity for
+  // atomic concepts from every structured discovery term. A zero-result
+  // phrase can therefore never suppress the remaining intake evidence.
+  for (const phrase of normalizedPhrases) add(phrase, 140);
+  for (const atom of normalizedAtoms) add(atom);
+  for (const phrase of normalizedPhrases) add(phrase);
+  if (selected.length > 1) return { query: selected.join("|"), mode: "regex" };
+  return { query: (selected[0] || regexEscape(request.userGoal || "")).slice(0, 280), mode: selected.length ? "regex" : "literal" };
 };
 const discoveryPath = (value) => {
   const path = typeof value === "string" ? value : value?.path;
@@ -769,13 +799,15 @@ export function createSelfDevelopmentService({
       "Repository paths returned",
       { retry: "safe_read" },
     );
+    const search = discoverySearch(request);
     add(
       "search_code",
       "repo_read_remote",
       {
         tool: "repo_search",
         arguments: {
-          query: discoverySearchQuery(request),
+          query: search.query,
+          mode: search.mode,
           path: root,
           limit: 100,
         },

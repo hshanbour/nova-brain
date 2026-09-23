@@ -1515,7 +1515,9 @@ test("empty implementation scope resolves bounded source and test candidates fro
   for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`automatic-scope-${index}`});
   const blocked=await f.runtime.get(created.task.id);
   assert.equal(blocked.errorCode,"implementation_scope_required");
-  assert.equal(f.calls.find((call)=>call.name==="repo_search").args.query,"microphone");
+  const searchCall=f.calls.find((call)=>call.name==="repo_search");
+  assert.equal(searchCall.args.mode,"regex");
+  assert.match(searchCall.args.query,/microphone/);
   const result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
   assert.equal(result.task.id,blocked.id);
   assert.equal(result.task.status,"queued");
@@ -1524,6 +1526,52 @@ test("empty implementation scope resolves bounded source and test candidates fro
   assert.ok(result.continuationSteps.includes("plan_implementation"));
   assert.equal(result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths.includes("src/autonomy/worker-runtime.js"),false);
   assert.equal(result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths.includes("docs/unrelated.md"),false);
+});
+test("discovery searches all structured concepts in one bounded escaped repository scan",async()=>{
+  const goal="Implement a tiny accessibility improvement in Nova Console: make the New conversation control expose a keyboard-shortcut hint to assistive technology, preserve all existing behavior, add or update a focused regression test, and stop before any push or deployment.";
+  let scopeInput;
+  const f=await fixture({
+    structuredIntake:{
+      async specify(){return{
+        version:1,status:"ready",intent:"implementation",objective:"Make the New conversation control accessible.",
+        acceptanceCriteria:["The New conversation control exposes a keyboard shortcut hint to assistive technology.","Existing behavior remains unchanged."],
+        constraints:[{type:"preserve",requirement:"Preserve all existing behavior."},{type:"boundary",requirement:"Stop before push or deployment."}],
+        explicitPaths:[],focusedTests:[],
+        searchTerms:["New conversation control","keyboard shortcut hint","assistive technology accessibility","focused regression test","chat.*loading"],
+        clarificationQuestion:"",specificationHash:"7".repeat(64),
+      };},
+      async resolveScope(input){scopeInput=input;return{
+        version:1,status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-client.test.js","test/console-static.test.js"],
+        constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:["assets/console.js"]},{constraintIndex:1,disposition:"respected",evidencePaths:[]}],
+        unresolvedPrerequisites:[],decisionHash:"8".repeat(64),
+      };},
+    },
+    execute(name,args){
+      if(name==="repo_list")return{ok:true,files:["assets/console.js","assets/voice-input.js","src/http/api.js","test/console-client.test.js","test/console-static.test.js","test/voice-input.test.js"]};
+      if(name==="repo_search"){
+        assert.equal(args.mode,"regex");
+        assert.ok(args.query.length<=280);
+        assert.match(args.query,/new conversation control/);
+        assert.match(args.query,/keyboard shortcut hint/);
+        assert.match(args.query,/conversation/);
+        assert.ok(args.query.includes("chat\\.\\*loading"));
+        return{ok:true,matches:[{path:"assets/console.js"},{path:"test/console-client.test.js"},{path:"test/console-static.test.js"}]};
+      }
+      return{ok:true};
+    },
+  }),created=await f.service.createTrustedIntake(goal);
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`multi-concept-${index}`});
+  const blocked=await f.runtime.get(created.task.id);
+  assert.equal(blocked.errorCode,"implementation_scope_required");
+  const result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+  assert.deepEqual(scopeInput.candidatePaths,["assets/console.js","test/console-client.test.js","test/console-static.test.js"]);
+  assert.equal(scopeInput.candidatePaths.includes("assets/voice-input.js"),false);
+  assert.equal(scopeInput.candidatePaths.includes("src/http/api.js"),false);
+  assert.equal(scopeInput.candidatePaths.includes("test/voice-input.test.js"),false);
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,["assets/console.js"]);
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/console-client.test.js","test/console-static.test.js"]);
+  assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
+  assert.ok(result.continuationSteps.includes("plan_implementation"));
 });
 test("automatic discovery ranks owning microphone modules above preservation-context matches",async()=>{
   const existing=new Set(["test/voice-input.test.js","test/console-static.test.js"]),files=[
