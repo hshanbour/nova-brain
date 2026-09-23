@@ -75,6 +75,10 @@ const DISCOVERY_QUERY_STOP_WORDS = new Set([
   ...DISCOVERY_STOP_WORDS,
   "control", "focused", "regression", "technology",
 ]);
+const CONSTRAINT_ENFORCEMENTS = new Set(["scope_selection","preservation_assessment","omit_git_push","omit_preview_deploy","existing_delivery_approval"]);
+const legacyConstraintEnforcements=type=>type==="preserve"?["preservation_assessment"]:["scope_selection"];
+const constraintEnforcements=item=>item?.enforcements||legacyConstraintEnforcements(item?.type);
+const hasConstraintEnforcement=(request,enforcement)=>(request?.constraints||[]).some(item=>constraintEnforcements(item).includes(enforcement));
 const TASK_DIFF_DIGESTS = Object.freeze({
   git_sha1: /^[a-f0-9]{40}$/i,
   sha256: /^[a-f0-9]{64}$/i,
@@ -357,7 +361,7 @@ export function createSelfDevelopmentService({
 } = {}) {
   if (!runtime || !storage || !ownerId)
     throw new Error("Self-development dependencies are required.");
-  function structure(input, { canonicalIntent } = {}) {
+  function structure(input, { canonicalIntent, canonicalConstraintBindings = false } = {}) {
     const userGoal = boundedText(
         input?.userGoal || input?.goal,
         "user_goal",
@@ -479,7 +483,10 @@ export function createSelfDevelopmentService({
       throw new SelfDevelopmentError("invalid_input", "Structured constraints must be an array.", 400);
     const constraints=(input.constraints||[]).map(item=>{
       if(!item||typeof item!=="object"||Array.isArray(item)||!["preserve","exclude","boundary"].includes(item.type))throw new SelfDevelopmentError("invalid_input","Each structured constraint must have a supported type and requirement.",400);
-      return{type:item.type,requirement:boundedText(item.requirement,"constraint",500)};
+      const enforcements=canonicalConstraintBindings?item.enforcements:legacyConstraintEnforcements(item.type);
+      if(!Array.isArray(enforcements)||!enforcements.length||enforcements.length>2||new Set(enforcements).size!==enforcements.length||enforcements.some(value=>!CONSTRAINT_ENFORCEMENTS.has(value))||item.type==="preserve"&&(enforcements.length!==1||enforcements[0]!=="preservation_assessment")||item.type==="exclude"&&(enforcements.length!==1||enforcements[0]!=="scope_selection")||item.type==="boundary"&&enforcements.includes("omit_git_push")&&!enforcements.includes("omit_preview_deploy"))throw new SelfDevelopmentError("invalid_input","Each trusted structured constraint must have a supported enforcement binding.",400);
+      const normalized={type:item.type,requirement:boundedText(item.requirement,"constraint",500)};
+      return canonicalConstraintBindings?{...normalized,enforcements:[...enforcements]}:normalized;
     });
     if(constraints.length>12)throw new SelfDevelopmentError("invalid_input","Too many structured constraints were supplied.",400);
     if (
@@ -643,6 +650,7 @@ export function createSelfDevelopmentService({
     candidates,
     branch,
     currentCommit,
+    request,
   }) => {
     const add = (...args) =>
       steps.push(annotation(base + steps.length + 1, ...args));
@@ -740,7 +748,7 @@ export function createSelfDevelopmentService({
       "Commit exactly matches the reviewed bounded change-set",
       { retry: "not_retryable" },
     );
-    add(
+    if(!hasConstraintEnforcement(request,"omit_git_push")) add(
       "push",
       "github_write",
       {
@@ -751,41 +759,43 @@ export function createSelfDevelopmentService({
       "Exact push approval succeeds",
       { retry: "approval_bound", approval: true },
     );
-    add(
-      "deploy_preview",
-      "vercel_preview",
-      {
-        tool: "preview_deploy",
-        arguments: { branch, commitSha: "$CURRENT_COMMIT" },
-      },
-      "Git-backed Preview deployment",
-      "Preview deployment created",
-      { retry: "idempotent_deploy", approval: true },
-    );
-    add(
-      "wait",
-      "scheduler",
-      { delayMs: 5000 },
-      "Bounded deployment wait",
-      "Task reschedules without busy-looping",
-      { retry: "bounded_wait" },
-    );
-    add(
-      "verify_preview",
-      "vercel_preview",
-      {
-        tool: "preview_verify",
-        arguments: {
-          deploymentId: "$DEPLOYMENT_ID",
-          path: "/api/health",
-          expectedStatus: 200,
-          commitSha: "$CURRENT_COMMIT",
+    if(!hasConstraintEnforcement(request,"omit_preview_deploy")){
+      add(
+        "deploy_preview",
+        "vercel_preview",
+        {
+          tool: "preview_deploy",
+          arguments: { branch, commitSha: "$CURRENT_COMMIT" },
         },
-      },
-      "Protected Preview verification",
-      "Exact SHA Preview health succeeds",
-      { retry: "repair_required" },
-    );
+        "Git-backed Preview deployment",
+        "Preview deployment created",
+        { retry: "idempotent_deploy", approval: true },
+      );
+      add(
+        "wait",
+        "scheduler",
+        { delayMs: 5000 },
+        "Bounded deployment wait",
+        "Task reschedules without busy-looping",
+        { retry: "bounded_wait" },
+      );
+      add(
+        "verify_preview",
+        "vercel_preview",
+        {
+          tool: "preview_verify",
+          arguments: {
+            deploymentId: "$DEPLOYMENT_ID",
+            path: "/api/health",
+            expectedStatus: 200,
+            commitSha: "$CURRENT_COMMIT",
+          },
+        },
+        "Protected Preview verification",
+        "Exact SHA Preview health succeeds",
+        { retry: "repair_required" },
+      );
+    }
   };
   function plan(request, taskId) {
     const steps = [],
@@ -846,6 +856,7 @@ export function createSelfDevelopmentService({
         candidates,
         branch: request.targetBranch,
         currentCommit: request.startingCommit,
+        request,
       });
     } else add(
       "plan_patch",
@@ -946,7 +957,7 @@ export function createSelfDevelopmentService({
         "Commit exactly matches the reviewed bounded change-set",
         { retry: "not_retryable" },
       );
-      add(
+      if(!hasConstraintEnforcement(request,"omit_git_push")) add(
         "push",
         "github_write",
         {
@@ -960,44 +971,46 @@ export function createSelfDevelopmentService({
         "Exact push approval succeeds",
         { retry: "approval_bound", approval: true },
       );
-      add(
-        "deploy_preview",
-        "vercel_preview",
-        {
-          tool: "preview_deploy",
-          arguments: {
-            branch: request.targetBranch,
-            commitSha: "$CURRENT_COMMIT",
+      if(!hasConstraintEnforcement(request,"omit_preview_deploy")){
+        add(
+          "deploy_preview",
+          "vercel_preview",
+          {
+            tool: "preview_deploy",
+            arguments: {
+              branch: request.targetBranch,
+              commitSha: "$CURRENT_COMMIT",
+            },
           },
-        },
-        "Git-backed Preview deployment",
-        "Preview deployment created",
-        { retry: "idempotent_deploy", approval: true },
-      );
-      add(
-        "wait",
-        "scheduler",
-        { delayMs: 5000 },
-        "Bounded deployment wait",
-        "Task reschedules without busy-looping",
-        { retry: "bounded_wait" },
-      );
-      add(
-        "verify_preview",
-        "vercel_preview",
-        {
-          tool: "preview_verify",
-          arguments: {
-            deploymentId: "$DEPLOYMENT_ID",
-            path: "/api/health",
-            expectedStatus: 200,
-            commitSha: "$CURRENT_COMMIT",
+          "Git-backed Preview deployment",
+          "Preview deployment created",
+          { retry: "idempotent_deploy", approval: true },
+        );
+        add(
+          "wait",
+          "scheduler",
+          { delayMs: 5000 },
+          "Bounded deployment wait",
+          "Task reschedules without busy-looping",
+          { retry: "bounded_wait" },
+        );
+        add(
+          "verify_preview",
+          "vercel_preview",
+          {
+            tool: "preview_verify",
+            arguments: {
+              deploymentId: "$DEPLOYMENT_ID",
+              path: "/api/health",
+              expectedStatus: 200,
+              commitSha: "$CURRENT_COMMIT",
+            },
           },
-        },
-        "Protected Preview verification",
-        "Exact SHA Preview health succeeds",
-        { retry: "repair_required" },
-      );
+          "Protected Preview verification",
+          "Exact SHA Preview health succeeds",
+          { retry: "repair_required" },
+        );
+      }
     }
     add(
       "summarize",
@@ -1034,8 +1047,8 @@ export function createSelfDevelopmentService({
       );
     return remote.currentTip;
   }
-  async function create(input, { signal, canonicalIntent } = {}) {
-    const parsed = structure(input, { canonicalIntent }),
+  async function create(input, { signal, canonicalIntent, canonicalConstraintBindings = false } = {}) {
+    const parsed = structure(input, { canonicalIntent, canonicalConstraintBindings }),
       request = Object.freeze({
         ...parsed,
         targetProject: "nova-brain",
@@ -1200,7 +1213,7 @@ export function createSelfDevelopmentService({
         focusedTests: specification.focusedTests,
         patch: { files: [] },
       },
-    }, { signal, canonicalIntent: specification.intent });
+    }, { signal, canonicalIntent: specification.intent, canonicalConstraintBindings: true });
   }
   async function get(taskId) {
     const task = await runtime.get(taskId);
@@ -1316,7 +1329,7 @@ export function createSelfDevelopmentService({
       try{scopeResolution=await structuredIntake.resolveScope({request,candidatePaths:resolvedCandidatePaths});}
       catch(error){throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409);}
       if(scopeResolution.status!=="resolved"){
-        const now=clock().toISOString(),blocked=await storage.updateAutonomyTask(current.id,ownerId,{status:"blocked",currentPhase:"scope_resolution",errorCode:"structured_scope_unresolved",blockedReason:"Nova could not establish a safe mutation-authoritative scope.",completedAt:now,metadata:{...current.metadata,structuredScopeResolution:{version:scopeResolution.version,status:"blocked",decisionHash:scopeResolution.decisionHash,providerUsage:scopeResolution.providerUsage||null,unresolvedPrerequisiteFingerprints:(scopeResolution.unresolvedPrerequisites||[]).map(hash),constraintCoverage:scopeResolution.constraintCoverage}}},current.stateVersion);
+        const now=clock().toISOString(),blocked=await storage.updateAutonomyTask(current.id,ownerId,{status:"blocked",currentPhase:"scope_resolution",errorCode:"structured_scope_unresolved",blockedReason:"Nova could not establish a safe mutation-authoritative scope.",completedAt:now,metadata:{...current.metadata,structuredScopeResolution:{version:scopeResolution.version,status:"blocked",decisionHash:scopeResolution.decisionHash,providerUsage:scopeResolution.providerUsage||null,unresolvedPrerequisiteFingerprints:(scopeResolution.unresolvedPrerequisites||[]).map(hash),constraintCoverage:scopeResolution.constraintCoverage,constraintBindings:scopeResolution.constraintBindings}}},current.stateVersion);
         if(!blocked)throw new SelfDevelopmentError("version_conflict","Task changed during structured scope resolution.");
         await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_scope_resolution_blocked",status:"blocked",summary:"A safe mutation-authoritative scope could not be established.",metadata:{taskId:current.id,decisionHash:scopeResolution.decisionHash}});
         return{task:blocked,evidenceStepIds:[],scopeHash:null,continuationSteps:[]};
@@ -1393,6 +1406,7 @@ export function createSelfDevelopmentService({
       candidates,
       branch: current.branch,
       currentCommit: current.currentCommit,
+      request,
     });
     continuation.push(
       annotation(
@@ -1457,7 +1471,7 @@ export function createSelfDevelopmentService({
             ...(current.metadata.discoveryOnlyReplanHistory || []),
             replanRecord,
           ],
-          ...(scopeResolution?{structuredScopeResolution:{version:scopeResolution.version,decisionHash:scopeResolution.decisionHash,providerUsage:scopeResolution.providerUsage||null,constraintCoverage:scopeResolution.constraintCoverage}}:{}),
+          ...(scopeResolution?{structuredScopeResolution:{version:scopeResolution.version,decisionHash:scopeResolution.decisionHash,providerUsage:scopeResolution.providerUsage||null,constraintCoverage:scopeResolution.constraintCoverage,constraintBindings:scopeResolution.constraintBindings}}:{}),
         },
       },
       current.stateVersion,

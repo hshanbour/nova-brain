@@ -47,6 +47,7 @@ async function fixture(
     ],
     existing = discovered,
     preservationAssessment = {status:"preserved",unrelatedRemovals:[],intentionalRemovals:[]},
+    constraints = [],
   } = {},
 ) {
   const storage = createInMemoryStorage();
@@ -69,6 +70,7 @@ async function fixture(
       selfDevelopment: {
         userGoal: "Update harmless planner documentation",
         acceptanceCriteria: ["Document is updated"],
+        constraints,
       },
     },
   });
@@ -197,6 +199,13 @@ test("independent preservation review rejects destructive simplification inside 
   const baseline="export function voiceMode() { return true; }\nexport function conversationHistory() { return true; }\n";
   const f=await fixture([output],{reads:[[DOC,baseline],[TEST,"import test from 'node:test';\ntest('existing regression', () => {});\n"]],preservationAssessment:{status:"blocked",unrelatedRemovals:[{path:DOC,behavior:"Existing voice mode behavior",baselineExcerpt:"export function voiceMode() { return true; }"}],intentionalRemovals:[]}});
   await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>error.code==="implementation_preservation_violation"&&error.safeDiagnostics.validationIssues.includes("unrelated_baseline_behavior_removed")&&error.safeDiagnostics.affectedPaths[0]===DOC);
+});
+test("preservation-bound intake constraints reach the existing assessment and immutable plan provenance",async()=>{
+  const constraint={type:"preserve",requirement:"Preserve all existing behavior.",enforcements:["preservation_assessment"]},f=await fixture([valid()],{constraints:[constraint]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),prompt=f.prompts.find(item=>item.responseFormat?.name==="nova_self_development_preservation_assessment"),payload=JSON.parse(prompt.message.split("\n").at(-1));
+  assert.deepEqual(payload.preservationConstraints,[constraint.requirement]);
+  assert.deepEqual(result.implementationPlan.constraintBindings,[{constraintIndex:0,type:"preserve",enforcements:["preservation_assessment"]}]);
+  assert.equal(result.implementationPlan.preservationAssessment.preservationConstraintHashes.length,1);
+  assert.equal(typeof result.implementationPlan.provenance.preservationAssessmentHash,"string");
 });
 
 test("preservation review rejects weakened regression coverage even when the test file is authorized",async()=>{

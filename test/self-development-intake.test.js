@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import {createSelfDevelopmentIntake,SELF_DEVELOPMENT_INTAKE_SCHEMAS} from "../src/autonomy/self-development-intake.js";
 
 const provider=(outputs,calls=[])=>({async generate(input){calls.push(input);return{type:"final",message:JSON.stringify(outputs.shift()),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:100,cachedInputTokens:0,outputTokens:40,reasoningTokens:0,totalTokens:140}};}});
-const ready=(extra={})=>({status:"ready",intent:"implementation",objective:"Implement the Console card",acceptanceCriteria:["The card updates in place."],constraints:[{type:"exclude",requirement:"Do not touch Voice."}],explicitPaths:[],focusedTests:[],searchTerms:["console activity"],clarificationQuestion:"",...extra});
+const ready=(extra={})=>({status:"ready",intent:"implementation",objective:"Implement the Console card",acceptanceCriteria:["The card updates in place."],constraints:[{type:"exclude",requirement:"Do not touch Voice.",enforcements:["scope_selection"]}],explicitPaths:[],focusedTests:[],searchTerms:["console activity"],clarificationQuestion:"",...extra});
 
 test("chat-native intake returns a strict structured specification and telemetry",async()=>{
   const calls=[],intake=createSelfDevelopmentIntake({modelProvider:provider([ready()],calls)}),result=await intake.specify("Implement a Console card without changing Voice");
-  assert.equal(result.status,"ready");assert.equal(result.intent,"implementation");assert.deepEqual(result.constraints,[{type:"exclude",requirement:"Do not touch Voice."}]);assert.equal(result.providerUsage.model,"gpt-6-luna");assert.equal(calls[0].stage,"intake");assert.equal(calls[0].responseFormat.strict,true);assert.deepEqual(calls[0].responseFormat.schema,SELF_DEVELOPMENT_INTAKE_SCHEMAS.intake);
+  assert.equal(result.status,"ready");assert.equal(result.intent,"implementation");assert.deepEqual(result.constraints,[{type:"exclude",requirement:"Do not touch Voice.",enforcements:["scope_selection"]}]);assert.equal(result.providerUsage.model,"gpt-6-luna");assert.equal(calls[0].stage,"intake");assert.equal(calls[0].responseFormat.strict,true);assert.deepEqual(calls[0].responseFormat.schema,SELF_DEVELOPMENT_INTAKE_SCHEMAS.intake);
 });
 
 test("explicit paths are accepted only when verbatim in the user request",async()=>{
@@ -19,7 +19,7 @@ test("explicit paths are accepted only when verbatim in the user request",async(
 });
 
 test("clear filename-free implementation request discards untrusted path guesses and remains discovery-only ready",async()=>{
-  const goal="Implement a tiny accessibility improvement in Nova Console: make the New conversation control expose a keyboard-shortcut hint to assistive technology, preserve all existing behavior, add or update a focused regression test, and stop before any push or deployment.",intake=createSelfDevelopmentIntake({modelProvider:provider([ready({objective:"Add an accessible keyboard shortcut hint to the New conversation control.",acceptanceCriteria:["Assistive technology can discover the keyboard shortcut hint.","Existing New conversation behavior remains unchanged.","A focused regression test covers the hint."],constraints:[{type:"preserve",requirement:"Preserve all existing behavior."},{type:"boundary",requirement:"Stop before push or deployment."}],explicitPaths:["assets/console.js"],focusedTests:["test/console-static.test.js"],searchTerms:["New conversation","keyboard shortcut","aria-keyshortcuts"]})])}),result=await intake.specify(goal);
+  const goal="Implement a tiny accessibility improvement in Nova Console: make the New conversation control expose a keyboard-shortcut hint to assistive technology, preserve all existing behavior, add or update a focused regression test, and stop before any push or deployment.",intake=createSelfDevelopmentIntake({modelProvider:provider([ready({objective:"Add an accessible keyboard shortcut hint to the New conversation control.",acceptanceCriteria:["Assistive technology can discover the keyboard shortcut hint.","Existing New conversation behavior remains unchanged.","A focused regression test covers the hint."],constraints:[{type:"preserve",requirement:"Preserve all existing behavior.",enforcements:["preservation_assessment"]},{type:"boundary",requirement:"Stop before push or deployment.",enforcements:["omit_git_push","omit_preview_deploy"]}],explicitPaths:["assets/console.js"],focusedTests:["test/console-static.test.js"],searchTerms:["New conversation","keyboard shortcut","aria-keyshortcuts"]})])}),result=await intake.specify(goal);
   assert.equal(result.status,"ready");assert.deepEqual(result.explicitPaths,[]);assert.deepEqual(result.focusedTests,[]);assert.deepEqual(result.scopeNormalization,{discardedExplicitPaths:1,discardedFocusedTests:1});
 });
 
@@ -41,13 +41,33 @@ test("analysis-only intent remains a structured non-mutation classification",asy
 });
 
 test("scope resolution can only narrow repository-evidenced candidates and covers constraints",async()=>{
-  const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:["assets/console.js"]}],unresolvedPrerequisites:[]}])}),request={userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"exclude",requirement:"No Voice"}]},result=await intake.resolveScope({request,candidatePaths:["assets/console.js","assets/voice-input.js","test/console-static.test.js"]});
+  const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:["assets/console.js"]}],unresolvedPrerequisites:[]}])}),request={userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"exclude",requirement:"No Voice",enforcements:["scope_selection"]}]},result=await intake.resolveScope({request,candidatePaths:["assets/console.js","assets/voice-input.js","test/console-static.test.js"]});
   assert.deepEqual([...result.sourcePaths,...result.testPaths],["assets/console.js","test/console-static.test.js"]);
   const broaden=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/new.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:[]}],unresolvedPrerequisites:[]}])});
   await assert.rejects(()=>broaden.resolveScope({request,candidatePaths:["assets/console.js","test/console-static.test.js"]}),error=>error.code==="structured_scope_invalid");
 });
 
 test("unresolvable scope is represented as a bounded blocked decision",async()=>{
-  const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[{constraintIndex:0,disposition:"blocked",evidencePaths:[]}],unresolvedPrerequisites:["No relevant focused test was discovered."]}])}),result=await intake.resolveScope({request:{userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"boundary",requirement:"Frontend only"}]},candidatePaths:["assets/console.js","test/api.test.js"]});
+  const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[{constraintIndex:0,disposition:"blocked",evidencePaths:[]}],unresolvedPrerequisites:["No relevant focused test was discovered."]}])}),result=await intake.resolveScope({request:{userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"boundary",requirement:"Frontend only",enforcements:["scope_selection"]}]},candidatePaths:["assets/console.js","test/api.test.js"]});
   assert.equal(result.status,"blocked");assert.equal(result.unresolvedPrerequisites.length,1);
+});
+test("scope resolution delegates preservation and delivery constraints to their bound runtime owners",async()=>{
+  const calls=[],constraints=[
+    {type:"preserve",requirement:"Preserve existing behavior.",enforcements:["preservation_assessment"]},
+    {type:"boundary",requirement:"Stop before push or deployment.",enforcements:["omit_git_push","omit_preview_deploy"]},
+  ],intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[],unresolvedPrerequisites:[]}],calls)}),result=await intake.resolveScope({request:{userGoal:"Implement",acceptanceCriteria:["Works"],constraints},candidatePaths:["assets/console.js","test/console-static.test.js"]});
+  assert.equal(result.status,"resolved");
+  assert.deepEqual(result.constraintCoverage,[]);
+  assert.deepEqual(result.constraintBindings.map(item=>item.enforcements),[["preservation_assessment"],["omit_git_push","omit_preview_deploy"]]);
+  assert.deepEqual(JSON.parse(calls[0].message.split("\n").at(-1)).scopeConstraints,[]);
+});
+test("unsupported or incomplete constraint enforcement fails closed at intake",async()=>{
+  for(const constraints of [
+    [{type:"preserve",requirement:"Preserve behavior.",enforcements:["scope_selection"]}],
+    [{type:"boundary",requirement:"Stop before push.",enforcements:["omit_git_push"]}],
+    [{type:"boundary",requirement:"Use an unknown policy.",enforcements:["unknown"]}],
+  ]){
+    const intake=createSelfDevelopmentIntake({modelProvider:provider([ready({constraints})])});
+    await assert.rejects(()=>intake.specify("Implement the Console change"),error=>error.code==="structured_intake_invalid");
+  }
 });

@@ -375,11 +375,11 @@ test("trusted hybrid intake binds the approved project Preview to the fresh remo
   ]);
 });
 test("chat-native intake persists explicit scope constraints criteria and usage before worker execution",async()=>{
-  const f=await fixture({structuredIntake:{async specify(){return{version:1,status:"ready",intent:"implementation",objective:"Implement Live Activity",acceptanceCriteria:["One card updates in place."],constraints:[{type:"exclude",requirement:"Do not touch Voice."}],explicitPaths:["assets/console.js"],focusedTests:["test/console-static.test.js"],searchTerms:["console activity"],clarificationQuestion:"",specificationHash:"3".repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:50,outputTokens:20}};}}}),result=await f.service.createTrustedIntake("Implement Live Activity in assets/console.js and test/console-static.test.js without touching Voice");
-  assert.deepEqual(result.request.scope.paths,["assets/console.js"]);assert.deepEqual(result.request.scope.focusedTests,["test/console-static.test.js"]);assert.equal(result.request.scopeAuthority,"explicit");assert.deepEqual(result.request.constraints,[{type:"exclude",requirement:"Do not touch Voice."}]);assert.equal(result.request.intake.providerUsage.stage,"intake");assert.equal(result.plan.some(step=>step.type==="apply_patch"),true);
+  const f=await fixture({structuredIntake:{async specify(){return{version:1,status:"ready",intent:"implementation",objective:"Implement Live Activity",acceptanceCriteria:["One card updates in place."],constraints:[{type:"exclude",requirement:"Do not touch Voice.",enforcements:["scope_selection"]}],explicitPaths:["assets/console.js"],focusedTests:["test/console-static.test.js"],searchTerms:["console activity"],clarificationQuestion:"",specificationHash:"3".repeat(64),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:50,outputTokens:20}};}}}),result=await f.service.createTrustedIntake("Implement Live Activity in assets/console.js and test/console-static.test.js without touching Voice");
+  assert.deepEqual(result.request.scope.paths,["assets/console.js"]);assert.deepEqual(result.request.scope.focusedTests,["test/console-static.test.js"]);assert.equal(result.request.scopeAuthority,"explicit");assert.deepEqual(result.request.constraints,[{type:"exclude",requirement:"Do not touch Voice.",enforcements:["scope_selection"]}]);assert.equal(result.request.intake.providerUsage.stage,"intake");assert.equal(result.plan.some(step=>step.type==="apply_patch"),true);
 });
 test("chat-native filename-free intake persists discovery-only scope without mutation authority",async()=>{
-  const goal="Implement a tiny accessibility improvement in Nova Console: make the New conversation control expose a keyboard-shortcut hint to assistive technology, preserve all existing behavior, add or update a focused regression test, and stop before any push or deployment.",f=await fixture({structuredIntake:{async specify(){return{version:1,status:"ready",intent:"implementation",objective:"Make the New conversation control expose a keyboard-shortcut hint to assistive technology.",acceptanceCriteria:["Assistive technology can discover the shortcut hint.","Existing behavior remains unchanged.","A focused regression test covers the hint."],constraints:[{type:"preserve",requirement:"Preserve all existing behavior."},{type:"boundary",requirement:"Stop before push or deployment."}],explicitPaths:[],focusedTests:[],searchTerms:["New conversation","keyboard shortcut","accessibility"],clarificationQuestion:"",specificationHash:"4".repeat(64),scopeNormalization:{discardedExplicitPaths:1,discardedFocusedTests:1},providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:50,outputTokens:20}};}}}),result=await f.service.createTrustedIntake(goal);
+  const goal="Implement a tiny accessibility improvement in Nova Console: make the New conversation control expose a keyboard-shortcut hint to assistive technology, preserve all existing behavior, add or update a focused regression test, and stop before any push or deployment.",f=await fixture({structuredIntake:{async specify(){return{version:1,status:"ready",intent:"implementation",objective:"Make the New conversation control expose a keyboard-shortcut hint to assistive technology.",acceptanceCriteria:["Assistive technology can discover the shortcut hint.","Existing behavior remains unchanged.","A focused regression test covers the hint."],constraints:[{type:"preserve",requirement:"Preserve all existing behavior.",enforcements:["preservation_assessment"]},{type:"boundary",requirement:"Stop before push or deployment.",enforcements:["omit_git_push","omit_preview_deploy"]}],explicitPaths:[],focusedTests:[],searchTerms:["New conversation","keyboard shortcut","accessibility"],clarificationQuestion:"",specificationHash:"4".repeat(64),scopeNormalization:{discardedExplicitPaths:1,discardedFocusedTests:1},providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:50,outputTokens:20}};}}}),result=await f.service.createTrustedIntake(goal);
   assert.equal(result.request.intent,"implementation");assert.equal(result.request.intake.canonicalIntent,"implementation");assert.equal(result.request.scopeAuthority,"discovery_only");assert.deepEqual(result.request.scope.paths,[]);assert.deepEqual(result.request.scope.focusedTests,[]);assert.deepEqual(result.request.scope.patch.files,[]);assert.deepEqual(result.request.intake.scopeNormalization,{discardedExplicitPaths:1,discardedFocusedTests:1});assert.equal(result.plan.some(step=>["apply_patch","run_focused_tests","run_full_tests","commit","push","deploy_preview"].includes(step.type)),false);
 });
 test("chat-native canonical intent survives harmless objective paraphrases",async()=>{
@@ -1447,7 +1447,7 @@ test("discovery-only replan preserves canonical implementation intent across neu
               intent: "implementation",
               objective,
               acceptanceCriteria: ["The shortcut hint is exposed."],
-              constraints: [{ type: "preserve", requirement: "Preserve existing behavior." }],
+              constraints: [{ type: "preserve", requirement: "Preserve existing behavior.", enforcements: ["preservation_assessment"] }],
               explicitPaths: [],
               focusedTests: [],
               searchTerms: ["shortcut hint"],
@@ -1535,14 +1535,14 @@ test("discovery searches all structured concepts in one bounded escaped reposito
       async specify(){return{
         version:1,status:"ready",intent:"implementation",objective:"Make the New conversation control accessible.",
         acceptanceCriteria:["The New conversation control exposes a keyboard shortcut hint to assistive technology.","Existing behavior remains unchanged."],
-        constraints:[{type:"preserve",requirement:"Preserve all existing behavior."},{type:"boundary",requirement:"Stop before push or deployment."}],
+        constraints:[{type:"preserve",requirement:"Preserve all existing behavior.",enforcements:["preservation_assessment"]},{type:"boundary",requirement:"Stop before push or deployment.",enforcements:["omit_git_push","omit_preview_deploy"]}],
         explicitPaths:[],focusedTests:[],
         searchTerms:["New conversation control","keyboard shortcut hint","assistive technology accessibility","focused regression test","chat.*loading"],
         clarificationQuestion:"",specificationHash:"7".repeat(64),
       };},
       async resolveScope(input){scopeInput=input;return{
         version:1,status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-client.test.js","test/console-static.test.js"],
-        constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:["assets/console.js"]},{constraintIndex:1,disposition:"respected",evidencePaths:[]}],
+        constraintCoverage:[],constraintBindings:[{constraintIndex:0,type:"preserve",enforcements:["preservation_assessment"]},{constraintIndex:1,type:"boundary",enforcements:["omit_git_push","omit_preview_deploy"]}],
         unresolvedPrerequisites:[],decisionHash:"8".repeat(64),
       };},
     },
@@ -1572,6 +1572,9 @@ test("discovery searches all structured concepts in one bounded escaped reposito
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/console-client.test.js","test/console-static.test.js"]);
   assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
   assert.ok(result.continuationSteps.includes("plan_implementation"));
+  assert.equal(result.continuationSteps.includes("push"),false);
+  assert.equal(result.continuationSteps.includes("deploy_preview"),false);
+  assert.deepEqual(scopeInput.request.constraints.map(item=>item.enforcements),[["preservation_assessment"],["omit_git_push","omit_preview_deploy"]]);
 });
 test("automatic discovery ranks owning microphone modules above preservation-context matches",async()=>{
   const existing=new Set(["test/voice-input.test.js","test/console-static.test.js"]),files=[
