@@ -1646,6 +1646,69 @@ test("structured unresolved scope schedules one same-task read-only rediscovery 
   assert.equal(result.task.metadata.structuredScopeResolution.providerUsage.inputTokens,30);
   await rejects(f.service.replanDiscoveryOnly(f.blocked.id,{expectedVersion:version}),"version_conflict");
 });
+test("authorized scope rediscovery gets one bounded continuation window after a long user wait",async()=>{
+  const f=await structuredScopeRecoveryFixture(),originalStartedAt=f.blocked.startedAt;
+  f.advance(3*60*60*1000);
+  const result=await f.service.recoverStructuredScope(f.blocked.id,{expectedVersion:f.blocked.stateVersion}),recovery=result.task.metadata.structuredScopeRecoveryHistory[0],active=result.task.metadata.activeContinuation;
+  assert.equal(result.task.startedAt,originalStartedAt);
+  assert.equal(recovery.attempt,1);assert.equal(recovery.attemptAccounting,"reserved_at_transition");
+  assert.equal(recovery.runtimeResumeCount,0);assert.equal(recovery.maxRuntimeResumes,1);
+  assert.equal(active.recoveryClass,"structured_scope_rediscovery");assert.equal(active.runtimeMinutes,15);
+  assert.equal(recovery.runtimeWindow.runtimeDeadline,active.runtimeDeadline);
+  assert.ok(recovery.continuationStepIds.every((stepId,index)=>stepId===`${result.task.currentStep+index+1}:${result.continuationSteps[index]}`));
+  const advanced=await f.runtime.tickTask(result.task.id,{idempotencyKey:"delayed-scope-recovery"});
+  assert.notEqual(advanced.status,"expired");
+  assert.equal((await f.runtime.steps(result.task.id)).filter(step=>Number.parseInt(step.stepId,10)>result.task.currentStep&&step.stepType==="search_code").length,1);
+});
+test("pre-action scope recovery expiry may resume the same reserved attempt once with CAS-safe replay",async()=>{
+  const f=await structuredScopeRecoveryFixture(),scheduled=await f.service.recoverStructuredScope(f.blocked.id,{expectedVersion:f.blocked.stateVersion}),base=scheduled.task.currentStep;
+  f.advance(16*60*1000);
+  await f.runtime.tickTask(scheduled.task.id,{idempotencyKey:"expire-unused-scope-window"});
+  const expired=await f.runtime.get(scheduled.task.id);
+  assert.equal(expired.status,"expired");assert.equal(expired.errorCode,"max_runtime_reached");assert.equal(expired.currentStep,base);
+  assert.equal(expired.metadata.runtimeExpiration.scope,"active_continuation");
+  assert.equal((await f.runtime.steps(expired.id)).some(step=>Number.parseInt(step.stepId,10)>base),false);
+  const [first,second]=await Promise.all([
+    f.service.recoverStructuredScope(expired.id,{expectedVersion:expired.stateVersion}),
+    f.service.recoverStructuredScope(expired.id,{expectedVersion:expired.stateVersion}),
+  ]);
+  assert.equal(first.task.id,expired.id);assert.equal(second.task.id,expired.id);
+  const resumed=await f.runtime.get(expired.id),record=resumed.metadata.structuredScopeRecoveryHistory[0];
+  assert.equal(resumed.status,"queued");assert.equal(record.attempt,1);assert.equal(record.runtimeResumeCount,1);
+  assert.equal(resumed.startingCommit,expired.startingCommit);assert.equal(resumed.currentCommit,expired.currentCommit);
+  assert.equal([first.idempotent,second.idempotent].filter(Boolean).length,1);
+  f.advance(16*60*1000);
+  await f.runtime.tickTask(resumed.id,{idempotencyKey:"expire-final-scope-window"});
+  const finalExpiry=await f.runtime.get(resumed.id);
+  await rejects(f.service.recoverStructuredScope(finalExpiry.id,{expectedVersion:finalExpiry.stateVersion}),"scope_recovery_expiry_ineligible");
+});
+test("a started rediscovery consumes its single bounded attempt and cannot refresh its runtime",async()=>{
+  const f=await structuredScopeRecoveryFixture(),scheduled=await f.service.recoverStructuredScope(f.blocked.id,{expectedVersion:f.blocked.stateVersion}),base=scheduled.task.currentStep;
+  await f.runtime.tickTask(scheduled.task.id,{idempotencyKey:"start-scope-recovery"});
+  assert.equal((await f.runtime.steps(scheduled.task.id)).some(step=>Number.parseInt(step.stepId,10)>base),true);
+  f.advance(16*60*1000);
+  await f.runtime.tickTask(scheduled.task.id,{idempotencyKey:"expire-started-scope-recovery"});
+  const expired=await f.runtime.get(scheduled.task.id);
+  assert.equal(expired.status,"expired");
+  await rejects(f.service.recoverStructuredScope(expired.id,{expectedVersion:expired.stateVersion}),"scope_recovery_expiry_ineligible");
+  assert.equal(expired.metadata.structuredScopeRecoveryHistory[0].attempt,1);
+});
+test("scope recovery timing survives a worker restart and remains bound to the starting commit",async()=>{
+  const f=await structuredScopeRecoveryFixture(),scheduled=await f.service.recoverStructuredScope(f.blocked.id,{expectedVersion:f.blocked.stateVersion}),active=scheduled.task.metadata.activeContinuation;
+  const restarted=createWorkerRuntime({storage:f.storage,ownerId:OWNER,workerId:"restarted-worker",approvedBranch:BRANCH,clock:()=>new Date(new Date(active.runtimeStartedAt).getTime()+1000),capabilities:["repo_read_remote","reasoning"],toolRegistry:{async execute(){return{ok:true,matches:[]};}}});
+  const result=await restarted.tickTask(scheduled.task.id,{idempotencyKey:"scope-recovery-after-restart"});
+  assert.notEqual(result.status,"expired");
+  const after=await restarted.get(scheduled.task.id);
+  assert.equal(after.startingCommit,SHA);assert.equal(after.currentCommit,SHA);
+  assert.equal(after.metadata.activeContinuation.generationId,active.generationId);
+});
+test("pre-action expiry recovery fails closed when the task baseline changes",async()=>{
+  const f=await structuredScopeRecoveryFixture(),scheduled=await f.service.recoverStructuredScope(f.blocked.id,{expectedVersion:f.blocked.stateVersion});
+  f.advance(16*60*1000);await f.runtime.tickTask(scheduled.task.id,{idempotencyKey:"expire-before-baseline-drift"});
+  let expired=await f.runtime.get(scheduled.task.id);
+  expired=await f.storage.updateAutonomyTask(expired.id,OWNER,{currentCommit:NEW_SHA},expired.stateVersion);
+  await rejects(f.service.recoverStructuredScope(expired.id,{expectedVersion:expired.stateVersion}),"scope_recovery_expiry_ineligible");
+});
 test("pre-transition structured resolver failure preserves the sole recovery attempt",async()=>{
   const failure=Object.assign(new Error("private provider detail"),{code:"structured_intake_invalid",safeDiagnostics:{boundary:"schema_parse",reason:"invalid_json"}}),f=await structuredScopeRecoveryFixture({recoveryError:failure}),before=f.blocked;
   await assert.rejects(()=>f.service.recoverStructuredScope(before.id,{expectedVersion:before.stateVersion}),error=>error.code==="structured_intake_invalid"&&error.safeDiagnostics?.recoveryTransitionScheduled===false&&error.safeDiagnostics?.recoveryAttemptConsumed===false);

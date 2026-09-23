@@ -471,8 +471,9 @@ export function createWorkerRuntime({
     const deliveryRuntime=approvedDelivery&&task.metadata?.approvedDeliveryRuntime,
       deliveryRuntimeClassValid=deliveryRuntime?.recoveryClass===HISTORICAL_APPROVED_DELIVERY_RUNTIME.recoveryClass||deliveryRuntime?.recoveryClass===APPROVAL_CONTRACT_DELIVERY_RUNTIME||deliveryRuntime?.recoveryClass==="historical_v288_approval_contract_delivery_runtime_recovery",
       deliveryRuntimeValid=Boolean(deliveryRuntime&&deliveryRuntimeClassValid&&deliveryRuntime.taskId===task.id&&deliveryRuntime.approvalId===task.approvalState?.approvalId&&deliveryRuntime.approvedStateVersion===task.approvalState?.approvedStateVersion&&deliveryRuntime.deliveryStateVersion===task.approvalState?.deliveryStateVersion&&deliveryRuntime.repository===approvedRepository&&deliveryRuntime.branch===task.branch&&deliveryRuntime.commitSha===task.currentCommit&&deliveryRuntime.reviewStepId===`${task.currentStep}:review_commit`&&deliveryRuntime.deliveryStepId===`${task.currentStep+1}:push`&&deliveryRuntime.maxAdditionalDeliverySteps===1&&deliveryRuntime.consumed!==true&&new Date(deliveryRuntime.deadline)>clock());
-    if (taskRuntimeWindow(task,clock()).expired&&!deliveryRuntimeValid)
-      return stop(task, "expired", "max_runtime_reached");
+    const runtimeWindow=taskRuntimeWindow(task,clock());
+    if (runtimeWindow.expired&&!deliveryRuntimeValid)
+      return stop(task, "expired", "max_runtime_reached",undefined,{runtimeWindow});
     if (!capability) return stop(task, "failed", "invalid_step_type");
     if (!capabilities.includes(capability)) {
       await storage.updateAutonomyTask(task.id, ownerId, {
@@ -801,8 +802,18 @@ export function createWorkerRuntime({
       },
     );
   }
-  async function stop(task, status, errorCode, resultSummary) {
+  async function stop(task, status, errorCode, resultSummary, diagnostics={}) {
     await storage.releaseAutonomyLocks(task.id);
+    const runtimeExpiration=errorCode==="max_runtime_reached"&&diagnostics.runtimeWindow?{
+      version:1,
+      scope:diagnostics.runtimeWindow.scope,
+      startedAt:diagnostics.runtimeWindow.startedAt,
+      deadline:diagnostics.runtimeWindow.deadline,
+      elapsedWindowMs:diagnostics.runtimeWindow.elapsedMs,
+      maxRuntimeMs:diagnostics.runtimeWindow.maxRuntimeMs,
+      continuationGenerationId:diagnostics.runtimeWindow.continuationGenerationId,
+      expiredAt:iso(clock),
+    }:null;
     const updated = await storage.updateAutonomyTask(task.id, ownerId, {
       status,
       errorCode: errorCode || null,
@@ -811,13 +822,14 @@ export function createWorkerRuntime({
       leaseOwner: null,
       leaseToken: null,
       leaseExpiresAt: null,
+      ...(runtimeExpiration?{metadata:{...task.metadata,runtimeExpiration}}:{}),
     });
     await activity(
       task,
       `autonomy_task_${status}`,
       status,
       `Autonomous task ${status}.`,
-      { errorCode },
+      { errorCode,...(runtimeExpiration?{runtimeExpiration}:{} ) },
     );
     return { claimed: true, status, task: updated };
   }
