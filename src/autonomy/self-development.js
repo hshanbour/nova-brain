@@ -264,6 +264,23 @@ const hash = (value) =>
 const TERMINAL_RETRY_CONTRACT_VERSION = "self-development-terminal-retry-v1",
   TERMINAL_RETRY_STATUSES = new Set(["failed", "cancelled"]),
   MAX_TERMINAL_RETRY_DEPTH = 32;
+const isTerminalRetryPredecessor = (task) => {
+  if (TERMINAL_RETRY_STATUSES.has(task?.status)) return true;
+  if (
+    task?.status !== "blocked" ||
+    task.errorCode !== "structured_scope_recovery_exhausted" ||
+    !task.completedAt ||
+    task.leaseOwner ||
+    task.leaseToken
+  )
+    return false;
+  const history = task.metadata?.structuredScopeRecoveryHistory;
+  const latest = Array.isArray(history) ? history.at(-1) : null;
+  return (
+    latest?.status === "exhausted" &&
+    Number(latest.attempt) === Number(latest.maxAttempts)
+  );
+};
 const terminalSuccessorIdentity = (rootRequestFingerprint, predecessor) => {
   const successorFingerprint = hash({
     version: TERMINAL_RETRY_CONTRACT_VERSION,
@@ -1341,7 +1358,7 @@ export function createSelfDevelopmentService({
           "durable_task_create_failed",
           "Existing task identity does not match this request.",
         );
-      if (!TERMINAL_RETRY_STATUSES.has(prior.status))
+      if (!isTerminalRetryPredecessor(prior))
         return {
           request,
           plan: prior.metadata.steps,

@@ -724,6 +724,25 @@ test("active completed approval-bound and blocked requests preserve existing ide
     assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,1,status);
   }
 });
+test("scope-recovery-exhausted blocked task creates one deterministic audit-linked successor",async()=>{
+  const f=await fixture(),request={userGoal:"Implement an exhausted Nova Console scope retry"},root=await f.service.create(request),blocked=await f.storage.updateAutonomyTask(root.task.id,OWNER,{status:"blocked",errorCode:"structured_scope_recovery_exhausted",blockedReason:"Nova exhausted the single bounded scope rediscovery pass without establishing safe authority.",completedAt:"2026-01-01T00:01:00.000Z",metadata:{...root.task.metadata,structuredScopeRecoveryHistory:[{status:"exhausted",attempt:1,maxAttempts:1}]}}),before=await f.storage.getAutonomyTask(root.task.id,OWNER),successor=await f.service.create(request),replay=await f.service.create(request),after=await f.storage.getAutonomyTask(root.task.id,OWNER);
+  assert.notEqual(successor.task.id,root.task.id);
+  assert.equal(successor.idempotent,false);
+  assert.equal(replay.idempotent,true);
+  assert.equal(replay.task.id,successor.task.id);
+  assert.equal(successor.task.metadata.supersedesTaskId,root.task.id);
+  assert.deepEqual(successor.task.metadata.predecessorTerminal,{status:"blocked",stateVersion:blocked.stateVersion,completedAt:blocked.completedAt,errorCode:blocked.errorCode});
+  assert.deepEqual(after,before);
+  assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,2);
+});
+test("blocked scope tasks without proven exhausted recovery remain idempotently reusable",async()=>{
+  for(const metadata of [undefined,{structuredScopeRecoveryHistory:[]},{structuredScopeRecoveryHistory:[{status:"resolution_pending",attempt:1,maxAttempts:1}]},{structuredScopeRecoveryHistory:[{status:"exhausted",attempt:0,maxAttempts:1}]}]){
+    const f=await fixture(),request={userGoal:`Implement a recoverable blocked scope retry ${JSON.stringify(metadata||{})}`},root=await f.service.create(request),blocked=await f.storage.updateAutonomyTask(root.task.id,OWNER,{status:"blocked",errorCode:"structured_scope_recovery_exhausted",completedAt:"2026-01-01T00:01:00.000Z",...(metadata?{metadata:{...root.task.metadata,...metadata}}:{})}),replay=await f.service.create(request);
+    assert.equal(replay.idempotent,true);
+    assert.equal(replay.task.id,blocked.id);
+    assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,1);
+  }
+});
 test("failed task creates one deterministic audit-linked successor at the trusted feature tip",async()=>{
   const freshTip="8".repeat(40),f=await fixture({verifyRemote:async()=>({currentTip:freshTip,ancestors:{}})}),request={userGoal:"Implement a deterministic Nova Console retry"},root=await f.service.create(request);
   assert.equal(root.task.id,`selfdev_${root.task.metadata.selfDevelopmentRequestFingerprint.slice(0,32)}`);
