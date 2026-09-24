@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createSelfDevelopmentIntake,SELF_DEVELOPMENT_INTAKE_SCHEMAS} from "../src/autonomy/self-development-intake.js";
+import {deriveSourceCreationAuthorities} from "../src/autonomy/source-creation-authority.js";
 
 const provider=(outputs,calls=[])=>({async generate(input){calls.push(input);return{type:"final",message:JSON.stringify(outputs.shift()),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:100,cachedInputTokens:0,outputTokens:40,reasoningTokens:0,totalTokens:140}};}});
 const ready=(extra={})=>({status:"ready",intent:"implementation",objective:"Implement the Console card",acceptanceCriteria:["The card updates in place."],constraints:[{type:"exclude",requirement:"Do not touch Voice.",enforcements:["scope_selection"]}],explicitPaths:[],focusedTests:[],searchTerms:["console activity"],clarificationQuestion:"",...extra});
@@ -49,6 +50,19 @@ test("scope resolution can only narrow repository-evidenced candidates and cover
   await assert.rejects(()=>broaden.resolveScope({request,candidatePaths:["assets/console.js","test/console-static.test.js"]}),error=>error.code==="structured_scope_invalid");
 });
 
+test("scope resolution may authorize a new source only inside a deterministic repository envelope",async()=>{
+  const request={userGoal:"Add a Twilio integration adapter and register it",acceptanceCriteria:["The Twilio adapter is registered."],constraints:[]},candidatePaths=["src/integrations/index.js","src/integrations/stripe-adapter.js","src/integrations/gmail-adapter.js","test/integrations.test.js"],candidateEvidence=[
+    {path:"src/integrations/index.js",role:"source",inventory:true,matches:[{stepId:"2:search_code",query:"integration adapter",line:4,text:"export function registerIntegration(adapter) {}",truncated:false}]},
+    {path:"src/integrations/stripe-adapter.js",role:"source",inventory:true,matches:[{stepId:"2:search_code",query:"integration adapter",line:1,text:"export const stripeAdapter = {};",truncated:false}]},
+    {path:"src/integrations/gmail-adapter.js",role:"source",inventory:true,matches:[{stepId:"2:search_code",query:"integration adapter",line:1,text:"export const gmailAdapter = {};",truncated:false}]},
+    {path:"test/integrations.test.js",role:"focused_test",inventory:true,matches:[],relationship:{sourcePath:"src/integrations/index.js",matchedTokens:["integration"],basis:"existing_bound_commit_path_relation"}},
+  ],authorities=deriveSourceCreationAuthorities(candidatePaths,{userGoal:request.userGoal}),intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["src/integrations/index.js"],newSourcePaths:["src/integrations/twilio-adapter.js"],testPaths:["test/integrations.test.js"],constraintCoverage:[],unresolvedEvidence:[]}])}),result=await intake.resolveScope({request,candidatePaths,candidateEvidence,sourceCreationAuthorities:authorities});
+  assert.deepEqual(result.newSourcePaths,["src/integrations/twilio-adapter.js"]);
+  assert.equal(result.sourceCreationRecords.length,1);
+  assert.deepEqual(result.sourceCreationRecords[0].evidencePaths,["src/integrations/gmail-adapter.js","src/integrations/index.js","src/integrations/stripe-adapter.js"]);
+  assert.equal(result.sourceCreationRecords[0].baselineExists,false);
+});
+
 test("scope evidence cannot introduce authority or unsupported source-test relationships",async()=>{
   const request={userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[]},candidatePaths=["assets/console.js","test/console-static.test.js"];
   for(const candidateEvidence of [
@@ -84,7 +98,7 @@ test("a bounded ownership certificate may validate a task-relevant truncated phy
 
 test("unresolvable scope is represented as a bounded blocked decision",async()=>{
   const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[{constraintIndex:0,disposition:"blocked",evidencePaths:[]}],unresolvedEvidence:[{category:"focused_test",concepts:["console activity test"]}]}])}),result=await intake.resolveScope({request:{userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"boundary",requirement:"Frontend only",enforcements:["scope_selection"]}]},candidatePaths:["assets/console.js","test/api.test.js"]});
-  assert.equal(result.status,"blocked");assert.deepEqual(result.unresolvedEvidence,[{category:"focused_test",concepts:["console activity test"]}]);assert.equal(result.version,2);
+  assert.equal(result.status,"blocked");assert.deepEqual(result.unresolvedEvidence,[{category:"focused_test",concepts:["console activity test"]}]);assert.equal(result.version,3);
 });
 test("scope recovery evidence is typed, bounded, and cannot grant path authority",async()=>{
   const request={userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[]},candidates=["assets/console.js","test/console-static.test.js"];

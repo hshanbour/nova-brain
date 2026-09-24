@@ -12,7 +12,7 @@ import {
   ApprovalRequiredError,
 } from "../src/policy/action-policy.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
-import { canonicalContentHash } from "../src/autonomy/self-development-plan-lifecycle.js";
+import { canonicalContentHash, lifecycleHash } from "../src/autonomy/self-development-plan-lifecycle.js";
 import {
   INITIAL_OWNER_PROFILE,
   INITIAL_PROJECTS,
@@ -438,6 +438,18 @@ test("Hands independently rejects create over tracked or untracked existing file
     await assert.rejects(() => f.registry.execute("repo_apply_patch", {branch:BRANCH,files:[{path:"new.test.js",operation:"create",content:"export const overwrite = true;\n"}]}), error => error.code === "operation_conflict");
     assert.equal(await readFile(join(f.root,"new.test.js"),"utf8"),"untracked\n");
   } finally { await f.close(); }
+});
+
+test("Hands applies only the exact provenance-bound authorized source creation",async()=>{
+  const f=await fixture();
+  try{
+    await mkdir(join(f.root,"src","integrations"),{recursive:true});
+    const {stdout}=await run("git",["rev-parse","HEAD"],{cwd:f.root}),currentCommit=stdout.trim(),runId="selfdev_source_create",path="src/integrations/twilio-adapter.js",creationAuthority={version:1,path,operation:"create",baselineExists:false,baselineCommit:currentCommit,authorityHash:"a".repeat(64),recordHash:"b".repeat(64)},file={path,operation:"create",content:"export const twilioAdapter = {};\n",creationAuthority},planProvenance={version:"2",generationId:"source-create",taskId:runId,currentCommit,mutationPreconditions:[{path,operation:"create",creationAuthorityHash:lifecycleHash(creationAuthority)}]};
+    await assert.rejects(()=>f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit,planProvenance,files:[{...file,creationAuthority:{...creationAuthority,path:"src/integrations/signal-adapter.js"}}]},{runId}),error=>error.code==="implementation_plan_precondition_mismatch");
+    const result=await f.registry.execute("repo_apply_patch",{branch:BRANCH,currentCommit,planProvenance,files:[file]},{runId});
+    assert.deepEqual(result.files,[path]);
+    assert.equal(await readFile(join(f.root,path),"utf8"),file.content);
+  }finally{await f.close();}
 });
 
 test("protected branches are refused before patch or commit", async () => {

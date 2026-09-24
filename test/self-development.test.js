@@ -17,6 +17,7 @@ import { registerSelfDevelopmentTools } from "../src/autonomy/self-development-t
 import { ApprovalRequiredError } from "../src/policy/action-policy.js";
 import { createAgent } from "../src/agent/agent.js";
 import {bindImplementationPlan,canonicalContentHash,lifecycleHash,planLifecycleMetadata} from "../src/autonomy/self-development-plan-lifecycle.js";
+import {authorizeNewSourcePath} from "../src/autonomy/source-creation-authority.js";
 
 const OWNER = "owner",
   SHA = "a".repeat(40),
@@ -1792,7 +1793,7 @@ async function runOwnershipCertificationCase({goal,searchTerms,files,matches,res
   let scopeInput;
   const structuredIntake={
     async specify(){return{version:1,status:"ready",intent:"implementation",objective:goal,acceptanceCriteria:["The requested behavior is implemented.","Focused regression coverage passes."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms,clarificationQuestion:"",specificationHash:"c".repeat(64)};},
-    async resolveScope(input){scopeInput=input;return resolution;},
+    async resolveScope(input){scopeInput=input;return typeof resolution==="function"?resolution(input):resolution;},
   },existing=new Set(files),f=await fixture({
     structuredIntake,
     resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&existing.has(path)}),
@@ -1848,6 +1849,31 @@ test("scope certification freezes coordinated multi-file integration ownership",
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,["src/integrations/slack-client.js","src/integrations/slack-handler.js"]);
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/slack-client.test.js"]);
   assert.ok(result.scopeInput.candidateEvidence.filter(item=>item.role==="source").every(item=>item.ownership));
+});
+test("scope certification freezes a repository-grounded new source path before planning",async()=>{
+  const newPath="src/integrations/twilio-adapter.js",result=await runOwnershipCertificationCase({
+    goal:"Implement a Nova Twilio integration adapter, register it, and add focused regression coverage.",
+    searchTerms:["integration adapter","register integration"],
+    files:["src/integrations/index.js","src/integrations/stripe-adapter.js","src/integrations/gmail-adapter.js","test/integrations.test.js"],
+    matches:[
+      {path:"src/integrations/index.js",line:4,text:"export function registerIntegration(adapter) {}"},
+      {path:"src/integrations/stripe-adapter.js",line:1,text:"export const stripeAdapter = {};"},
+      {path:"src/integrations/gmail-adapter.js",line:1,text:"export const gmailAdapter = {};"},
+      {path:"test/integrations.test.js",line:7,text:'test("registerIntegration adapter", () => {});'},
+    ],
+    resolution(input){
+      const authorized=authorizeNewSourcePath(newPath,{authorities:input.sourceCreationAuthorities,userGoal:input.request.userGoal,existingPaths:input.candidatePaths});
+      assert.equal(authorized.authorized,true);
+      return{version:3,status:"resolved",sourcePaths:["src/integrations/index.js"],newSourcePaths:[newPath],testPaths:["test/integrations.test.js"],sourceCreationRecords:[authorized.record],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[],decisionHash:"9".repeat(64)};
+    },
+  });
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,["src/integrations/index.js"]);
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/integrations.test.js"]);
+  assert.equal(result.task.metadata.selfDevelopment.scope.authorizedCreatePaths.length,1);
+  assert.equal(result.task.metadata.selfDevelopment.scope.authorizedCreatePaths[0].path,newPath);
+  assert.equal(result.task.metadata.selfDevelopment.scope.authorizedCreatePaths[0].baselineCommit,SHA);
+  assert.equal(result.task.metadata.selfDevelopment.scope.authorizedCreatePaths[0].baselineExists,false);
+  assert.ok(result.task.metadata.structuredScopeResolution.authorizedCreatePathHashes[0]);
 });
 test("scope certification keeps genuinely ambiguous ownership discovery-only",async()=>{
   const result=await runOwnershipCertificationCase({

@@ -15,6 +15,7 @@ import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { registerHandsTools } from "../src/tools/hands-runtime.js";
 import {canonicalContentHash} from "../src/autonomy/self-development-plan-lifecycle.js";
 import {focusedTestEvidenceRelevance,focusedTestRelationshipEvidence,focusedTestSourceRelationship,plannedTestCreationAuthority,sourceOwnershipEvidence} from "../src/autonomy/focused-test-evidence-relevance.js";
+import {authorizeNewSourcePath,deriveSourceCreationAuthorities} from "../src/autonomy/source-creation-authority.js";
 
 const OWNER = "owner",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -48,6 +49,7 @@ async function fixture(
     existing = discovered,
     preservationAssessment = {status:"preserved",unrelatedRemovals:[],intentionalRemovals:[]},
     constraints = [],
+    authorizedCreatePaths = [],
   } = {},
 ) {
   const storage = createInMemoryStorage();
@@ -71,6 +73,7 @@ async function fixture(
         userGoal: "Update harmless planner documentation",
         acceptanceCriteria: ["Document is updated"],
         constraints,
+        scope: {authorizedCreatePaths},
       },
     },
   });
@@ -712,6 +715,37 @@ test("new source creation remains fail-closed without a pre-plan authoritative p
   output.files.push({path:"src/integrations/new-adapter.js",operation:"create",content:"export function createAdapter() {}\n",reason:"new integration adapter",intendedChanges:["add adapter"]});
   const f=await fixture([output],{discovered:[DOC,TEST,"src/integrations/existing-adapter.js"]});
   await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>error.code==="implementation_scope_violation"&&error.safeDiagnostics?.rejectionCode==="evidence_bound_path_required");
+});
+
+test("repository-grounded new source coordinates with an existing modification and a new focused test",async()=>{
+  const siblings=["src/integrations/stripe-adapter.js","src/integrations/gmail-adapter.js"],goal="Add a Twilio integration adapter",authority=deriveSourceCreationAuthorities(siblings,{userGoal:goal})[0],authorized=authorizeNewSourcePath("src/integrations/twilio-adapter.js",{authorities:[authority],userGoal:goal,existingPaths:siblings});
+  assert.equal(authorized.authorized,true);
+  const creationAuthority={...authorized.record,baselineCommit:SHA},newTest="test/planner-twilio.test.js",output=valid();
+  output.files.push({path:creationAuthority.path,operation:"create",content:"export const twilioAdapter = {};\n",reason:"add the repository-conventional integration adapter",intendedChanges:["provide Twilio adapter"]});
+  output.files.push({path:newTest,operation:"create",content:'import test from "node:test";\ntest("planner Twilio adapter",()=>{});\n',reason:"add repository-conventional focused coverage",intendedChanges:["cover Twilio adapter"]});
+  output.focusedTests=[{path:newTest,kind:"planned_new"}];
+  output.acceptanceMapping[0].files.push(creationAuthority.path);
+  output.acceptanceMapping[0].tests=[newTest];
+  const f=await fixture([output],{discovered:[DOC,TEST,EXTRA,...siblings],existing:[DOC,TEST,EXTRA,...siblings],authorizedCreatePaths:[creationAuthority]}),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],authorizedCreatePaths:[creationAuthority],currentCommit:SHA}),created=result.implementationPlan.files.find(file=>file.path===creationAuthority.path),precondition=result.implementationPlan.provenance.mutationPreconditions.find(item=>item.path===creationAuthority.path);
+  assert.equal(created.operation,"create");
+  assert.deepEqual(created.creationAuthority,creationAuthority);
+  assert.deepEqual(result.implementationPlan.focusedTests,[{path:newTest,kind:"planned_new"}]);
+  assert.match(precondition.creationAuthorityHash,/^[a-f0-9]{64}$/);
+  assert.deepEqual(JSON.parse(f.prompts[0].message.split("\n")[1]).authorizedNewSourcePaths,[{path:creationAuthority.path,operation:"create",authorityHash:creationAuthority.authorityHash,baselineExists:false}]);
+});
+
+test("source creation rejects tampered authority overwrite and source-create blast-radius overflow",async()=>{
+  const siblings=["src/integrations/stripe-adapter.js","src/integrations/gmail-adapter.js"],goal="Add a Twilio integration adapter",authority=deriveSourceCreationAuthorities(siblings,{userGoal:goal})[0],authorized=authorizeNewSourcePath("src/integrations/twilio-adapter.js",{authorities:[authority],userGoal:goal,existingPaths:siblings}),validRecord={...authorized.record,baselineCommit:SHA};
+  for(const records of [
+    [{...validRecord,path:"src/integrations/signal-adapter.js"}],
+    Array.from({length:5},(_,index)=>({...validRecord,path:`src/integrations/twilio-${index}-adapter.js`})),
+  ]){
+    const f=await fixture([valid()],{authorizedCreatePaths:records});
+    await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],authorizedCreatePaths:records,currentCommit:SHA}),error=>error.code==="implementation_scope_violation");
+  }
+  const output=valid();output.files.push({path:validRecord.path,operation:"create",content:"export const twilioAdapter = {};\n",reason:"adapter",intendedChanges:["add"]});output.acceptanceMapping[0].files.push(validRecord.path);
+  const overwrite=await fixture([output],{discovered:[DOC,TEST,...siblings],existing:[DOC,TEST,...siblings,validRecord.path],authorizedCreatePaths:[validRecord]});
+  await assert.rejects(()=>overwrite.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],authorizedCreatePaths:[validRecord],currentCommit:SHA}),error=>error.code==="operation_conflict");
 });
 
 test("planned new tests fail closed unless nonexistent relevant bounded create files", async () => {

@@ -8,6 +8,7 @@ import {describeReviewRemediation,recoverReviewRemediation,REVIEW_REMEDIATION_TO
 import {recoveryHash} from "./failed-local-read-recovery.js";
 import {describeEvidenceBoundReviewReplan,recoverEvidenceBoundReviewReplan,EVIDENCE_BOUND_REVIEW_REPLAN_TOOL,describeImplementationContentReviewReplan,recoverImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL,describeSourceLiteralReviewReplan,recoverSourceLiteralReviewReplan,SOURCE_LITERAL_REVIEW_REPLAN_TOOL,describeObservableLinkageReviewReplan,recoverObservableLinkageReviewReplan,OBSERVABLE_LINKAGE_REVIEW_REPLAN_TOOL,describeSemanticEvidenceReviewReplan,recoverSemanticEvidenceReviewReplan,SEMANTIC_EVIDENCE_REVIEW_REPLAN_TOOL,describeFailedSemanticReadRecovery,recoverFailedSemanticReadRecovery,FAILED_SEMANTIC_READ_RECOVERY_TOOL,describeTestIdentityInventoryReviewReplan,recoverTestIdentityInventoryReviewReplan,TEST_IDENTITY_INVENTORY_REPLAN_TOOL} from "./review-remediation-scope.js";
 import {focusedTestRelationshipEvidence,sourceOwnershipEvidence} from "./focused-test-evidence-relevance.js";
+import {MAX_AUTHORIZED_NEW_SOURCE_PATHS,deriveSourceCreationAuthorities,safeNewSourcePath,verifySourceCreationRecord} from "./source-creation-authority.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -797,7 +798,7 @@ export function createSelfDevelopmentService({
         } : {}),
       };
     });
-    return { candidatePaths, candidateEvidence };
+    return {candidatePaths,candidateEvidence,sourceCreationAuthorities:deriveSourceCreationAuthorities([...discovered],{userGoal:request.userGoal})};
   };
   const structuredScopeMetadata = (resolution, extra = {}) => ({
     version: resolution.version,
@@ -812,6 +813,7 @@ export function createSelfDevelopmentService({
     unresolvedEvidenceFingerprints: (resolution.unresolvedEvidence || []).map(hash),
     constraintCoverage: resolution.constraintCoverage,
     constraintBindings: resolution.constraintBindings,
+    authorizedCreatePathHashes:(resolution.sourceCreationRecords||[]).map(record=>hash(record)),
     ...extra,
   });
   const structuredScopeRecoveryConcepts = (resolution) => [
@@ -905,6 +907,7 @@ export function createSelfDevelopmentService({
     branch,
     currentCommit,
     request,
+    authorizedCreatePaths=request?.scope?.authorizedCreatePaths||[],
   }) => {
     const add = (...args) =>
       steps.push(annotation(base + steps.length + 1, ...args));
@@ -925,7 +928,7 @@ export function createSelfDevelopmentService({
       "reasoning",
       {
         tool: "self_development_plan_implementation",
-        arguments: { taskId, candidatePaths: candidates, currentCommit },
+        arguments: { taskId, candidatePaths: candidates, currentCommit, authorizedCreatePaths },
       },
       "Nova-generated structured implementation plan",
       "Plan is generated only from durable evidence",
@@ -1591,7 +1594,7 @@ export function createSelfDevelopmentService({
     const discoveryResolution = input.candidatePaths ? null : await resolveDiscoveryCandidates(request, steps);
     let resolvedCandidatePaths = input.candidatePaths ?? discoveryResolution?.candidatePaths,scopeResolution=null;
     if(!input.candidatePaths&&resolvedCandidatePaths&&structuredIntake?.resolveScope){
-      try{scopeResolution=await resolveStructuredScope({request,candidatePaths:resolvedCandidatePaths,candidateEvidence:discoveryResolution.candidateEvidence,costContext:{taskId:current.id}});}
+      try{scopeResolution=await resolveStructuredScope({request,candidatePaths:resolvedCandidatePaths,candidateEvidence:discoveryResolution.candidateEvidence,sourceCreationAuthorities:discoveryResolution.sourceCreationAuthorities,costContext:{taskId:current.id}});}
       catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409,{...error?.safeDiagnostics,recoveryTransitionScheduled:false,recoveryAttemptConsumed:false});}
       if(scopeResolution.status!=="resolved"){
         const now=clock().toISOString(),concepts=structuredScopeRecoveryConcepts(scopeResolution),attempt=scopeRecoveryHistory.length+1;
@@ -1623,8 +1626,7 @@ export function createSelfDevelopmentService({
         "Implementation recovery requires 2-12 evidence candidate files.",
         400,
       );
-    const candidates = [...new Set(resolvedCandidatePaths.map(safePath))];
-    const inventory = new Set(
+    const candidates = [...new Set(resolvedCandidatePaths.map(safePath))],authorizedCreatePaths=[],inventory = new Set(
       steps
         .filter(
           (step) =>
@@ -1635,6 +1637,19 @@ export function createSelfDevelopmentService({
           safePath(typeof item === "string" ? item : item?.path || ""),
         ),
     );
+    const sourceCreationRecords=scopeResolution?.sourceCreationRecords||[],newSourcePaths=scopeResolution?.newSourcePaths||[];
+    if(sourceCreationRecords.length!==newSourcePaths.length)throw new SelfDevelopmentError("source_creation_authority_invalid","Every proposed new source path requires one exact creation-authority record.",400);
+    if(sourceCreationRecords.length){
+      if(sourceCreationRecords.length>MAX_AUTHORIZED_NEW_SOURCE_PATHS)throw new SelfDevelopmentError("replan_scope_too_large","New source creation scope exceeds the bounded limit.",400);
+      const proposed=[...newSourcePaths].map(safePath).sort(),recordPaths=sourceCreationRecords.map(record=>safePath(record?.path)).sort();
+      if(proposed.length!==recordPaths.length||new Set(recordPaths).size!==recordPaths.length||JSON.stringify(proposed)!==JSON.stringify(recordPaths))throw new SelfDevelopmentError("source_creation_authority_invalid","Authorized source creation records must exactly match the structured scope decision.",400);
+      for(const record of sourceCreationRecords){
+        const path=safePath(record.path),frozen={...record,baselineCommit:current.currentCommit,baselineExists:false},state=typeof resolvePathState==="function"?await resolvePathState(path,current.currentCommit):null;
+        if(safeNewSourcePath(path)!==path||REPLAN_PROTECTED.test(path)||!verifySourceCreationRecord(frozen)||!record.evidencePaths?.every(evidence=>inventory.has(safePath(evidence))))throw new SelfDevelopmentError("source_creation_authority_invalid","New source creation authority is not repository-grounded or targets a protected path.",403,{path,mutationApplied:false});
+        if(!state||state.existsInCommit||state.existsInWorktree||state.staged||state.untracked)throw new SelfDevelopmentError("source_creation_precondition_failed","Authorized source creation requires proven baseline and workspace nonexistence.",409,{path,mutationApplied:false});
+        authorizedCreatePaths.push(frozen);
+      }
+    }
     for (const path of candidates) {
       if (!inventory.has(path)) {
         if (typeof resolvePathState !== "function")
@@ -1684,6 +1699,7 @@ export function createSelfDevelopmentService({
       branch: current.branch,
       currentCommit: current.currentCommit,
       request,
+      authorizedCreatePaths,
     });
     continuation.push(
       annotation(
@@ -1700,7 +1716,7 @@ export function createSelfDevelopmentService({
       ),
     );
     const now = clock().toISOString(),
-      scopeHash = hash(candidates),
+      scopeHash = hash({candidates,authorizedCreatePaths}),
       replanRecord = {
         fromStatus: current.status,
         fromStateVersion: current.stateVersion,
@@ -1711,6 +1727,7 @@ export function createSelfDevelopmentService({
         ...(discoveryResolution ? { candidateEvidenceHash: hash(discoveryResolution.candidateEvidence) } : {}),
         scopeSource: input.candidatePaths ? "explicit_durable_evidence" : "automatic_durable_discovery",
         scopeHash,
+        authorizedCreatePathsHash:hash(authorizedCreatePaths),
         createdAt: now,
       };
     const updated = await storage.updateAutonomyTask(
@@ -1740,7 +1757,7 @@ export function createSelfDevelopmentService({
             ...request,
             intent: persistedIntent(request, current.objective),
             scopeAuthority: "resolved_discovery",
-            scope:{...request.scope,paths:candidates.filter(path=>!path.startsWith("test/")),focusedTests:candidates.filter(path=>path.startsWith("test/"))},
+            scope:{...request.scope,paths:candidates.filter(path=>!path.startsWith("test/")),focusedTests:candidates.filter(path=>path.startsWith("test/")),authorizedCreatePaths},
           },
           steps: [...current.metadata.steps, ...continuation],
           requiredCapability: "repo_read_remote",

@@ -8,7 +8,7 @@ export const canonicalContentHash=value=>lifecycleHash(canonicalContent(value));
 
 export function bindImplementationPlan({task,plan,evidence,readStepIds=[],plannerAttempt=1}){
   const evidenceGenerationId=lifecycleHash({taskId:task.id,currentCommit:task.currentCommit,evidence:evidence.map(item=>({path:item.path,contentHash:canonicalContentHash(item.content)})),readStepIds});
-  const mutationPreconditions=plan.files.map(file=>({path:file.path,operation:file.operation,...(file.operation==="replace"?{expectedContentHash:canonicalContentHash(file.expectedContent)}:{})}));
+  const mutationPreconditions=plan.files.map(file=>({path:file.path,operation:file.operation,...(file.operation==="replace"?{expectedContentHash:canonicalContentHash(file.expectedContent)}:file.creationAuthority?{creationAuthorityHash:lifecycleHash(file.creationAuthority)}:{})}));
   const preservationAssessmentHash=plan.preservationAssessment?.assessmentHash||null;
   const generationId=lifecycleHash({taskId:task.id,currentCommit:task.currentCommit,startingCommit:task.startingCommit||null,evidenceGenerationId,planHash:plan.planHash,preservationAssessmentHash,mutationPreconditions,plannerAttempt});
   return Object.freeze({version:IMPLEMENTATION_PLAN_PROVENANCE_VERSION,generationId,authority:"active",taskId:task.id,currentCommit:task.currentCommit,startingCommit:task.startingCommit||null,evidenceGenerationId,preservationAssessmentHash,plannerAttempt,mutationPreconditions});
@@ -39,7 +39,7 @@ export function assertActiveImplementationPlan(task,files,{allowPlanningOnly=fal
   if(task.metadata?.activeImplementationPlanGeneration!==provenance.generationId||active.length!==1||active[0].generationId!==provenance.generationId)fail("implementation_plan_superseded","The implementation plan is not the unique active generation.");
   if(!Array.isArray(files)||!Array.isArray(provenance.mutationPreconditions))fail("implementation_plan_precondition_mismatch","Implementation files do not match the active plan preconditions.");
   const expected=new Map(provenance.mutationPreconditions.map(item=>[item.path,item]));
-  if(files.length!==expected.size||files.some(file=>{const bound=expected.get(file.path);return!bound||bound.operation!==file.operation||(file.operation==="replace"&&bound.expectedContentHash!==canonicalContentHash(file.expectedContent));}))fail("implementation_plan_precondition_mismatch","Implementation files do not match the active plan preconditions.");
+  if(files.length!==expected.size||files.some(file=>{const bound=expected.get(file.path);return!bound||bound.operation!==file.operation||(file.operation==="replace"&&bound.expectedContentHash!==canonicalContentHash(file.expectedContent))||(file.operation==="create"&&Object.hasOwn(bound,"creationAuthorityHash")&&bound.creationAuthorityHash!==lifecycleHash(file.creationAuthority));}))fail("implementation_plan_precondition_mismatch","Implementation files do not match the active plan preconditions.");
   return provenance;
 }
 
