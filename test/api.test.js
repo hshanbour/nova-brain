@@ -4,6 +4,7 @@ import { Readable } from "node:stream";
 import { createApp,createRemoteEvidenceComparator } from "../src/app.js";
 import { createApi } from "../src/http/api.js";
 import { OpenAIProviderError } from "../src/providers/openai-model-provider.js";
+import { ModelCostBudgetError } from "../src/providers/model-cost-budget.js";
 
 function request({ method, url, body, headers = {} }) {
   const stream = Readable.from(body ? [body] : []);
@@ -1251,6 +1252,15 @@ test("API identifies exhausted model credit without exposing upstream bodies",as
   const upstream=new OpenAIProviderError(429,JSON.stringify({error:{type:"insufficient_quota",code:"credit_balance_exhausted",message:"secret account detail"}}),{stage:"intake",model:"gpt-6-luna"}),app=createApi({agent:{tools:{list(){return[];}},async run(){throw upstream;}},config:{allowedOrigins:[],maxBodyBytes:64*1024},storage:{provider:"memory",durable:false},initialize:async()=>{},ownerId:"owner",logger:{error(){}}}),res=response();
   await app.handle(request({method:"POST",url:"/api/agent",headers:{"content-type":"application/json"},body:JSON.stringify({message:"Hello."})}),res);
   assert.equal(res.statusCode,503);const payload=JSON.parse(res.body);assert.equal(payload.code,"MODEL_PROVIDER_UNAVAILABLE");assert.match(payload.error,/no available API credit/);assert.equal(res.body.includes("secret account detail"),false);
+});
+test("model budget exhaustion returns a safe actionable pre-call error",async()=>{
+  const status={budgetId:"authorization-1",authorizedUsd:20,spentUsd:19.9,reservedUsd:0.1,remainingUsd:0},app=createApi({agent:{tools:{list(){return[];}},async run(){throw new ModelCostBudgetError("cost_budget_exhausted",status);}},config:{allowedOrigins:[],maxBodyBytes:64*1024},storage:{provider:"memory",durable:false},initialize:async()=>{},ownerId:"owner",logger:{error(){}}}),res=response();
+  await app.handle(request({method:"POST",url:"/api/agent",headers:{"content-type":"application/json"},body:JSON.stringify({message:"hello"})}),res);
+  assert.equal(res.statusCode,402);assert.deepEqual(JSON.parse(res.body),{error:"Nova's authorized model budget is insufficient for the next bounded call. $19.900000 spent, $0.100000 reserved, $20.00 authorized.",code:"cost_budget_exhausted",budget:status});
+});
+test("model budget status exposes only bounded accounting fields",async()=>{
+  const budget={budgetId:"authorization-1",authorizedUsd:20,spentUsd:1,reservedUsd:.5,remainingUsd:18.5},app=createApi({agent:{tools:{list(){return[];}}},config:{allowedOrigins:[],maxBodyBytes:64*1024},storage:{provider:"memory",durable:false},initialize:async()=>{},ownerId:"owner",modelCostController:{async status(taskId){assert.equal(taskId,null);return budget;}},logger:{error(){}}}),res=response();
+  await app.handle(request({method:"GET",url:"/api/model-budget"}),res);assert.equal(res.statusCode,200);assert.deepEqual(JSON.parse(res.body),{enabled:true,budget});
 });
 test("create-conflict recovery is exact-task and scoped-worker protected", async () => {
   let taskId;

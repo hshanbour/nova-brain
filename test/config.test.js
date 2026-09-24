@@ -80,6 +80,16 @@ test("economical defaults do not downgrade planner or explicit stage overrides",
   assert.equal(config.openAI.routes.planner.reasoningEffort, null);
 });
 
+test("model spending authority is explicit, disabled by default, and bounded", () => {
+  const disabled = readConfig({ NOVA_BRAIN_MODEL_PROVIDER: "openai", OPENAI_API_KEY: "key", OPENAI_MODEL: "gpt-6-sol" });
+  assert.deepEqual(disabled.openAI.budget, { budgetId: "disabled", globalBudgetUsd: 0, taskBudgetUsd: 0 });
+  const configured = readConfig({ NOVA_BRAIN_MODEL_PROVIDER: "openai", OPENAI_API_KEY: "key", OPENAI_MODEL: "gpt-6-sol", NOVA_OPENAI_BUDGET_ID: "recharge-2026-09-24-01", NOVA_OPENAI_GLOBAL_BUDGET_USD: "20", NOVA_OPENAI_TASK_BUDGET_USD: "3.50" });
+  assert.deepEqual(configured.openAI.budget, { budgetId: "recharge-2026-09-24-01", globalBudgetUsd: 20, taskBudgetUsd: 3.5 });
+  assert.throws(() => readConfig({ NOVA_OPENAI_BUDGET_ID: "bad id" }), /stable 1-80 character/);
+  assert.throws(() => readConfig({ NOVA_OPENAI_GLOBAL_BUDGET_USD: "-1" }), /non-negative USD/);
+  assert.throws(() => readConfig({ NOVA_OPENAI_TASK_BUDGET_USD: "1.0000001" }), /at most 6 decimal/);
+});
+
 test("agent execution limits are bounded configuration values", () => {
   assert.throws(() => readConfig({ NOVA_BRAIN_MAX_STEPS: "0" }), /between 1 and 10/);
   assert.throws(() => readConfig({ NOVA_BRAIN_MAX_STEPS: "11" }), /between 1 and 10/);

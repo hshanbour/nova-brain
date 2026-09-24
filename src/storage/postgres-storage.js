@@ -239,6 +239,22 @@ const benchmarkResultRow = (row) =>
     createdAt: date(row.created_at),
     updatedAt: date(row.updated_at),
   };
+const modelCostReservationRow = (row) => row && ({
+  id: row.id,
+  ownerId: row.owner_id,
+  budgetId: row.budget_id,
+  taskId: row.task_id,
+  runId: row.run_id,
+  stage: row.stage,
+  model: row.model,
+  status: row.status,
+  reservedNanoUsd: Number(row.reserved_nano_usd),
+  actualNanoUsd: row.actual_nano_usd === null ? null : Number(row.actual_nano_usd),
+  usage: row.usage,
+  metadata: row.metadata,
+  createdAt: date(row.created_at),
+  settledAt: date(row.settled_at),
+});
 
 export function createPostgresStorage({ connectionString }) {
   if (!connectionString)
@@ -1248,6 +1264,65 @@ export function createPostgresStorage({ connectionString }) {
           )
         )[0]?.total || 0,
       );
+    },
+    async getModelCostBudget(ownerId, budgetId) {
+      const row = (await run("SELECT * FROM nova_model_cost_budgets WHERE owner_id=$1 AND budget_id=$2", [ownerId, budgetId]))[0];
+      if (!row) return null;
+      return {
+        ownerId: row.owner_id,
+        budgetId: row.budget_id,
+        spentNanoUsd: Number(row.spent_nano_usd),
+        reservedNanoUsd: Number(row.reserved_nano_usd),
+        tasks: row.task_totals || {},
+        updatedAt: date(row.updated_at),
+      };
+    },
+    async reserveModelCost(input) {
+      await run(
+        "INSERT INTO nova_model_cost_budgets (owner_id,budget_id) VALUES ($1,$2) ON CONFLICT (owner_id,budget_id) DO NOTHING",
+        [input.ownerId, input.budgetId],
+      );
+      const rows = await run(
+        `WITH updated AS (
+          UPDATE nova_model_cost_budgets
+          SET reserved_nano_usd=reserved_nano_usd+$3,
+              task_totals=CASE WHEN $4::text IS NULL THEN task_totals ELSE
+                jsonb_set(task_totals,ARRAY[$4],COALESCE(task_totals->$4,'{}'::jsonb)||jsonb_build_object(
+                  'spentNanoUsd',COALESCE((task_totals->$4->>'spentNanoUsd')::bigint,0),
+                  'reservedNanoUsd',COALESCE((task_totals->$4->>'reservedNanoUsd')::bigint,0)+$3
+                ),true) END,
+              updated_at=now()
+          WHERE owner_id=$1 AND budget_id=$2
+            AND spent_nano_usd+reserved_nano_usd+$3<=$5
+            AND ($4::text IS NULL OR COALESCE((task_totals->$4->>'spentNanoUsd')::bigint,0)+COALESCE((task_totals->$4->>'reservedNanoUsd')::bigint,0)+$3<=$6)
+          RETURNING owner_id,budget_id
+        )
+        INSERT INTO nova_model_cost_reservations (id,owner_id,budget_id,task_id,run_id,stage,model,status,reserved_nano_usd,metadata)
+        SELECT $7,owner_id,budget_id,$4,$8,$9,$10,'reserved',$3,$11::jsonb FROM updated RETURNING *`,
+        [input.ownerId, input.budgetId, input.reservedNanoUsd, input.taskId || null, input.globalCapNanoUsd, input.taskCapNanoUsd, input.id, input.runId || null, input.stage, input.model, JSON.stringify(input.metadata || {})],
+      );
+      return modelCostReservationRow(rows[0]);
+    },
+    async settleModelCost(id, ownerId, patch) {
+      const rows = await run(
+        `WITH claimed AS (
+          UPDATE nova_model_cost_reservations SET status=$3,actual_nano_usd=$4,usage=$5::jsonb,settled_at=now()
+          WHERE id=$1 AND owner_id=$2 AND status='reserved' RETURNING *
+        ), ledger AS (
+          UPDATE nova_model_cost_budgets AS budget
+          SET reserved_nano_usd=budget.reserved_nano_usd-claimed.reserved_nano_usd,
+              spent_nano_usd=budget.spent_nano_usd+claimed.actual_nano_usd,
+              task_totals=CASE WHEN claimed.task_id IS NULL THEN budget.task_totals ELSE
+                jsonb_set(budget.task_totals,ARRAY[claimed.task_id],COALESCE(budget.task_totals->claimed.task_id,'{}'::jsonb)||jsonb_build_object(
+                  'spentNanoUsd',COALESCE((budget.task_totals->claimed.task_id->>'spentNanoUsd')::bigint,0)+claimed.actual_nano_usd,
+                  'reservedNanoUsd',COALESCE((budget.task_totals->claimed.task_id->>'reservedNanoUsd')::bigint,0)-claimed.reserved_nano_usd
+                ),true) END,
+              updated_at=now()
+          FROM claimed WHERE budget.owner_id=claimed.owner_id AND budget.budget_id=claimed.budget_id RETURNING budget.owner_id
+        ) SELECT claimed.* FROM claimed,ledger`,
+        [id, ownerId, patch.status, patch.actualNanoUsd, patch.usage ? JSON.stringify(patch.usage) : null],
+      );
+      return modelCostReservationRow(rows[0]);
     },
   };
   return Object.freeze(storage);

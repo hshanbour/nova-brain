@@ -2,6 +2,7 @@ import { createAgent } from "./agent/agent.js";
 import { readConfig } from "./config/env.js";
 import { createApi } from "./http/api.js";
 import { createModelProvider } from "./providers/model-provider-factory.js";
+import { createModelCostController } from "./providers/model-cost-budget.js";
 import { createToolRegistry } from "./tools/tool-registry.js";
 import {
   registerDeveloperTools,
@@ -55,8 +56,11 @@ export function createApp({
   voiceFetchImpl,
 } = {}) {
   const config = readConfig(environment);
-  const modelProvider = createModelProvider(config);
   const storage = storageOverride || createStorage(config);
+  const modelCostController = config.modelProvider === "openai"
+    ? createModelCostController({ storage, ownerId: OWNER_ID, config: config.openAI.budget })
+    : null;
+  const modelProvider = createModelProvider(config, { costController: modelCostController });
   const developerSessionSmoke = storage.saveDeveloperSession && storage.getDeveloperSession
     ? createDeveloperSessionSmoke({ environment, storage, ownerId: OWNER_ID })
     : null;
@@ -177,9 +181,9 @@ export function createApp({
       if(!request)return null;
       return validateExistingTaskControlRequest(request,await workerRuntime.get(request.taskId));
     },
-    routeDurableRequest: async ({message, context, signal}) => {
+    routeDurableRequest: async ({message, context, runId, signal}) => {
       if (context?.voice === true || !isDurableSelfDevelopmentRequest(message)) return null;
-      return selfDevelopment.createTrustedIntake(message, {signal});
+      return selfDevelopment.createTrustedIntake(message, {signal, costContext:{runId}});
     },
     logger,
   });
@@ -233,6 +237,7 @@ export function createApp({
     familiarityConsent,
     developerSessionSmoke,
     developerWorkspaceHandoff,
+    modelCostController,
     logger,
   });
   return Object.freeze({ ...api, initialize, workerRuntime });

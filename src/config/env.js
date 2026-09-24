@@ -106,6 +106,10 @@ export function readConfig(environment = process.env) {
     throw new Error("NOVA_BRAIN_OPENAI_SERVICE_TIER must be default or flex.");
   }
   const openAIModel = environment.OPENAI_MODEL || null;
+  const modelBudgetId = environment.NOVA_OPENAI_BUDGET_ID || "disabled";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(modelBudgetId)) {
+    throw new Error("NOVA_OPENAI_BUDGET_ID must be a stable 1-80 character identifier.");
+  }
   const openAIRoute = (
     stage,
     prefix,
@@ -161,6 +165,11 @@ export function readConfig(environment = process.env) {
           defaultModel: "gpt-6-luna",
           defaultReasoningEffort: "none",
         }),
+      }),
+      budget: Object.freeze({
+        budgetId: modelBudgetId,
+        globalBudgetUsd: parseBudgetMoney(environment.NOVA_OPENAI_GLOBAL_BUDGET_USD, "NOVA_OPENAI_GLOBAL_BUDGET_USD"),
+        taskBudgetUsd: parseBudgetMoney(environment.NOVA_OPENAI_TASK_BUDGET_USD, "NOVA_OPENAI_TASK_BUDGET_USD"),
       }),
     }),
     integrations: Object.freeze({
@@ -246,6 +255,14 @@ function parseMoney(value, name, defaultValue) {
   if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 2)
     throw new Error(`${name} must be greater than 0 and no more than 2.00.`);
   return Math.round(parsed * 100) / 100;
+}
+
+function parseBudgetMoney(value, name) {
+  if (value === undefined || value === "") return 0;
+  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(value)) throw new Error(`${name} must be a non-negative USD amount with at most 6 decimal places.`);
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100_000) throw new Error(`${name} must be between 0 and 100000 USD.`);
+  return parsed;
 }
 
 function parseInteger(value, name, { defaultValue, min, max }) {

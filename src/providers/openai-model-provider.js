@@ -14,6 +14,7 @@ function providerUsage(payload, { model, stage, requestedServiceTier }) {
     serviceTier: typeof payload?.service_tier === "string" ? payload.service_tier : requestedServiceTier,
     inputTokens: tokenCount(usage.input_tokens),
     cachedInputTokens: tokenCount(usage.input_tokens_details?.cached_tokens),
+    cacheWriteTokens: tokenCount(usage.input_tokens_details?.cache_write_tokens ?? usage.input_tokens_details?.cache_creation_tokens),
     outputTokens: tokenCount(usage.output_tokens),
     reasoningTokens: tokenCount(usage.output_tokens_details?.reasoning_tokens),
     totalTokens: tokenCount(usage.total_tokens),
@@ -147,7 +148,7 @@ function parseToolArguments(value, name) {
   }
 }
 
-export function createOpenAIModelProvider({ apiKey, model, routes = {}, serviceTier = "default", fetchImpl = fetch }) {
+export function createOpenAIModelProvider({ apiKey, model, routes = {}, serviceTier = "default", costController = null, fetchImpl = fetch }) {
   if (!apiKey) throw new Error("OPENAI_API_KEY is required for the OpenAI provider.");
   if (!model) throw new Error("OPENAI_MODEL is required for the OpenAI provider.");
   if (!["default", "flex"].includes(serviceTier)) throw new Error("OpenAI service tier must be default or flex.");
@@ -158,6 +159,7 @@ export function createOpenAIModelProvider({ apiKey, model, routes = {}, serviceT
     planner: routes.planner || { model, stage: "planner" },
     no_change: routes.noChange || routes.no_change || { model, stage: "no_change" },
   });
+  const continuationUsage = new Map();
 
   return Object.freeze({
     name: "openai",
@@ -172,6 +174,7 @@ export function createOpenAIModelProvider({ apiKey, model, routes = {}, serviceT
       responseFormat,
       signal,
       stage = "chat",
+      costContext = {},
     }) {
       if (!OPENAI_STAGES.has(stage)) throw new Error(`Unsupported OpenAI execution stage: ${stage}`);
       const route = configuredRoutes[stage];
@@ -195,19 +198,42 @@ export function createOpenAIModelProvider({ apiKey, model, routes = {}, serviceT
         ...(responseFormat ? { text: { format: { type: "json_schema", name: responseFormat.name, schema: responseFormat.schema, strict: strictResponseFormat } } } : {}),
         ...(continuationToken ? { previous_response_id: continuationToken } : {})
       };
-      const response = await fetchImpl(OPENAI_RESPONSES_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        signal,
-        body: JSON.stringify(requestBody)
-      });
+      const reservation = costController ? await costController.reserve({
+        model: selectedModel,
+        stage,
+        serviceTier,
+        requestBody,
+        maxOutputTokens: route?.maxOutputTokens,
+        priorContextTokens: continuationUsage.get(continuationToken) || 0,
+        taskId: costContext?.taskId || null,
+        runId: costContext?.runId || null,
+      }) : null;
+      let response;
+      try {
+        response = await fetchImpl(OPENAI_RESPONSES_URL, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json"
+          },
+          signal,
+          body: JSON.stringify(requestBody)
+        });
+      } catch (error) {
+        if (reservation) await costController.markUncertain(reservation);
+        throw error;
+      }
 
       if (!response.ok) {
         let detail = "";
         try { detail = await response.text(); } catch {}
+        if (reservation) {
+          let errorUsage = null;
+          try { errorUsage = providerUsage(JSON.parse(detail), { model: selectedModel, stage, requestedServiceTier: serviceTier }); } catch {}
+          if (errorUsage) await costController.reconcile(reservation, errorUsage, { model: selectedModel, serviceTier });
+          else if (response.status >= 500 || response.status === 408) await costController.markUncertain(reservation);
+          else await costController.release(reservation);
+        }
         throw new OpenAIProviderError(response.status, detail, {
           model: selectedModel,
           requestMode: responseFormat ? "responses_json_schema" : "responses",
@@ -215,8 +241,20 @@ export function createOpenAIModelProvider({ apiKey, model, routes = {}, serviceT
         });
       }
 
-      const payload = await response.json();
-      const usage = providerUsage(payload, { model: selectedModel, stage, requestedServiceTier: serviceTier });
+      let payload;
+      try { payload = await response.json(); }
+      catch (error) {
+        if (reservation) await costController.markUncertain(reservation);
+        throw error;
+      }
+      let usage = providerUsage(payload, { model: selectedModel, stage, requestedServiceTier: serviceTier });
+      if (reservation) {
+        const accounting = usage
+          ? await costController.reconcile(reservation, usage, { model: selectedModel, serviceTier: usage.serviceTier || serviceTier })
+          : (await costController.markUncertain(reservation), { costStatus: "uncertain", estimatedCostUsd: reservation.reservedNanoUsd / 1_000_000_000 });
+        usage = Object.freeze({ ...(usage || { model: selectedModel, stage, serviceTier, inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 }), ...accounting });
+      }
+      if (payload?.id && usage) continuationUsage.set(payload.id, usage.totalTokens);
       const toolCalls = (payload.output || [])
         .filter((item) => item.type === "function_call")
         .map((item) => ({

@@ -1,7 +1,7 @@
 import { createMockModelProvider } from "./mock-model-provider.js";
 import { createOpenAIModelProvider } from "./openai-model-provider.js";
 
-export function createModelProvider(config) {
+export function createModelProvider(config, { costController } = {}) {
   if (config.modelProvider === "mock") return createMockModelProvider();
 
   if (config.modelProvider === "openai") {
@@ -10,6 +10,7 @@ export function createModelProvider(config) {
       model: config.openAI.model,
       routes: config.openAI.routes,
       serviceTier: config.openAI.serviceTier,
+      costController,
     });
   }
 

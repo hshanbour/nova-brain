@@ -1380,7 +1380,7 @@ export function createSelfDevelopmentService({
       dispatch: { status: "scheduled", durable: true },
     };
   }
-  async function createTrustedIntake(userGoal, {signal} = {}) {
+  async function createTrustedIntake(userGoal, {signal,costContext} = {}) {
     if (!isDurableSelfDevelopmentRequest(userGoal))
       throw new SelfDevelopmentError(
         "invalid_input",
@@ -1389,8 +1389,8 @@ export function createSelfDevelopmentService({
       );
     if(!structuredIntake?.specify)throw new SelfDevelopmentError("structured_intake_unavailable","Chat-native durable intake is unavailable.",503);
     let specification;
-    try{specification=await structuredIntake.specify(userGoal,{signal});}
-    catch(error){throw new SelfDevelopmentError(error?.code||"structured_intake_invalid","Nova could not establish a safe durable task specification.",409,error?.safeDiagnostics);}
+    try{specification=await structuredIntake.specify(userGoal,{signal,costContext});}
+    catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;throw new SelfDevelopmentError(error?.code||"structured_intake_invalid","Nova could not establish a safe durable task specification.",409,error?.safeDiagnostics);}
     if(specification.intent!=="implementation")throw new SelfDevelopmentError("structured_intake_intent_conflict","Deterministic durable routing and structured intake intent did not agree.",409,{boundary:"canonical_intent",deterministicIntent:"implementation",structuredIntent:specification.intent||null});
     if(specification.status!=="ready")return{clarificationRequired:true,message:specification.clarificationQuestion||"The implementation request requires clarification.",providerUsage:specification.providerUsage||null};
     return create({
@@ -1526,8 +1526,8 @@ export function createSelfDevelopmentService({
       );
     let resolvedCandidatePaths = input.candidatePaths ?? await resolveDiscoveryCandidates(request, steps),scopeResolution=null;
     if(!input.candidatePaths&&resolvedCandidatePaths&&structuredIntake?.resolveScope){
-      try{scopeResolution=await structuredIntake.resolveScope({request,candidatePaths:resolvedCandidatePaths});}
-      catch(error){throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409,{...error?.safeDiagnostics,recoveryTransitionScheduled:false,recoveryAttemptConsumed:false});}
+      try{scopeResolution=await structuredIntake.resolveScope({request,candidatePaths:resolvedCandidatePaths,costContext:{taskId:current.id}});}
+      catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409,{...error?.safeDiagnostics,recoveryTransitionScheduled:false,recoveryAttemptConsumed:false});}
       if(scopeResolution.status!=="resolved"){
         const now=clock().toISOString(),concepts=structuredScopeRecoveryConcepts(scopeResolution),attempt=scopeRecoveryHistory.length+1;
         if(attempt<=STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS&&concepts.length){

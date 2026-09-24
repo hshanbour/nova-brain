@@ -29,6 +29,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const benchmarkSessions = new Map();
   const benchmarkResults = new Map();
   const benchmarkBudgets = new Map();
+  const modelCostBudgets = new Map();
+  const modelCostReservations = new Map();
   let sequence = 0;
 
   return Object.freeze({
@@ -938,6 +940,40 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
           .filter((item) => item.ownerId === ownerId)
           .reduce((sum, item) => sum + Number(item.estimatedCostUsd || 0), 0)
       );
+    },
+    async getModelCostBudget(ownerId, budgetId) {
+      return copy(modelCostBudgets.get(`${ownerId}:${budgetId}`) || null);
+    },
+    async reserveModelCost(input) {
+      const key = `${input.ownerId}:${input.budgetId}`;
+      const current = modelCostBudgets.get(key) || { ownerId: input.ownerId, budgetId: input.budgetId, spentNanoUsd: 0, reservedNanoUsd: 0, tasks: {} };
+      const task = input.taskId ? current.tasks[input.taskId] || { spentNanoUsd: 0, reservedNanoUsd: 0 } : null;
+      if (current.spentNanoUsd + current.reservedNanoUsd + input.reservedNanoUsd > input.globalCapNanoUsd) return null;
+      if (task && task.spentNanoUsd + task.reservedNanoUsd + input.reservedNanoUsd > input.taskCapNanoUsd) return null;
+      const updated = copy(current);
+      updated.reservedNanoUsd += input.reservedNanoUsd;
+      if (input.taskId) updated.tasks[input.taskId] = { ...task, reservedNanoUsd: task.reservedNanoUsd + input.reservedNanoUsd };
+      modelCostBudgets.set(key, updated);
+      const reservation = { ...copy(input), status: "reserved", actualNanoUsd: null, usage: null, createdAt: now(clock), settledAt: null };
+      modelCostReservations.set(input.id, reservation);
+      return copy(reservation);
+    },
+    async settleModelCost(id, ownerId, patch) {
+      const reservation = modelCostReservations.get(id);
+      if (!reservation || reservation.ownerId !== ownerId || reservation.status !== "reserved") return null;
+      const key = `${ownerId}:${reservation.budgetId}`;
+      const current = modelCostBudgets.get(key);
+      if (!current) return null;
+      const actual = Number(patch.actualNanoUsd || 0);
+      current.reservedNanoUsd -= reservation.reservedNanoUsd;
+      current.spentNanoUsd += actual;
+      if (reservation.taskId) {
+        const task = current.tasks[reservation.taskId] || { spentNanoUsd: 0, reservedNanoUsd: 0 };
+        current.tasks[reservation.taskId] = { spentNanoUsd: task.spentNanoUsd + actual, reservedNanoUsd: task.reservedNanoUsd - reservation.reservedNanoUsd };
+      }
+      const updated = { ...reservation, status: patch.status, actualNanoUsd: actual, usage: copy(patch.usage), settledAt: now(clock) };
+      modelCostReservations.set(id, updated);
+      return copy(updated);
     },
   });
 }

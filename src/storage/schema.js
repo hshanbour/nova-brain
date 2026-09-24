@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -173,5 +173,32 @@ export const SCHEMA_STATEMENTS = Object.freeze([
   )`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_owner_cost_idx ON nova_voice_benchmark_results (owner_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS nova_voice_benchmark_session_idx ON nova_voice_benchmark_results (session_id, created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9) ON CONFLICT (version) DO NOTHING`
+  `CREATE TABLE IF NOT EXISTS nova_model_cost_budgets (
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    budget_id text NOT NULL,
+    spent_nano_usd bigint NOT NULL DEFAULT 0 CHECK (spent_nano_usd >= 0),
+    reserved_nano_usd bigint NOT NULL DEFAULT 0 CHECK (reserved_nano_usd >= 0),
+    task_totals jsonb NOT NULL DEFAULT '{}'::jsonb,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY(owner_id,budget_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS nova_model_cost_reservations (
+    id text PRIMARY KEY,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    budget_id text NOT NULL,
+    task_id text,
+    run_id text,
+    stage text NOT NULL,
+    model text NOT NULL,
+    status text NOT NULL CHECK (status IN ('reserved','settled','released','uncertain')),
+    reserved_nano_usd bigint NOT NULL CHECK (reserved_nano_usd >= 0),
+    actual_nano_usd bigint CHECK (actual_nano_usd >= 0),
+    usage jsonb,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    settled_at timestamptz,
+    FOREIGN KEY(owner_id,budget_id) REFERENCES nova_model_cost_budgets(owner_id,budget_id) ON DELETE CASCADE
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_model_cost_task_idx ON nova_model_cost_reservations (owner_id,budget_id,task_id,created_at)`,
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10) ON CONFLICT (version) DO NOTHING`
 ]);

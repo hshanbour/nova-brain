@@ -54,6 +54,7 @@ import { DeveloperSessionError } from "../autonomy/developer-session-adapter.js"
 import { DeveloperSessionSmokeError } from "../autonomy/developer-session-smoke.js";
 import { DeveloperWorkspaceHandoffError } from "../autonomy/developer-workspace-handoff.js";
 import { OpenAIProviderError } from "../providers/openai-model-provider.js";
+import { ModelCostBudgetError } from "../providers/model-cost-budget.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -188,6 +189,7 @@ export function createApi({
   familiarityConsent,
   developerSessionSmoke,
   developerWorkspaceHandoff,
+  modelCostController,
   logger = console,
 }) {
   const recognitionEngines =
@@ -251,6 +253,21 @@ export function createApi({
             provider: config.modelProvider,
             storage: storageHealth,
           });
+          return;
+        }
+
+        if (request.method === "GET" && pathname === "/api/model-budget") {
+          await ready();
+          if (!modelCostController) {
+            sendJson(response, 200, { enabled: false });
+            return;
+          }
+          const taskId = url.searchParams.get("taskId");
+          if (taskId && !/^selfdev_[a-f0-9]{32}$/.test(taskId)) {
+            sendJson(response, 400, { error: "A valid durable task ID is required." });
+            return;
+          }
+          sendJson(response, 200, { enabled: true, budget: await modelCostController.status(taskId) });
           return;
         }
 
@@ -2100,8 +2117,13 @@ export function createApi({
           sendJson(response, 502, { error: error.message });
           return;
         }
+
         if (error instanceof AgentDeadlineError) {
           sendJson(response, 504, { error: error.message });
+          return;
+        }
+        if (error instanceof ModelCostBudgetError) {
+          sendJson(response, 402, { error: error.message, code: error.code, budget: error.status });
           return;
         }
         if (error instanceof OpenAIProviderError) {

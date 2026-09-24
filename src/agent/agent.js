@@ -182,7 +182,7 @@ export function createAgent({
           }
         }
         const allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
-        const durable = speakerRestricted||existingTaskRoute ? null : await routeDurableRequest({message, context: trustedContext, requestId, signal: executionSignal});
+        const durable = speakerRestricted||existingTaskRoute ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, signal: executionSignal});
         executionSignal.throwIfAborted();
         if(durable?.clarificationRequired===true){
           if(durable.providerUsage)providerUsage.push(durable.providerUsage);
@@ -239,6 +239,7 @@ export function createAgent({
           continuationToken,
           signal: executionSignal,
           stage: "chat",
+          costContext: { runId: run.id },
         });
         if (generated.providerUsage) {
           providerUsage.push(generated.providerUsage);
