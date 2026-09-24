@@ -1689,6 +1689,124 @@ test("structured unresolved scope schedules one same-task read-only rediscovery 
   assert.equal(result.task.metadata.structuredScopeResolution.providerUsage.inputTokens,30);
   await rejects(f.service.replanDiscoveryOnly(f.blocked.id,{expectedVersion:version}),"version_conflict");
 });
+test("saturated discovery reserves bounded test-only searches from grounded source ownership",async()=>{
+  let resolutionCalls=0;const scopeInputs=[],searchCalls=[];
+  const f=await fixture({
+    structuredIntake:{
+      async specify(){return{version:1,status:"ready",intent:"implementation",objective:"Improve keyboard focus in the Recent Conversations drawer.",acceptanceCriteria:["Keyboard focus is managed in the drawer.","Focused Console regression coverage passes."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["recent conversations drawer","keyboard focus"],clarificationQuestion:"",specificationHash:"1".repeat(64)};},
+      async resolveScope(input){
+        resolutionCalls+=1;scopeInputs.push(input);
+        if(resolutionCalls===1)return{version:2,status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[{category:"focused_test",concepts:["drawer regression coverage"]}],decisionHash:"2".repeat(64)};
+        return{version:2,status:"resolved",sourcePaths:["assets/console.js","assets/console.css"],testPaths:["test/console-static.test.js"],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[],decisionHash:"3".repeat(64)};
+      },
+    },
+    resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&["assets/console.js","assets/console.css","test/console-static.test.js"].includes(path)}),
+    execute(name,args){
+      if(name==="repo_list")return{ok:true,files:["assets/console.js","assets/console.css",...Array.from({length:248},(_,index)=>`src/context/panel-${index}.js`)],truncated:true};
+      if(name==="repo_search"){
+        searchCalls.push(args);
+        if(args.path==="test")return args.mode==="filename"&&args.query==="console"
+          ?{ok:true,matches:[{path:"test/console-static.test.js"}]}
+          :{ok:true,matches:[]};
+        return{ok:true,matches:[
+          {path:"assets/console.js",line:41,text:'const recentDrawer = document.querySelector("#recentConversations");'},
+          {path:"assets/console.css",line:12,text:".recent-conversations-drawer { position: fixed; }"},
+          ...Array.from({length:22},(_,index)=>({path:`src/context/panel-${index}.js`,line:1,text:"export const panelContext = true;"})),
+        ],truncated:true};
+      }
+      return{ok:true};
+    },
+  }),created=await f.service.createTrustedIntake("Improve keyboard focus in the Recent Conversations drawer and add focused Console regression coverage.");
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`saturated-initial-${index}`});
+  const blocked=await f.runtime.get(created.task.id),scheduled=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+  assert.equal(scheduled.task.currentPhase,"scope_rediscovery");
+  const targeted=scheduled.task.metadata.steps.slice(scheduled.task.currentStep).filter(step=>step.input?.arguments?.path==="test");
+  assert.ok(targeted.length>=1&&targeted.length<=4);
+  assert.ok(targeted.every(step=>step.input.arguments.limit===12));
+  assert.ok(targeted.some(step=>step.input.arguments.mode==="filename"&&step.input.arguments.query==="console"));
+  const rediscovered=await executeScheduledScopeRediscovery({...f,created}),resolved=await f.service.replanDiscoveryOnly(rediscovered.id,{expectedVersion:rediscovered.stateVersion});
+  assert.equal(resolved.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
+  assert.deepEqual(resolved.task.metadata.selfDevelopment.scope.paths,["assets/console.js","assets/console.css"]);
+  assert.deepEqual(resolved.task.metadata.selfDevelopment.scope.focusedTests,["test/console-static.test.js"]);
+  const evidence=scopeInputs[1].candidateEvidence.find(item=>item.path==="test/console-static.test.js");
+  assert.equal(evidence.relationship.sourcePath,"assets/console.js");
+  assert.equal(searchCalls.filter(call=>call.path==="test").length<=4,true);
+});
+test("targeted test-only discovery rejects unrelated tests and remains fail closed",async()=>{
+  let resolutionCalls=0;
+  const f=await fixture({
+    structuredIntake:{
+      async specify(){return{version:1,status:"ready",intent:"implementation",objective:"Improve the drawer keyboard behavior.",acceptanceCriteria:["Drawer keyboard behavior works.","Focused regression coverage passes."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["drawer keyboard"],clarificationQuestion:"",specificationHash:"4".repeat(64)};},
+      async resolveScope(input){resolutionCalls+=1;assert.equal(input.candidatePaths.includes("test/unrelated-billing.test.js"),false);return{version:2,status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[{category:"focused_test",concepts:["drawer regression"]}],decisionHash:String(resolutionCalls+4).repeat(64)};},
+    },
+    resolvePathState:async()=>({existsInCommit:false}),
+    execute(name,args){
+      if(name==="repo_list")return{ok:true,files:["assets/drawer.js"],truncated:true};
+      if(name==="repo_search")return args.path==="test"
+        ?{ok:true,matches:[{path:"test/unrelated-billing.test.js",line:9,text:"billing invoice regression"}]}
+        :{ok:true,matches:[{path:"assets/drawer.js",line:3,text:'export function openDrawer() { document.querySelector("#drawer"); }'}]};
+      return{ok:true};
+    },
+  }),created=await f.service.createTrustedIntake("Improve the Nova Console drawer keyboard behavior and add focused regression coverage.");
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`unrelated-test-initial-${index}`});
+  const blocked=await f.runtime.get(created.task.id),scheduled=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+  const rediscovered=await executeScheduledScopeRediscovery({...f,created}),exhausted=await f.service.replanDiscoveryOnly(rediscovered.id,{expectedVersion:rediscovered.stateVersion});
+  assert.equal(scheduled.task.metadata.selfDevelopment.scopeAuthority,"discovery_only");
+  assert.equal(exhausted.task.status,"blocked");
+  assert.equal(exhausted.task.errorCode,"structured_scope_recovery_exhausted");
+  assert.equal(resolutionCalls,2);
+});
+test("saturated targeted discovery relates shared frontend backend integration and multi-source tests by repository content",async()=>{
+  const cases=[
+    {
+      name:"shared frontend static test",
+      goal:"Implement Nova Console recent drawer keyboard focus with focused regression coverage.",
+      sources:[{path:"assets/recent-drawer-controller.js",text:'export function openRecentDrawer() { document.querySelector("#recentDrawer"); }'}],
+      testPath:"test/console-static.test.js",testText:'test("openRecentDrawer keeps recentDrawer focus", () => {});',
+    },
+    {
+      name:"backend integration test",
+      goal:"Implement Nova widget API validation with focused integration regression coverage.",
+      sources:[{path:"src/http/widgets.js",text:'router.post("/api/widgets", createWidget);'}],
+      testPath:"test/api.test.js",testText:'test("widgets API rejects invalid widgets", async () => {});',
+    },
+    {
+      name:"multi-source shared test",
+      goal:"Implement Nova Console conversation drawer focus across its controller and view with focused regression coverage.",
+      sources:[
+        {path:"assets/drawer-controller.js",text:'export function focusConversationDrawer() { document.querySelector("#conversationDrawer"); }'},
+        {path:"assets/conversation-view.js",text:'export function renderConversationDrawer() { document.querySelector("#conversationDrawer"); }'},
+      ],
+      testPath:"test/console-static.test.js",testText:'test("conversationDrawer focus and render remain wired", () => {});',
+    },
+  ];
+  for(const item of cases){
+    let resolutionCalls=0,secondInput;
+    const f=await fixture({
+      structuredIntake:{
+        async specify(){return{version:1,status:"ready",intent:"implementation",objective:item.goal,acceptanceCriteria:["The requested behavior works.","Focused regression coverage passes."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[item.goal],clarificationQuestion:"",specificationHash:"6".repeat(64)};},
+        async resolveScope(input){resolutionCalls+=1;if(resolutionCalls===1)return{version:2,status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[{category:"focused_test",concepts:["focused regression"]}],decisionHash:"7".repeat(64)};secondInput=input;return{version:2,status:"resolved",sourcePaths:item.sources.map(source=>source.path),testPaths:[item.testPath],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[],decisionHash:"8".repeat(64)};},
+      },
+      resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&[...item.sources.map(source=>source.path),item.testPath].includes(path)}),
+      execute(name,args){
+        if(name==="repo_list")return{ok:true,files:item.sources.map(source=>source.path),truncated:true};
+        if(name==="repo_search"){
+          if(args.path==="test")return args.mode==="regex"?{ok:true,matches:[{path:item.testPath,line:5,text:item.testText}]}:{ok:true,matches:[]};
+          return{ok:true,matches:[...item.sources.map((source,index)=>({path:source.path,line:index+1,text:source.text})),...Array.from({length:24-item.sources.length},(_,index)=>({path:`src/context/noise-${index}.js`,line:1,text:"export const unrelatedContext = true;"}))],truncated:true};
+        }
+        return{ok:true};
+      },
+    }),created=await f.service.createTrustedIntake(item.goal);
+    for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`${item.name}-initial-${index}`});
+    const blocked=await f.runtime.get(created.task.id);await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+    const rediscovered=await executeScheduledScopeRediscovery({...f,created}),resolved=await f.service.replanDiscoveryOnly(rediscovered.id,{expectedVersion:rediscovered.stateVersion});
+    assert.equal(resolved.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery",item.name);
+    const evidence=secondInput.candidateEvidence.find(candidate=>candidate.path===item.testPath);
+    assert.ok(evidence,`${item.name}: ${JSON.stringify(secondInput.candidatePaths)}`);
+    assert.equal(evidence.relationship.basis,"repository_search_content_relation",item.name);
+    assert.ok(item.sources.some(source=>source.path===evidence.relationship.sourcePath),item.name);
+  }
+});
 test("authorized scope rediscovery gets one bounded continuation window after a long user wait",async()=>{
   const f=await structuredScopeRecoveryFixture(),originalStartedAt=f.blocked.startedAt;
   f.advance(3*60*60*1000);
@@ -1701,7 +1819,8 @@ test("authorized scope rediscovery gets one bounded continuation window after a 
   assert.ok(recovery.continuationStepIds.every((stepId,index)=>stepId===`${result.task.currentStep+index+1}:${result.continuationSteps[index]}`));
   const advanced=await f.runtime.tickTask(result.task.id,{idempotencyKey:"delayed-scope-recovery"});
   assert.notEqual(advanced.status,"expired");
-  assert.equal((await f.runtime.steps(result.task.id)).filter(step=>Number.parseInt(step.stepId,10)>result.task.currentStep&&step.stepType==="search_code").length,1);
+  const recoverySearches=(await f.runtime.steps(result.task.id)).filter(step=>Number.parseInt(step.stepId,10)>result.task.currentStep&&step.stepType==="search_code");
+  assert.ok(recoverySearches.length>=1&&recoverySearches.length<=5);
 });
 test("pre-action scope recovery expiry may resume the same reserved attempt once with CAS-safe replay",async()=>{
   const f=await structuredScopeRecoveryFixture(),scheduled=await f.service.recoverStructuredScope(f.blocked.id,{expectedVersion:f.blocked.stateVersion}),base=scheduled.task.currentStep;

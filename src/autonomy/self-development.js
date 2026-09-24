@@ -188,6 +188,8 @@ const DISCOVERY_QUERY_STOP_WORDS = new Set([
 const DISCOVERY_MAX_QUERIES = 8;
 const DISCOVERY_RESULTS_PER_QUERY = 24;
 const DISCOVERY_MAX_ALTERNATIVES_PER_QUERY = 10;
+const DISCOVERY_MAX_TARGETED_TEST_QUERIES = 4;
+const DISCOVERY_TARGETED_TEST_RESULTS_PER_QUERY = 12;
 const DISCOVERY_MAX_QUERY_LENGTH = 180;
 const STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS = 1;
 const STRUCTURED_SCOPE_RECOVERY_RUNTIME_MINUTES = 15;
@@ -771,6 +773,29 @@ export function createSelfDevelopmentService({
       minimumConfidence = Math.max(4, Math.ceil(strongest * 0.35)),
       sources = rankedSources.filter((path) => score(path) >= minimumConfidence).slice(0, 6);
     if (!sources.length) return null;
+    // A saturated goal-level search can return only source/context matches even
+    // after ownership is clear. Reserve a separate, bounded test-only retrieval
+    // opportunity derived exclusively from repository-grounded source evidence.
+    // These searches discover evidence; focusedTestRelationshipEvidence remains
+    // the authority gate and rejects unrelated results.
+    const targetedTestSearches = [], targetedTestSearchKeys = new Set();
+    const addTargetedTestSearch = (query, mode) => {
+      const normalized = String(query || "").trim().slice(0, DISCOVERY_MAX_QUERY_LENGTH), key = `${mode}:${normalized}`;
+      if (!normalized || targetedTestSearchKeys.has(key) || targetedTestSearches.length >= DISCOVERY_MAX_TARGETED_TEST_QUERIES) return;
+      targetedTestSearchKeys.add(key);
+      targetedTestSearches.push({query:normalized,mode,path:"test",limit:DISCOVERY_TARGETED_TEST_RESULTS_PER_QUERY});
+    };
+    for (const source of sources) {
+      const stem = source.split("/").at(-1).replace(/\.(?:c?js|mjs|ts|tsx|jsx|css|html|md)$/i, ""),
+        stemTokens = rawDiscoveryTokens(stem).filter(token => token.length >= 3 && !DISCOVERY_QUERY_STOP_WORDS.has(token)),
+        ownershipTokens = ownershipFor(source)?.matchedTokens || [];
+      if (stem.length >= 3) addTargetedTestSearch(stem, "filename");
+      const contentAnchors = [...new Set([...ownershipTokens, ...stemTokens])]
+        .filter(token => token.length >= 4 && /^[a-z0-9_-]+$/i.test(token))
+        .slice(0, DISCOVERY_MAX_ALTERNATIVES_PER_QUERY);
+      if (contentAnchors.length) addTargetedTestSearch(contentAnchors.map(regexEscape).join("|"), "regex");
+      if (targetedTestSearches.length >= DISCOVERY_MAX_TARGETED_TEST_QUERIES) break;
+    }
     const matchesByPath=new Map([...discoveryEvidence].map(([path,value])=>[path,value.matches]));
     const sourceAssociation = (path) => focusedTestRelationshipEvidence(path, sources,{matchesByPath});
     const testScore = (path) => score(path) + sourceAssociation(path).matchedTokens.length * 2;
@@ -797,7 +822,10 @@ export function createSelfDevelopmentService({
         if (tests.length >= 6) break;
       }
     }
-    if (!tests.length) return null;
+    if (!tests.length) return {candidatePaths:[...sources],candidateEvidence:sources.map(path=>{
+      const evidence=discoveryEvidence.get(path)||{inventory:false,matches:[]},ownership=ownershipFor(path);
+      return{path,role:"source",inventory:evidence.inventory===true,matches:evidence.matches,...(ownership?{ownership}:{})};
+    }),sourceCreationAuthorities:deriveSourceCreationAuthorities([...discovered],{userGoal:request.userGoal}),targetedTestSearches};
     const candidatePaths = [...new Set([...sources, ...tests])].slice(0, 12), candidateEvidence = candidatePaths.map((path) => {
       const evidence = discoveryEvidence.get(path) || { inventory: false, matches: [] }, relationship = path.startsWith("test/") ? focusedTestRelationshipEvidence(path, sources,{matchesByPath}) : null,ownership=path.startsWith("test/")?null:ownershipFor(path);
       return {
@@ -815,7 +843,7 @@ export function createSelfDevelopmentService({
         } : {}),
       };
     });
-    return {candidatePaths,candidateEvidence,sourceCreationAuthorities:deriveSourceCreationAuthorities([...discovered],{userGoal:request.userGoal})};
+    return {candidatePaths,candidateEvidence,sourceCreationAuthorities:deriveSourceCreationAuthorities([...discovered],{userGoal:request.userGoal}),targetedTestSearches};
   };
   const structuredScopeMetadata = (resolution, extra = {}) => ({
     version: resolution.version,
@@ -865,7 +893,7 @@ export function createSelfDevelopmentService({
     }
     throw lastError;
   };
-  const appendScopeRediscovery = ({ steps, base, request, concepts }) => {
+  const appendScopeRediscovery = ({ steps, base, request, concepts, targetedTestSearches = [] }) => {
     const recoveryRequest = {
       ...request,
       scope: { ...request.scope, searchTerms: concepts },
@@ -887,6 +915,18 @@ export function createSelfDevelopmentService({
           },
           `Additional repository evidence for unresolved scope concept ${index + 1}`,
           "Read-only recovery evidence returned",
+          { retry: "safe_read" },
+        ),
+      );
+    for (const [index, search] of targetedTestSearches.slice(0, DISCOVERY_MAX_TARGETED_TEST_QUERIES).entries())
+      steps.push(
+        annotation(
+          base + steps.length + 1,
+          "search_code",
+          "repo_read_remote",
+          { tool: "repo_search", arguments: search },
+          `Targeted focused-test evidence from grounded source ownership ${index + 1}`,
+          "Bounded test-only repository evidence returned",
           { retry: "safe_read" },
         ),
       );
@@ -1615,9 +1655,10 @@ export function createSelfDevelopmentService({
       catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409,{...error?.safeDiagnostics,recoveryTransitionScheduled:false,recoveryAttemptConsumed:false});}
       if(scopeResolution.status!=="resolved"){
         const now=clock().toISOString(),concepts=structuredScopeRecoveryConcepts(scopeResolution),attempt=scopeRecoveryHistory.length+1;
-        if(attempt<=STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS&&concepts.length){
+        const needsFocusedTestEvidence=(scopeResolution.unresolvedEvidence||[]).some(item=>item.category==="focused_test"),targetedTestSearches=needsFocusedTestEvidence?discoveryResolution.targetedTestSearches:[];
+        if(attempt<=STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS&&(concepts.length||targetedTestSearches.length)){
           const base=current.metadata.steps.length,continuation=[];
-          appendScopeRediscovery({steps:continuation,base,request,concepts});
+          appendScopeRediscovery({steps:continuation,base,request,concepts,targetedTestSearches});
           const activeContinuation=createActiveContinuation({task:current,startStep:base,plannedSteps:continuation.length,repairLimit:0,recoveryClass:STRUCTURED_SCOPE_RECOVERY_CLASS,runtimeStartedAt:now,runtimeMinutes:STRUCTURED_SCOPE_RECOVERY_RUNTIME_MINUTES}),blockedWaitStartedAt=current.completedAt||current.updatedAt||null,blockedWaitMs=blockedWaitStartedAt?Math.max(0,new Date(now).getTime()-new Date(blockedWaitStartedAt).getTime()):null;
           const record={version:2,attempt,maxAttempts:STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS,attemptAccounting:"reserved_at_transition",fromStateVersion:current.stateVersion,baseStep:base,startingCommit:current.startingCommit,currentCommit:current.currentCommit,decisionHash:scopeResolution.decisionHash,candidatePathsHash:hash(resolvedCandidatePaths),candidateEvidenceHash:hash(discoveryResolution.candidateEvidence),unresolvedEvidence:(scopeResolution.unresolvedEvidence||[]).map(item=>({category:item.category,concepts:[...item.concepts]})),unresolvedEvidenceFingerprints:(scopeResolution.unresolvedEvidence||[]).map(hash),concepts,conceptsHash:hash(concepts),providerUsage:scopeResolution.providerUsage||null,continuationStepIds:continuation.map((step,index)=>`${base+index+1}:${step.type}`),continuationGenerationId:activeContinuation.generationId,runtimeWindow:{runtimeStartedAt:activeContinuation.runtimeStartedAt,runtimeDeadline:activeContinuation.runtimeDeadline,runtimeMinutes:activeContinuation.runtimeMinutes},runtimeResumeCount:0,maxRuntimeResumes:1,blockedWaitStartedAt,blockedWaitMs,status:"scheduled",createdAt:now};
           const recovered=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",currentStep:base,currentPhase:"scope_rediscovery",nextRunAt:now,completedAt:null,errorCode:null,blockedReason:null,retryCount:0,maxSteps:Math.min(100,Math.max(current.maxSteps,base+continuation.length+request.maxRepairIterations*6)),metadata:{...current.metadata,steps:[...current.metadata.steps,...continuation],requiredCapability:"repo_read_remote",autoDispatch:true,activeContinuation,continuationHistory:[...(current.metadata.continuationHistory||[]),activeContinuation],structuredScopeResolution:structuredScopeMetadata(scopeResolution,{recoveryAttempt:attempt}),structuredScopeRecoveryHistory:[...scopeRecoveryHistory,record]}},current.stateVersion);
