@@ -73,6 +73,15 @@ test("scope resolution rejects filename-only, truncated, and weak test evidence 
   }
 });
 
+test("a bounded ownership certificate may validate a task-relevant truncated physical line",async()=>{
+  const candidatePaths=["assets/console.js","test/console-static.test.js"],candidateEvidence=[
+    {path:"assets/console.js",role:"source",inventory:true,matches:[{stepId:"2:search_code",query:"drawer keyboard",line:33,text:'const recentsDrawer = document.querySelector("#recentsDrawer");',truncated:true}],ownership:{basis:"selector_binding",matchedTokens:["drawer"],stepId:"2:search_code",line:33}},
+    {path:"test/console-static.test.js",role:"focused_test",inventory:true,matches:[],relationship:{sourcePath:"assets/console.js",matchedTokens:["console"],basis:"existing_bound_commit_path_relation"}},
+  ],intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[],unresolvedEvidence:[]}])}),result=await intake.resolveScope({request:{userGoal:"Implement drawer keyboard behavior",acceptanceCriteria:["Keyboard navigation works."],constraints:[]},candidatePaths,candidateEvidence});
+  assert.equal(result.status,"resolved");
+  assert.deepEqual(result.sourcePaths,["assets/console.js"]);
+});
+
 test("unresolvable scope is represented as a bounded blocked decision",async()=>{
   const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[{constraintIndex:0,disposition:"blocked",evidencePaths:[]}],unresolvedEvidence:[{category:"focused_test",concepts:["console activity test"]}]}])}),result=await intake.resolveScope({request:{userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"boundary",requirement:"Frontend only",enforcements:["scope_selection"]}]},candidatePaths:["assets/console.js","test/api.test.js"]});
   assert.equal(result.status,"blocked");assert.deepEqual(result.unresolvedEvidence,[{category:"focused_test",concepts:["console activity test"]}]);assert.equal(result.version,2);

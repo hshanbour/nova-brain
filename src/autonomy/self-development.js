@@ -7,7 +7,7 @@ import {describeFullTestScopeRecovery,recoverFullTestScope,FULL_TEST_SCOPE_RECOV
 import {describeReviewRemediation,recoverReviewRemediation,REVIEW_REMEDIATION_TOOL,describeRejectedReviewPlanContinuation,recoverRejectedReviewPlanContinuation,REJECTED_REVIEW_PLAN_CONTINUATION_TOOL,describeSourceBoundReviewReplan,recoverSourceBoundReviewReplan,SOURCE_BOUND_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
 import {recoveryHash} from "./failed-local-read-recovery.js";
 import {describeEvidenceBoundReviewReplan,recoverEvidenceBoundReviewReplan,EVIDENCE_BOUND_REVIEW_REPLAN_TOOL,describeImplementationContentReviewReplan,recoverImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL,describeSourceLiteralReviewReplan,recoverSourceLiteralReviewReplan,SOURCE_LITERAL_REVIEW_REPLAN_TOOL,describeObservableLinkageReviewReplan,recoverObservableLinkageReviewReplan,OBSERVABLE_LINKAGE_REVIEW_REPLAN_TOOL,describeSemanticEvidenceReviewReplan,recoverSemanticEvidenceReviewReplan,SEMANTIC_EVIDENCE_REVIEW_REPLAN_TOOL,describeFailedSemanticReadRecovery,recoverFailedSemanticReadRecovery,FAILED_SEMANTIC_READ_RECOVERY_TOOL,describeTestIdentityInventoryReviewReplan,recoverTestIdentityInventoryReviewReplan,TEST_IDENTITY_INVENTORY_REPLAN_TOOL} from "./review-remediation-scope.js";
-import {focusedTestSourceRelationship} from "./focused-test-evidence-relevance.js";
+import {focusedTestRelationshipEvidence,sourceOwnershipEvidence} from "./focused-test-evidence-relevance.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -730,6 +730,7 @@ export function createSelfDevelopmentService({
         goalCounts.set(token, Math.min(3, (goalCounts.get(token) || 0) + 1));
     }
     const documentationRequested = [...goalCounts].some(([token]) => DISCOVERY_DOCUMENTATION_TERMS.has(token));
+    const ownershipFor=path=>sourceOwnershipEvidence(path,discoveryEvidence.get(path)?.matches||[],{userGoal:goalText});
     const score = (path) => {
       if (/^(?:docs?\/|readme(?:\.|$))/i.test(path) && !documentationRequested) return 0;
       const tokens = [...new Set(rawDiscoveryTokens(path).filter((token) => token.length >= 3 && !DISCOVERY_STOP_WORDS.has(token)))];
@@ -741,6 +742,8 @@ export function createSelfDevelopmentService({
       }
       if (semanticMatches >= 2) value += 3;
       if (searched.has(path)) value += 6;
+      const ownership=ownershipFor(path);
+      if(ownership)value+=10+ownership.matchedTokens.length*2;
       return value;
     }, safe = (path) => !REPLAN_PROTECTED.test(path) && /\.(?:c?js|mjs|ts|tsx|jsx|css|html|md)$/i.test(path);
     const rankedSources = [...discovered]
@@ -750,7 +753,8 @@ export function createSelfDevelopmentService({
       minimumConfidence = Math.max(4, Math.ceil(strongest * 0.35)),
       sources = rankedSources.filter((path) => score(path) >= minimumConfidence).slice(0, 6);
     if (!sources.length) return null;
-    const sourceAssociation = (path) => focusedTestSourceRelationship(path, sources);
+    const matchesByPath=new Map([...discoveryEvidence].map(([path,value])=>[path,value.matches]));
+    const sourceAssociation = (path) => focusedTestRelationshipEvidence(path, sources,{matchesByPath});
     const testScore = (path) => score(path) + sourceAssociation(path).matchedTokens.length * 2;
     const tests = [...discovered]
       // A search hit can be incidental (for example, a runtime test containing
@@ -770,24 +774,25 @@ export function createSelfDevelopmentService({
         const state = await resolvePathState(path, request.startingCommit);
         if (state?.existsInCommit && !REPLAN_PROTECTED.test(path)) {
           tests.push(path);
-          inferredTestEvidence.set(path, focusedTestSourceRelationship(path, sources));
+          inferredTestEvidence.set(path, focusedTestRelationshipEvidence(path, sources,{matchesByPath}));
         }
         if (tests.length >= 6) break;
       }
     }
     if (!tests.length) return null;
     const candidatePaths = [...new Set([...sources, ...tests])].slice(0, 12), candidateEvidence = candidatePaths.map((path) => {
-      const evidence = discoveryEvidence.get(path) || { inventory: false, matches: [] }, relationship = path.startsWith("test/") ? focusedTestSourceRelationship(path, sources) : null;
+      const evidence = discoveryEvidence.get(path) || { inventory: false, matches: [] }, relationship = path.startsWith("test/") ? focusedTestRelationshipEvidence(path, sources,{matchesByPath}) : null,ownership=path.startsWith("test/")?null:ownershipFor(path);
       return {
         path,
         role: path.startsWith("test/") ? "focused_test" : "source",
         inventory: evidence.inventory === true,
         matches: evidence.matches,
+        ...(ownership?{ownership}:{}),
         ...(path.startsWith("test/") ? {
           relationship: relationship?.related ? {
             sourcePath: relationship.sourcePath,
             matchedTokens: relationship.matchedTokens,
-            basis: inferredTestEvidence.has(path) ? "existing_bound_commit_path_relation" : "repository_search_path_relation",
+            basis: relationship.basis||(inferredTestEvidence.has(path) ? "existing_bound_commit_path_relation" : "repository_search_path_relation"),
           } : null,
         } : {}),
       };

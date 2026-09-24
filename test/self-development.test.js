@@ -1759,7 +1759,7 @@ test("one invalid structured scope result cannot strand coherent repository-grou
     execute(name,args){
       if(name==="repo_list")return{ok:true,files:["assets/console.js","assets/console.css","test/console-static.test.js","src/autonomy/worker-runtime.js","test/self-development.test.js"]};
       if(name==="repo_search")return{ok:true,matches:[
-        {path:"assets/console.js",line:33,text:'const recentsDrawer = document.querySelector("#recentsDrawer");'},
+        {path:"assets/console.js",line:33,text:'const recentsDrawer = document.querySelector("#recentsDrawer");'+"x".repeat(300)},
         {path:"assets/console.css",line:14,text:".recents-drawer{position:fixed}"},
         {path:"test/console-static.test.js",line:7,text:"'assets/console.js'"},
       ],query:args.query};
@@ -1777,7 +1777,8 @@ test("one invalid structured scope result cannot strand coherent repository-grou
   assert.deepEqual(scopeInputs[1].candidateEvidence,scopeInputs[0].candidateEvidence);
   assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").matches[0].stepId,"2:search_code");
   assert.match(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").matches[0].text,/recentsDrawer/);
-  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").matches[0].truncated,false);
+  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").matches[0].truncated,true);
+  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").ownership.basis,"selector_binding");
   assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="test/console-static.test.js").role,"focused_test");
   assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="test/console-static.test.js").relationship.sourcePath,"assets/console.js");
   assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
@@ -1786,6 +1787,85 @@ test("one invalid structured scope result cannot strand coherent repository-grou
   assert.equal(result.task.metadata.structuredScopeResolution.validationAttempts,2);
   assert.ok(result.continuationSteps.indexOf("read_files")<result.continuationSteps.indexOf("plan_implementation"));
   assert.equal((await f.runtime.steps(result.task.id)).some(step=>step.stepType==="apply_patch"&&step.status==="completed"),false);
+});
+async function runOwnershipCertificationCase({goal,searchTerms,files,matches,resolution}){
+  let scopeInput;
+  const structuredIntake={
+    async specify(){return{version:1,status:"ready",intent:"implementation",objective:goal,acceptanceCriteria:["The requested behavior is implemented.","Focused regression coverage passes."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms,clarificationQuestion:"",specificationHash:"c".repeat(64)};},
+    async resolveScope(input){scopeInput=input;return resolution;},
+  },existing=new Set(files),f=await fixture({
+    structuredIntake,
+    resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&existing.has(path)}),
+    execute(name){
+      if(name==="repo_list")return{ok:true,files};
+      if(name==="repo_search")return{ok:true,matches};
+      return{ok:true};
+    },
+  }),created=await f.service.createTrustedIntake(goal);
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`ownership-certification-${index}`});
+  const blocked=await f.runtime.get(created.task.id);let replanned=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+  if(resolution.status==="blocked"){
+    for(let index=0;index<20;index++){
+      const current=await f.runtime.get(created.task.id);
+      if(current.status==="blocked")break;
+      await f.runtime.tickTask(current.id,{idempotencyKey:`ownership-certification-recovery-${index}`});
+    }
+    const recovered=await f.runtime.get(created.task.id);
+    replanned=await f.service.replanDiscoveryOnly(recovered.id,{expectedVersion:recovered.stateVersion});
+  }
+  return{...f,task:replanned.task,scopeInput};
+}
+test("scope certification resolves backend route ownership and its API regression test",async()=>{
+  const result=await runOwnershipCertificationCase({
+    goal:"Implement Nova widget API validation and add focused API regression coverage.",
+    searchTerms:["widget api","widget validation"],
+    files:["src/http/widgets.js","test/widgets-api.test.js","docs/widgets.md"],
+    matches:[
+      {path:"src/http/widgets.js",line:18,text:'router.post("/api/widgets", createWidget);'},
+      {path:"test/widgets-api.test.js",line:9,text:'test("POST /api/widgets validates widget payload", async () => {});'},
+      {path:"docs/widgets.md",line:2,text:"Widget API documentation"},
+    ],
+    resolution:{version:2,status:"resolved",sourcePaths:["src/http/widgets.js"],testPaths:["test/widgets-api.test.js"],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[],decisionHash:"d".repeat(64)},
+  });
+  assert.equal(result.scopeInput.candidateEvidence.find(item=>item.path==="src/http/widgets.js").ownership.basis,"route_registration");
+  assert.equal(result.scopeInput.candidateEvidence.find(item=>item.path==="test/widgets-api.test.js").relationship.sourcePath,"src/http/widgets.js");
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,["src/http/widgets.js"]);
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/widgets-api.test.js"]);
+  assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
+});
+test("scope certification freezes coordinated multi-file integration ownership",async()=>{
+  const result=await runOwnershipCertificationCase({
+    goal:"Fix Nova Slack message delivery across the client and handler with focused regression coverage.",
+    searchTerms:["Slack message delivery","Slack client handler"],
+    files:["src/integrations/slack-client.js","src/integrations/slack-handler.js","test/slack-client.test.js"],
+    matches:[
+      {path:"src/integrations/slack-client.js",line:9,text:"export async function sendSlackMessage() {}"},
+      {path:"src/integrations/slack-handler.js",line:12,text:"export function registerSlackHandler() {}"},
+      {path:"test/slack-client.test.js",line:7,text:'test("sendSlackMessage through registered handler", async () => {});'},
+    ],
+    resolution:{version:2,status:"resolved",sourcePaths:["src/integrations/slack-client.js","src/integrations/slack-handler.js"],testPaths:["test/slack-client.test.js"],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[],decisionHash:"e".repeat(64)},
+  });
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,["src/integrations/slack-client.js","src/integrations/slack-handler.js"]);
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/slack-client.test.js"]);
+  assert.ok(result.scopeInput.candidateEvidence.filter(item=>item.role==="source").every(item=>item.ownership));
+});
+test("scope certification keeps genuinely ambiguous ownership discovery-only",async()=>{
+  const result=await runOwnershipCertificationCase({
+    goal:"Fix Nova payment authorization behavior with focused regression coverage.",
+    searchTerms:["payment authorization"],
+    files:["src/payments/stripe.js","src/payments/adyen.js","test/payments.test.js"],
+    matches:[
+      {path:"src/payments/stripe.js",line:8,text:"export async function authorizePayment() {}"},
+      {path:"src/payments/adyen.js",line:8,text:"export async function authorizePayment() {}"},
+      {path:"test/payments.test.js",line:5,text:'test("authorizePayment", async () => {});'},
+    ],
+    resolution:{version:2,status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[{category:"source_ownership",concepts:["payment provider selection"]}],decisionHash:"f".repeat(64)},
+  });
+  assert.equal(result.task.status,"blocked");
+  assert.equal(result.task.errorCode,"structured_scope_recovery_exhausted");
+  assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"discovery_only");
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,[]);
+  assert.equal((await result.runtime.steps(result.task.id)).some(step=>["read_files","plan_implementation","apply_patch"].includes(step.stepType)),false);
 });
 test("historical version-one unresolved scope metadata remains recoverable on the same task",async()=>{
   const f=await structuredScopeRecoveryFixture(),historical=await f.storage.updateAutonomyTask(f.blocked.id,OWNER,{metadata:{...f.blocked.metadata,structuredScopeResolution:{version:1,status:"blocked",unresolvedPrerequisiteFingerprints:["a".repeat(64)]},structuredScopeRecoveryHistory:[]}},f.blocked.stateVersion);

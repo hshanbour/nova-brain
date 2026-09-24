@@ -14,7 +14,7 @@ import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA, SELF_DEVELOPMENT_IMPLEMENTAT
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { registerHandsTools } from "../src/tools/hands-runtime.js";
 import {canonicalContentHash} from "../src/autonomy/self-development-plan-lifecycle.js";
-import {focusedTestEvidenceRelevance,focusedTestSourceRelationship} from "../src/autonomy/focused-test-evidence-relevance.js";
+import {focusedTestEvidenceRelevance,focusedTestRelationshipEvidence,focusedTestSourceRelationship,plannedTestCreationAuthority,sourceOwnershipEvidence} from "../src/autonomy/focused-test-evidence-relevance.js";
 
 const OWNER = "owner",
   BRANCH = "feat/nova-brain-mvp-foundation",
@@ -148,6 +148,30 @@ test("canonical valid structured output produces the Hands replacement represent
   assert.equal(f.prompts[0].stage,"planner");
   assert.equal(f.prompts[1].responseFormat.name,"nova_self_development_preservation_assessment");
   assert.equal(result.implementationPlan.preservationAssessment.status,"preserved");
+});
+
+test("repository ownership and focused-test certification matrix stays deterministic",()=>{
+  const ui=sourceOwnershipEvidence("assets/panel.js",[{stepId:"2:search_code",line:41,text:'panel.addEventListener("keydown", handlePanelKeys);',truncated:true}],{userGoal:"Improve panel keyboard navigation"});
+  assert.equal(ui.basis,"event_handler");
+  assert.ok(ui.matchedTokens.includes("panel"));
+
+  const backend=sourceOwnershipEvidence("src/http/widgets.js",[{stepId:"3:search_code",line:18,text:'router.post("/api/widgets", createWidget);',truncated:false}],{userGoal:"Add widget API behavior"});
+  assert.equal(backend.basis,"route_registration");
+
+  const multiSource=["src/integrations/slack-client.js","src/integrations/slack-handler.js"];
+  assert.equal(sourceOwnershipEvidence(multiSource[0],[{stepId:"4:search_code",line:9,text:"export async function sendSlackMessage() {}",truncated:false}],{userGoal:"Repair Slack message delivery"}).basis,"exported_symbol");
+  assert.equal(sourceOwnershipEvidence(multiSource[1],[{stepId:"5:search_code",line:12,text:"export function registerSlackHandler() {}",truncated:false}],{userGoal:"Repair Slack message delivery"}).basis,"exported_symbol");
+  assert.equal(focusedTestRelationshipEvidence("test/slack-client.test.js",multiSource).related,true);
+
+  const contentMatches=new Map([
+    ["src/http/widgets.js",[{text:"createWidget validates widget payload"}]],
+    ["test/api.test.js",[{text:"createWidget validates widget payload"}]],
+  ]);
+  assert.equal(focusedTestRelationshipEvidence("test/api.test.js",["src/http/widgets.js"],{matchesByPath:contentMatches}).basis,"repository_search_content_relation");
+
+  const convention=plannedTestCreationAuthority("test/widget-accessibility.test.js",{candidatePaths:["assets/widget.js"],discoveredPaths:new Set(["test/console-static.test.js","test/console-client.test.js"])});
+  assert.equal(convention.authorized,true);
+  assert.equal(plannedTestCreationAuthority("test/widget-accessibility.test.js",{candidatePaths:["assets/widget.js"],discoveredPaths:new Set(["test/console-static.test.js"])}).authorized,false);
 });
 test("planner records stage-bound provider usage without changing the canonical plan",async()=>{const usage={model:"strong",stage:"planner",serviceTier:"default",inputTokens:1000,cachedInputTokens:800,outputTokens:200,reasoningTokens:50,totalTokens:1200},output={type:"final",message:JSON.stringify(valid()),providerUsage:usage},f=await fixture([output]),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA});assert.deepEqual(result.providerUsage,[usage]);assert.equal(result.implementationPlan.files[0].path,DOC);});
 test("an unchanged evidence-bound plan becomes a bounded no-change candidate",async()=>{
@@ -654,7 +678,7 @@ test("a planned new focused test is create-bound, content-bound, and not evidenc
     intendedChanges: ["cover new behavior"],
   });
   output.focusedTests = [{ path: NEW, kind: "planned_new" }];
-  const f = await fixture([output], { discovered: [DOC, TEST] }),
+  const f = await fixture([output], { discovered: [DOC, TEST, EXTRA] }),
     result = await f.planner.generate({
       taskId: "selfdev-plan",
       candidatePaths: [DOC, TEST],
@@ -681,6 +705,13 @@ test("undiscovered existing path is not mistaken for a safe create target", asyn
   output.focusedTests = [{path,kind:"planned_new"}];
   const f = await fixture([output], {discovered:[DOC,TEST], existing:[DOC,TEST,path]});
   await assert.rejects(() => f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}), error => error.code === "operation_conflict" && error.safeDiagnostics.discovered === false && error.safeDiagnostics.requiredAction === "read_before_modify");
+});
+
+test("new source creation remains fail-closed without a pre-plan authoritative path contract",async()=>{
+  const output=valid();
+  output.files.push({path:"src/integrations/new-adapter.js",operation:"create",content:"export function createAdapter() {}\n",reason:"new integration adapter",intendedChanges:["add adapter"]});
+  const f=await fixture([output],{discovered:[DOC,TEST,"src/integrations/existing-adapter.js"]});
+  await assert.rejects(()=>f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA}),error=>error.code==="implementation_scope_violation"&&error.safeDiagnostics?.rejectionCode==="evidence_bound_path_required");
 });
 
 test("planned new tests fail closed unless nonexistent relevant bounded create files", async () => {
