@@ -62,6 +62,7 @@ const HISTORICAL_APPROVED_DELIVERY_HANDOFF=Object.freeze({...HISTORICAL_APPROVED
 const HISTORICAL_APPROVED_DELIVERY_HANDOFF_RUNTIME=Object.freeze({...HISTORICAL_APPROVED_DELIVERY,fromStateVersion:274,priorDeliveryStateVersion:273,failedStepId:"309:push",recoveryClass:"historical_approved_delivery_handoff_runtime_recovery",runtimeMinutes:5});
 const HISTORICAL_APPROVED_DELIVERY_WORKER_CAPABILITY_RUNTIME=Object.freeze({...HISTORICAL_APPROVED_DELIVERY,fromStateVersion:276,priorDeliveryStateVersion:275,failedStepId:"309:push",priorRecoveryClass:HISTORICAL_APPROVED_DELIVERY_HANDOFF_RUNTIME.recoveryClass,recoveryClass:"historical_approved_delivery_worker_capability_runtime_recovery",runtimeMinutes:5});
 const APPROVAL_CONTRACT_DELIVERY_RUNTIME="approval_contract_delivery_runtime";
+const STRUCTURED_SCOPE_RECOVERY_CLASS="structured_scope_rediscovery";
 const MUTATING = new Set(["apply_patch", "commit", "push"]);
 const REASONING = new Set(["diagnose", "plan_patch", "inspect_failure"]);
 const RETRYABLE = new Set([
@@ -814,6 +815,8 @@ export function createWorkerRuntime({
       continuationGenerationId:diagnostics.runtimeWindow.continuationGenerationId,
       expiredAt:iso(clock),
     }:null;
+    const recoveryHistory=task.metadata?.structuredScopeRecoveryHistory||[],recovery=recoveryHistory.at(-1),scopeResolutionPending=status==="blocked"&&errorCode==="implementation_scope_required"&&task.metadata?.activeContinuation?.recoveryClass===STRUCTURED_SCOPE_RECOVERY_CLASS&&recovery?.status==="scheduled"&&recovery?.continuationGenerationId===task.metadata.activeContinuation.generationId;
+    const recoveryMetadata=scopeResolutionPending?{...task.metadata,activeContinuation:null,requiredCapability:null,structuredScopeRecoveryHistory:[...recoveryHistory.slice(0,-1),{...recovery,status:"resolution_pending",rediscoveryCompletedAt:iso(clock)}],structuredScopeContinuation:{version:1,status:"pending",attempt:recovery.attempt,maxAttempts:recovery.maxAttempts,continuationGenerationId:recovery.continuationGenerationId,startingCommit:recovery.startingCommit,currentCommit:recovery.currentCommit,createdAt:iso(clock)}}:null;
     const updated = await storage.updateAutonomyTask(task.id, ownerId, {
       status,
       errorCode: errorCode || null,
@@ -822,7 +825,7 @@ export function createWorkerRuntime({
       leaseOwner: null,
       leaseToken: null,
       leaseExpiresAt: null,
-      ...(runtimeExpiration?{metadata:{...task.metadata,runtimeExpiration}}:{}),
+      ...(runtimeExpiration?{metadata:{...task.metadata,runtimeExpiration}}:recoveryMetadata?{metadata:recoveryMetadata}:{}),
     });
     await activity(
       task,

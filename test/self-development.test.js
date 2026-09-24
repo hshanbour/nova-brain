@@ -1793,6 +1793,10 @@ test("bounded rediscovery may freeze only newly repository-evidenced scope befor
   const afterRestart=await executeScheduledScopeRediscovery(f);
   assert.equal(afterRestart.status,"blocked");assert.equal(afterRestart.errorCode,"implementation_scope_required");
   assert.equal(afterRestart.metadata.selfDevelopment.scopeAuthority,"discovery_only");
+  assert.equal(afterRestart.metadata.structuredScopeRecoveryHistory[0].status,"resolution_pending");
+  assert.equal(afterRestart.metadata.structuredScopeContinuation.status,"pending");
+  assert.equal(afterRestart.metadata.structuredScopeContinuation.attempt,1);
+  assert.equal(afterRestart.metadata.activeContinuation,null);
   assert.equal((await f.runtime.steps(afterRestart.id)).some(step=>["plan_implementation","apply_patch"].includes(step.stepType)),false);
   const resolved=await f.service.replanDiscoveryOnly(afterRestart.id,{expectedVersion:afterRestart.stateVersion});
   assert.equal(resolved.task.id,first.task.id);
@@ -1802,6 +1806,7 @@ test("bounded rediscovery may freeze only newly repository-evidenced scope befor
   assert.deepEqual(resolved.task.metadata.selfDevelopment.scope.paths,["assets/console.js","assets/api-client.js"]);
   assert.deepEqual(resolved.task.metadata.selfDevelopment.scope.focusedTests,["test/console-client.test.js","test/console-static.test.js"]);
   assert.equal(resolved.task.metadata.structuredScopeRecoveryHistory[0].status,"resolved");
+  assert.equal(resolved.task.metadata.structuredScopeContinuation.status,"resolved");
   assert.ok(resolved.continuationSteps.indexOf("read_files")<resolved.continuationSteps.indexOf("plan_implementation"));
   assert.ok(f.scopeCalls[1].candidatePaths.includes("assets/api-client.js"));
   assert.equal(resolved.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths.includes("src/autonomy/worker-runtime.js"),false);

@@ -10,6 +10,10 @@ const HISTORICAL_DELIVERY_HANDOFF_RUNTIME_RECOVERY="historical_approved_delivery
 const HISTORICAL_DELIVERY_WORKER_CAPABILITY_RUNTIME_RECOVERY="historical_approved_delivery_worker_capability_runtime_recovery";
 
 function exactRepository(task){return task?.metadata?.selfDevelopment?.repository;}
+function pendingStructuredScopeResolution(task){
+  const continuation=task?.metadata?.structuredScopeContinuation,recovery=task?.metadata?.structuredScopeRecoveryHistory?.at(-1),request=task?.metadata?.selfDevelopment,scope=request?.scope;
+  return Boolean(task?.status==="blocked"&&task.errorCode==="implementation_scope_required"&&!task.approvalState&&!task.leaseToken&&!task.leaseOwner&&continuation?.version===1&&continuation.status==="pending"&&continuation.attempt===1&&continuation.maxAttempts===1&&continuation.startingCommit===task.startingCommit&&continuation.currentCommit===task.currentCommit&&recovery?.status==="resolution_pending"&&recovery.attempt===continuation.attempt&&recovery.continuationGenerationId===continuation.continuationGenerationId&&request?.scopeAuthority==="discovery_only"&&!scope?.paths?.length&&!scope?.focusedTests?.length&&!scope?.patch?.files?.length);
+}
 function exactVersionBinding({task,approval,state,allowClaimed}){
   const claimed=allowClaimed&&["planning","running"].includes(task?.status)&&Boolean(task?.leaseToken),deliveryStateVersion=task?.stateVersion-(claimed?1:0);
   if(!Number.isInteger(state?.approvedStateVersion)||state?.deliveryStateVersion!==deliveryStateVersion)return false;
@@ -51,12 +55,13 @@ export function createAutoDispatchService({storage,ownerId,approvedBranch="feat/
     const tasks=await storage.listAutonomyTasks(ownerId,{limit:100});
     let task,approvedDelivery=false;
     for(const item of tasks){
-      const common=item.taskType==="self_development"&&item.branch===branch&&item.metadata?.autoDispatch!==false&&ACTIVE.has(item.status)&&item.status!=="waiting_for_approval"&&!item.leaseToken&&!item.leaseOwner&&(item.status!=="waiting"?(!item.nextRunAt||new Date(item.nextRunAt)<=clock()):(item.nextRunAt&&new Date(item.nextRunAt)<=clock()));if(!common)continue;
+      const pendingScopeResolution=pendingStructuredScopeResolution(item);
+      const common=item.taskType==="self_development"&&item.branch===branch&&item.metadata?.autoDispatch!==false&&(ACTIVE.has(item.status)||pendingScopeResolution)&&item.status!=="waiting_for_approval"&&!item.leaseToken&&!item.leaseOwner&&(pendingScopeResolution||item.status!=="waiting"?(!item.nextRunAt||new Date(item.nextRunAt)<=clock()):(item.nextRunAt&&new Date(item.nextRunAt)<=clock()));if(!common)continue;
       if(!item.approvalState){task=item;break;}
       const approval=await storage.getApproval(item.approvalState.approvalId,ownerId),steps=await storage.listAutonomySteps(item.id);if(isExactApprovedDelivery({task:item,approval,steps,approvedBranch,approvedRepository})){task=item;approvedDelivery=true;break;}
     }
     if(!task)return{dispatched:false};
-    const step=task.metadata?.steps?.[task.currentStep],stepType=approvedDelivery?"push":step?.type,taskOwnedLocalRead=stepType==="read_files"&&step?.input?.tool==="repo_read_task_owned_local",mode=approvedDelivery||task.status==="waiting_for_worker"||LOCAL.has(stepType)||taskOwnedLocalRead?"local_handoff":"task_tick";
+    const scopeResolution=pendingStructuredScopeResolution(task),step=task.metadata?.steps?.[task.currentStep],stepType=scopeResolution?"resolve_scope":approvedDelivery?"push":step?.type,taskOwnedLocalRead=stepType==="read_files"&&step?.input?.tool==="repo_read_task_owned_local",mode=scopeResolution?"scope_resolution":approvedDelivery||task.status==="waiting_for_worker"||LOCAL.has(stepType)||taskOwnedLocalRead?"local_handoff":"task_tick";
     return{dispatched:true,task:{id:task.id,status:task.status,branch:task.branch,expectedCommit:task.currentCommit,stateVersion:task.stateVersion,mode,stepType:stepType||null,continuationGenerationId:task.metadata?.activeContinuation?.generationId||null,...(reviewRemediationDescriptor(task)?{reviewRemediationScopeRequired:true,reviewRemediationRecoveryClass:reviewRemediationDescriptor(task).recoveryClass}:task.metadata?.failedFullTestRetryHistory?.length||task.metadata?.fullTestScopeRecoveryHistory?.length?{fullTestScopeRequired:true,fullTestScopeRecoveryClass:task.metadata?.activeContinuation?.recoveryClass}:task.metadata?.executionScopeRecoveryHistory?.length?{executionScopeRequired:true}:{})}};
   }
   return Object.freeze({next});

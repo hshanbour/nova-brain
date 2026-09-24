@@ -1566,7 +1566,7 @@ export function createSelfDevelopmentService({
           return{task:recovered,evidenceStepIds:[],scopeHash:null,continuationSteps:continuation.map(step=>step.type),scopeRecovery:record};
         }
         const exhausted=scopeRecoveryHistory.length>=STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS,errorCode=exhausted?"structured_scope_recovery_exhausted":"structured_scope_unresolved",blockedReason=exhausted?"Nova exhausted the single bounded scope rediscovery pass without establishing safe authority.":"Nova could not establish a safe mutation-authoritative scope or bounded recovery concepts.";
-        const blocked=await storage.updateAutonomyTask(current.id,ownerId,{status:"blocked",currentPhase:"scope_resolution",errorCode,blockedReason,completedAt:now,metadata:{...current.metadata,requiredCapability:null,activeContinuation:null,structuredScopeResolution:structuredScopeMetadata(scopeResolution,{recoveryAttempt:scopeRecoveryHistory.length,recoveryExhausted:exhausted}),structuredScopeRecoveryHistory:scopeRecoveryHistory.map((item,index)=>index===scopeRecoveryHistory.length-1?{...item,status:"exhausted",exhaustedAt:now}:item)}},current.stateVersion);
+        const blocked=await storage.updateAutonomyTask(current.id,ownerId,{status:"blocked",currentPhase:"scope_resolution",errorCode,blockedReason,completedAt:now,metadata:{...current.metadata,requiredCapability:null,activeContinuation:null,structuredScopeResolution:structuredScopeMetadata(scopeResolution,{recoveryAttempt:scopeRecoveryHistory.length,recoveryExhausted:exhausted}),structuredScopeRecoveryHistory:scopeRecoveryHistory.map((item,index)=>index===scopeRecoveryHistory.length-1?{...item,status:"exhausted",exhaustedAt:now}:item),...(current.metadata?.structuredScopeContinuation?{structuredScopeContinuation:{...current.metadata.structuredScopeContinuation,status:"exhausted",completedAt:now}}:{})}},current.stateVersion);
         if(!blocked)throw new SelfDevelopmentError("version_conflict","Task changed during structured scope resolution.");
         await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:exhausted?"self_development_scope_rediscovery_exhausted":"self_development_scope_resolution_blocked",status:"blocked",summary:blockedReason,metadata:{taskId:current.id,decisionHash:scopeResolution.decisionHash,recoveryAttempt:scopeRecoveryHistory.length,recoveryExhausted:exhausted}});
         return{task:blocked,evidenceStepIds:[],scopeHash:null,continuationSteps:[]};
@@ -1711,6 +1711,7 @@ export function createSelfDevelopmentService({
           ],
           ...(scopeResolution?{structuredScopeResolution:structuredScopeMetadata(scopeResolution,{recoveryAttempt:scopeRecoveryHistory.length})}:{}),
           ...(scopeRecoveryHistory.length?{structuredScopeRecoveryHistory:scopeRecoveryHistory.map((item,index)=>index===scopeRecoveryHistory.length-1?{...item,status:"resolved",resolvedAt:now,resolvedDecisionHash:scopeResolution?.decisionHash||null}:item)}:{}),
+          ...(current.metadata?.structuredScopeContinuation?{structuredScopeContinuation:{...current.metadata.structuredScopeContinuation,status:"resolved",completedAt:now,decisionHash:scopeResolution?.decisionHash||null}}:{}),
         },
       },
       current.stateVersion,
