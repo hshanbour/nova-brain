@@ -2,6 +2,22 @@ export class NovaApiError extends Error {
   constructor(message, status = 0) { super(message); this.name = "NovaApiError"; this.status = status; }
 }
 
+const durableTaskAcknowledgement = /^Durable self-development task (selfdev_[a-f0-9]{32}) is [a-z_]+\. Track it in Activity; Nova's Persistent Local Worker can continue it independently\.$/;
+
+export function durableTaskIdFromAcknowledgement(value) {
+  if (typeof value !== "string") return null;
+  return value.match(durableTaskAcknowledgement)?.[1] || null;
+}
+
+export function durableTaskRecordsFromMessages(messages, conversationId) {
+  const records = new Map();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const taskId = message?.role === "assistant" ? durableTaskIdFromAcknowledgement(message.content) : null;
+    if (taskId && !records.has(taskId)) records.set(taskId, { taskId, conversationId: typeof conversationId === "string" ? conversationId : "", startedAt: message.createdAt || null, completedAt: null });
+  }
+  return [...records.values()];
+}
+
 export function createNovaClient({ fetchImpl = globalThis.fetch, endpoint = "/api/agent" } = {}) {
   if (typeof fetchImpl !== "function") throw new TypeError("Nova client requires a fetch implementation.");
   let conversationId;

@@ -1,9 +1,32 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createNovaClient, NovaApiError } from "../assets/api-client.js";
+import { createNovaClient, durableTaskIdFromAcknowledgement, durableTaskRecordsFromMessages, NovaApiError } from "../assets/api-client.js";
 import { ownerMemoryClient } from "../assets/memory-client.js";
 
 const jsonResponse = (body, { ok = true, status = 200 } = {}) => ({ ok, status, async json() { return body; } });
+
+test("durable acknowledgement parser restores only an exact safe task identity", () => {
+  const id = "selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  assert.equal(durableTaskIdFromAcknowledgement(`Durable self-development task ${id} is blocked. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`), id);
+  for (const unsafe of [
+    `Task ${id} is blocked.`,
+    `Durable self-development task ${id} is blocked. leaseToken=secret`,
+    "Durable self-development task selfdev_invalid is running. Track it in Activity; Nova's Persistent Local Worker can continue it independently.",
+    null,
+  ]) assert.equal(durableTaskIdFromAcknowledgement(unsafe), null);
+});
+
+test("conversation reload reconstructs each durable task identity exactly once", () => {
+  const id = "selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", acknowledgement = `Durable self-development task ${id} is blocked. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`;
+  const records = durableTaskRecordsFromMessages([
+    { role: "assistant", content: acknowledgement, createdAt: "2026-09-24T12:00:00.000Z" },
+    { role: "assistant", content: acknowledgement, createdAt: "2026-09-24T12:01:00.000Z" },
+    { role: "user", content: acknowledgement },
+    { role: "assistant", content: `${acknowledgement} leaseToken=hidden` },
+  ], "conversation-1");
+  assert.deepEqual(records, [{ taskId: id, conversationId: "conversation-1", startedAt: "2026-09-24T12:00:00.000Z", completedAt: null }]);
+  assert.doesNotMatch(JSON.stringify(records), /leaseToken|fingerprint|step input/i);
+});
 
 test("console client continues and resets a Nova conversation", async () => {
   const requests = [];

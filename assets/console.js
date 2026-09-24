@@ -1,4 +1,4 @@
-import { createNovaClient } from "./api-client.js";
+import { createNovaClient, durableTaskRecordsFromMessages } from "./api-client.js";
 import { ownerMemoryClient } from "./memory-client.js";
 import { selectWorkspace } from "./workspace-navigation.js";
 import { conversationTitle, createConversationHistory } from "./conversation-history.js";
@@ -117,7 +117,12 @@ function ensureLiveActivity(durableTask,{startedAt=new Date().toISOString()}={})
   record={taskId:durableTask.id,conversationId:client.conversationId||"",startedAt,node:createLiveActivityNode(durableTask.id),timer:null,completedAt:null};liveActivityRecords.set(record.taskId,record);persistLiveActivityRecords();void refreshLiveActivity(record);return record;
 }
 function stopLiveActivityPolling(){for(const record of liveActivityRecords.values())clearTimeout(record.timer);liveActivityRecords.clear();}
-function restoreLiveActivities(){for(const stored of readLiveActivityRecords().filter(item=>item.conversationId===client.conversationId)){const record={...stored,node:createLiveActivityNode(stored.taskId),timer:null};liveActivityRecords.set(stored.taskId,record);void refreshLiveActivity(record);}}
+function restoreLiveActivities(storedMessages=[]){
+  const known=new Map(readLiveActivityRecords().filter(item=>item.conversationId===client.conversationId).map(item=>[item.taskId,item]));
+  for(const item of durableTaskRecordsFromMessages(storedMessages,client.conversationId)){if(!known.has(item.taskId))known.set(item.taskId,{...item,startedAt:item.startedAt||new Date().toISOString()});}
+  for(const stored of known.values()){if(liveActivityRecords.has(stored.taskId))continue;const record={...stored,node:createLiveActivityNode(stored.taskId),timer:null};liveActivityRecords.set(stored.taskId,record);void refreshLiveActivity(record);}
+  persistLiveActivityRecords();
+}
 
 function clearConversation() {
   stopLiveActivityPolling();
@@ -159,7 +164,7 @@ async function selectConversation(id) {
     const storedMessages = await conversationHistory.select(id);
     clearConversation();
     for (const stored of storedMessages) addMessage({ role: stored.role, text: stored.content });
-    restoreLiveActivities();
+    restoreLiveActivities(storedMessages);
     if (!storedMessages.length) welcome.hidden = false;
     recentsDrawer.hidden = true; await refreshRecents(); input.focus();
   } catch (cause) {
@@ -261,7 +266,7 @@ async function restoreConversation() {
   try {
     const restored = await conversationHistory.restore(); if (!restored) return;
     for (const stored of restored.messages) addMessage({ role: stored.role, text: stored.content });
-    restoreLiveActivities();
+    restoreLiveActivities(restored.messages);
   } catch { requestError.textContent = "The previous conversation could not be restored. You can start a new chat."; requestError.hidden = false; }
 }
 
