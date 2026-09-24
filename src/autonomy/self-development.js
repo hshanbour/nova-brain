@@ -698,7 +698,7 @@ export function createSelfDevelopmentService({
     return candidates;
   };
   const resolveDiscoveryCandidates = async (request, steps) => {
-    const discovered = new Set(), searched = new Set();
+    const discovered = new Set(), searched = new Set(), discoveryEvidence = new Map();
     for (const step of steps.filter((item) => item.status === "completed" && ["inspect_repo", "search_code"].includes(item.stepType))) {
       const values = step.stepType === "inspect_repo"
         ? [...(step.result?.files || []), ...(step.result?.items || [])]
@@ -707,7 +707,20 @@ export function createSelfDevelopmentService({
         const path = discoveryPath(value);
         if (path) {
           discovered.add(path);
-          if (step.stepType === "search_code") searched.add(path);
+          const current = discoveryEvidence.get(path) || { inventory: false, matches: [] };
+          if (step.stepType === "search_code") {
+            searched.add(path);
+            const rawText = typeof value?.text === "string" ? value.text.replace(/\s+/g, " ").trim() : "", text = rawText.slice(0, 240);
+            if (text && current.matches.length < 3)
+              current.matches.push({
+                stepId: step.stepId,
+                query: String(step.input?.arguments?.query || "").slice(0, 180),
+                ...(Number.isInteger(value?.line) ? { line: value.line } : {}),
+                text,
+                truncated: rawText.length > text.length,
+              });
+          } else current.inventory = true;
+          discoveryEvidence.set(path, current);
         }
       }
     }
@@ -746,6 +759,7 @@ export function createSelfDevelopmentService({
       // mutation-authoritative planner evidence.
       .filter((path) => path.startsWith("test/") && safe(path) && sourceAssociation(path).related && testScore(path) > 0)
       .sort((a, b) => testScore(b) - testScore(a) || a.localeCompare(b)).slice(0, 6);
+    const inferredTestEvidence = new Map();
     if (!tests.length && typeof resolvePathState === "function") {
       const inferred = [];
       for (const source of sources) {
@@ -754,11 +768,31 @@ export function createSelfDevelopmentService({
       }
       for (const path of [...new Set(inferred)].slice(0, 18)) {
         const state = await resolvePathState(path, request.startingCommit);
-        if (state?.existsInCommit && !REPLAN_PROTECTED.test(path)) tests.push(path);
+        if (state?.existsInCommit && !REPLAN_PROTECTED.test(path)) {
+          tests.push(path);
+          inferredTestEvidence.set(path, focusedTestSourceRelationship(path, sources));
+        }
         if (tests.length >= 6) break;
       }
     }
-    return tests.length ? [...new Set([...sources, ...tests])].slice(0, 12) : null;
+    if (!tests.length) return null;
+    const candidatePaths = [...new Set([...sources, ...tests])].slice(0, 12), candidateEvidence = candidatePaths.map((path) => {
+      const evidence = discoveryEvidence.get(path) || { inventory: false, matches: [] }, relationship = path.startsWith("test/") ? focusedTestSourceRelationship(path, sources) : null;
+      return {
+        path,
+        role: path.startsWith("test/") ? "focused_test" : "source",
+        inventory: evidence.inventory === true,
+        matches: evidence.matches,
+        ...(path.startsWith("test/") ? {
+          relationship: relationship?.related ? {
+            sourcePath: relationship.sourcePath,
+            matchedTokens: relationship.matchedTokens,
+            basis: inferredTestEvidence.has(path) ? "existing_bound_commit_path_relation" : "repository_search_path_relation",
+          } : null,
+        } : {}),
+      };
+    });
+    return { candidatePaths, candidateEvidence };
   };
   const structuredScopeMetadata = (resolution, extra = {}) => ({
     version: resolution.version,
@@ -1549,9 +1583,10 @@ export function createSelfDevelopmentService({
         "Recovery runtime budget must be an integer from 15 to 90 minutes.",
         400,
       );
-    let resolvedCandidatePaths = input.candidatePaths ?? await resolveDiscoveryCandidates(request, steps),scopeResolution=null;
+    const discoveryResolution = input.candidatePaths ? null : await resolveDiscoveryCandidates(request, steps);
+    let resolvedCandidatePaths = input.candidatePaths ?? discoveryResolution?.candidatePaths,scopeResolution=null;
     if(!input.candidatePaths&&resolvedCandidatePaths&&structuredIntake?.resolveScope){
-      try{scopeResolution=await resolveStructuredScope({request,candidatePaths:resolvedCandidatePaths,costContext:{taskId:current.id}});}
+      try{scopeResolution=await resolveStructuredScope({request,candidatePaths:resolvedCandidatePaths,candidateEvidence:discoveryResolution.candidateEvidence,costContext:{taskId:current.id}});}
       catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409,{...error?.safeDiagnostics,recoveryTransitionScheduled:false,recoveryAttemptConsumed:false});}
       if(scopeResolution.status!=="resolved"){
         const now=clock().toISOString(),concepts=structuredScopeRecoveryConcepts(scopeResolution),attempt=scopeRecoveryHistory.length+1;
@@ -1559,7 +1594,7 @@ export function createSelfDevelopmentService({
           const base=current.metadata.steps.length,continuation=[];
           appendScopeRediscovery({steps:continuation,base,request,concepts});
           const activeContinuation=createActiveContinuation({task:current,startStep:base,plannedSteps:continuation.length,repairLimit:0,recoveryClass:STRUCTURED_SCOPE_RECOVERY_CLASS,runtimeStartedAt:now,runtimeMinutes:STRUCTURED_SCOPE_RECOVERY_RUNTIME_MINUTES}),blockedWaitStartedAt=current.completedAt||current.updatedAt||null,blockedWaitMs=blockedWaitStartedAt?Math.max(0,new Date(now).getTime()-new Date(blockedWaitStartedAt).getTime()):null;
-          const record={version:2,attempt,maxAttempts:STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS,attemptAccounting:"reserved_at_transition",fromStateVersion:current.stateVersion,baseStep:base,startingCommit:current.startingCommit,currentCommit:current.currentCommit,decisionHash:scopeResolution.decisionHash,candidatePathsHash:hash(resolvedCandidatePaths),unresolvedEvidence:(scopeResolution.unresolvedEvidence||[]).map(item=>({category:item.category,concepts:[...item.concepts]})),unresolvedEvidenceFingerprints:(scopeResolution.unresolvedEvidence||[]).map(hash),concepts,conceptsHash:hash(concepts),providerUsage:scopeResolution.providerUsage||null,continuationStepIds:continuation.map((step,index)=>`${base+index+1}:${step.type}`),continuationGenerationId:activeContinuation.generationId,runtimeWindow:{runtimeStartedAt:activeContinuation.runtimeStartedAt,runtimeDeadline:activeContinuation.runtimeDeadline,runtimeMinutes:activeContinuation.runtimeMinutes},runtimeResumeCount:0,maxRuntimeResumes:1,blockedWaitStartedAt,blockedWaitMs,status:"scheduled",createdAt:now};
+          const record={version:2,attempt,maxAttempts:STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS,attemptAccounting:"reserved_at_transition",fromStateVersion:current.stateVersion,baseStep:base,startingCommit:current.startingCommit,currentCommit:current.currentCommit,decisionHash:scopeResolution.decisionHash,candidatePathsHash:hash(resolvedCandidatePaths),candidateEvidenceHash:hash(discoveryResolution.candidateEvidence),unresolvedEvidence:(scopeResolution.unresolvedEvidence||[]).map(item=>({category:item.category,concepts:[...item.concepts]})),unresolvedEvidenceFingerprints:(scopeResolution.unresolvedEvidence||[]).map(hash),concepts,conceptsHash:hash(concepts),providerUsage:scopeResolution.providerUsage||null,continuationStepIds:continuation.map((step,index)=>`${base+index+1}:${step.type}`),continuationGenerationId:activeContinuation.generationId,runtimeWindow:{runtimeStartedAt:activeContinuation.runtimeStartedAt,runtimeDeadline:activeContinuation.runtimeDeadline,runtimeMinutes:activeContinuation.runtimeMinutes},runtimeResumeCount:0,maxRuntimeResumes:1,blockedWaitStartedAt,blockedWaitMs,status:"scheduled",createdAt:now};
           const recovered=await storage.updateAutonomyTask(current.id,ownerId,{status:"queued",currentStep:base,currentPhase:"scope_rediscovery",nextRunAt:now,completedAt:null,errorCode:null,blockedReason:null,retryCount:0,maxSteps:Math.min(100,Math.max(current.maxSteps,base+continuation.length+request.maxRepairIterations*6)),metadata:{...current.metadata,steps:[...current.metadata.steps,...continuation],requiredCapability:"repo_read_remote",autoDispatch:true,activeContinuation,continuationHistory:[...(current.metadata.continuationHistory||[]),activeContinuation],structuredScopeResolution:structuredScopeMetadata(scopeResolution,{recoveryAttempt:attempt}),structuredScopeRecoveryHistory:[...scopeRecoveryHistory,record]}},current.stateVersion);
           if(!recovered)throw new SelfDevelopmentError("version_conflict","Task changed during bounded scope rediscovery scheduling.");
           await storage.appendActivity({ownerId,projectId:current.projectId,runId:current.id,action:"self_development_scope_rediscovery_scheduled",status:"queued",summary:"Nova scheduled one bounded read-only scope rediscovery pass.",metadata:{taskId:current.id,decisionHash:scopeResolution.decisionHash,attempt,maxAttempts:STRUCTURED_SCOPE_RECOVERY_MAX_ATTEMPTS,conceptsHash:record.conceptsHash,continuationStepIds:record.continuationStepIds}});
@@ -1668,6 +1703,7 @@ export function createSelfDevelopmentService({
         previousCompletedAt: current.completedAt,
         evidenceStepIds,
         candidatePaths: candidates,
+        ...(discoveryResolution ? { candidateEvidenceHash: hash(discoveryResolution.candidateEvidence) } : {}),
         scopeSource: input.candidatePaths ? "explicit_durable_evidence" : "automatic_durable_discovery",
         scopeHash,
         createdAt: now,

@@ -1756,9 +1756,13 @@ test("one invalid structured scope result cannot strand coherent repository-grou
       },
     },
     resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&["assets/console.js","assets/console.css","test/console-static.test.js"].includes(path)}),
-    execute(name){
+    execute(name,args){
       if(name==="repo_list")return{ok:true,files:["assets/console.js","assets/console.css","test/console-static.test.js","src/autonomy/worker-runtime.js","test/self-development.test.js"]};
-      if(name==="repo_search")return{ok:true,matches:[{path:"assets/console.js"},{path:"assets/console.css"},{path:"test/console-static.test.js"}]};
+      if(name==="repo_search")return{ok:true,matches:[
+        {path:"assets/console.js",line:33,text:'const recentsDrawer = document.querySelector("#recentsDrawer");'},
+        {path:"assets/console.css",line:14,text:".recents-drawer{position:fixed}"},
+        {path:"test/console-static.test.js",line:7,text:"'assets/console.js'"},
+      ],query:args.query};
       return{ok:true};
     },
   }),created=await f.service.createTrustedIntake("Implement accessible keyboard navigation for Nova Console's recent conversations drawer and add focused regression coverage.");
@@ -1770,6 +1774,12 @@ test("one invalid structured scope result cannot strand coherent repository-grou
   assert.ok(scopeInput.candidatePaths.includes("assets/console.js"));
   assert.ok(scopeInput.candidatePaths.includes("assets/console.css"));
   assert.ok(scopeInput.candidatePaths.includes("test/console-static.test.js"));
+  assert.deepEqual(scopeInputs[1].candidateEvidence,scopeInputs[0].candidateEvidence);
+  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").matches[0].stepId,"2:search_code");
+  assert.match(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").matches[0].text,/recentsDrawer/);
+  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").matches[0].truncated,false);
+  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="test/console-static.test.js").role,"focused_test");
+  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="test/console-static.test.js").relationship.sourcePath,"assets/console.js");
   assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,["assets/console.js","assets/console.css"]);
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/console-static.test.js"]);

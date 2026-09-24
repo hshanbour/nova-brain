@@ -41,10 +41,36 @@ test("analysis-only intent remains a structured non-mutation classification",asy
 });
 
 test("scope resolution can only narrow repository-evidenced candidates and covers constraints",async()=>{
-  const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:["assets/console.js"]}],unresolvedEvidence:[]}])}),request={userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"exclude",requirement:"No Voice",enforcements:["scope_selection"]}]},result=await intake.resolveScope({request,candidatePaths:["assets/console.js","assets/voice-input.js","test/console-static.test.js"]});
+  const calls=[],intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:["assets/console.js"]}],unresolvedEvidence:[]}],calls)}),request={userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"exclude",requirement:"No Voice",enforcements:["scope_selection"]}]},candidateEvidence=[{path:"assets/console.js",role:"source",inventory:true,matches:[{stepId:"2:search_code",query:"recent conversations drawer",line:33,text:'const recentsDrawer = document.querySelector("#recentsDrawer");',truncated:false}]},{path:"assets/voice-input.js",role:"source",inventory:true,matches:[]},{path:"test/console-static.test.js",role:"focused_test",inventory:true,matches:[],relationship:{sourcePath:"assets/console.js",matchedTokens:["console"],basis:"existing_bound_commit_path_relation"}}],result=await intake.resolveScope({request,candidatePaths:["assets/console.js","assets/voice-input.js","test/console-static.test.js"],candidateEvidence});
   assert.deepEqual([...result.sourcePaths,...result.testPaths],["assets/console.js","test/console-static.test.js"]);
+  const payload=JSON.parse(calls[0].message.split("\n").at(-1));
+  assert.deepEqual(payload.candidateEvidence,candidateEvidence);
   const broaden=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/new.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:[]}],unresolvedEvidence:[]}])});
   await assert.rejects(()=>broaden.resolveScope({request,candidatePaths:["assets/console.js","test/console-static.test.js"]}),error=>error.code==="structured_scope_invalid");
+});
+
+test("scope evidence cannot introduce authority or unsupported source-test relationships",async()=>{
+  const request={userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[]},candidatePaths=["assets/console.js","test/console-static.test.js"];
+  for(const candidateEvidence of [
+    [{path:"assets/console.js",role:"source",inventory:true,matches:[]},{path:"test/other.test.js",role:"focused_test",inventory:true,matches:[]}],
+    [{path:"assets/console.js",role:"source",inventory:true,matches:[]},{path:"test/console-static.test.js",role:"focused_test",inventory:true,matches:[],relationship:{sourcePath:"assets/not-authorized.js",matchedTokens:["console"],basis:"existing_bound_commit_path_relation"}}],
+    [{path:"assets/console.js",role:"source",inventory:true,matches:[{stepId:"2:search_code",query:"drawer",line:1,text:"x".repeat(241),truncated:false}]},{path:"test/console-static.test.js",role:"focused_test",inventory:true,matches:[]}],
+  ]){
+    const intake=createSelfDevelopmentIntake({modelProvider:provider([])});
+    await assert.rejects(()=>intake.resolveScope({request,candidatePaths,candidateEvidence}),error=>error.code==="structured_scope_invalid");
+  }
+});
+
+test("scope resolution rejects filename-only, truncated, and weak test evidence even when the model selects it",async()=>{
+  const request={userGoal:"Implement drawer keyboard behavior",acceptanceCriteria:["Keyboard navigation works."],constraints:[]},candidatePaths=["assets/console.js","test/console-static.test.js"],resolved={status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[],unresolvedEvidence:[]};
+  for(const candidateEvidence of [
+    [{path:"assets/console.js",role:"source",inventory:true,matches:[]},{path:"test/console-static.test.js",role:"focused_test",inventory:true,matches:[],relationship:{sourcePath:"assets/console.js",matchedTokens:["console"],basis:"existing_bound_commit_path_relation"}}],
+    [{path:"assets/console.js",role:"source",inventory:true,matches:[{stepId:"2:search_code",query:"drawer",line:1,text:"bounded partial line",truncated:true}]},{path:"test/console-static.test.js",role:"focused_test",inventory:true,matches:[],relationship:{sourcePath:"assets/console.js",matchedTokens:["console"],basis:"existing_bound_commit_path_relation"}}],
+    [{path:"assets/console.js",role:"source",inventory:true,matches:[{stepId:"2:search_code",query:"drawer",line:1,text:"drawer handler",truncated:false}]},{path:"test/console-static.test.js",role:"focused_test",inventory:true,matches:[],relationship:null}],
+  ]){
+    const intake=createSelfDevelopmentIntake({modelProvider:provider([resolved])});
+    await assert.rejects(()=>intake.resolveScope({request,candidatePaths,candidateEvidence}),error=>error.code==="structured_scope_invalid");
+  }
 });
 
 test("unresolvable scope is represented as a bounded blocked decision",async()=>{
