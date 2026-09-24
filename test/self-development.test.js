@@ -1732,15 +1732,50 @@ test("pre-action expiry recovery fails closed when the task baseline changes",as
   expired=await f.storage.updateAutonomyTask(expired.id,OWNER,{currentCommit:NEW_SHA},expired.stateVersion);
   await rejects(f.service.recoverStructuredScope(expired.id,{expectedVersion:expired.stateVersion}),"scope_recovery_expiry_ineligible");
 });
-test("pre-transition structured resolver failure preserves the sole recovery attempt",async()=>{
+test("pre-transition structured resolver failure is retried once and preserves the sole recovery attempt",async()=>{
   const failure=Object.assign(new Error("private provider detail"),{code:"structured_intake_invalid",safeDiagnostics:{boundary:"schema_parse",reason:"invalid_json"}}),f=await structuredScopeRecoveryFixture({recoveryError:failure}),before=f.blocked;
-  await assert.rejects(()=>f.service.recoverStructuredScope(before.id,{expectedVersion:before.stateVersion}),error=>error.code==="structured_intake_invalid"&&error.safeDiagnostics?.recoveryTransitionScheduled===false&&error.safeDiagnostics?.recoveryAttemptConsumed===false);
+  await assert.rejects(()=>f.service.recoverStructuredScope(before.id,{expectedVersion:before.stateVersion}),error=>error.code==="structured_intake_invalid"&&error.safeDiagnostics?.scopeValidationAttempts===2&&error.safeDiagnostics?.recoveryTransitionScheduled===false&&error.safeDiagnostics?.recoveryAttemptConsumed===false);
+  assert.equal(f.resolutionCalls,2);
+  assert.deepEqual(f.scopeCalls[1],f.scopeCalls[0]);
   const after=await f.runtime.get(before.id);
   assert.equal(after.stateVersion,before.stateVersion);
   assert.equal(after.status,"blocked");
   assert.equal(after.currentPhase,before.currentPhase);
   assert.deepEqual(after.metadata.structuredScopeRecoveryHistory||[],[]);
   assert.equal((await f.runtime.steps(after.id)).some(step=>step.stepType==="scope_rediscovery"),false);
+});
+test("one invalid structured scope result cannot strand coherent repository-grounded discovery",async()=>{
+  let resolutionCalls=0;const scopeInputs=[];
+  const failure=Object.assign(new Error("invalid structured result"),{code:"structured_scope_invalid"}),f=await fixture({
+    structuredIntake:{
+      async specify(){return{version:1,status:"ready",intent:"implementation",objective:"Implement accessible keyboard navigation for the recent conversations drawer.",acceptanceCriteria:["Keyboard navigation works in the conversations drawer.","Focused Console regression coverage passes."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["recent conversations drawer","keyboard navigation","focused console tests"],clarificationQuestion:"",specificationHash:"a".repeat(64)};},
+      async resolveScope(input){
+        resolutionCalls+=1;scopeInputs.push(input);
+        if(resolutionCalls===1)throw failure;
+        return{version:2,status:"resolved",sourcePaths:["assets/console.js","assets/console.css"],testPaths:["test/console-static.test.js"],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[],decisionHash:"b".repeat(64)};
+      },
+    },
+    resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&["assets/console.js","assets/console.css","test/console-static.test.js"].includes(path)}),
+    execute(name){
+      if(name==="repo_list")return{ok:true,files:["assets/console.js","assets/console.css","test/console-static.test.js","src/autonomy/worker-runtime.js","test/self-development.test.js"]};
+      if(name==="repo_search")return{ok:true,matches:[{path:"assets/console.js"},{path:"assets/console.css"},{path:"test/console-static.test.js"}]};
+      return{ok:true};
+    },
+  }),created=await f.service.createTrustedIntake("Implement accessible keyboard navigation for Nova Console's recent conversations drawer and add focused regression coverage.");
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`scope-freeze-regression-${index}`});
+  const blocked=await f.runtime.get(created.task.id),result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+  assert.equal(resolutionCalls,2);
+  assert.deepEqual(scopeInputs[1],scopeInputs[0]);
+  const scopeInput=scopeInputs[1];
+  assert.ok(scopeInput.candidatePaths.includes("assets/console.js"));
+  assert.ok(scopeInput.candidatePaths.includes("assets/console.css"));
+  assert.ok(scopeInput.candidatePaths.includes("test/console-static.test.js"));
+  assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,["assets/console.js","assets/console.css"]);
+  assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/console-static.test.js"]);
+  assert.equal(result.task.metadata.structuredScopeResolution.validationAttempts,2);
+  assert.ok(result.continuationSteps.indexOf("read_files")<result.continuationSteps.indexOf("plan_implementation"));
+  assert.equal((await f.runtime.steps(result.task.id)).some(step=>step.stepType==="apply_patch"&&step.status==="completed"),false);
 });
 test("historical version-one unresolved scope metadata remains recoverable on the same task",async()=>{
   const f=await structuredScopeRecoveryFixture(),historical=await f.storage.updateAutonomyTask(f.blocked.id,OWNER,{metadata:{...f.blocked.metadata,structuredScopeResolution:{version:1,status:"blocked",unresolvedPrerequisiteFingerprints:["a".repeat(64)]},structuredScopeRecoveryHistory:[]}},f.blocked.stateVersion);

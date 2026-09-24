@@ -765,6 +765,7 @@ export function createSelfDevelopmentService({
     status: resolution.status,
     decisionHash: resolution.decisionHash,
     providerUsage: resolution.providerUsage || null,
+    validationAttempts: resolution.validationAttempts || 1,
     unresolvedEvidence: (resolution.unresolvedEvidence || []).map((item) => ({
       category: item.category,
       concepts: [...item.concepts],
@@ -782,6 +783,30 @@ export function createSelfDevelopmentService({
         .filter((item) => item.length >= 2 && item.length <= 80 && /^[a-z0-9][a-z0-9 _-]*$/i.test(item)),
     ),
   ].slice(0, DISCOVERY_MAX_QUERIES);
+  const resolveStructuredScope = async (input) => {
+    let lastError;
+    for (let validationAttempts = 1; validationAttempts <= 2; validationAttempts += 1) {
+      try {
+        return {
+          ...(await structuredIntake.resolveScope(input)),
+          validationAttempts,
+        };
+      } catch (error) {
+        lastError = error;
+        if (
+          validationAttempts === 2 ||
+          !["structured_intake_invalid", "structured_scope_invalid"].includes(error?.code)
+        )
+          throw Object.assign(error, {
+            safeDiagnostics: {
+              ...error?.safeDiagnostics,
+              scopeValidationAttempts: validationAttempts,
+            },
+          });
+      }
+    }
+    throw lastError;
+  };
   const appendScopeRediscovery = ({ steps, base, request, concepts }) => {
     const recoveryRequest = {
       ...request,
@@ -1526,7 +1551,7 @@ export function createSelfDevelopmentService({
       );
     let resolvedCandidatePaths = input.candidatePaths ?? await resolveDiscoveryCandidates(request, steps),scopeResolution=null;
     if(!input.candidatePaths&&resolvedCandidatePaths&&structuredIntake?.resolveScope){
-      try{scopeResolution=await structuredIntake.resolveScope({request,candidatePaths:resolvedCandidatePaths,costContext:{taskId:current.id}});}
+      try{scopeResolution=await resolveStructuredScope({request,candidatePaths:resolvedCandidatePaths,costContext:{taskId:current.id}});}
       catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409,{...error?.safeDiagnostics,recoveryTransitionScheduled:false,recoveryAttemptConsumed:false});}
       if(scopeResolution.status!=="resolved"){
         const now=clock().toISOString(),concepts=structuredScopeRecoveryConcepts(scopeResolution),attempt=scopeRecoveryHistory.length+1;
