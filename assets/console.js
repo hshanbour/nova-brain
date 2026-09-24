@@ -68,6 +68,7 @@ function persistLiveActivityRecords(){try{const retained=readLiveActivityRecords
 function elapsedLabel(startedAt,endedAt){const start=new Date(startedAt).valueOf(),end=endedAt?new Date(endedAt).valueOf():Date.now();if(!Number.isFinite(start)||!Number.isFinite(end))return"";const seconds=Math.max(0,Math.floor((end-start)/1000)),minutes=Math.floor(seconds/60),hours=Math.floor(minutes/60);return hours?`${hours}h ${minutes%60}m`:minutes?`${minutes}m ${seconds%60}s`:`${seconds}s`;}
 function safeProgressLabel(task,activity=[]){
   if(task.status==="waiting_for_approval")return"Waiting for your approval";
+  if(task.status==="blocked"||task.status==="paused"||terminalTaskStates.has(task.status))return taskStatusLabels[task.status]||"Working on it…";
   const action=activity.find(item=>typeof item?.action==="string")?.action||"",phase=String(task.currentPhase||"");
   if(/deploy/.test(action+phase))return"Deploying Preview";
   if(/push/.test(action+phase))return"Pushing to GitHub";
