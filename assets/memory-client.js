@@ -22,6 +22,9 @@ export const ownerMemoryClient = Object.freeze({
   messages: (id, { offset = 0, limit = 100 } = {}) => request(`/api/conversations/${encodeURIComponent(id)}/messages?limit=${limit}&offset=${offset}`),
   projects: () => request("/api/projects"),
   activity: () => request("/api/activity"),
+  task: (id) => request(`/api/autonomy/tasks/${encodeURIComponent(id)}`),
+  taskActivity: (id) => request(`/api/activity?runId=${encodeURIComponent(id)}&limit=100`),
+  cancelTask: (id) => request(`/api/autonomy/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   tools: () => request("/api/tools"),
   approvals: () => request("/api/approvals"),
   decideApproval: (id, decision) => request(`/api/approvals/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) })

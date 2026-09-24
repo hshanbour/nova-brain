@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createNovaClient, NovaApiError } from "../assets/api-client.js";
+import { ownerMemoryClient } from "../assets/memory-client.js";
 
 const jsonResponse = (body, { ok = true, status = 200 } = {}) => ({ ok, status, async json() { return body; } });
 
@@ -31,4 +32,23 @@ test("console client forwards cancellation and preserves AbortError", async () =
   const client = createNovaClient({ fetchImpl: async (_url, options) => { receivedSignal = options.signal; const error = new Error("cancelled"); error.name = "AbortError"; throw error; } });
   await assert.rejects(() => client.send("Cancel this turn", { signal: controller.signal }), (error) => error.name === "AbortError");
   assert.equal(receivedSignal, controller.signal);
+});
+
+test("console clients use the existing task activity approval and cancellation contracts", async () => {
+  const requests=[],originalFetch=globalThis.fetch;
+  globalThis.fetch=async(url,options={})=>{requests.push({url,method:options.method||"GET",body:options.body});return jsonResponse({task:{id:"selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},activity:[],approvals:[]});};
+  try{
+    await ownerMemoryClient.task("selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await ownerMemoryClient.taskActivity("selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await ownerMemoryClient.cancelTask("selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await ownerMemoryClient.approvals();
+    await ownerMemoryClient.decideApproval("approval-1","approved");
+  }finally{globalThis.fetch=originalFetch;}
+  assert.deepEqual(requests,[
+    {url:"/api/autonomy/tasks/selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",method:"GET",body:undefined},
+    {url:"/api/activity?runId=selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&limit=100",method:"GET",body:undefined},
+    {url:"/api/autonomy/tasks/selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/cancel",method:"POST",body:undefined},
+    {url:"/api/approvals",method:"GET",body:undefined},
+    {url:"/api/approvals/approval-1/decision",method:"POST",body:JSON.stringify({decision:"approved"})},
+  ]);
 });
