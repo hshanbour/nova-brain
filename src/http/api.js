@@ -53,6 +53,7 @@ import { SelfDevelopmentError } from "../autonomy/self-development.js";
 import { DeveloperSessionError } from "../autonomy/developer-session-adapter.js";
 import { DeveloperSessionSmokeError } from "../autonomy/developer-session-smoke.js";
 import { DeveloperWorkspaceHandoffError } from "../autonomy/developer-workspace-handoff.js";
+import { OpenAIProviderError } from "../providers/openai-model-provider.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -2101,6 +2102,17 @@ export function createApi({
         }
         if (error instanceof AgentDeadlineError) {
           sendJson(response, 504, { error: error.message });
+          return;
+        }
+        if (error instanceof OpenAIProviderError) {
+          const upstreamCode=error.safeDiagnostics?.upstreamErrorCode;
+          const message=upstreamCode==="credit_balance_exhausted"||upstreamCode==="insufficient_quota"
+            ? "Nova's model provider has no available API credit. Please try again after credit is restored."
+            : upstreamCode==="rate_limit_exceeded"
+              ? "Nova's model provider is temporarily rate limited. Please try again shortly."
+              : "Nova's model provider is temporarily unavailable. Please try again.";
+          logger.error("Nova model provider unavailable",{requestId,runId:error.runId,upstreamStatus:error.upstreamStatus,diagnostics:error.safeDiagnostics});
+          sendJson(response, 503, { error: message, code: "MODEL_PROVIDER_UNAVAILABLE", requestId });
           return;
         }
         if (error?.name === "AbortError") {

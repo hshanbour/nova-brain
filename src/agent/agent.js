@@ -161,6 +161,25 @@ export function createAgent({
           const task=existingTaskRoute.task;
           systemContext=`${systemContext}\n\nEXISTING DURABLE TASK CONTROL: This turn targets exactly task ${task.id} at stateVersion ${task.stateVersion}, status ${task.status}, phase ${task.currentPhase||"unknown"}. Do not create a task or broaden authority. Use only the exposed task-bound tools, preserve exact task/version CAS, and fail closed if the requested transition is ineligible.`;
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"existing_task_control_routed",status:"completed",summary:"Existing durable task control routed to the bounded Chat tool path.",metadata:{route:existingTaskRoute.route,action:existingTaskRoute.action,taskId:task.id,status:task.status,stateVersion:task.stateVersion,expectedVersion:existingTaskRoute.expectedVersion}});
+          if(existingTaskRoute.action==="recovery"){
+            const expectedVersion=Number.isInteger(existingTaskRoute.expectedVersion)?existingTaskRoute.expectedVersion:task.stateVersion;
+            const arguments_={taskId:task.id,expectedVersion};
+            await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"tool_started",tool:"self_development_scope_recover",status:"running",summary:"Started bounded task recovery.",metadata:toolActivityMetadata("self_development_scope_recover",arguments_)});
+            try{
+              executionSignal.throwIfAborted();
+              const result=await toolRegistry.execute("self_development_scope_recover",arguments_,{...trustedContext,runId:run.id,signal:executionSignal});
+              executionSignal.throwIfAborted();
+              const recovered=result?.task||task,taskControl={taskId:task.id,status:recovered.status||null,stateVersion:Number.isInteger(recovered.stateVersion)?recovered.stateVersion:null},response={id:randomUUID(),conversationId,message:`Durable task ${task.id} recovery was accepted. Its current state is ${recovered.status||"queued"}.`,provider:"durable_runtime",toolCalls:[{id:`recovery:${task.id}:${expectedVersion}`,name:"self_development_scope_recover",arguments:arguments_,status:"completed",result:taskControl}],steps:0,runId:run.id,runStatus:"task_recovered",taskControl};
+              await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"tool_completed",tool:"self_development_scope_recover",status:"completed",summary:"Bounded task recovery completed.",metadata:{taskId:task.id,expectedVersion}});
+              await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
+              await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:{message:response.message,taskControl:response.taskControl,providerUsage},completedAt:new Date().toISOString()});
+              return response;
+            }catch(error){
+              const safeError=safeToolError(error,"self_development_scope_recover");
+              await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"tool_failed",tool:"self_development_scope_recover",status:"failed",summary:toolErrorSummary(safeError,"self_development_scope_recover"),metadata:toolActivityMetadata("self_development_scope_recover",arguments_,safeError)});
+              throw error;
+            }
+          }
         }
         const allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
         const durable = speakerRestricted||existingTaskRoute ? null : await routeDurableRequest({message, context: trustedContext, requestId, signal: executionSignal});

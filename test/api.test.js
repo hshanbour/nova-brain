@@ -1197,7 +1197,7 @@ test("focused-test evidence recovery is exact-task and scoped-worker protected",
   assert.equal(taskId, "exact-task");
 });
 
-test("API logs bounded structured OpenAI diagnostics while returning a generic error", async () => {
+test("API logs bounded structured OpenAI diagnostics while returning an actionable safe error", async () => {
   const entries = [];
   const upstream = new OpenAIProviderError(
     400,
@@ -1235,14 +1235,22 @@ test("API logs bounded structured OpenAI diagnostics while returning a generic e
     }),
     res,
   );
-  assert.equal(res.statusCode, 500);
-  assert.deepEqual(JSON.parse(res.body), { error: "Internal server error" });
+  assert.equal(res.statusCode, 503);
+  const payload=JSON.parse(res.body);
+  assert.equal(payload.code,"MODEL_PROVIDER_UNAVAILABLE");
+  assert.match(payload.error,/temporarily unavailable/);
+  assert.match(payload.requestId,/^[0-9a-f-]{36}$/);
   assert.match(res.headers.get("x-request-id"), /^[0-9a-f-]{36}$/);
   assert.equal(entries[0][1].upstreamStatus, 400);
   assert.equal(entries[0][1].runId, "run-safe-id");
   assert.equal(entries[0][1].diagnostics.upstreamStatus, 400);
   assert.equal(entries[0][1].diagnostics.upstreamErrorMessage, "invalid schema [redacted]");
   assert.equal(JSON.stringify(entries).includes("sk-secret-value"), false);
+});
+test("API identifies exhausted model credit without exposing upstream bodies",async()=>{
+  const upstream=new OpenAIProviderError(429,JSON.stringify({error:{type:"insufficient_quota",code:"credit_balance_exhausted",message:"secret account detail"}}),{stage:"intake",model:"gpt-6-luna"}),app=createApi({agent:{tools:{list(){return[];}},async run(){throw upstream;}},config:{allowedOrigins:[],maxBodyBytes:64*1024},storage:{provider:"memory",durable:false},initialize:async()=>{},ownerId:"owner",logger:{error(){}}}),res=response();
+  await app.handle(request({method:"POST",url:"/api/agent",headers:{"content-type":"application/json"},body:JSON.stringify({message:"Hello."})}),res);
+  assert.equal(res.statusCode,503);const payload=JSON.parse(res.body);assert.equal(payload.code,"MODEL_PROVIDER_UNAVAILABLE");assert.match(payload.error,/no available API credit/);assert.equal(res.body.includes("secret account detail"),false);
 });
 test("create-conflict recovery is exact-task and scoped-worker protected", async () => {
   let taskId;
