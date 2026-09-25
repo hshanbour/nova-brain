@@ -149,6 +149,7 @@ export function registerWorkerTools(registry, { runtime, taskMigration, codingEx
         delivery: { type: "object" },
         verification: { type: "array" },
       }, ["jobId", "parentTaskId", "objective", "acceptanceCriteria", "repository", "projectId", "workspaceId", "delivery"]),
+      validate: (input) => codingExecutor.validatePrepared(input),
       execute: (input, context) => codingExecutor.create({
         ...input,
         approval: { buildApproved: true, approvalId: context?.approvalId },

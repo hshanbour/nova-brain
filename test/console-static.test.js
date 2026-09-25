@@ -55,6 +55,7 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(consoleJs, /item\?\.arguments\?\.taskId===task\.id/);
   assert.match(consoleJs, /ownerMemoryClient\.cancelTask/);
   assert.match(consoleJs, /ownerMemoryClient\.decideApproval/);
+  assert.match(consoleJs, /showLiveActivityError\(record,cause\.message\);await refreshLiveActivity\(record\)\.catch\(\(\)=>\{\}\)/);
   assert.match(consoleJs, /liveActivityStorageKey/);
   assert.match(consoleJs, /taskErrorLabels\[task\.errorCode\]/);
   assert.doesNotMatch(consoleJs, /live-activity[\s\S]{0,500}JSON\.stringify\(task/);

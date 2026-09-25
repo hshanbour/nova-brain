@@ -4,6 +4,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const SECRET = /(?:sk-[A-Za-z0-9_-]{16,}|(?:api[_-]?key|password|passcode|bearer|authorization)\s*[:=]\s*\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----|seed\s+phrase\s*[:=]\s*\S+)/i;
 const TERMINAL = new Set(["completed", "failed", "cancelled", "expired", "blocked"]);
+const CODING_SPECIFICATION_VERSION = 1;
 
 export class CodingExecutorError extends Error {
   constructor(code, message, statusCode = 409) {
@@ -39,6 +40,24 @@ function hash(value) {
   return createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
 
+export function immutableCodingSpecification(value) {
+  return Object.freeze({
+    version: CODING_SPECIFICATION_VERSION,
+    jobId: value.jobId,
+    parentTaskId: value.parentTaskId,
+    objective: value.objective,
+    acceptanceCriteria: value.acceptanceCriteria,
+    constraints: value.constraints,
+    repository: value.repository,
+    projectId: value.projectId,
+    workspaceId: value.workspaceId,
+    delivery: value.delivery,
+    verification: value.verification,
+  });
+}
+
+export const codingSpecificationHash = (value) => hash(immutableCodingSpecification(value));
+
 function normalizeBindings(bindings) {
   const result = new Map();
   for (const binding of bindings || []) {
@@ -72,7 +91,7 @@ export function configuredCodingBindings(environment = process.env, fallback = {
     : [];
 }
 
-function normalizeJob(input, binding) {
+function normalizeJob(input, binding, { requireApproval = true } = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) fail("coding_job_invalid", "A structured coding job is required.", 400);
   const jobId = text(input.jobId, "jobId", 128);
   const parentTaskId = text(input.parentTaskId, "parentTaskId", 128);
@@ -91,9 +110,8 @@ function normalizeJob(input, binding) {
   if (!delivery || delivery.boundary !== "local_commit" || delivery.allowPush === true || delivery.allowDeploy === true) {
     fail("coding_delivery_boundary_rejected", "Coding jobs are limited to a local commit; push and deployment require separate approval.", 403);
   }
-  if (input.approval?.buildApproved !== true) fail("coding_build_approval_required", "The build stage requires explicit owner approval.", 403);
-  return Object.freeze({
-    version: 1,
+  if (requireApproval && input.approval?.buildApproved !== true) fail("coding_build_approval_required", "The build stage requires explicit owner approval.", 403);
+  const specification = immutableCodingSpecification({
     jobId,
     parentTaskId,
     objective: text(input.objective, "objective", 8_000),
@@ -103,9 +121,11 @@ function normalizeJob(input, binding) {
     projectId,
     workspaceId,
     delivery: Object.freeze({ boundary: "local_commit", allowPush: false, allowDeploy: false }),
-    approval: Object.freeze({ buildApproved: true, approvalId: text(input.approval.approvalId, "approval.approvalId", 128) }),
     verification: strings(input.verification || [], "verification", { max: 30 }),
   });
+  return requireApproval
+    ? Object.freeze({ ...specification, approval: Object.freeze({ buildApproved: true, approvalId: text(input.approval.approvalId, "approval.approvalId", 128) }) })
+    : specification;
 }
 
 function publicResult(task, steps) {
@@ -138,18 +158,27 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
     throw new Error("Coding executor requires the durable task runtime and storage.");
   }
   const trusted = normalizeBindings(bindings);
+  const validatePrepared = async (input, options) => {
+    const binding = trusted.get(input?.projectId);
+    const job = normalizeJob(input, binding, options);
+    const parent = await storage.getAutonomyTask(job.parentTaskId, ownerId);
+    if (!parent) fail("coding_parent_task_not_found", "The parent Nova task was not found.", 404);
+    if (parent.projectId !== job.projectId || parent.branch !== job.repository.branch || parent.currentCommit !== job.repository.baseline) {
+      fail("coding_parent_binding_changed", "The parent task no longer matches the trusted coding baseline.");
+    }
+    const prepared = parent.metadata?.codingDelegation;
+    if (parent.taskType === "coding_orchestration" && prepared?.codingJobHash !== codingSpecificationHash(job)) {
+      fail("coding_parent_specification_changed", "The approved coding job no longer matches its prepared parent task.");
+    }
+    return { job, parent };
+  };
   return Object.freeze({
+    async validatePrepared(input) {
+      const { job } = await validatePrepared(input, { requireApproval: false });
+      return { ok: true, specificationHash: codingSpecificationHash(job) };
+    },
     async create(input) {
-      const binding = trusted.get(input?.projectId);
-      const job = normalizeJob(input, binding);
-      const parent = await storage.getAutonomyTask(job.parentTaskId, ownerId);
-      if (!parent) fail("coding_parent_task_not_found", "The parent Nova task was not found.", 404);
-      if (parent.projectId !== job.projectId || parent.branch !== job.repository.branch || parent.currentCommit !== job.repository.baseline) {
-        fail("coding_parent_binding_changed", "The parent task no longer matches the trusted coding baseline.");
-      }
-      const prepared=parent.metadata?.codingDelegation;
-      if(parent.taskType==="coding_orchestration"&&prepared?.codingJobHash!==hash({...job,approval:undefined}))
-        fail("coding_parent_specification_changed","The approved coding job no longer matches its prepared parent task.");
+      const { job } = await validatePrepared(input, { requireApproval: true });
       const taskId = `coding_${hash([job.parentTaskId, job.jobId]).slice(0, 32)}`;
       const existing = await storage.getAutonomyTask(taskId, ownerId);
       const jobHash = hash(job);

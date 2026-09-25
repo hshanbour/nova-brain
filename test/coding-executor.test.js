@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCodingExecutorService } from "../src/autonomy/coding-executor.js";
+import { codingSpecificationHash, createCodingExecutorService, immutableCodingSpecification } from "../src/autonomy/coding-executor.js";
 import { createCodexCliRunner, registerCodexExecutorTool } from "../src/tools/codex-executor-tool.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
@@ -17,8 +17,9 @@ const runFile = promisify(execFile);
 const OWNER = "owner";
 const BASE = "a".repeat(40);
 
-function harness() {
-  const tasks = new Map([["parent-1", { id: "parent-1", ownerId: OWNER, projectId: "nova-brain", branch: "feature", currentCommit: BASE, status: "planning" }]]);
+function harness({ prepared = false } = {}) {
+  const canonical = immutableCodingSpecification(request({ approval: undefined }));
+  const tasks = new Map([["parent-1", { id: "parent-1", ownerId: OWNER, projectId: "nova-brain", branch: "feature", currentCommit: BASE, status: "planning", stateVersion: 1, taskType: prepared ? "coding_orchestration" : "project", metadata: prepared ? { codingDelegation: { version: 1, codingJob: canonical, codingJobHash: codingSpecificationHash(canonical) } } : {} }]]);
   const steps = new Map();
   const activities = [];
   const storage = {
@@ -72,6 +73,28 @@ test("approved coding delegation creates one durable parent-linked Codex task", 
   assert.equal(tasks.size, 2);
   assert.equal(activities.at(-1).action, "coding_job_prepared");
   assert.doesNotMatch(JSON.stringify(first), /api[_ -]?key|bearer\s+/i);
+});
+
+test("prepared specification remains approval-stable across parent lifecycle changes and rejects semantic mutation", async () => {
+  const { service, tasks } = harness({ prepared: true });
+  const exact = request({ approval: undefined });
+  const validated = await service.validatePrepared(exact);
+  assert.equal(validated.specificationHash, codingSpecificationHash(exact));
+  Object.assign(tasks.get("parent-1"), { status: "waiting_for_approval", stateVersion: 7, currentPhase: "approval", updatedAt: new Date().toISOString(), approvalState: { approvalId: "approval-1", approved: false } });
+  const first = await service.create(request());
+  const duplicate = await service.create(request());
+  assert.equal(first.duplicate, false);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(first.task.metadata.parentTaskId, "parent-1");
+  assert.deepEqual(first.task.metadata.codingJob.delivery, { boundary: "local_commit", allowPush: false, allowDeploy: false });
+  for (const changed of [
+    { objective: "Changed objective." },
+    { acceptanceCriteria: ["Different acceptance."] },
+    { constraints: ["Different authority."] },
+    { repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline: "b".repeat(40) } },
+    { delivery: { boundary: "local_commit", allowPush: true, allowDeploy: false } },
+    { verification: ["Different verification."] },
+  ]) await assert.rejects(service.validatePrepared({ ...exact, ...changed }), error => ["coding_parent_specification_changed", "coding_parent_binding_changed", "coding_delivery_boundary_rejected"].includes(error.code));
 });
 
 test("a durable coding delegation routes exactly once to the bounded local Codex worker", async () => {

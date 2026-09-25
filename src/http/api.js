@@ -1897,6 +1897,17 @@ export function createApi({
                 });
               if(codingParent&&execution?.task?.id)await storage.updateAutonomyTask(codingParent.id,ownerId,{status:"completed",currentPhase:"delegated_coding",completedAt:new Date().toISOString(),metadata:{...codingParent.metadata,delegatedTaskId:execution.task.id}},codingParent.stateVersion);
             } catch (error) {
+              if (codingParent) {
+                const failureCode = /^[a-z0-9_:-]{1,80}$/.test(String(error?.code || "")) ? String(error.code) : "approved_action_failed";
+                await storage.updateAutonomyTask(codingParent.id, ownerId, {
+                  status: "failed",
+                  currentPhase: "approval",
+                  errorCode: failureCode,
+                  blockedReason: "Approved coding action failed safely.",
+                  completedAt: new Date().toISOString(),
+                  approvalState: { ...codingParent.approvalState, approved: true, failureCode },
+                }, codingParent.stateVersion);
+              }
               await storage.appendActivity({
                 ownerId,
                 projectId: approval.projectId,

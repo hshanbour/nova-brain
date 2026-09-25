@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createCodingDelegationService, codingDelegationFingerprint, isChatCodingDelegationRequest } from "../src/autonomy/coding-delegation.js";
+import { codingSpecificationHash } from "../src/autonomy/coding-executor.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
@@ -29,6 +30,7 @@ test("preparation selects only the trusted project, resolves a fresh baseline, a
   assert.equal(first.task.taskType,"coding_orchestration");assert.equal(first.task.metadata.autoDispatch,false);
   assert.deepEqual(first.codingJob.repository,{slug:"hshanbour/nova-brain",branch:"feature",baseline:BASE});
   assert.deepEqual(first.codingJob.delivery,{boundary:"local_commit",allowPush:false,allowDeploy:false});
+  assert.equal(first.codingJob.version,1);assert.equal(first.task.metadata.codingDelegation.codingJobHash,codingSpecificationHash(first.codingJob));
   assert.equal(first.codingJob.parentTaskId,first.task.id);assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,1);
 });
 

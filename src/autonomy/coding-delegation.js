@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { codingSpecificationHash, immutableCodingSpecification } from "./coding-executor.js";
 
 const CODING_ACTION = /\b(?:build|code|implement|fix|improve|change|update|finish|repair|refactor|add)\b/i;
 const CODEX_DELEGATION = /\b(?:use|delegate|hand\s*off|assign|send)\b[\s\S]{0,80}\bCodex\b|\bCodex\b[\s\S]{0,80}\b(?:coding|executor|implement|engineer)/i;
@@ -58,7 +59,7 @@ export function createCodingDelegationService({ runtime, storage, ownerId, bindi
       }
       const parentTaskId = `orchestration_${digest(["coding-delegation-v1", requestFingerprint, binding.projectId, binding.repository, binding.branch, remote.currentTip]).slice(0, 32)}`;
       const jobId = `job_${digest([parentTaskId, "codex-local-v1"]).slice(0, 32)}`;
-      const job = Object.freeze({
+      const job = immutableCodingSpecification({
         jobId,
         parentTaskId,
         objective,
@@ -87,7 +88,7 @@ export function createCodingDelegationService({ runtime, storage, ownerId, bindi
         metadata: {
           autoDispatch: false,
           parentTask: true,
-          codingDelegation: { version: 1, requestFingerprint, codingJob: job, codingJobHash: digest(job) },
+          codingDelegation: { version: 1, requestFingerprint, codingJob: job, codingJobHash: codingSpecificationHash(job) },
           steps: [],
         },
       });
