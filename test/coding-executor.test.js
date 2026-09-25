@@ -318,6 +318,10 @@ test("Codex CLI runner binds repository, strips secrets, verifies the local comm
   await runFile("git", ["commit", "-m", "baseline"], { cwd: root });
   await runFile("git", ["remote", "add", "origin", "https://github.com/hshanbour/nova-brain.git"], { cwd: root });
   const baseline = (await runFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+  await writeFile(join(root, "local-only.js"), "export const localOnly = true;\n");
+  await runFile("git", ["add", "local-only.js"], { cwd: root });
+  await runFile("git", ["commit", "-m", "newer local checkout"], { cwd: root });
+  const sourceHead = (await runFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
   const gitExecutable = process.platform === "win32" ? (await runFile("where.exe", ["git"])).stdout.split(/\r?\n/).find(Boolean) : (await runFile("which", ["git"])).stdout.trim();
   let observed;
   const runner = createCodexCliRunner({
@@ -326,18 +330,23 @@ test("Codex CLI runner binds repository, strips secrets, verifies the local comm
     environment: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, TEMP: process.env.TEMP, USERPROFILE: process.env.USERPROFILE, CODEX_HOME: process.env.CODEX_HOME, OPENAI_API_KEY: "must-not-leak" },
     async authProcess(command, args) { assert.equal(command, process.execPath);assert.deepEqual(args, ["login", "status"]);return { stdout: "", stderr: "", code: 0 }; },
     async spawnProcess(command, args, options) {
-      observed = { command, args, env: options.env, input: options.input };
-      await writeFile(join(root, "source.js"), "export const value = 2;\n");
-      await runFile("git", ["add", "source.js"], { cwd: root });
-      await runFile("git", ["commit", "-m", "implement change"], { cwd: root });
-      const finalSha = (await runFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+      observed = { command, args, env: options.env, input: options.input, cwd: options.cwd };
+      assert.notEqual(options.cwd, root);
+      assert.equal((await runFile("git", ["rev-parse", "HEAD"], { cwd: options.cwd })).stdout.trim(), baseline);
+      assert.equal((await runFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: options.cwd })).stdout.trim(), "HEAD");
+      await assert.rejects(readFile(join(options.cwd, "local-only.js")));
+      await writeFile(join(options.cwd, "source.js"), "export const value = 2;\n");
+      await runFile("git", ["add", "source.js"], { cwd: options.cwd });
+      await runFile("git", ["commit", "-m", "implement change"], { cwd: options.cwd });
+      const finalSha = (await runFile("git", ["rev-parse", "HEAD"], { cwd: options.cwd })).stdout.trim();
       const output = { status: "completed", summary: "Implemented and tested.", repository: "hshanbour/nova-brain", baseline, finalLocalSha: finalSha, filesChanged: ["source.js"], tests: [{ command: "node --test", status: "passed", summary: null }], limitations: [], pushOccurred: false, deploymentOccurred: false, approvalsRequiredNext: ["push"], failure: null };
       await writeFile(args[args.indexOf("--output-last-message") + 1], JSON.stringify(output));
       options.onLine(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 100, output_tokens: 25 } }));
       return { stdout: "", stderr: "", code: 0 };
     },
   });
-  const result = await runner(request({ repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline } }), { root, repository: "hshanbour/nova-brain", branch: "feature" });
+  const taskId = `coding_${"c".repeat(32)}`;
+  const result = await runner(request({ repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline } }), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId });
   assert.equal(result.status, "completed");
   assert.equal(observed.command, process.execPath);
   assert.deepEqual(result.filesChanged, ["source.js"]);
@@ -348,6 +357,11 @@ test("Codex CLI runner binds repository, strips secrets, verifies the local comm
   assert.ok(observed.args.includes("--ephemeral"));
   assert.ok(observed.args.includes("--ignore-user-config"));
   assert.ok(observed.args.includes("workspace-write"));
+  assert.equal((await runFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim(), sourceHead);
+  assert.equal((await runFile("git", ["status", "--porcelain=v1"], { cwd: root })).stdout.trim(), "");
+  assert.equal((await runFile("git", ["rev-parse", `refs/nova/coding-jobs/${taskId}`], { cwd: root })).stdout.trim(), result.finalLocalSha);
+  assert.equal(result.executor.localRef, `refs/nova/coding-jobs/${taskId}`);
+  assert.equal(((await runFile("git", ["worktree", "list", "--porcelain"], { cwd: root })).stdout.match(/^worktree /gm) || []).length, 1);
 });
 
 test("executor preflight fails safely for missing executables, workspace, or authentication", async (t) => {
@@ -355,13 +369,35 @@ test("executor preflight fails safely for missing executables, workspace, or aut
   t.after(() => rm(root, { recursive: true, force: true }));
   const missing = join(root, "missing.exe"), missingWorkspace = join(root, "missing-workspace");
   const base = { executable: process.execPath, gitExecutable: process.execPath, authProcess: async () => ({ stdout: "", stderr: "", code: 0 }), spawnProcess: async () => { throw new Error("must not launch"); }, gitProcess: async () => { throw new Error("must not launch"); } };
-  await assert.rejects(createCodexCliRunner({ ...base, executable: missing })(request(), { root, repository: "hshanbour/nova-brain", branch: "feature" }), (error) => error.code === "coding_executor_codex_executable_missing");
-  await assert.rejects(createCodexCliRunner({ ...base, gitExecutable: missing })(request(), { root, repository: "hshanbour/nova-brain", branch: "feature" }), (error) => error.code === "coding_executor_git_executable_missing");
-  await assert.rejects(createCodexCliRunner(base)(request(), { root: missingWorkspace, repository: "hshanbour/nova-brain", branch: "feature" }), (error) => error.code === "coding_executor_workspace_missing");
+  const taskId = `coding_${"d".repeat(32)}`;
+  await assert.rejects(createCodexCliRunner({ ...base, executable: missing })(request(), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId }), (error) => error.code === "coding_executor_codex_executable_missing");
+  await assert.rejects(createCodexCliRunner({ ...base, gitExecutable: missing })(request(), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId }), (error) => error.code === "coding_executor_git_executable_missing");
+  await assert.rejects(createCodexCliRunner(base)(request(), { root: missingWorkspace, repository: "hshanbour/nova-brain", branch: "feature", taskId }), (error) => error.code === "coding_executor_workspace_missing");
   let launched = false;
   const authFailure = createCodexCliRunner({ ...base, authProcess: async () => { throw Object.assign(new Error("not logged in"), { safeDiagnostics: { exitCode: 1 } }); }, spawnProcess: async () => { launched = true; } });
-  await assert.rejects(authFailure(request(), { root, repository: "hshanbour/nova-brain", branch: "feature" }), (error) => error.code === "coding_executor_auth_unavailable" && error.safeDiagnostics.exitCode === 1);
+  await assert.rejects(authFailure(request(), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId }), (error) => error.code === "coding_executor_auth_unavailable" && error.safeDiagnostics.exitCode === 1);
   assert.equal(launched, false);
+});
+
+test("executor rejects an unavailable approved baseline before launching Codex and retains bounded diagnostics", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "nova-codex-missing-baseline-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await runFile("git", ["init", "-b", "feature"], { cwd: root });
+  await runFile("git", ["config", "user.email", "nova@example.invalid"], { cwd: root });
+  await runFile("git", ["config", "user.name", "Nova Test"], { cwd: root });
+  await writeFile(join(root, "source.js"), "export const value = 1;\n");
+  await runFile("git", ["add", "source.js"], { cwd: root });
+  await runFile("git", ["commit", "-m", "local baseline"], { cwd: root });
+  await runFile("git", ["remote", "add", "origin", "https://github.com/hshanbour/nova-brain.git"], { cwd: root });
+  const gitExecutable = process.platform === "win32" ? (await runFile("where.exe", ["git"])).stdout.split(/\r?\n/).find(Boolean) : (await runFile("which", ["git"])).stdout.trim();
+  let launched = false;
+  const runner = createCodexCliRunner({ executable: process.execPath, gitExecutable, authProcess: async () => ({ stdout: "", stderr: "", code: 0 }), spawnProcess: async () => { launched = true; } });
+  await assert.rejects(
+    runner(request({ repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline: "f".repeat(40) } }), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId: `coding_${"e".repeat(32)}` }),
+    (error) => error.code === "coding_executor_baseline_unavailable" && error.safeDiagnostics.stage === "workspace_preflight" && error.safeDiagnostics.executorLaunched === false,
+  );
+  assert.equal(launched, false);
+  assert.equal(((await runFile("git", ["worktree", "list", "--porcelain"], { cwd: root })).stdout.match(/^worktree /gm) || []).length, 1);
 });
 
 test("Codex tool fails closed with a machine-readable result without broad authority", async () => {

@@ -102,39 +102,63 @@ function usageFromEvent(event) {
 }
 
 export function createCodexCliRunner({ executable = "codex", gitExecutable = "git", environment = process.env, spawnProcess = runProcess, gitProcess = runProcess, authProcess = runProcess, clock = () => new Date() } = {}) {
-  return async function run(job, { root, repository, branch, signal, onProgress } = {}) {
-    const cwd = resolve(root);
+  return async function run(job, { root, repository, branch, taskId, signal, onProgress } = {}) {
+    taskId = requireCodingTaskId(taskId);
+    const sourceRoot = resolve(root);
     const env = safeEnvironment(environment);
     if (isAbsolute(executable)) await requireLocalPath(executable, { kind: "codex_executable" });
     if (isAbsolute(gitExecutable)) await requireLocalPath(gitExecutable, { kind: "git_executable" });
-    await requireLocalPath(cwd, { kind: "workspace", directory: true });
+    await requireLocalPath(sourceRoot, { kind: "workspace", directory: true });
     try {
-      await authProcess(executable, ["login", "status"], { cwd, env, signal });
+      await authProcess(executable, ["login", "status"], { cwd: sourceRoot, env, signal });
     } catch (cause) {
       throw Object.assign(new Error("Codex authentication is unavailable to the persistent worker."), { code: "coding_executor_auth_unavailable", safeDiagnostics: { resource: "codex_auth", exitCode: cause?.safeDiagnostics?.exitCode ?? null }, cause });
     }
-    const git = async (...args) => {
+    const gitAt = async (cwd, args, { cleanup = false } = {}) => {
       try {
-        return (await gitProcess(gitExecutable, ["-c", `safe.directory=${cwd}`, "-C", cwd, ...args], { cwd, env, signal })).stdout.trim();
+        return (await gitProcess(gitExecutable, ["-c", `safe.directory=${cwd}`, "-C", cwd, ...args], { cwd: sourceRoot, env, signal: cleanup ? undefined : signal })).stdout.trim();
       } catch (cause) {
         if (cause?.code === "ENOENT") throw Object.assign(new Error("The bound Git executable became unavailable."), { code: "coding_executor_git_executable_missing", safeDiagnostics: { resource: "git_executable", pathExists: false }, cause });
         throw cause;
       }
     };
-    const [top, remote, actualBranch, head, dirty] = await Promise.all([
-      git("rev-parse", "--show-toplevel"), git("remote", "get-url", "origin"), git("branch", "--show-current"), git("rev-parse", "HEAD"), git("status", "--porcelain=v1", "--untracked-files=all"),
+    const sourceGit = (...args) => gitAt(sourceRoot, args);
+    const [top, remote, actualBranch, sourceHead, dirty] = await Promise.all([
+      sourceGit("rev-parse", "--show-toplevel"), sourceGit("remote", "get-url", "origin"), sourceGit("branch", "--show-current"), sourceGit("rev-parse", "HEAD"), sourceGit("status", "--porcelain=v1", "--untracked-files=all"),
     ]);
-    if (resolve(top).toLowerCase() !== cwd.toLowerCase() || normalizeRemote(remote) !== repository || actualBranch !== branch || head !== job.repository.baseline) {
-      throw Object.assign(new Error("The local coding workspace does not match the bound repository baseline."), { code: "coding_workspace_binding_changed" });
+    const sourceBinding = { topLevelMatches: resolve(top).toLowerCase() === sourceRoot.toLowerCase(), repositoryMatches: normalizeRemote(remote) === repository, branchMatches: actualBranch === branch };
+    if (!sourceBinding.topLevelMatches || !sourceBinding.repositoryMatches || !sourceBinding.branchMatches) {
+      throw Object.assign(new Error("The local coding workspace does not match the trusted repository binding."), { code: "coding_workspace_binding_changed", safeDiagnostics: { stage: "repository_preflight", ...sourceBinding, executorLaunched: false } });
     }
-    if (dirty) throw Object.assign(new Error("The local coding workspace must be clean before delegation."), { code: "coding_workspace_dirty" });
+    if (dirty) throw Object.assign(new Error("The local coding workspace must be clean before delegation."), { code: "coding_workspace_dirty", safeDiagnostics: { stage: "repository_preflight", sourceHead, clean: false, executorLaunched: false } });
     const temporary = await mkdtemp(join(tmpdir(), "nova-codex-job-"));
+    const cwd = join(temporary, "workspace");
     const schemaPath = join(temporary, "result.schema.json");
     const resultPath = join(temporary, "result.json");
-    await writeFile(schemaPath, JSON.stringify(RESULT_SCHEMA), { encoding: "utf8", mode: 0o600 });
     const usage = {};
     const startedAt = clock().toISOString();
+    let worktreeAdded = false;
+    const localRef = `refs/nova/coding-jobs/${taskId}`;
     try {
+      try {
+        await sourceGit("cat-file", "-e", `${job.repository.baseline}^{commit}`);
+      } catch (cause) {
+        throw Object.assign(new Error("The approved coding baseline is unavailable in the trusted repository."), { code: "coding_executor_baseline_unavailable", safeDiagnostics: { stage: "workspace_preflight", expectedBaseline: job.repository.baseline, executorLaunched: false }, cause });
+      }
+      try {
+        await sourceGit("worktree", "add", "--detach", cwd, job.repository.baseline);
+        worktreeAdded = true;
+      } catch (cause) {
+        throw Object.assign(new Error("The isolated coding workspace could not be prepared."), { code: "coding_executor_workspace_prepare_failed", safeDiagnostics: { stage: "workspace_preparation", expectedBaseline: job.repository.baseline, executorLaunched: false }, cause });
+      }
+      const git = (...args) => gitAt(cwd, args);
+      const [isolatedHead, isolatedBranch, isolatedRemote, isolatedDirty] = await Promise.all([
+        git("rev-parse", "HEAD"), git("rev-parse", "--abbrev-ref", "HEAD"), git("remote", "get-url", "origin"), git("status", "--porcelain=v1", "--untracked-files=all"),
+      ]);
+      if (isolatedHead !== job.repository.baseline || isolatedBranch !== "HEAD" || normalizeRemote(isolatedRemote) !== repository || isolatedDirty) {
+        throw Object.assign(new Error("The isolated coding workspace does not match the approved immutable baseline."), { code: "coding_executor_workspace_prepare_failed", safeDiagnostics: { stage: "workspace_preparation", expectedBaseline: job.repository.baseline, actualHead: isolatedHead, detached: isolatedBranch === "HEAD", repositoryMatches: normalizeRemote(isolatedRemote) === repository, clean: !isolatedDirty, executorLaunched: false } });
+      }
+      await writeFile(schemaPath, JSON.stringify(RESULT_SCHEMA), { encoding: "utf8", mode: 0o600 });
       try {
         await spawnProcess(executable, [
           "exec", "--json", "--ephemeral", "--ignore-user-config", "--sandbox", "workspace-write",
@@ -166,10 +190,10 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
       }
       const parsed = JSON.parse(resultText);
       const [finalSha, finalBranch, finalRemote, finalDirty, ancestry] = await Promise.all([
-        git("rev-parse", "HEAD"), git("branch", "--show-current"), git("remote", "get-url", "origin"), git("status", "--porcelain=v1", "--untracked-files=all"),
+        git("rev-parse", "HEAD"), git("rev-parse", "--abbrev-ref", "HEAD"), git("remote", "get-url", "origin"), git("status", "--porcelain=v1", "--untracked-files=all"),
         git("merge-base", "--is-ancestor", job.repository.baseline, "HEAD").then(() => "yes", () => "no"),
       ]);
-      if (finalBranch !== branch || normalizeRemote(finalRemote) !== repository || ancestry !== "yes") throw Object.assign(new Error("Codex changed the repository authority binding."), { code: "coding_result_binding_changed" });
+      if (finalBranch !== "HEAD" || normalizeRemote(finalRemote) !== repository || ancestry !== "yes") throw Object.assign(new Error("Codex changed the repository authority binding."), { code: "coding_result_binding_changed" });
       if (finalDirty) throw Object.assign(new Error("Codex returned with uncommitted workspace changes."), { code: "coding_result_uncommitted" });
       if (parsed.pushOccurred || parsed.deploymentOccurred) throw Object.assign(new Error("Codex exceeded the local-commit delivery boundary."), { code: "coding_delivery_boundary_violated" });
       if (parsed.status === "completed" && (!SHA.test(finalSha) || finalSha === job.repository.baseline || parsed.finalLocalSha !== finalSha)) {
@@ -179,6 +203,11 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
       if (JSON.stringify([...new Set(parsed.filesChanged)].sort()) !== JSON.stringify([...new Set(filesChanged)].sort())) {
         throw Object.assign(new Error("Codex result files do not match the committed diff."), { code: "coding_result_files_mismatch" });
       }
+      try {
+        await sourceGit("update-ref", localRef, finalSha, "0".repeat(40));
+      } catch (cause) {
+        throw Object.assign(new Error("The verified local coding commit could not be retained."), { code: "coding_executor_commit_retention_failed", safeDiagnostics: { stage: "commit_retention", executorLaunched: true }, cause });
+      }
       return Object.freeze({
         ...parsed,
         commitSha: parsed.finalLocalSha,
@@ -186,9 +215,11 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
         pushOccurred: false,
         deploymentOccurred: false,
         usage: Object.keys(usage).length ? usage : null,
-        executor: { type: "codex_cli", startedAt, completedAt: clock().toISOString(), billing: "codex_account_separate_from_nova_api_budget" },
+        executor: { type: "codex_cli", startedAt, completedAt: clock().toISOString(), billing: "codex_account_separate_from_nova_api_budget", localRef },
       });
     } finally {
+      if (worktreeAdded) await gitAt(sourceRoot, ["worktree", "remove", "--force", cwd], { cleanup: true }).catch(() => {});
+      await gitAt(sourceRoot, ["worktree", "prune"], { cleanup: true }).catch(() => {});
       await rm(temporary, { recursive: true, force: true });
     }
   };
@@ -210,7 +241,7 @@ export function registerCodexExecutorTool(registry, { root, repository, branch, 
       requireCodingTaskId(context.taskId);
       const emit = async (phase, summary) => activity?.({ job, context, phase, summary });
       await emit("inspecting", "Codex is inspecting the bound project.");
-      const result = await executeRunner(job, { root, repository, branch, signal: context.signal, onProgress: emit });
+      const result = await executeRunner(job, { root, repository, branch, taskId: context.taskId, signal: context.signal, onProgress: emit });
       await emit(result.status === "completed" ? "reviewing" : result.status, result.status === "completed" ? "Codex completed implementation, tests, review, and a local commit." : result.summary);
       if (result.status !== "completed") {
         const error = new Error(result.failure?.message || result.summary || "Codex coding execution did not complete.");
