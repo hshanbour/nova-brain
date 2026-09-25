@@ -4,13 +4,14 @@ import {registerHandsTools} from "../tools/hands-runtime.js";
 import {canonicalSchemaDiagnostic,localSchemaDiagnostic} from "./schema-diagnostics.js";
 import {REVIEW_REMEDIATION_CLASS,reviewRemediationDescriptorForClass} from "./review-remediation-scope.js";
 import {registerCodexExecutorTool} from "../tools/codex-executor-tool.js";
-import {requireCodingTaskId} from "./coding-executor.js";
+import {CODING_ACTIVE_PROGRESS_PHASES,requireCodingTaskId} from "./coding-executor.js";
 
 const ALLOWED=new Set(["repo_read_task_owned_local","repo_apply_patch","repo_validate_patch","test_run","test_run_full","repo_diff","repo_review_commit","git_commit","git_integrate_reviewed_commit","codex_execute"]);
 const SHA=/^[a-f0-9]{40}$/;
 export function createCodingProgressReporter(client){
   return async({context,phase,summary})=>{
     const taskId=requireCodingTaskId(context?.taskId);
+    if(!CODING_ACTIVE_PROGRESS_PHASES.includes(phase))throw Object.assign(new Error("Coding progress phase is invalid."),{code:"coding_progress_invalid"});
     return client.request(`/api/admin/coding-jobs/${encodeURIComponent(taskId)}/progress`,{handoffId:context.handoffId,phase,summary});
   };
 }

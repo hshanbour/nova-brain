@@ -288,11 +288,72 @@ test("coding handoff preserves one canonical durable task ID through progress, e
   assert.equal((await runtime.steps(created.task.id))[0].status, "completed");
 });
 
+test("nonterminal progress stays separate while a structured Codex terminal result survives handoff failure intact", async () => {
+  const storage = createInMemoryStorage();
+  await storage.initialize({ owner: { id: OWNER }, projects: [{ id: "nova-brain", name: "Nova Brain" }] });
+  const runtime = createWorkerRuntime({ storage, ownerId: OWNER, toolRegistry: createToolRegistry(), approvedBranch: "feature", approvedRepository: "hshanbour/nova-brain" });
+  const parent = await runtime.create({ id: "parent-1", title: "Parent", objective: "Coordinate the project.", taskType: "project", projectId: "nova-brain", branch: "feature", startingCommit: BASE });
+  const service = createCodingExecutorService({ runtime, storage, ownerId: OWNER, bindings: [{ projectId: "nova-brain", workspaceId: "nova-brain", repository: "hshanbour/nova-brain", branch: "feature" }] });
+  const created = await service.create(request({ parentTaskId: parent.id }));
+  const dispatch = createAutoDispatchService({ storage, ownerId: OWNER, approvedBranch: "feature", approvedRepository: "hshanbour/nova-brain" });
+  const handoffs = createLocalWorkerHandoff({ storage, ownerId: OWNER, approvedBranch: "feature" });
+  const calls = [];
+  const client = { async request(path, body) {
+    calls.push({ path, body });
+    if (path.endsWith("/next")) return dispatch.next(body);
+    if (path.endsWith("/claim")) return handoffs.claim(body);
+    const progress = path.match(/^\/api\/admin\/coding-jobs\/([^/]+)\/progress$/);
+    if (progress) return service.progress(decodeURIComponent(progress[1]), body);
+    const complete = path.match(/^\/api\/admin\/worker\/handoff\/([^/]+)\/complete$/);
+    if (complete) return handoffs.complete(decodeURIComponent(complete[1]), body);
+    const fail = path.match(/^\/api\/admin\/worker\/handoff\/([^/]+)\/fail$/);
+    if (fail) return handoffs.fail(decodeURIComponent(fail[1]), body);
+    throw new Error(`Unexpected request: ${path}`);
+  } };
+  const codingResult = {
+    status: "blocked",
+    summary: "Focused verification could not complete.",
+    repository: "hshanbour/nova-brain",
+    baseline: BASE,
+    finalLocalSha: null,
+    filesChanged: [],
+    tests: [{ command: "npm test", status: "failed", summary: "One focused assertion failed." }],
+    limitations: ["A bounded repair needs a fresh decision."],
+    pushOccurred: false,
+    deploymentOccurred: false,
+    approvalsRequiredNext: ["retry"],
+    failure: { code: "tests_failed", message: "Focused tests failed." },
+  };
+  const registry = createToolRegistry();
+  registerCodexExecutorTool(registry, {
+    root: "C:/bound",
+    repository: "hshanbour/nova-brain",
+    branch: "feature",
+    runner: async () => structuredClone(codingResult),
+    activity: createCodingProgressReporter(client),
+  });
+  const worker = createPersistentLocalWorker({ client, root: "C:/bound", repository: "hshanbour/nova-brain", branch: "feature", runtimeVersion: "c".repeat(40), workerId: "local-worker", registry });
+  await assert.rejects(worker.runOnce(), (error) => error.code === "tests_failed");
+  const progressCalls = calls.filter((call) => call.path.includes("/coding-jobs/"));
+  assert.deepEqual(progressCalls.map((call) => call.body.phase), ["inspecting"]);
+  assert.equal(progressCalls.some((call) => ["blocked", "failed", "cancelled"].includes(call.body.phase)), false);
+  assert.equal(calls.some((call) => call.path.endsWith("/complete")), false);
+  const failure = calls.find((call) => call.path.endsWith("/fail"));
+  assert.equal(failure.body.error.code, "tests_failed");
+  assert.deepEqual(failure.body.error.diagnostics.codingResult, codingResult);
+  const task = await runtime.get(created.task.id);
+  const [step] = await runtime.steps(created.task.id);
+  assert.equal(task.status, "failed");
+  assert.equal(step.status, "failed");
+  assert.deepEqual(step.result.diagnostics.codingResult, codingResult);
+});
+
 test("invalid coding task identity fails before progress or Codex execution", async () => {
   let requested = false;
   const report = createCodingProgressReporter({ async request() { requested = true; } });
   await assert.rejects(report({ context: { taskId: undefined, handoffId: "handoff" }, phase: "inspecting", summary: "Inspecting." }), (error) => error.code === "coding_task_identity_invalid");
   await assert.rejects(report({ context: { taskId: "[object Object]", handoffId: "handoff" }, phase: "inspecting", summary: "Inspecting." }), (error) => error.code === "coding_task_identity_invalid");
+  for (const phase of ["blocked", "failed", "cancelled"]) await assert.rejects(report({ context: { taskId: `coding_${"a".repeat(32)}`, handoffId: "handoff" }, phase, summary: "Terminal." }), (error) => error.code === "coding_progress_invalid");
   assert.equal(requested, false);
   const registry = createToolRegistry();
   let executed = false;

@@ -296,13 +296,13 @@ export function registerCodexExecutorTool(registry, { root, repository, branch, 
       const emit = async (phase, summary) => activity?.({ job, context, phase, summary });
       await emit("inspecting", "Codex is inspecting the bound project.");
       const result = await executeRunner(job, { root, repository, branch, taskId: context.taskId, signal: context.signal, onProgress: emit });
-      await emit(result.status === "completed" ? "reviewing" : result.status, result.status === "completed" ? "Codex completed implementation, tests, review, and a local commit." : result.summary);
       if (result.status !== "completed") {
         const error = new Error(result.failure?.message || result.summary || "Codex coding execution did not complete.");
         error.code = result.failure?.code || `coding_executor_${result.status}`;
         error.safeDiagnostics = { codingResult: result };
         throw error;
       }
+      await emit("reviewing", "Codex completed implementation, tests, review, and a local commit.");
       return result;
     },
   });

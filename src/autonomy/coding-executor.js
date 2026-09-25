@@ -9,6 +9,7 @@ const CODING_SPECIFICATION_VERSION = 1;
 const CODING_RETRY_CONTRACT_VERSION = 1;
 const MAX_SUCCESSOR_DEPTH = 32;
 const CODING_TASK_ID = /^coding_[a-f0-9]{32}$/;
+export const CODING_ACTIVE_PROGRESS_PHASES = Object.freeze(["preparing", "inspecting", "implementing", "testing", "reviewing"]);
 
 export class CodingExecutorError extends Error {
   constructor(code, message, statusCode = 409, safeDiagnostics = undefined) {
@@ -371,7 +372,7 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
       const task = await runtime.get(taskId);
       if (task.taskType !== "coding_delegation") fail("coding_job_not_found", "Coding job was not found.", 404);
       const phase = String(input.phase || "");
-      if (!new Set(["preparing", "inspecting", "implementing", "testing", "reviewing"]).has(phase)) {
+      if (!CODING_ACTIVE_PROGRESS_PHASES.includes(phase)) {
         fail("coding_progress_invalid", "Coding progress phase is invalid.", 400);
       }
       const handoffId = text(input.handoffId, "handoffId", 128);
