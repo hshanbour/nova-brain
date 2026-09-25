@@ -4,7 +4,10 @@ const SHA = /^[a-f0-9]{40}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const SECRET = /(?:sk-[A-Za-z0-9_-]{16,}|(?:api[_-]?key|password|passcode|bearer|authorization)\s*[:=]\s*\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----|seed\s+phrase\s*[:=]\s*\S+)/i;
 const TERMINAL = new Set(["completed", "failed", "cancelled", "expired", "blocked"]);
+const RETRYABLE_TERMINAL = new Set(["failed", "cancelled", "blocked"]);
 const CODING_SPECIFICATION_VERSION = 1;
+const CODING_RETRY_CONTRACT_VERSION = 1;
+const MAX_SUCCESSOR_DEPTH = 32;
 const CODING_TASK_ID = /^coding_[a-f0-9]{32}$/;
 
 export class CodingExecutorError extends Error {
@@ -65,6 +68,43 @@ export function immutableCodingSpecification(value) {
 }
 
 export const codingSpecificationHash = (value) => hash(immutableCodingSpecification(value));
+
+function codingTaskIdentity(job) {
+  return `coding_${hash([job.parentTaskId, job.jobId]).slice(0, 32)}`;
+}
+
+function codingSuccessorIdentity(specificationHash, predecessor) {
+  return `coding_${hash([
+    `coding-terminal-successor-v${CODING_RETRY_CONTRACT_VERSION}`,
+    specificationHash,
+    predecessor.id,
+    predecessor.stateVersion,
+  ]).slice(0, 32)}`;
+}
+
+function verifyStoredCodingIdentity(task, job, specificationHash) {
+  const stored = task?.metadata?.codingJob;
+  if (task?.taskType !== "coding_delegation" || !stored
+    || task.metadata?.parentTaskId !== job.parentTaskId
+    || hash(stored) !== task.metadata?.codingJobHash
+    || codingSpecificationHash(stored) !== specificationHash
+    || (task.metadata?.codingSpecificationHash && task.metadata.codingSpecificationHash !== specificationHash)) {
+    fail("coding_job_identity_conflict", "The coding job identity is already bound to different inputs.");
+  }
+}
+
+function verifyRetryLineage(task, { rootTaskId, predecessor, generation, specificationHash }) {
+  const retry = task.metadata?.codingRetry;
+  if (generation === 0 && !retry) return; // Legacy root jobs predate explicit retry lineage.
+  if (retry?.contractVersion !== CODING_RETRY_CONTRACT_VERSION
+    || retry?.rootTaskId !== rootTaskId
+    || retry?.predecessorTaskId !== (predecessor?.id || null)
+    || retry?.predecessorStateVersion !== (predecessor?.stateVersion || null)
+    || retry?.generation !== generation
+    || retry?.specificationHash !== specificationHash) {
+    fail("coding_job_identity_conflict", "The coding job identity is already bound to different retry lineage.");
+  }
+}
 
 function normalizeBindings(bindings) {
   const result = new Map();
@@ -187,14 +227,34 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
     },
     async create(input) {
       const { job } = await validatePrepared(input, { requireApproval: true });
-      const taskId = `coding_${hash([job.parentTaskId, job.jobId]).slice(0, 32)}`;
-      const existing = await storage.getAutonomyTask(taskId, ownerId);
+      const specificationHash = codingSpecificationHash(job);
       const jobHash = hash(job);
-      if (existing) {
-        if (existing.metadata?.codingJobHash !== jobHash) fail("coding_job_identity_conflict", "The coding job identity is already bound to different inputs.");
-        return { task: existing, result: publicResult(existing, await runtime.steps(taskId)), duplicate: true };
+      const rootTaskId = codingTaskIdentity(job);
+      let taskId = rootTaskId, predecessor = null, generation = 0;
+      for (; generation <= MAX_SUCCESSOR_DEPTH; generation += 1) {
+        const existing = await storage.getAutonomyTask(taskId, ownerId);
+        if (!existing) break;
+        verifyStoredCodingIdentity(existing, job, specificationHash);
+        verifyRetryLineage(existing, { rootTaskId, predecessor, generation, specificationHash });
+        if (!RETRYABLE_TERMINAL.has(existing.status)) {
+          return { task: existing, result: publicResult(existing, await runtime.steps(taskId)), duplicate: true };
+        }
+        if (existing.metadata?.codingJob?.approval?.approvalId === job.approval?.approvalId) {
+          return { task: existing, result: publicResult(existing, await runtime.steps(taskId)), duplicate: true };
+        }
+        predecessor = existing;
+        taskId = codingSuccessorIdentity(specificationHash, predecessor);
       }
-      const task = await runtime.create({
+      if (generation > MAX_SUCCESSOR_DEPTH) fail("coding_retry_lineage_invalid", "The bounded coding retry lineage is exhausted.");
+      const retry = Object.freeze({
+        contractVersion: CODING_RETRY_CONTRACT_VERSION,
+        rootTaskId,
+        predecessorTaskId: predecessor?.id || null,
+        predecessorStateVersion: predecessor?.stateVersion || null,
+        generation,
+        specificationHash,
+      });
+      const createInput = {
         id: taskId,
         title: `Codex: ${job.objective.slice(0, 100)}`,
         objective: job.objective,
@@ -208,6 +268,8 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
         metadata: {
           codingJob: job,
           codingJobHash: jobHash,
+          codingSpecificationHash: specificationHash,
+          codingRetry: retry,
           parentTaskId: job.parentTaskId,
           requiredCapability: "codex_local",
           autoDispatch: true,
@@ -218,7 +280,18 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
             reason: "Execute the exact approved coding job in the bound local repository.",
           }],
         },
-      });
+      };
+      let task;
+      try {
+        task = await runtime.create(createInput);
+      } catch (error) {
+        if (error?.code !== "23505" && error?.cause?.code !== "23505") throw error;
+        const concurrent = await storage.getAutonomyTask(taskId, ownerId);
+        if (!concurrent) throw error;
+        verifyStoredCodingIdentity(concurrent, job, specificationHash);
+        verifyRetryLineage(concurrent, { rootTaskId, predecessor, generation, specificationHash });
+        return { task: concurrent, result: publicResult(concurrent, await runtime.steps(taskId)), duplicate: true };
+      }
       await storage.appendActivity({
         ownerId,
         projectId: job.projectId,
@@ -227,7 +300,7 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
         tool: "codex_execute",
         status: "queued",
         summary: "Preparing the approved bounded Codex coding job.",
-        metadata: { taskId: task.id, parentTaskId: job.parentTaskId, jobId: job.jobId, repository: job.repository.slug, branch: job.repository.branch },
+        metadata: { taskId: task.id, parentTaskId: job.parentTaskId, jobId: job.jobId, repository: job.repository.slug, branch: job.repository.branch, predecessorTaskId: predecessor?.id || null, retryGeneration: generation },
       });
       return { task, result: publicResult(task, []), duplicate: false };
     },

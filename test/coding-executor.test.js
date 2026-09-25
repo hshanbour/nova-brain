@@ -23,6 +23,7 @@ function harness({ prepared = false } = {}) {
   const tasks = new Map([["parent-1", { id: "parent-1", ownerId: OWNER, projectId: "nova-brain", branch: "feature", currentCommit: BASE, status: "planning", stateVersion: 1, taskType: prepared ? "coding_orchestration" : "project", metadata: prepared ? { codingDelegation: { version: 1, codingJob: canonical, codingJobHash: codingSpecificationHash(canonical) } } : {} }]]);
   const steps = new Map();
   const activities = [];
+  let createRace = false;
   const storage = {
     async getAutonomyTask(id) { return structuredClone(tasks.get(id) || null); },
     async appendActivity(value) { activities.push(structuredClone(value)); return value; },
@@ -32,6 +33,7 @@ function harness({ prepared = false } = {}) {
       const task = { ...structuredClone(input), status: "queued", stateVersion: 1, currentCommit: input.startingCommit, currentStep: 0, checkpoint: {} };
       tasks.set(task.id, task);
       steps.set(task.id, []);
+      if (createRace) { createRace = false; throw Object.assign(new Error("duplicate key"), { code: "23505" }); }
       return structuredClone(task);
     },
     async get(id) { const task = tasks.get(id); if (!task) throw new Error("missing"); return structuredClone(task); },
@@ -39,7 +41,7 @@ function harness({ prepared = false } = {}) {
     async control(id, action) { const task = tasks.get(id); task.status = action === "cancel" ? "cancelled" : task.status; return structuredClone(task); },
   };
   const service = createCodingExecutorService({ runtime, storage, ownerId: OWNER, bindings: [{ projectId: "nova-brain", workspaceId: "nova-brain", repository: "hshanbour/nova-brain", branch: "feature" }] });
-  return { service, tasks, steps, activities };
+  return { service, tasks, steps, activities, runtime, storage, raceNextCreate() { createRace = true; } };
 }
 
 function request(overrides = {}) {
@@ -74,6 +76,79 @@ test("approved coding delegation creates one durable parent-linked Codex task", 
   assert.equal(tasks.size, 2);
   assert.equal(activities.at(-1).action, "coding_job_prepared");
   assert.doesNotMatch(JSON.stringify(first), /api[_ -]?key|bearer\s+/i);
+});
+
+test("terminal coding failure creates one deterministic approved successor without mutating its predecessor", async () => {
+  const fixture = harness({ prepared: true });
+  const first = await fixture.service.create(request());
+  const predecessor = fixture.tasks.get(first.task.id);
+  delete predecessor.metadata.codingRetry; // Exact legacy shape from the first deployed executor generation.
+  delete predecessor.metadata.codingSpecificationHash;
+  Object.assign(predecessor, { status: "failed", stateVersion: 4, errorCode: "coding_executor_failed", completedAt: "2026-09-25T00:00:00.000Z" });
+  Object.assign(fixture.tasks.get("parent-1"), { status: "failed", stateVersion: 5, currentPhase: "approval" });
+  const before = structuredClone(predecessor);
+  assert.equal(fixture.tasks.size, 2); // A terminal task never retries itself automatically.
+  const approvalReplay = await fixture.service.create(request());
+  assert.equal(approvalReplay.duplicate, true);
+  assert.equal(approvalReplay.task.id, first.task.id);
+  assert.equal(fixture.tasks.size, 2);
+  const retryInput = request({ approval: { buildApproved: true, approvalId: "approval-2" } });
+  const successor = await fixture.service.create(retryInput);
+  const duplicate = await fixture.service.create(retryInput);
+  assert.equal(successor.duplicate, false);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(successor.task.id, duplicate.task.id);
+  assert.notEqual(successor.task.id, first.task.id);
+  assert.deepEqual(fixture.tasks.get(first.task.id), before);
+  assert.equal(successor.task.metadata.parentTaskId, "parent-1");
+  assert.equal(successor.task.metadata.codingRetry.predecessorTaskId, first.task.id);
+  assert.equal(successor.task.metadata.codingRetry.predecessorStateVersion, 4);
+  assert.equal(successor.task.metadata.codingRetry.generation, 1);
+  assert.equal(successor.task.metadata.codingRetry.specificationHash, codingSpecificationHash(retryInput));
+  assert.equal(successor.task.metadata.codingSpecificationHash, codingSpecificationHash(retryInput));
+  assert.equal(successor.task.metadata.codingJob.approval.approvalId, "approval-2");
+  assert.equal(fixture.tasks.size, 3);
+  Object.assign(fixture.tasks.get(successor.task.id), { status: "failed", stateVersion: 4, errorCode: "coding_executor_failed" });
+  const retryApprovalReplay = await fixture.service.create(retryInput);
+  assert.equal(retryApprovalReplay.task.id, successor.task.id);
+  assert.equal(fixture.tasks.size, 3);
+  const secondSuccessor = await fixture.service.create(request({ approval: { buildApproved: true, approvalId: "approval-3" } }));
+  assert.notEqual(secondSuccessor.task.id, successor.task.id);
+  assert.equal(secondSuccessor.task.metadata.codingRetry.predecessorTaskId, successor.task.id);
+  assert.equal(secondSuccessor.task.metadata.codingRetry.generation, 2);
+});
+
+test("blocked and cancelled coding jobs are successor-eligible while completed and expired jobs remain idempotent", async () => {
+  for (const status of ["blocked", "cancelled"]) {
+    const fixture = harness(), first = await fixture.service.create(request());
+    Object.assign(fixture.tasks.get(first.task.id), { status, stateVersion: 3 });
+    const successor = await fixture.service.create(request({ approval: { buildApproved: true, approvalId: `approval-${status}` } }));
+    assert.notEqual(successor.task.id, first.task.id);
+    assert.equal(successor.task.metadata.codingRetry.predecessorTaskId, first.task.id);
+  }
+  for (const status of ["completed", "expired"]) {
+    const fixture = harness(), first = await fixture.service.create(request());
+    Object.assign(fixture.tasks.get(first.task.id), { status, stateVersion: 3 });
+    const replay = await fixture.service.create(request({ approval: { buildApproved: true, approvalId: `approval-${status}` } }));
+    assert.equal(replay.duplicate, true);
+    assert.equal(replay.task.id, first.task.id);
+    assert.equal(fixture.tasks.size, 2);
+  }
+});
+
+test("terminal successor lineage survives restart and a concurrent retry converges on one child", async () => {
+  const fixture = harness({ prepared: true }), first = await fixture.service.create(request());
+  Object.assign(fixture.tasks.get(first.task.id), { status: "failed", stateVersion: 5, errorCode: "executor_failed" });
+  fixture.raceNextCreate();
+  const retryInput = request({ approval: { buildApproved: true, approvalId: "approval-race" } });
+  const raced = await fixture.service.create(retryInput);
+  assert.equal(raced.duplicate, true);
+  assert.equal(fixture.tasks.size, 3);
+  const restarted = createCodingExecutorService({ runtime: fixture.runtime, storage: fixture.storage, ownerId: OWNER, bindings: [{ projectId: "nova-brain", workspaceId: "nova-brain", repository: "hshanbour/nova-brain", branch: "feature" }] });
+  const replay = await restarted.create(retryInput);
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.task.id, raced.task.id);
+  assert.equal(fixture.tasks.size, 3);
 });
 
 test("prepared specification remains approval-stable across parent lifecycle changes and rejects semantic mutation", async () => {
@@ -198,12 +273,13 @@ test("invalid claimed coding identity fails its handoff before executor launch",
 });
 
 test("coding delegation rejects untrusted repository, Main, stale parent, unapproved mutation, and identity conflicts", async () => {
-  const { service } = harness();
+  const { service, tasks } = harness();
   await assert.rejects(service.create(request({ repository: { slug: "other/repo", branch: "feature", baseline: BASE } })), (error) => error.code === "coding_repository_binding_rejected");
   await assert.rejects(service.create(request({ repository: { slug: "hshanbour/nova-brain", branch: "main", baseline: BASE } })), (error) => error.code === "coding_repository_binding_rejected");
   await assert.rejects(service.create(request({ approval: { buildApproved: false, approvalId: "approval-1" } })), (error) => error.code === "coding_build_approval_required");
   await assert.rejects(service.create(request({ delivery: { boundary: "production", allowPush: true, allowDeploy: true } })), (error) => error.code === "coding_delivery_boundary_rejected");
-  await service.create(request());
+  const first = await service.create(request());
+  Object.assign(tasks.get(first.task.id), { status: "failed", stateVersion: 3 });
   await assert.rejects(service.create(request({ objective: "A different objective." })), (error) => error.code === "coding_job_identity_conflict");
 });
 
