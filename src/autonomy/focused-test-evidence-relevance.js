@@ -22,9 +22,9 @@ const OWNERSHIP_PATTERNS=Object.freeze([
 // prove a concrete ownership anchor. Only explicit definitions/wiring plus a
 // task-relevant semantic token become an ownership certificate.
 export function sourceOwnershipEvidence(path,matches,{userGoal=""}={}){
-  const goal=semanticEvidenceTokens(userGoal),pathTokens=semanticEvidenceTokens(path),certificates=[];
+  const goal=semanticEvidenceTokens(userGoal),certificates=[];
   for(const match of matches||[]){
-    const text=String(match?.text||""),tokens=semanticEvidenceTokens(text),matchedTokens=[...tokens].filter(token=>goal.has(token)||pathTokens.has(token)).slice(0,6);
+    const text=String(match?.text||""),tokens=semanticEvidenceTokens(text),matchedTokens=[...tokens].filter(token=>goal.has(token)).slice(0,6);
     const pattern=OWNERSHIP_PATTERNS.find(([,expression])=>expression.test(text));
     if(pattern&&matchedTokens.length)certificates.push({basis:pattern[0],matchedTokens,stepId:match.stepId,line:Number.isInteger(match.line)?match.line:null});
   }
@@ -60,6 +60,42 @@ export function focusedTestRelationshipEvidence(path,candidatePaths=[],{matchesB
     if((matchedTokens.length>=2||matchedTokens.some(token=>token.length>=7))&&(!best||matchedTokens.length>best.matchedTokens.length))best={related:true,sourcePath,matchedTokens,basis:"repository_search_content_relation"};
   }
   return best||direct;
+}
+
+const normalizedPathTokens=value=>[...directPathTokens(value)].sort();
+const scopeSelectionConstraint=request=>(request?.constraints||[]).some(item=>(item?.enforcements||[]).includes("scope_selection"));
+const ambiguousAlternativeSources=(sources,request)=>{
+  if(sources.length<2)return false;
+  const goal=semanticEvidenceTokens(request?.userGoal||""),groups=new Map();
+  for(const item of sources){
+    const signature=[...(item.ownership?.matchedTokens||[])].sort().join("|");
+    if(!signature)continue;
+    const distinctive=normalizedPathTokens(item.path).filter(token=>!goal.has(token)&&token!=="src"&&token!=="http");
+    if(!distinctive.length)continue;
+    if(!groups.has(signature))groups.set(signature,[]);
+    groups.get(signature).push({path:item.path,distinctive});
+  }
+  return [...groups.values()].some(group=>group.length>1&&new Set(group.flatMap(item=>item.distinctive)).size>1);
+};
+
+// Deterministic discovery certificates are the authority gate for existing
+// paths. The model can help when selection is incomplete or ambiguous, but it
+// cannot grant missing ownership/test authority and cannot veto this complete
+// repository-grounded contract.
+export function deterministicScopeAuthority({request,candidatePaths=[],candidateEvidence=[],selectedSourcePaths,selectedTestPaths,allowCertifiedSubset=false}={}){
+  const candidates=[...new Set(candidatePaths)],evidenceByPath=new Map((candidateEvidence||[]).map(item=>[item?.path,item]));
+  const incomplete=reason=>Object.freeze({resolved:false,reason,sourcePaths:[],testPaths:[]});
+  if(request?.intent!=="implementation")return incomplete("intent_not_implementation");
+  if(candidates.length<2||candidates.length>12||candidates.some(path=>typeof path!=="string"||IMPLEMENTATION_PROTECTED_PATH.test(path)))return incomplete("candidate_bounds_or_protection_invalid");
+  if(scopeSelectionConstraint(request))return incomplete("semantic_scope_constraint_requires_resolution");
+  const eligibleSources=candidates.map(path=>evidenceByPath.get(path)).filter(item=>item?.role==="source"&&item.ownership&&item.path&&!item.path.startsWith("test/")&&!IMPLEMENTATION_PROTECTED_PATH.test(item.path));
+  const sourcePaths=selectedSourcePaths?[...new Set(selectedSourcePaths)]:eligibleSources.map(item=>item.path);
+  if(!sourcePaths.length||sourcePaths.some(path=>!candidates.includes(path)||!eligibleSources.some(item=>item.path===path)))return incomplete("source_ownership_incomplete");
+  if(ambiguousAlternativeSources(allowCertifiedSubset?sourcePaths.map(path=>evidenceByPath.get(path)):eligibleSources,request))return incomplete("source_ownership_ambiguous");
+  const eligibleTests=candidates.map(path=>evidenceByPath.get(path)).filter(item=>item?.role==="focused_test"&&item.relationship&&item.path?.startsWith("test/")&&!IMPLEMENTATION_PROTECTED_PATH.test(item.path)&&sourcePaths.includes(item.relationship.sourcePath));
+  const testPaths=selectedTestPaths?[...new Set(selectedTestPaths)]:eligibleTests.map(item=>item.path);
+  if(!testPaths.length||testPaths.some(path=>!candidates.includes(path)||!eligibleTests.some(item=>item.path===path)))return incomplete("focused_test_relationship_incomplete");
+  return Object.freeze({resolved:true,reason:null,sourcePaths:Object.freeze(sourcePaths),testPaths:Object.freeze(testPaths)});
 }
 
 export function plannedTestCreationAuthority(path,{candidatePaths=[],discoveredPaths=new Set()}={}){

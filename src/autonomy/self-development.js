@@ -7,7 +7,7 @@ import {describeFullTestScopeRecovery,recoverFullTestScope,FULL_TEST_SCOPE_RECOV
 import {describeReviewRemediation,recoverReviewRemediation,REVIEW_REMEDIATION_TOOL,describeRejectedReviewPlanContinuation,recoverRejectedReviewPlanContinuation,REJECTED_REVIEW_PLAN_CONTINUATION_TOOL,describeSourceBoundReviewReplan,recoverSourceBoundReviewReplan,SOURCE_BOUND_REVIEW_REPLAN_TOOL} from "./review-remediation-scope.js";
 import {recoveryHash} from "./failed-local-read-recovery.js";
 import {describeEvidenceBoundReviewReplan,recoverEvidenceBoundReviewReplan,EVIDENCE_BOUND_REVIEW_REPLAN_TOOL,describeImplementationContentReviewReplan,recoverImplementationContentReviewReplan,IMPLEMENTATION_CONTENT_REVIEW_REPLAN_TOOL,describeSourceLiteralReviewReplan,recoverSourceLiteralReviewReplan,SOURCE_LITERAL_REVIEW_REPLAN_TOOL,describeObservableLinkageReviewReplan,recoverObservableLinkageReviewReplan,OBSERVABLE_LINKAGE_REVIEW_REPLAN_TOOL,describeSemanticEvidenceReviewReplan,recoverSemanticEvidenceReviewReplan,SEMANTIC_EVIDENCE_REVIEW_REPLAN_TOOL,describeFailedSemanticReadRecovery,recoverFailedSemanticReadRecovery,FAILED_SEMANTIC_READ_RECOVERY_TOOL,describeTestIdentityInventoryReviewReplan,recoverTestIdentityInventoryReviewReplan,TEST_IDENTITY_INVENTORY_REPLAN_TOOL} from "./review-remediation-scope.js";
-import {focusedTestRelationshipEvidence,sourceOwnershipEvidence} from "./focused-test-evidence-relevance.js";
+import {deterministicScopeAuthority,focusedTestRelationshipEvidence,sourceOwnershipEvidence} from "./focused-test-evidence-relevance.js";
 import {MAX_AUTHORIZED_NEW_SOURCE_PATHS,deriveSourceCreationAuthorities,safeNewSourcePath,verifySourceCreationRecord} from "./source-creation-authority.js";
 
 const REPOSITORY = "hshanbour/nova-brain",
@@ -744,7 +744,7 @@ export function createSelfDevelopmentService({
         }
       }
     }
-    const goalText = discoveryGoalText(request.userGoal), goal = discoveryTokens(goalText), goalCounts = new Map(), goalRaw = rawDiscoveryTokens(goalText);
+    const goalText = discoveryGoalText([request.userGoal,...(request.acceptanceCriteria||[]),...(request.scope?.searchTerms||[])].join("\n")), goal = discoveryTokens(goalText), goalCounts = new Map(), goalRaw = rawDiscoveryTokens(goalText);
     for (const token of goalRaw) {
       if (token.length >= 3 && !DISCOVERY_STOP_WORDS.has(token))
         goalCounts.set(token, Math.min(3, (goalCounts.get(token) || 0) + 1));
@@ -850,7 +850,7 @@ export function createSelfDevelopmentService({
     status: resolution.status,
     decisionHash: resolution.decisionHash,
     providerUsage: resolution.providerUsage || null,
-    validationAttempts: resolution.validationAttempts || 1,
+    validationAttempts: resolution.validationAttempts ?? 1,
     unresolvedEvidence: (resolution.unresolvedEvidence || []).map((item) => ({
       category: item.category,
       concepts: [...item.concepts],
@@ -859,6 +859,10 @@ export function createSelfDevelopmentService({
     constraintCoverage: resolution.constraintCoverage,
     constraintBindings: resolution.constraintBindings,
     authorizedCreatePathHashes:(resolution.sourceCreationRecords||[]).map(record=>hash(record)),
+    authoritySource:resolution.authoritySource||"model_assisted_deterministic_validation",
+    ...(resolution.certificateHash?{certificateHash:resolution.certificateHash}:{}),
+    ...(resolution.deterministicCertificateStatus?{deterministicCertificateStatus:resolution.deterministicCertificateStatus}:{}),
+    ...(resolution.deterministicCertificateReason?{deterministicCertificateReason:resolution.deterministicCertificateReason}:{}),
     ...extra,
   });
   const structuredScopeRecoveryConcepts = (resolution) => [
@@ -1651,8 +1655,23 @@ export function createSelfDevelopmentService({
     const discoveryResolution = input.candidatePaths ? null : await resolveDiscoveryCandidates(request, steps);
     let resolvedCandidatePaths = input.candidatePaths ?? discoveryResolution?.candidatePaths,scopeResolution=null;
     if(!input.candidatePaths&&resolvedCandidatePaths&&structuredIntake?.resolveScope){
-      try{scopeResolution=await resolveStructuredScope({request,candidatePaths:resolvedCandidatePaths,candidateEvidence:discoveryResolution.candidateEvidence,sourceCreationAuthorities:discoveryResolution.sourceCreationAuthorities,costContext:{taskId:current.id}});}
+      const authorityRequest={...request,intent:persistedIntent(request,current.objective)},evidenceByPath=new Map(discoveryResolution.candidateEvidence.map(item=>[item.path,item])),certificate=deterministicScopeAuthority({request:authorityRequest,candidatePaths:resolvedCandidatePaths,candidateEvidence:discoveryResolution.candidateEvidence}),certificatePaths=certificate.resolved?[...certificate.sourcePaths,...certificate.testPaths]:[],baselineStates=certificate.resolved&&typeof resolvePathState==="function"?await Promise.all(certificatePaths.map(path=>resolvePathState(path,current.currentCommit))):[],baselineBound=certificatePaths.every((path,index)=>baselineStates[index]?.existsInCommit===true||evidenceByPath.get(path)?.inventory===true),baselineCertified=certificate.resolved&&!(discoveryResolution.sourceCreationAuthorities||[]).length&&baselineBound;
+      if(baselineCertified){
+        const decision={version:4,status:"resolved",sourcePaths:[...certificate.sourcePaths],newSourcePaths:[],testPaths:[...certificate.testPaths],sourceCreationRecords:[],constraintCoverage:[],constraintBindings:(request.constraints||[]).map((item,constraintIndex)=>({constraintIndex,type:item.type,enforcements:[...(item.enforcements||[])]})),unresolvedEvidence:[],authoritySource:"deterministic_repository_certificates",certificateHash:hash({repository:request.repository,branch:current.branch,currentCommit:current.currentCommit,candidatePaths:resolvedCandidatePaths,candidateEvidence:discoveryResolution.candidateEvidence,sourcePaths:certificate.sourcePaths,testPaths:certificate.testPaths})};
+        scopeResolution={...decision,decisionHash:hash(decision),providerUsage:null,validationAttempts:0};
+      }else try{
+        scopeResolution=await resolveStructuredScope({request,candidatePaths:resolvedCandidatePaths,candidateEvidence:discoveryResolution.candidateEvidence,sourceCreationAuthorities:discoveryResolution.sourceCreationAuthorities,costContext:{taskId:current.id}});
+        if(scopeResolution.status==="resolved"){
+          const validated=deterministicScopeAuthority({request:authorityRequest,candidatePaths:resolvedCandidatePaths,candidateEvidence:discoveryResolution.candidateEvidence,selectedSourcePaths:scopeResolution.sourcePaths,selectedTestPaths:scopeResolution.testPaths,allowCertifiedSubset:(scopeResolution.newSourcePaths||[]).length>0});
+          const selectedPaths=[...scopeResolution.sourcePaths,...scopeResolution.testPaths],selectedStates=validated.resolved&&typeof resolvePathState==="function"?await Promise.all(selectedPaths.map(path=>resolvePathState(path,current.currentCommit))):[],selectedBaselineCertified=validated.resolved&&selectedPaths.every((path,index)=>selectedStates[index]?.existsInCommit===true||evidenceByPath.get(path)?.inventory===true);
+          if(!selectedBaselineCertified){
+            const reason=validated.reason||"baseline_binding_incomplete",unresolvedEvidence=[{category:reason.startsWith("focused_test")?"focused_test":"source_ownership",concepts:[reason.replaceAll("_"," ")]}],decision={version:4,status:"blocked",sourcePaths:[],newSourcePaths:[],testPaths:[],sourceCreationRecords:[],constraintCoverage:scopeResolution.constraintCoverage||[],constraintBindings:scopeResolution.constraintBindings||[],unresolvedEvidence,authoritySource:"deterministic_repository_certificates",providerUsage:scopeResolution.providerUsage||null,validationAttempts:scopeResolution.validationAttempts||1};
+            scopeResolution={...decision,decisionHash:hash(decision)};
+          }
+        }
+      }
       catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;throw new SelfDevelopmentError(error?.code||"structured_scope_invalid","Nova could not establish a safe mutation-authoritative scope.",409,{...error?.safeDiagnostics,recoveryTransitionScheduled:false,recoveryAttemptConsumed:false});}
+      scopeResolution={...scopeResolution,deterministicCertificateStatus:baselineCertified?"complete":"incomplete",...(!baselineCertified?{deterministicCertificateReason:certificate.resolved?"baseline_binding_incomplete":certificate.reason}:{})};
       if(scopeResolution.status!=="resolved"){
         const now=clock().toISOString(),concepts=structuredScopeRecoveryConcepts(scopeResolution),attempt=scopeRecoveryHistory.length+1;
         const needsFocusedTestEvidence=(scopeResolution.unresolvedEvidence||[]).some(item=>item.category==="focused_test"),targetedTestSearches=needsFocusedTestEvidence?discoveryResolution.targetedTestSearches:[];

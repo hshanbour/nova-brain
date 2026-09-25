@@ -14,7 +14,7 @@ import { SELF_DEVELOPMENT_HANDS_PATCH_INPUT_SCHEMA, SELF_DEVELOPMENT_IMPLEMENTAT
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { registerHandsTools } from "../src/tools/hands-runtime.js";
 import {canonicalContentHash} from "../src/autonomy/self-development-plan-lifecycle.js";
-import {focusedTestEvidenceRelevance,focusedTestRelationshipEvidence,focusedTestSourceRelationship,plannedTestCreationAuthority,sourceOwnershipEvidence} from "../src/autonomy/focused-test-evidence-relevance.js";
+import {deterministicScopeAuthority,focusedTestEvidenceRelevance,focusedTestRelationshipEvidence,focusedTestSourceRelationship,plannedTestCreationAuthority,sourceOwnershipEvidence} from "../src/autonomy/focused-test-evidence-relevance.js";
 import {authorizeNewSourcePath,deriveSourceCreationAuthorities} from "../src/autonomy/source-creation-authority.js";
 
 const OWNER = "owner",
@@ -175,6 +175,15 @@ test("repository ownership and focused-test certification matrix stays determini
   const convention=plannedTestCreationAuthority("test/widget-accessibility.test.js",{candidatePaths:["assets/widget.js"],discoveredPaths:new Set(["test/console-static.test.js","test/console-client.test.js"])});
   assert.equal(convention.authorized,true);
   assert.equal(plannedTestCreationAuthority("test/widget-accessibility.test.js",{candidatePaths:["assets/widget.js"],discoveredPaths:new Set(["test/console-static.test.js"])}).authorized,false);
+});
+test("deterministic scope authority freezes complete certificates and rejects missing ambiguous or protected authority",()=>{
+  const request={intent:"implementation",userGoal:"Implement panel keyboard navigation",constraints:[]},sourcePath="assets/panel.js",testPath="test/panel-static.test.js",ownership=sourceOwnershipEvidence(sourcePath,[{stepId:"2:search_code",line:4,text:'panel.addEventListener("keydown", handlePanelKeys);',truncated:false}],{userGoal:request.userGoal}),relationship=focusedTestRelationshipEvidence(testPath,[sourcePath]),evidence=[{path:sourcePath,role:"source",inventory:true,matches:[],ownership},{path:testPath,role:"focused_test",inventory:true,matches:[],relationship}];
+  assert.deepEqual(deterministicScopeAuthority({request,candidatePaths:[sourcePath,testPath],candidateEvidence:evidence}).sourcePaths,[sourcePath]);
+  assert.equal(deterministicScopeAuthority({request,candidatePaths:[sourcePath,testPath],candidateEvidence:evidence.map(item=>item.path===testPath?{...item,relationship:null}:item)}).reason,"focused_test_relationship_incomplete");
+  const ambiguousSources=["src/payments/stripe.js","src/payments/adyen.js"],ambiguousEvidence=ambiguousSources.map((path,index)=>({path,role:"source",inventory:true,matches:[],ownership:sourceOwnershipEvidence(path,[{stepId:`${index+2}:search_code`,line:8,text:"export async function authorizePayment() {}",truncated:false}],{userGoal:"Fix payment authorization"})}));
+  ambiguousEvidence.push({path:"test/payments.test.js",role:"focused_test",inventory:true,matches:[],relationship:focusedTestRelationshipEvidence("test/payments.test.js",ambiguousSources)});
+  assert.equal(deterministicScopeAuthority({request:{...request,userGoal:"Fix payment authorization"},candidatePaths:ambiguousEvidence.map(item=>item.path),candidateEvidence:ambiguousEvidence}).reason,"source_ownership_ambiguous");
+  assert.equal(deterministicScopeAuthority({request,candidatePaths:["src/autonomy/worker-runtime.js",testPath],candidateEvidence:evidence}).reason,"candidate_bounds_or_protection_invalid");
 });
 test("planner records stage-bound provider usage without changing the canonical plan",async()=>{const usage={model:"strong",stage:"planner",serviceTier:"default",inputTokens:1000,cachedInputTokens:800,outputTokens:200,reasoningTokens:50,totalTokens:1200},output={type:"final",message:JSON.stringify(valid()),providerUsage:usage},f=await fixture([output]),result=await f.planner.generate({taskId:"selfdev-plan",candidatePaths:[DOC,TEST],currentCommit:SHA});assert.deepEqual(result.providerUsage,[usage]);assert.equal(result.implementationPlan.files[0].path,DOC);});
 test("an unchanged evidence-bound plan becomes a bounded no-change candidate",async()=>{

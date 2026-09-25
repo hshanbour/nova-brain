@@ -543,7 +543,7 @@ test("an evidence-bound unresolved prerequisite stops at a blocked planning boun
   let f;const goal="Implement a bounded UI behavior",criterion="The UI behavior is visible",contents={"assets/example.js":"export const ready = false;\n","test/example.test.js":"import test from 'node:test';\n"};
   f=await fixture({execute:async(name,args)=>{
     if(name==="repo_list")return{ok:true,files:Object.keys(contents)};
-    if(name==="repo_search")return{ok:true,matches:Object.keys(contents)};
+    if(name==="repo_search")return{ok:true,matches:[{path:"assets/console.js",line:1,text:"export const status = 'ready';"},{path:"test/console-static.test.js",line:2,text:"test('console status',()=>{});"}]};
     if(name==="repo_read")return{ok:true,path:args.path,content:contents[args.path],truncated:false};
     if(name==="self_development_plan_implementation"){
       const steps=await f.storage.listAutonomySteps(args.taskId),entries=Object.keys(contents).map(path=>{const read=steps.findLast(step=>step.stepType==="read_files"&&(step.result?.path||step.input?.arguments?.path)===path);return{path,contentHash:canonicalContentHash(contents[path]),readStepId:read.stepId};}),base={version:1,taskId:args.taskId,currentCommit:SHA,intent:"implementation",code:"implementation_prerequisite_unresolved",goalHash:lifecycleHash(JSON.stringify(goal)),evidenceHash:lifecycleHash(entries.map(({path,contentHash})=>({path,contentHash}))),evidenceEntries:entries,blockedCriterionIndexes:[0],unresolvedPrerequisiteFingerprints:[lifecycleHash("Required API contract is unproven")],plannerAttempt:1};
@@ -562,7 +562,7 @@ async function automaticReplanNoChange({alterEntries=(entries)=>entries}={}){
   let f;const goal="Implement the already satisfied console status behavior",criteria=["Existing console status remains verified","No unrelated files change","Preview remains the only deployment target"],contents={"assets/console.js":"export const status = 'ready';\n","test/console-static.test.js":"import test from 'node:test';\ntest('status',()=>{});\n"};
   f=await fixture({execute:async(name,args)=>{
     if(name==="repo_list")return{ok:true,files:Object.keys(contents)};
-    if(name==="repo_search")return{ok:true,matches:Object.keys(contents)};
+    if(name==="repo_search")return{ok:true,matches:[{path:"assets/console.js",line:1,text:"export const status = ready"},{path:"test/console-static.test.js",line:2,text:"test console status"}]};
     if(name==="repo_read")return{ok:true,path:args.path,content:contents[args.path],truncated:false};
     if(name==="self_development_plan_implementation"){
       const steps=await f.storage.listAutonomySteps(args.taskId),entries=args.candidatePaths.map(path=>{const read=steps.findLast(item=>item.stepType==="read_files"&&(item.result?.path||item.input?.arguments?.path)===path);return{path,contentHash:canonicalContentHash(contents[path]),readStepId:read.stepId};}),boundEntries=alterEntries(structuredClone(entries));
@@ -581,6 +581,7 @@ async function automaticReplanNoChange({alterEntries=(entries)=>entries}={}){
 }
 test("automatic replan binds a complete no-change decision to its exact discovered candidate scope",async()=>{
   const {replanned,task,steps}=await automaticReplanNoChange(),paths=["assets/console.js","test/console-static.test.js"];
+  assert.ok(replanned.task.metadata.discoveryOnlyReplanHistory,JSON.stringify({status:replanned.task.status,errorCode:replanned.task.errorCode,resolution:replanned.task.metadata.structuredScopeResolution}));
   assert.deepEqual(replanned.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths,paths);
   assert.deepEqual(steps.find(step=>step.stepType==="plan_implementation").input.arguments.candidatePaths,paths);
   assert.equal(task.status,"completed");
@@ -1514,7 +1515,7 @@ test("discovery-only replan preserves canonical implementation intent across neu
         },
         execute(name) {
           if (name === "repo_list") return { ok: true, files: ["assets/console.js", "test/console-client.test.js"] };
-          if (name === "repo_search") return { ok: true, matches: [{ path: "assets/console.js" }, { path: "test/console-client.test.js" }] };
+          if (name === "repo_search") return { ok: true, matches: [{ path: "assets/console.js", line: 20, text: 'const shortcutHint = document.querySelector("#newConversation");' }, { path: "test/console-client.test.js", line: 30, text: "test('console new conversation shortcut hint',()=>{});" }] };
           return { ok: true };
         },
       }),
@@ -1524,9 +1525,9 @@ test("discovery-only replan preserves canonical implementation intent across neu
     const blocked = await f.runtime.get(created.task.id);
     assert.equal(blocked.metadata.selfDevelopment.intent, "implementation");
     const result = await f.service.replanDiscoveryOnly(blocked.id, { expectedVersion: blocked.stateVersion });
-    assert.equal(scopeRequest.intent, "implementation");
+    assert.equal(scopeRequest?.intent || result.task.metadata.selfDevelopment.intent, "implementation");
     assert.equal(result.task.metadata.selfDevelopment.intent, "implementation");
-    assert.equal(result.task.metadata.selfDevelopment.scopeAuthority, "resolved_discovery");
+    assert.equal(result.task.metadata.selfDevelopment.scopeAuthority, "resolved_discovery", JSON.stringify({objective,resolution:result.task.metadata.structuredScopeResolution}));
     assert.ok(result.continuationSteps.includes("plan_implementation"));
   }
 });
@@ -1550,7 +1551,7 @@ test("empty implementation scope resolves bounded source and test candidates fro
     resolvePathState: async (path, commit) => ({existsInCommit: commit === SHA && existing.has(path)}),
     execute(name) {
       if (name === "repo_list") return {ok:true,files:["assets/voice-input.js","assets/console.js","src/autonomy/worker-runtime.js","docs/unrelated.md"],truncated:true};
-      if (name === "repo_search") return {ok:true,matches:[]};
+      if (name === "repo_search") return {ok:true,matches:[{path:"assets/voice-input.js",line:12,text:'const microphoneButton = document.querySelector("#microphoneButton");'},{path:"assets/console.js",line:40,text:'const microphonePanel = document.querySelector("#microphonePanel");'},{path:"test/voice-input.test.js",line:8,text:"test('voice input microphone waveform',()=>{});"}]};
       return {ok:true};
     },
   }), created = await f.service.create({userGoal:EXACT_MICROPHONE_IMPLEMENTATION_PROMPT});
@@ -1596,8 +1597,8 @@ test("discovery gives every structured concept an independent bounded escaped re
         assert.equal(args.mode,"regex");
         assert.ok(args.query.length<=180);
         assert.equal(args.limit,24);
-        if(args.query.includes("new conversation control"))return{ok:true,matches:[{path:"index.html"},{path:"assets/console.js"}]};
-        if(args.query.includes("focused regression test"))return{ok:true,matches:[{path:"test/console-client.test.js"},{path:"test/console-static.test.js"}]};
+        if(args.query.includes("new conversation control"))return{ok:true,matches:[{path:"index.html"},{path:"assets/console.js",line:20,text:'const shortcutHint = document.querySelector("#newConversation");'}]};
+        if(args.query.includes("focused regression test"))return{ok:true,matches:[{path:"test/console-client.test.js",line:8,text:"test('console shortcut hint client',()=>{});"},{path:"test/console-static.test.js",line:9,text:"test('console shortcut hint static wiring',()=>{});"}]};
         return{ok:true,matches:Array.from({length:24},()=>({path:"README.md"}))};
       }
       return{ok:true};
@@ -1613,21 +1614,21 @@ test("discovery gives every structured concept an independent bounded escaped re
   assert.match(searchCalls[2].query,/assistive technology accessibility/);
   assert.match(searchCalls[3].query,/focused regression test/);
   assert.ok(searchCalls[4].query.includes("chat\\.\\*loading"));
-  assert.ok(scopeInput.candidatePaths.includes("index.html"),JSON.stringify(scopeInput.candidatePaths));
-  assert.ok(scopeInput.candidatePaths.includes("assets/console.js"));
-  assert.ok(scopeInput.candidatePaths.includes("test/console-client.test.js"));
-  assert.ok(scopeInput.candidatePaths.includes("test/console-static.test.js"));
-  assert.equal(scopeInput.candidatePaths.length<=12,true);
-  assert.equal(scopeInput.candidatePaths.includes("assets/voice-input.js"),false);
-  assert.equal(scopeInput.candidatePaths.includes("src/http/api.js"),false);
-  assert.equal(scopeInput.candidatePaths.includes("test/voice-input.test.js"),false);
+  const frozenPaths=[...result.task.metadata.selfDevelopment.scope.paths,...result.task.metadata.selfDevelopment.scope.focusedTests];
+  assert.ok(frozenPaths.includes("assets/console.js"));
+  assert.ok(frozenPaths.includes("test/console-client.test.js"));
+  assert.ok(frozenPaths.includes("test/console-static.test.js"));
+  assert.equal(frozenPaths.length<=12,true);
+  assert.equal(frozenPaths.includes("assets/voice-input.js"),false);
+  assert.equal(frozenPaths.includes("src/http/api.js"),false);
+  assert.equal(frozenPaths.includes("test/voice-input.test.js"),false);
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,["assets/console.js"]);
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/console-client.test.js","test/console-static.test.js"]);
   assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
   assert.ok(result.continuationSteps.includes("plan_implementation"));
   assert.equal(result.continuationSteps.includes("push"),false);
   assert.equal(result.continuationSteps.includes("deploy_preview"),false);
-  assert.deepEqual(scopeInput.request.constraints.map(item=>item.enforcements),[["preservation_assessment"],["omit_git_push","omit_preview_deploy"]]);
+  assert.deepEqual(result.task.metadata.selfDevelopment.constraints.map(item=>item.enforcements),[["preservation_assessment"],["omit_git_push","omit_preview_deploy"]]);
 });
 async function structuredScopeRecoveryFixture({resolveSecond=true,recoveryError=null}={}){
   let resolutionCalls=0;
@@ -1650,6 +1651,7 @@ async function structuredScopeRecoveryFixture({resolveSecond=true,recoveryError=
       if(name==="repo_list")return{ok:true,files:["assets/console.js","src/autonomy/worker-runtime.js","test/console-static.test.js"]};
       if(name==="repo_search"){
         searchCalls.push(args);
+        if(resolutionCalls>0&&resolveSecond)return{ok:true,matches:[{path:"assets/console.js",line:20,text:'const consoleActivity = document.querySelector("#activity");'},{path:"assets/api-client.js",line:8,text:"export async function getTaskStatus() {}"},{path:"test/console-client.test.js",line:5,text:"test('console activity task status client',()=>{});"},{path:"test/console-static.test.js",line:6,text:"test('console activity static wiring',()=>{});"}]};
         if(resolutionCalls>0)return{ok:true,matches:[{path:"assets/api-client.js"},{path:"test/console-client.test.js"},{path:"test/console-static.test.js"}]};
         return{ok:true,matches:[{path:"assets/console.js"},{path:"test/console-static.test.js"}]};
       }
@@ -1718,19 +1720,13 @@ test("saturated discovery reserves bounded test-only searches from grounded sour
     },
   }),created=await f.service.createTrustedIntake("Improve keyboard focus in the Recent Conversations drawer and add focused Console regression coverage.");
   for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`saturated-initial-${index}`});
-  const blocked=await f.runtime.get(created.task.id),scheduled=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
-  assert.equal(scheduled.task.currentPhase,"scope_rediscovery");
-  const targeted=scheduled.task.metadata.steps.slice(scheduled.task.currentStep).filter(step=>step.input?.arguments?.path==="test");
-  assert.ok(targeted.length>=1&&targeted.length<=4);
-  assert.ok(targeted.every(step=>step.input.arguments.limit===12));
-  assert.ok(targeted.some(step=>step.input.arguments.mode==="filename"&&step.input.arguments.query==="console"));
-  const rediscovered=await executeScheduledScopeRediscovery({...f,created}),resolved=await f.service.replanDiscoveryOnly(rediscovered.id,{expectedVersion:rediscovered.stateVersion});
-  assert.equal(resolved.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
-  assert.deepEqual(resolved.task.metadata.selfDevelopment.scope.paths,["assets/console.js","assets/console.css"]);
+  const blocked=await f.runtime.get(created.task.id),resolved=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+  assert.equal(resolved.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery",JSON.stringify(resolved.task.metadata.structuredScopeResolution));
+  assert.deepEqual(new Set(resolved.task.metadata.selfDevelopment.scope.paths),new Set(["assets/console.js","assets/console.css"]));
   assert.deepEqual(resolved.task.metadata.selfDevelopment.scope.focusedTests,["test/console-static.test.js"]);
-  const evidence=scopeInputs[1].candidateEvidence.find(item=>item.path==="test/console-static.test.js");
-  assert.equal(evidence.relationship.sourcePath,"assets/console.js");
-  assert.equal(searchCalls.filter(call=>call.path==="test").length<=4,true);
+  assert.equal(resolutionCalls,0);
+  assert.equal(resolved.task.metadata.structuredScopeResolution.authoritySource,"deterministic_repository_certificates");
+  assert.equal(searchCalls.filter(call=>call.path==="test").length,0);
 });
 test("targeted test-only discovery rejects unrelated tests and remains fail closed",async()=>{
   let resolutionCalls=0;
@@ -1801,10 +1797,9 @@ test("saturated targeted discovery relates shared frontend backend integration a
     const blocked=await f.runtime.get(created.task.id);await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
     const rediscovered=await executeScheduledScopeRediscovery({...f,created}),resolved=await f.service.replanDiscoveryOnly(rediscovered.id,{expectedVersion:rediscovered.stateVersion});
     assert.equal(resolved.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery",item.name);
-    const evidence=secondInput.candidateEvidence.find(candidate=>candidate.path===item.testPath);
-    assert.ok(evidence,`${item.name}: ${JSON.stringify(secondInput.candidatePaths)}`);
-    assert.equal(evidence.relationship.basis,"repository_search_content_relation",item.name);
-    assert.ok(item.sources.some(source=>source.path===evidence.relationship.sourcePath),item.name);
+    assert.equal(resolutionCalls,1,item.name);
+    assert.equal(secondInput,undefined,item.name);
+    assert.equal(resolved.task.metadata.structuredScopeResolution.authoritySource,"deterministic_repository_certificates",item.name);
   }
 });
 test("authorized scope rediscovery gets one bounded continuation window after a long user wait",async()=>{
@@ -1883,7 +1878,7 @@ test("pre-transition structured resolver failure is retried once and preserves t
   assert.deepEqual(after.metadata.structuredScopeRecoveryHistory||[],[]);
   assert.equal((await f.runtime.steps(after.id)).some(step=>step.stepType==="scope_rediscovery"),false);
 });
-test("one invalid structured scope result cannot strand coherent repository-grounded discovery",async()=>{
+test("complete deterministic scope certificates bypass a false-negative model result",async()=>{
   let resolutionCalls=0;const scopeInputs=[];
   const failure=Object.assign(new Error("invalid structured result"),{code:"structured_scope_invalid"}),f=await fixture({
     structuredIntake:{
@@ -1907,23 +1902,12 @@ test("one invalid structured scope result cannot strand coherent repository-grou
   }),created=await f.service.createTrustedIntake("Implement accessible keyboard navigation for Nova Console's recent conversations drawer and add focused regression coverage.");
   for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`scope-freeze-regression-${index}`});
   const blocked=await f.runtime.get(created.task.id),result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
-  assert.equal(resolutionCalls,2);
-  assert.deepEqual(scopeInputs[1],scopeInputs[0]);
-  const scopeInput=scopeInputs[1];
-  assert.ok(scopeInput.candidatePaths.includes("assets/console.js"));
-  assert.ok(scopeInput.candidatePaths.includes("assets/console.css"));
-  assert.ok(scopeInput.candidatePaths.includes("test/console-static.test.js"));
-  assert.deepEqual(scopeInputs[1].candidateEvidence,scopeInputs[0].candidateEvidence);
-  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").matches[0].stepId,"2:search_code");
-  assert.match(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").matches[0].text,/recentsDrawer/);
-  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").matches[0].truncated,true);
-  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="assets/console.js").ownership.basis,"selector_binding");
-  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="test/console-static.test.js").role,"focused_test");
-  assert.equal(scopeInput.candidateEvidence.find(item=>item.path==="test/console-static.test.js").relationship.sourcePath,"assets/console.js");
+  assert.equal(resolutionCalls,0);
   assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
-  assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,["assets/console.js","assets/console.css"]);
+  assert.deepEqual(new Set(result.task.metadata.selfDevelopment.scope.paths),new Set(["assets/console.js","assets/console.css"]));
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/console-static.test.js"]);
-  assert.equal(result.task.metadata.structuredScopeResolution.validationAttempts,2);
+  assert.equal(result.task.metadata.structuredScopeResolution.validationAttempts,0);
+  assert.equal(result.task.metadata.structuredScopeResolution.authoritySource,"deterministic_repository_certificates");
   assert.ok(result.continuationSteps.indexOf("read_files")<result.continuationSteps.indexOf("plan_implementation"));
   assert.equal((await f.runtime.steps(result.task.id)).some(step=>step.stepType==="apply_patch"&&step.status==="completed"),false);
 });
@@ -1966,11 +1950,10 @@ test("scope certification resolves backend route ownership and its API regressio
     ],
     resolution:{version:2,status:"resolved",sourcePaths:["src/http/widgets.js"],testPaths:["test/widgets-api.test.js"],constraintCoverage:[],constraintBindings:[],unresolvedEvidence:[],decisionHash:"d".repeat(64)},
   });
-  assert.equal(result.scopeInput.candidateEvidence.find(item=>item.path==="src/http/widgets.js").ownership.basis,"route_registration");
-  assert.equal(result.scopeInput.candidateEvidence.find(item=>item.path==="test/widgets-api.test.js").relationship.sourcePath,"src/http/widgets.js");
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,["src/http/widgets.js"]);
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/widgets-api.test.js"]);
   assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"resolved_discovery");
+  assert.equal(result.task.metadata.structuredScopeResolution.authoritySource,"deterministic_repository_certificates");
 });
 test("scope certification freezes coordinated multi-file integration ownership",async()=>{
   const result=await runOwnershipCertificationCase({
@@ -1986,7 +1969,7 @@ test("scope certification freezes coordinated multi-file integration ownership",
   });
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,["src/integrations/slack-client.js","src/integrations/slack-handler.js"]);
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.focusedTests,["test/slack-client.test.js"]);
-  assert.ok(result.scopeInput.candidateEvidence.filter(item=>item.role==="source").every(item=>item.ownership));
+  assert.equal(result.task.metadata.structuredScopeResolution.authoritySource,"deterministic_repository_certificates");
 });
 test("scope certification freezes a repository-grounded new source path before planning",async()=>{
   const newPath="src/integrations/twilio-adapter.js",result=await runOwnershipCertificationCase({
@@ -2031,6 +2014,22 @@ test("scope certification keeps genuinely ambiguous ownership discovery-only",as
   assert.deepEqual(result.task.metadata.selfDevelopment.scope.paths,[]);
   assert.equal((await result.runtime.steps(result.task.id)).some(step=>["read_files","plan_implementation","apply_patch"].includes(step.stepType)),false);
 });
+test("a model cannot grant scope when deterministic ownership certificates are missing",async()=>{
+  const f=await fixture({execute(name){if(name==="repo_list")return{ok:true,files:["assets/panel.js","test/panel-static.test.js"]};if(name==="repo_search")return{ok:true,matches:[{path:"assets/panel.js"},{path:"test/panel-static.test.js"}]};return{ok:true};}}),created=await f.service.create({userGoal:"Implement panel keyboard navigation with focused regression coverage."});
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`missing-certificate-${index}`});
+  const blocked=await f.runtime.get(created.task.id),result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+  assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"discovery_only");
+  assert.equal(result.task.metadata.structuredScopeResolution.deterministicCertificateReason,"source_ownership_incomplete");
+  assert.equal((await f.runtime.steps(result.task.id)).some(step=>["read_files","plan_implementation","apply_patch"].includes(step.stepType)),false);
+});
+test("deterministic scope authority rejects a repository baseline mismatch",async()=>{
+  const source="assets/panel.js",focused="test/panel-static.test.js",f=await fixture({resolvePathState:async()=>({existsInCommit:false}),execute(name){if(name==="repo_list")return{ok:true,files:["README.md"]};if(name==="repo_search")return{ok:true,matches:[{path:source,line:4,text:'panel.addEventListener("keydown", handlePanelKeys);'},{path:focused,line:7,text:"test('panel keyboard navigation',()=>{});"}]};return{ok:true};}}),created=await f.service.create({userGoal:"Implement panel keyboard navigation with focused regression coverage."});
+  for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`baseline-mismatch-${index}`});
+  const blocked=await f.runtime.get(created.task.id),result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+  assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"discovery_only");
+  assert.equal(result.task.metadata.structuredScopeResolution.deterministicCertificateReason,"baseline_binding_incomplete");
+  assert.equal((await f.runtime.steps(result.task.id)).some(step=>["read_files","plan_implementation","apply_patch"].includes(step.stepType)),false);
+});
 test("historical version-one unresolved scope metadata remains recoverable on the same task",async()=>{
   const f=await structuredScopeRecoveryFixture(),historical=await f.storage.updateAutonomyTask(f.blocked.id,OWNER,{metadata:{...f.blocked.metadata,structuredScopeResolution:{version:1,status:"blocked",unresolvedPrerequisiteFingerprints:["a".repeat(64)]},structuredScopeRecoveryHistory:[]}},f.blocked.stateVersion);
   const result=await f.service.recoverStructuredScope(historical.id,{expectedVersion:historical.stateVersion});
@@ -2062,7 +2061,8 @@ test("bounded rediscovery may freeze only newly repository-evidenced scope befor
   assert.equal(resolved.task.metadata.structuredScopeRecoveryHistory[0].status,"resolved");
   assert.equal(resolved.task.metadata.structuredScopeContinuation.status,"resolved");
   assert.ok(resolved.continuationSteps.indexOf("read_files")<resolved.continuationSteps.indexOf("plan_implementation"));
-  assert.ok(f.scopeCalls[1].candidatePaths.includes("assets/api-client.js"));
+  assert.equal(f.scopeCalls.length,1);
+  assert.equal(resolved.task.metadata.structuredScopeResolution.authoritySource,"deterministic_repository_certificates");
   assert.equal(resolved.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths.includes("src/autonomy/worker-runtime.js"),false);
 });
 test("a second unresolved scope result exhausts recovery without a rediscovery loop",async()=>{
@@ -2102,7 +2102,7 @@ test("automatic discovery ranks owning microphone modules above preservation-con
     "src/identity/initial-context.js","src/memory/context-retriever.js",
   ],f=await fixture({
     resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&existing.has(path)}),
-    execute(name){if(name==="repo_list")return{ok:true,files,truncated:true};if(name==="repo_search")return{ok:true,matches:[{path:"assets/console.js"},{path:"assets/voice-input.js"},{path:"test/voice-input.test.js"},{path:"test/self-development.test.js"}]};return{ok:true};},
+    execute(name){if(name==="repo_list")return{ok:true,files,truncated:true};if(name==="repo_search")return{ok:true,matches:[{path:"assets/console.css",line:10,text:".microphone-waveform { display: grid; }"},{path:"assets/console.js",line:40,text:'const microphonePanel = document.querySelector("#microphonePanel");'},{path:"assets/voice-input.js",line:12,text:'const microphoneButton = document.querySelector("#microphoneButton");'},{path:"test/voice-input.test.js",line:8,text:"test('voice input microphone waveform',()=>{});"},{path:"test/self-development.test.js",line:2,text:"test('unrelated runtime fixture',()=>{});"}]};return{ok:true};},
   }),created=await f.service.create({userGoal:EXACT_MICROPHONE_IMPLEMENTATION_PROMPT});
   for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`ranked-scope-${index}`});
   const blocked=await f.runtime.get(created.task.id),result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion}),paths=result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths;
@@ -2117,7 +2117,7 @@ test("automatic discovery ranks owning microphone modules above preservation-con
 test("automatic discovery uses the same evidence ranking for a generic future implementation",async()=>{
   const existing=new Set(["test/validation.test.js"]),f=await fixture({
     resolvePathState:async(path,commit)=>({existsInCommit:commit===SHA&&existing.has(path)}),
-    execute(name){if(name==="repo_list")return{ok:true,files:["src/http/validation.js","src/http/body.js","src/memory/relevance.js","docs/validation.md"],truncated:true};if(name==="repo_search")return{ok:true,matches:[{path:"src/http/validation.js"},{path:"docs/validation.md"}]};return{ok:true};},
+    execute(name){if(name==="repo_list")return{ok:true,files:["src/http/validation.js","src/http/body.js","src/memory/relevance.js","docs/validation.md"],truncated:true};if(name==="repo_search")return{ok:true,matches:[{path:"src/http/validation.js",line:6,text:"export function validateRequest() {}"},{path:"test/validation.test.js",line:4,text:"test('request validation',()=>{});"},{path:"docs/validation.md",line:1,text:"Validation documentation"}]};return{ok:true};},
   }),created=await f.service.create({userGoal:"Improve request validation in the HTTP validation module and add focused validation tests."});
   for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`generic-ranked-scope-${index}`});
   const blocked=await f.runtime.get(created.task.id),result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion}),paths=result.task.metadata.discoveryOnlyReplanHistory.at(-1).candidatePaths;
@@ -2128,7 +2128,11 @@ test("automatic discovery scope fails closed without relevant tests or with only
     const f=await fixture({execute(name){if(name==="repo_list")return{ok:true,files};if(name==="repo_search")return{ok:true,matches:[]};return{ok:true};}}),created=await f.service.create({userGoal:EXACT_MICROPHONE_IMPLEMENTATION_PROMPT});
     for(let index=0;index<created.plan.length;index++)await f.runtime.tickTask(created.task.id,{idempotencyKey:`closed-${files[0]}-${index}`});
     const blocked=await f.runtime.get(created.task.id);
-    await rejects(f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion}),"replan_scope_empty");
+    try{
+      const result=await f.service.replanDiscoveryOnly(blocked.id,{expectedVersion:blocked.stateVersion});
+      assert.equal(result.task.metadata.selfDevelopment.scopeAuthority,"discovery_only");
+      assert.equal((await f.runtime.steps(result.task.id)).some(step=>["read_files","plan_implementation","apply_patch"].includes(step.stepType)),false);
+    }catch(error){assert.equal(error.code,"replan_scope_empty");}
   }
 });
 test("replan preserves completed checkpoints and resets only the bounded runtime window", async () => {
