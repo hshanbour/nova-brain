@@ -63,3 +63,50 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(css, /\.live-activity-pulse/);
   assert.match(css, /prefers-reduced-motion:reduce[^}]*\.live-activity-pulse/);
 });
+
+async function liveActivitySource() {
+  const source = await readFile('assets/console.js', 'utf8');
+  const terminalLine = source.split(/\r?\n/).find((line) => line.startsWith('const terminalTaskStates='));
+  const elapsedLine = source.split(/\r?\n/).find((line) => line.startsWith('function elapsedLabel('));
+  assert.ok(terminalLine); assert.ok(elapsedLine);
+  return {
+    source,
+    terminalStates: new Set(JSON.parse(terminalLine.match(/new Set\((\[[^;]+\])\)/)[1])),
+    elapsedLabel: Function(`${elapsedLine};return elapsedLabel;`)(),
+  };
+}
+
+test('Live Activity elapsed time advances only for nonterminal tasks', async () => {
+  const { elapsedLabel } = await liveActivitySource(), originalNow = Date.now;
+  try {
+    Date.now = () => Date.parse('2026-09-25T12:00:01.000Z');
+    const first = elapsedLabel('2026-09-25T12:00:00.000Z', null, true);
+    Date.now = () => Date.parse('2026-09-25T12:00:05.000Z');
+    const second = elapsedLabel('2026-09-25T12:00:00.000Z', null, true);
+    assert.equal(first, '1s'); assert.equal(second, '5s'); assert.notEqual(first, second);
+  } finally { Date.now = originalNow; }
+});
+
+test('every authoritative terminal state freezes elapsed time across restoration', async () => {
+  const { source, terminalStates, elapsedLabel } = await liveActivitySource(), expected = ['completed','failed','cancelled','expired','blocked'];
+  assert.deepEqual([...terminalStates], expected);
+  const startedAt = '2026-09-25T12:00:00.000Z', endedAt = '2026-09-25T12:01:07.000Z', frozen = elapsedLabel(startedAt, endedAt, false), originalNow = Date.now;
+  try {
+    Date.now = () => Date.parse('2026-09-25T13:00:00.000Z'); assert.equal(elapsedLabel(startedAt, endedAt, false), frozen);
+    Date.now = () => Date.parse('2026-09-26T13:00:00.000Z'); assert.equal(elapsedLabel(startedAt, endedAt, false), frozen);
+  } finally { Date.now = originalNow; }
+  assert.equal(frozen, '1m 7s');
+  assert.equal(elapsedLabel(startedAt, null, false), '');
+  assert.match(source, /endedAt=terminal\?\(task\.completedAt\|\|task\.updatedAt\|\|record\.completedAt\|\|null\):null/);
+  assert.match(source, /elapsedLabel\(record\.startedAt,endedAt,!terminal\)/);
+});
+
+test('terminal cards remain visible without Stop and stop polling while nonterminal cancellation rules remain intact', async () => {
+  const { source, terminalStates } = await liveActivitySource();
+  assert.equal(terminalStates.has('blocked'), true);
+  assert.match(source, /const cancellable=!terminal&&!task\.leaseOwner&&!task\.leaseToken&&!\["running","waiting_for_approval"\]\.includes\(task\.status\)/);
+  assert.match(source, /if\(!terminal\)\{const stop=document\.createElement\("button"\)/);
+  assert.match(source, /if\(!terminalTaskStates\.has\(task\.status\)\)record\.timer=setTimeout/);
+  assert.match(source, /card\.replaceChildren\(\)/);
+  assert.match(source, /liveActivityRecords\.has\(stored\.taskId\)/);
+});
