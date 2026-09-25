@@ -5,6 +5,7 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const SECRET = /(?:sk-[A-Za-z0-9_-]{16,}|(?:api[_-]?key|password|passcode|bearer|authorization)\s*[:=]\s*\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----|seed\s+phrase\s*[:=]\s*\S+)/i;
 const TERMINAL = new Set(["completed", "failed", "cancelled", "expired", "blocked"]);
 const CODING_SPECIFICATION_VERSION = 1;
+const CODING_TASK_ID = /^coding_[a-f0-9]{32}$/;
 
 export class CodingExecutorError extends Error {
   constructor(code, message, statusCode = 409) {
@@ -17,6 +18,13 @@ export class CodingExecutorError extends Error {
 
 function fail(code, message, statusCode = 409) {
   throw new CodingExecutorError(code, message, statusCode);
+}
+
+export function requireCodingTaskId(value) {
+  if (typeof value !== "string" || !CODING_TASK_ID.test(value)) {
+    fail("coding_task_identity_invalid", "A canonical durable coding task ID is required.", 400);
+  }
+  return value;
 }
 
 function text(value, name, max = 4_000) {
@@ -224,11 +232,13 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
       return { task, result: publicResult(task, []), duplicate: false };
     },
     async get(taskId) {
+      taskId = requireCodingTaskId(taskId);
       const task = await runtime.get(taskId);
       if (task.taskType !== "coding_delegation") fail("coding_job_not_found", "Coding job was not found.", 404);
       return { task, result: publicResult(task, await runtime.steps(taskId)) };
     },
     async progress(taskId, input = {}) {
+      taskId = requireCodingTaskId(taskId);
       const task = await runtime.get(taskId);
       if (task.taskType !== "coding_delegation") fail("coding_job_not_found", "Coding job was not found.", 404);
       const phase = String(input.phase || "");
@@ -253,6 +263,7 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
       return { ok: true, taskId: task.id, phase };
     },
     async cancel(taskId) {
+      taskId = requireCodingTaskId(taskId);
       const task = await runtime.get(taskId);
       if (task.taskType !== "coding_delegation") fail("coding_job_not_found", "Coding job was not found.", 404);
       if (task.status === "running" || task.leaseOwner || task.leaseToken) {

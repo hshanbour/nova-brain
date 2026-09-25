@@ -12,6 +12,7 @@ import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
 import { createAutoDispatchService } from "../src/autonomy/auto-dispatch.js";
 import { createLocalWorkerHandoff } from "../src/autonomy/local-worker-handoff.js";
+import { createCodingProgressReporter, createPersistentLocalWorker } from "../src/autonomy/persistent-local-worker.js";
 
 const runFile = promisify(execFile);
 const OWNER = "owner";
@@ -125,6 +126,77 @@ test("a durable coding delegation routes exactly once to the bounded local Codex
   assert.ok(Date.parse(handoff.handoff.deadline) - Date.now() > 60 * 60 * 1000);
 });
 
+test("coding handoff preserves one canonical durable task ID through progress, execution, and completion", async () => {
+  const storage = createInMemoryStorage();
+  await storage.initialize({ owner: { id: OWNER }, projects: [{ id: "nova-brain", name: "Nova Brain" }] });
+  const runtime = createWorkerRuntime({ storage, ownerId: OWNER, toolRegistry: createToolRegistry(), approvedBranch: "feature", approvedRepository: "hshanbour/nova-brain" });
+  const parent = await runtime.create({ id: "parent-1", title: "Parent", objective: "Coordinate the project.", taskType: "project", projectId: "nova-brain", branch: "feature", startingCommit: BASE });
+  const service = createCodingExecutorService({ runtime, storage, ownerId: OWNER, bindings: [{ projectId: "nova-brain", workspaceId: "nova-brain", repository: "hshanbour/nova-brain", branch: "feature" }] });
+  const created = await service.create(request({ parentTaskId: parent.id }));
+  const dispatch = createAutoDispatchService({ storage, ownerId: OWNER, approvedBranch: "feature", approvedRepository: "hshanbour/nova-brain" });
+  const handoffs = createLocalWorkerHandoff({ storage, ownerId: OWNER, approvedBranch: "feature" });
+  const calls = [];
+  const client = { async request(path, body) {
+    calls.push({ path, body });
+    if (path.endsWith("/next")) return dispatch.next(body);
+    if (path.endsWith("/claim")) return handoffs.claim(body);
+    const progress = path.match(/^\/api\/admin\/coding-jobs\/([^/]+)\/progress$/);
+    if (progress) return service.progress(decodeURIComponent(progress[1]), body);
+    const complete = path.match(/^\/api\/admin\/worker\/handoff\/([^/]+)\/complete$/);
+    if (complete) return handoffs.complete(decodeURIComponent(complete[1]), body);
+    const fail = path.match(/^\/api\/admin\/worker\/handoff\/([^/]+)\/fail$/);
+    if (fail) return handoffs.fail(decodeURIComponent(fail[1]), body);
+    throw new Error(`Unexpected request: ${path}`);
+  } };
+  let executionContext = null;
+  const report = createCodingProgressReporter(client);
+  const registry = { async execute(name, _job, context) {
+    assert.equal(name, "codex_execute");
+    executionContext = context;
+    await report({ context, phase: "inspecting", summary: "Codex is inspecting the bound project." });
+    return { ok: true, status: "completed", summary: "Done", finalLocalSha: "b".repeat(40), filesChanged: ["src/a.js"], tests: [], limitations: [], pushOccurred: false, deploymentOccurred: false, approvalsRequiredNext: ["push"] };
+  } };
+  const worker = createPersistentLocalWorker({ client, root: "C:/bound", repository: "hshanbour/nova-brain", branch: "feature", runtimeVersion: "c".repeat(40), workerId: "local-worker", registry });
+  const completed = await worker.runOnce();
+  assert.equal(completed.status, "queued");
+  assert.equal(executionContext.taskId, created.task.id);
+  assert.equal(calls.find((call) => call.path.includes("/coding-jobs/")).path, `/api/admin/coding-jobs/${created.task.id}/progress`);
+  assert.equal(calls.find((call) => call.path.endsWith("/complete")).body.taskId, created.task.id);
+  assert.equal((await runtime.get(created.task.id)).metadata.parentTaskId, parent.id);
+  assert.equal((await runtime.steps(created.task.id))[0].status, "completed");
+});
+
+test("invalid coding task identity fails before progress or Codex execution", async () => {
+  let requested = false;
+  const report = createCodingProgressReporter({ async request() { requested = true; } });
+  await assert.rejects(report({ context: { taskId: undefined, handoffId: "handoff" }, phase: "inspecting", summary: "Inspecting." }), (error) => error.code === "coding_task_identity_invalid");
+  await assert.rejects(report({ context: { taskId: "[object Object]", handoffId: "handoff" }, phase: "inspecting", summary: "Inspecting." }), (error) => error.code === "coding_task_identity_invalid");
+  assert.equal(requested, false);
+  const registry = createToolRegistry();
+  let executed = false;
+  registerCodexExecutorTool(registry, { root: "C:/bound", repository: "hshanbour/nova-brain", branch: "feature", runner: async () => { executed = true; } });
+  await assert.rejects(registry.execute("codex_execute", request(), { taskId: null }), (error) => error.code === "coding_task_identity_invalid");
+  assert.equal(executed, false);
+});
+
+test("invalid claimed coding identity fails its handoff before executor launch", async () => {
+  const calls = [];
+  let executed = false;
+  const task = { id: "not-a-coding-task", branch: "feature", expectedCommit: BASE, stateVersion: 1, mode: "local_handoff", stepType: "delegate_coding" };
+  const client = { async request(path, body) {
+    calls.push({ path, body });
+    if (path.endsWith("/next")) return { dispatched: true, task };
+    if (path.endsWith("/claim")) return { claimed: true, handoff: { handoffId: "handoff-1", taskId: task.id, stepId: "1:delegate_coding", stepType: "delegate_coding", branch: "feature", expectedCommit: BASE, tool: "codex_execute", arguments: request() } };
+    if (path.endsWith("/fail")) return { status: "failed" };
+    throw new Error(`Unexpected request: ${path}`);
+  } };
+  const worker = createPersistentLocalWorker({ client, root: "C:/bound", repository: "hshanbour/nova-brain", branch: "feature", workerId: "local-worker", registry: { async execute() { executed = true; } } });
+  await assert.rejects(worker.runOnce(), (error) => error.code === "coding_task_identity_invalid");
+  assert.equal(executed, false);
+  assert.equal(calls.find((call) => call.path.endsWith("/fail")).body.taskId, task.id);
+  assert.equal(calls.find((call) => call.path.endsWith("/fail")).body.error.code, "coding_task_identity_invalid");
+});
+
 test("coding delegation rejects untrusted repository, Main, stale parent, unapproved mutation, and identity conflicts", async () => {
   const { service } = harness();
   await assert.rejects(service.create(request({ repository: { slug: "other/repo", branch: "feature", baseline: BASE } })), (error) => error.code === "coding_repository_binding_rejected");
@@ -200,7 +272,7 @@ test("Codex CLI runner binds repository, strips secrets, verifies the local comm
 test("Codex tool fails closed with a machine-readable result without broad authority", async () => {
   const registry = createToolRegistry();
   registerCodexExecutorTool(registry, { root: "C:/bound", repository: "hshanbour/nova-brain", branch: "feature", runner: async () => ({ status: "blocked", summary: "Tests failed.", repository: "hshanbour/nova-brain", baseline: BASE, finalLocalSha: null, filesChanged: [], tests: [{ command: "npm test", status: "failed" }], limitations: ["Repair requires user approval."], pushOccurred: false, deploymentOccurred: false, approvalsRequiredNext: ["retry"], failure: { code: "tests_failed", message: "Focused tests failed." } }) });
-  await assert.rejects(registry.execute("codex_execute", request(), {}), (error) => {
+  await assert.rejects(registry.execute("codex_execute", request(), { taskId: "coding_" + "a".repeat(32) }), (error) => {
     assert.equal(error.code, "tests_failed");
     assert.equal(error.safeDiagnostics.codingResult.status, "blocked");
     assert.equal(error.safeDiagnostics.codingResult.pushOccurred, false);

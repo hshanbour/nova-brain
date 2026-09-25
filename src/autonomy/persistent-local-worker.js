@@ -4,9 +4,16 @@ import {registerHandsTools} from "../tools/hands-runtime.js";
 import {canonicalSchemaDiagnostic,localSchemaDiagnostic} from "./schema-diagnostics.js";
 import {REVIEW_REMEDIATION_CLASS,reviewRemediationDescriptorForClass} from "./review-remediation-scope.js";
 import {registerCodexExecutorTool} from "../tools/codex-executor-tool.js";
+import {requireCodingTaskId} from "./coding-executor.js";
 
 const ALLOWED=new Set(["repo_read_task_owned_local","repo_apply_patch","repo_validate_patch","test_run","test_run_full","repo_diff","repo_review_commit","git_commit","git_integrate_reviewed_commit","codex_execute"]);
 const SHA=/^[a-f0-9]{40}$/;
+export function createCodingProgressReporter(client){
+  return async({context,phase,summary})=>{
+    const taskId=requireCodingTaskId(context?.taskId);
+    return client.request(`/api/admin/coding-jobs/${encodeURIComponent(taskId)}/progress`,{handoffId:context.handoffId,phase,summary});
+  };
+}
 function exactApprovedDelivery(task,job,{repository,branch}){
   const binding=job?.approvedDelivery;
   return Boolean(task?.mode==="local_handoff"&&task.stepType==="push"&&job?.tool==="git_push"&&job.stepType==="push"&&binding?.contractVersion===1&&binding.taskType==="self_development"&&binding.taskId===task.id&&binding.taskId===job.taskId&&typeof binding.approvalId==="string"&&binding.approvalId.length>0&&binding.approved===true&&binding.revoked===false&&binding.reviewedCommit===task.expectedCommit&&binding.reviewedCommit===job.expectedCommit&&binding.reviewedCommit===job.arguments?.commitSha&&SHA.test(binding.reviewedCommit)&&binding.repository===repository&&binding.repository===job.repository&&binding.branch===branch&&binding.branch===task.branch&&binding.branch===job.branch&&binding.branch===job.arguments?.branch&&!['main','master'].includes(binding.branch)&&binding.logicalStepId===job.stepId&&binding.logicalStepId.endsWith(":push")&&binding.localHandoff===true&&binding.reviewHistoryImmutable===true&&binding.postReviewMutation===false&&binding.deliveryConsumed===false&&binding.gitPushSucceeded===false&&binding.secondLogicalPush===false&&binding.repositoryProvenanceValid===true);
@@ -32,7 +39,7 @@ export function createPersistentLocalWorker({client,root,branch="feat/nova-brain
   if(!root&&!registry)throw Object.assign(new Error("An explicit controlled repository root is required."),{code:"repository_context_unproven"});
   const controlledRoot=root||"injected-registry";
   const repositoryContext=Object.freeze({version:1,source:"persistent_worker_startup",repository,root:controlledRoot,branch});
-  const tools=registry||createToolRegistry();if(!registry){registerHandsTools(tools,{root:controlledRoot,environment:{...environment,VERCEL:"",NOVA_BRAIN_DEVELOPMENT_BRANCH:branch}});registerCodexExecutorTool(tools,{root:controlledRoot,repository,branch,activity:({context,phase,summary})=>client.request(`/api/admin/coding-jobs/${encodeURIComponent(context.taskId)}/progress`,{handoffId:context.handoffId,phase,summary}).catch(()=>{})});}
+  const tools=registry||createToolRegistry();if(!registry){registerHandsTools(tools,{root:controlledRoot,environment:{...environment,VERCEL:"",NOVA_BRAIN_DEVELOPMENT_BRANCH:branch}});registerCodexExecutorTool(tools,{root:controlledRoot,repository,branch,activity:createCodingProgressReporter(client)});}
   async function handoff(task){
     const key=`${task.id}:${task.stateVersion}:${task.stepType||"local"}`,deliveryCandidate=task.mode==="local_handoff"&&task.stepType==="push",claimed=await client.request("/api/admin/worker/handoff/claim",{workerId,runtimeVersion,repository,repositoryRoot:controlledRoot,continuationGenerationId:task.continuationGenerationId,capabilities:["repo_mutate_local","test_local","repo_read_remote","codex_local",...(deliveryCandidate?["approved_delivery_git_push"]:[])],expectedBranch:task.branch,expectedCommit:task.expectedCommit,taskId:task.id,idempotencyKey:key});
     if(!claimed.claimed)return{worked:false,taskId:task.id};
@@ -40,8 +47,9 @@ export function createPersistentLocalWorker({client,root,branch="feat/nova-brain
     if(!job||job.taskId!==task.id||job.branch!==branch||job.expectedCommit!==task.expectedCommit||(!ALLOWED.has(job.tool)&&!approvedPush)||!exactReviewRemediationScope(task,job,{repository,branch,root:controlledRoot,runtimeVersion,workerId})||!exactFullTestScope(task,job,{repository,branch,root:controlledRoot,runtimeVersion,workerId})||!exactExecutionScope(task,job,{repository,branch,root:controlledRoot,runtimeVersion,workerId}))throw Object.assign(new Error("Server returned an invalid bounded handoff."),{code:"invalid_handoff"});
     const context={taskId:task.id,handoffId:job.handoffId,stepId:job.stepId,stepType:job.stepType,tool:job.tool,schemaVersion:"1",validationLayer:"local_worker",payloadProvenance:"server_handoff",continuationGenerationId:task.continuationGenerationId};
     try{
+      if(job.tool==="codex_execute")requireCodingTaskId(task.id);
       if(!job.arguments||typeof job.arguments!=="object"||Array.isArray(job.arguments))throw Object.assign(new Error("Handoff arguments must be an object."),{code:"schema_mismatch",safeDiagnostics:canonicalSchemaDiagnostic({...context,fieldPath:"handoff.arguments",expected:{type:"object"},received:job.arguments,validationCode:"invalid_type"})});
-      const started=Date.now(),raw=await tools.execute(job.tool,job.arguments,{runId:task.id,stepId:job.stepId,workerId,runtimeVersion,projectId:"nova-brain",continuationGenerationId:context.continuationGenerationId,...(job.reviewRemediationScope?{reviewRemediationScope:job.reviewRemediationScope}:{}),...(job.executionScope?{executionScope:job.executionScope}:{}),...(job.fullTestScope?{fullTestScope:job.fullTestScope}:{}),approvalId:approvedPush?job.approvedDelivery.approvalId:undefined,schemaDiagnosticContext:{...context,validationLayer:"hands_tool_registry",payloadProvenance:"server_handoff_arguments"},repositoryContext:{...repositoryContext,expectedHead:job.expectedCommit,source:"persistent_worker_handoff"}});
+      const started=Date.now(),raw=await tools.execute(job.tool,job.arguments,{taskId:task.id,runId:task.id,handoffId:job.handoffId,stepId:job.stepId,workerId,runtimeVersion,projectId:"nova-brain",continuationGenerationId:context.continuationGenerationId,...(job.reviewRemediationScope?{reviewRemediationScope:job.reviewRemediationScope}:{}),...(job.executionScope?{executionScope:job.executionScope}:{}),...(job.fullTestScope?{fullTestScope:job.fullTestScope}:{}),approvalId:approvedPush?job.approvedDelivery.approvalId:undefined,schemaDiagnosticContext:{...context,validationLayer:"hands_tool_registry",payloadProvenance:"server_handoff_arguments"},repositoryContext:{...repositoryContext,expectedHead:job.expectedCommit,source:"persistent_worker_handoff"}});
       if(raw?.ok===false)throw Object.assign(new Error(raw.error?.message||"Bounded local step failed."),{code:raw.error?.code||"worker_failed",safeDiagnostics:raw.error?.evidence});
       const result=raw?.ok===undefined?{...raw,ok:true}:raw;
       const completed=await client.request(`/api/admin/worker/handoff/${encodeURIComponent(job.handoffId)}/complete`,{taskId:task.id,workerId,idempotencyKey:key,result:{...result,durationMs:result.durationMs??Date.now()-started}});

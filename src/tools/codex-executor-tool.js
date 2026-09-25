@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { RISK_LEVELS } from "../policy/action-policy.js";
+import { requireCodingTaskId } from "../autonomy/coding-executor.js";
 
 const SHA = /^[a-f0-9]{40}$/;
 const RESULT_SCHEMA = Object.freeze({
@@ -173,6 +174,7 @@ export function registerCodexExecutorTool(registry, { root, repository, branch, 
     configurationStatus: root && repository && branch ? "ready" : "configuration_required",
     inputSchema: { type: "object", additionalProperties: true },
     async execute(job, context = {}) {
+      requireCodingTaskId(context.taskId);
       const emit = async (phase, summary) => activity?.({ job, context, phase, summary });
       await emit("inspecting", "Codex is inspecting the bound project.");
       const result = await runner(job, { root, repository, branch, signal: context.signal, onProgress: emit });
