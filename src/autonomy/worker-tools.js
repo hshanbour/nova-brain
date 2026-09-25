@@ -138,6 +138,7 @@ export function registerWorkerTools(registry, { runtime, taskMigration, codingEx
       configurationStatus: "approval_required",
       approvalReason: "Owner approval is required before Codex may modify the bound development worktree.",
       inputSchema: schema({
+        version: number,
         jobId: text,
         parentTaskId: text,
         objective: text,

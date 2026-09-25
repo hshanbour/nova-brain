@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createCodingDelegationService, codingDelegationFingerprint, isChatCodingDelegationRequest } from "../src/autonomy/coding-delegation.js";
-import { codingSpecificationHash } from "../src/autonomy/coding-executor.js";
+import { codingSpecificationHash, createCodingExecutorService } from "../src/autonomy/coding-executor.js";
+import { registerWorkerTools } from "../src/autonomy/worker-tools.js";
+import { ApprovalRequiredError, createActionPolicy } from "../src/policy/action-policy.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
@@ -32,6 +34,22 @@ test("preparation selects only the trusted project, resolves a fresh baseline, a
   assert.deepEqual(first.codingJob.delivery,{boundary:"local_commit",allowPush:false,allowDeploy:false});
   assert.equal(first.codingJob.version,1);assert.equal(first.task.metadata.codingDelegation.codingJobHash,codingSpecificationHash(first.codingJob));
   assert.equal(first.codingJob.parentTaskId,first.task.id);assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,1);
+});
+
+test("the exact versioned specification returned by prepare reaches the owner approval boundary",async()=>{
+  const f=await fixture(),runId="chat-run",prepared=await f.service.prepare(request,{delegationRequestFingerprint:codingDelegationFingerprint("Use Codex to fix the drawer")});
+  const codingExecutor=createCodingExecutorService({runtime:f.runtime,storage:f.storage,ownerId:OWNER,bindings:[BINDING]});
+  const registry=createToolRegistry({policy:createActionPolicy({storage:f.storage,ownerId:OWNER,approvedBranch:"feature"})});
+  registerWorkerTools(registry,{runtime:f.runtime,taskMigration:{migrate(){throw new Error("unused");}},codingExecutor,codingDelegation:f.service});
+  await assert.rejects(
+    registry.execute("coding_job_create",prepared.codingJob,{runId,projectId:BINDING.projectId}),
+    error=>error instanceof ApprovalRequiredError&&error.approval.tool==="coding_job_create"&&error.approval.runId===runId,
+  );
+  const approvals=await f.storage.listApprovals(OWNER);
+  assert.equal(approvals.length,1);
+  assert.equal(approvals[0].status,"pending");
+  assert.equal(approvals[0].arguments.version,1);
+  assert.deepEqual(approvals[0].arguments,prepared.codingJob);
 });
 
 test("preparation fails closed for ambiguous or arbitrary project authority and never accepts Main",async()=>{
