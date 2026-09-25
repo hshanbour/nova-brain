@@ -57,6 +57,14 @@ function safeToolError(error, name) {
     for(const [key,value] of Object.entries(error?.safeDiagnostics||{}))if(allowedDiagnostics.has(key)&&(value===null||["string","number","boolean"].includes(typeof value)))diagnostics[key]=value;
     return{code,message:"Structured scope recovery failed safely.",...(Object.keys(diagnostics).length?{diagnostics}:{})};
   }
+  if(name==="coding_job_create"){
+    const diagnostics={},safe=error?.safeDiagnostics||{};
+    if(typeof safe.validationCode==="string")diagnostics.validationCode=safe.validationCode.slice(0,100);
+    if(typeof safe.fieldPath==="string")diagnostics.fieldPath=safe.fieldPath.slice(0,160);
+    if(Array.isArray(safe.argumentKeys))diagnostics.argumentKeys=safe.argumentKeys.filter(value=>typeof value==="string").slice(0,20).map(value=>value.slice(0,80));
+    const code=typeof error?.code==="string"&&/^(?:schema_mismatch|coding_[a-z0-9_]+)$/.test(error.code)?error.code:"coding_creation_failed";
+    return{code,message:"Coding job creation failed safely.",...(Object.keys(diagnostics).length?{diagnostics}:{})};
+  }
   const allowed = new Set([
     "invalid_input", "schema_mismatch", "repository_not_resolved",
     "repository_not_allowed", "branch_not_allowed", "project_not_found",
@@ -81,6 +89,11 @@ const EXISTING_TASK_CONTROL_TOOLS = new Set([
 const taskControlTools=route=>new Set(route?.action==="recovery"?[...EXISTING_TASK_CONTROL_TOOLS]:["self_development_get"]);
 
 function toolActivityMetadata(name,args,error){
+  if(name==="coding_job_create"){
+    const metadata={argumentKeys:Object.keys(args||{}).sort()};
+    if(error&&typeof error==="object")metadata.error=error;
+    return metadata;
+  }
   if(name!=="self_development_scope_recover")return undefined;
   const metadata={taskId:String(args?.taskId||"").slice(0,100),expectedVersion:Number.isInteger(args?.expectedVersion)?args.expectedVersion:null};
   if(error&&typeof error==="object")metadata.error=error;
@@ -194,7 +207,7 @@ export function createAgent({
         }
         if(durable?.codingDelegation===true){
           allowedTaskTools=new Set(["coding_job_prepare","coding_job_create","coding_job_get"]);
-          systemContext=`${systemContext}\n\nCHAT-NATIVE CODEX DELEGATION: This request explicitly asks Nova to orchestrate Codex. Do not use self-development. First call coding_job_prepare with the bounded objective, acceptance criteria, constraints, and verification. Then call coding_job_create using the exact codingJob object returned by preparation, without changing repository, branch, baseline, delivery, identity, or scope authority. coding_job_create must stop at the owner approval boundary. Never request push or deployment.`;
+          systemContext=`${systemContext}\n\nCHAT-NATIVE CODEX DELEGATION: This request explicitly asks Nova to orchestrate Codex. Do not use self-development. First call coding_job_prepare with the bounded objective, acceptance criteria, constraints, and verification. Then call coding_job_create using only the exact compact creationRequest returned by preparation. Never reconstruct or retransmit the full coding specification. coding_job_create must stop at the owner approval boundary. Never request push or deployment.`;
         }
         if (durable?.task) {
           const durableTask = {

@@ -183,6 +183,43 @@ test("prepared specification remains approval-stable across parent lifecycle cha
   ]) await assert.rejects(service.validatePrepared({ ...exact, ...changed }), error => ["coding_parent_specification_changed", "coding_parent_binding_changed", "coding_delivery_boundary_rejected"].includes(error.code));
 });
 
+test("compact creation handles reload one canonical stored job and ignore lifecycle-only parent changes", async () => {
+  const fixture = harness({ prepared: true });
+  const canonical = fixture.tasks.get("parent-1").metadata.codingDelegation.codingJob;
+  const handle = { parentTaskId: "parent-1", specificationHash: codingSpecificationHash(canonical) };
+  assert.deepEqual(await fixture.service.validateCreationHandle(handle), { ok: true, specificationHash: handle.specificationHash });
+  Object.assign(fixture.tasks.get("parent-1"), {
+    status: "waiting_for_approval",
+    stateVersion: 9,
+    currentPhase: "approval",
+    updatedAt: "2026-09-25T12:00:00.000Z",
+    approvalState: { approvalId: "approval-handle", approved: false },
+  });
+  const restarted = createCodingExecutorService({ runtime: fixture.runtime, storage: fixture.storage, ownerId: OWNER, bindings: [{ projectId: "nova-brain", workspaceId: "nova-brain", repository: "hshanbour/nova-brain", branch: "feature" }] });
+  const first = await restarted.createFromHandle(handle, { approvalId: "approval-handle" });
+  const duplicate = await restarted.createFromHandle(handle, { approvalId: "approval-handle" });
+  assert.equal(first.duplicate, false);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(first.task.id, duplicate.task.id);
+  assert.equal(first.task.metadata.codingJob.objective, canonical.objective);
+  assert.equal(first.task.metadata.codingJob.approval.approvalId, "approval-handle");
+  assert.deepEqual(first.task.metadata.steps[0].input.arguments, first.task.metadata.codingJob);
+  assert.equal(fixture.tasks.size, 2);
+});
+
+test("compact creation handles fail closed for malformed, unknown, mismatched, or mutated canonical specifications", async () => {
+  const fixture = harness({ prepared: true });
+  const parent = fixture.tasks.get("parent-1"), canonical = parent.metadata.codingDelegation.codingJob;
+  const handle = { parentTaskId: "parent-1", specificationHash: codingSpecificationHash(canonical) };
+  await assert.rejects(fixture.service.validateCreationHandle({ parentTaskId: "parent-1" }), error => error.code === "coding_creation_handle_invalid" && error.safeDiagnostics?.fieldPath === "coding_job_create.specificationHash");
+  await assert.rejects(fixture.service.validateCreationHandle({ ...handle, extra: "forbidden" }), error => error.code === "coding_creation_handle_invalid" && error.safeDiagnostics?.validationCode === "unsupported_field" && error.safeDiagnostics.argumentKeys.includes("extra"));
+  await assert.rejects(fixture.service.validateCreationHandle({ ...handle, parentTaskId: "missing-parent" }), error => error.code === "coding_parent_task_not_found");
+  await assert.rejects(fixture.service.validateCreationHandle({ ...handle, specificationHash: "b".repeat(64) }), error => error.code === "coding_parent_specification_changed");
+  parent.metadata.codingDelegation.codingJob = { ...canonical, objective: "Mutated objective." };
+  await assert.rejects(fixture.service.validateCreationHandle(handle), error => error.code === "coding_parent_specification_changed" && error.safeDiagnostics?.validationCode === "stored_specification_hash_mismatch");
+  assert.equal(fixture.tasks.size, 1);
+});
+
 test("a durable coding delegation routes exactly once to the bounded local Codex worker", async () => {
   const storage = createInMemoryStorage();
   await storage.initialize({ owner: { id: OWNER }, projects: [{ id: "nova-brain", name: "Nova Brain" }] });

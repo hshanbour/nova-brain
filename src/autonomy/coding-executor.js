@@ -11,16 +11,36 @@ const MAX_SUCCESSOR_DEPTH = 32;
 const CODING_TASK_ID = /^coding_[a-f0-9]{32}$/;
 
 export class CodingExecutorError extends Error {
-  constructor(code, message, statusCode = 409) {
+  constructor(code, message, statusCode = 409, safeDiagnostics = undefined) {
     super(message);
     this.name = "CodingExecutorError";
     this.code = code;
     this.statusCode = statusCode;
+    if (safeDiagnostics) this.safeDiagnostics = safeDiagnostics;
   }
 }
 
-function fail(code, message, statusCode = 409) {
-  throw new CodingExecutorError(code, message, statusCode);
+function fail(code, message, statusCode = 409, safeDiagnostics) {
+  throw new CodingExecutorError(code, message, statusCode, safeDiagnostics);
+}
+
+const HANDLE_HASH = /^[a-f0-9]{64}$/;
+
+function normalizeCreationHandle(input) {
+  const argumentKeys = input && typeof input === "object" && !Array.isArray(input) ? Object.keys(input).sort() : [];
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    fail("coding_creation_handle_invalid", "A compact coding creation handle is required.", 400, { validationCode: "invalid_type", fieldPath: "coding_job_create", argumentKeys });
+  }
+  if (argumentKeys.some((key) => !["parentTaskId", "specificationHash"].includes(key))) {
+    fail("coding_creation_handle_invalid", "The coding creation handle contains unsupported fields.", 400, { validationCode: "unsupported_field", fieldPath: "coding_job_create", argumentKeys });
+  }
+  if (typeof input.parentTaskId !== "string" || !ID.test(input.parentTaskId)) {
+    fail("coding_creation_handle_invalid", "The coding creation parent is invalid.", 400, { validationCode: "invalid_identifier", fieldPath: "coding_job_create.parentTaskId", argumentKeys });
+  }
+  if (typeof input.specificationHash !== "string" || !HANDLE_HASH.test(input.specificationHash)) {
+    fail("coding_creation_handle_invalid", "The coding specification hash is invalid.", 400, { validationCode: "invalid_hash", fieldPath: "coding_job_create.specificationHash", argumentKeys });
+  }
+  return Object.freeze({ parentTaskId: input.parentTaskId, specificationHash: input.specificationHash });
 }
 
 export function requireCodingTaskId(value) {
@@ -220,13 +240,31 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
     }
     return { job, parent };
   };
-  return Object.freeze({
-    async validatePrepared(input) {
-      const { job } = await validatePrepared(input, { requireApproval: false });
-      return { ok: true, specificationHash: codingSpecificationHash(job) };
-    },
-    async create(input) {
-      const { job } = await validatePrepared(input, { requireApproval: true });
+  const resolveCreationHandle = async (input) => {
+    const handle = normalizeCreationHandle(input);
+    const parent = await storage.getAutonomyTask(handle.parentTaskId, ownerId);
+    if (!parent || parent.taskType !== "coding_orchestration") {
+      fail("coding_parent_task_not_found", "The prepared coding parent was not found.", 404, { validationCode: "unknown_parent", fieldPath: "coding_job_create.parentTaskId", argumentKeys: Object.keys(handle) });
+    }
+    const prepared = parent.metadata?.codingDelegation;
+    if (!prepared?.codingJob || typeof prepared.codingJobHash !== "string") {
+      fail("coding_parent_specification_missing", "The prepared coding specification is unavailable.", 409, { validationCode: "stored_specification_missing", fieldPath: "coding_job_create.parentTaskId", argumentKeys: Object.keys(handle) });
+    }
+    const binding = trusted.get(prepared.codingJob.projectId);
+    const job = normalizeJob(prepared.codingJob, binding, { requireApproval: false });
+    const specificationHash = codingSpecificationHash(job);
+    if (prepared.codingJobHash !== specificationHash) {
+      fail("coding_parent_specification_changed", "The stored coding specification no longer matches its immutable hash.", 409, { validationCode: "stored_specification_hash_mismatch", fieldPath: "coding_job_create.specificationHash", argumentKeys: Object.keys(handle) });
+    }
+    if (handle.specificationHash !== specificationHash) {
+      fail("coding_parent_specification_changed", "The coding creation handle does not match the prepared specification.", 409, { validationCode: "specification_hash_mismatch", fieldPath: "coding_job_create.specificationHash", argumentKeys: Object.keys(handle) });
+    }
+    if (parent.projectId !== job.projectId || parent.branch !== job.repository.branch || parent.currentCommit !== job.repository.baseline) {
+      fail("coding_parent_binding_changed", "The parent task no longer matches the trusted coding baseline.");
+    }
+    return { handle, job, parent, specificationHash };
+  };
+  const createCanonical = async (job) => {
       const specificationHash = codingSpecificationHash(job);
       const jobHash = hash(job);
       const rootTaskId = codingTaskIdentity(job);
@@ -303,6 +341,24 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
         metadata: { taskId: task.id, parentTaskId: job.parentTaskId, jobId: job.jobId, repository: job.repository.slug, branch: job.repository.branch, predecessorTaskId: predecessor?.id || null, retryGeneration: generation },
       });
       return { task, result: publicResult(task, []), duplicate: false };
+  };
+  return Object.freeze({
+    async validatePrepared(input) {
+      const { job } = await validatePrepared(input, { requireApproval: false });
+      return { ok: true, specificationHash: codingSpecificationHash(job) };
+    },
+    async validateCreationHandle(input) {
+      const { specificationHash } = await resolveCreationHandle(input);
+      return { ok: true, specificationHash };
+    },
+    async createFromHandle(input, { approvalId } = {}) {
+      const { job } = await resolveCreationHandle(input);
+      const approved = normalizeJob({ ...job, approval: { buildApproved: true, approvalId } }, trusted.get(job.projectId), { requireApproval: true });
+      return createCanonical(approved);
+    },
+    async create(input) {
+      const { job } = await validatePrepared(input, { requireApproval: true });
+      return createCanonical(job);
     },
     async get(taskId) {
       taskId = requireCodingTaskId(taskId);

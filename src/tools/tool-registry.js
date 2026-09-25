@@ -61,7 +61,7 @@ export function createToolRegistry({ policy } = {}) {
       tools.set(tool.name, Object.freeze({ ...tool }));
     },
     list({ executableOnly = false } = {}) {
-      return [...tools.values()].filter((tool) => !executableOnly || tool.available !== false).map(({ execute: _execute, validate: _validate, ...tool }) => ({
+      return [...tools.values()].filter((tool) => !executableOnly || tool.available !== false).map(({ execute: _execute, validate: _validate, validateApprovedLegacy: _validateApprovedLegacy, ...tool }) => ({
         ...tool
       }));
     },
@@ -78,7 +78,17 @@ export function createToolRegistry({ policy } = {}) {
 
       if (tool.available === false) throw new Error(`Tool is unavailable: ${name}`);
 
-      try{validateSchemaInput(tool.inputSchema, input, name);if (tool.validate) await tool.validate(input);}catch(error){if(error?.code==="schema_mismatch")error.safeDiagnostics=canonicalSchemaDiagnostic({...error.safeDiagnostics,...context?.schemaDiagnosticContext,tool:name,schemaVersion:tool.inputSchema?.schemaVersion||tool.inputSchema?.version||"1",argumentKeys:Object.keys(input),validationLayer:"hands_tool_registry"});throw error;}
+      try {
+        validateSchemaInput(tool.inputSchema, input, name);
+        if (tool.validate) await tool.validate(input, context);
+      } catch (error) {
+        if (error?.code === "schema_mismatch" && context?.approvalId && typeof tool.validateApprovedLegacy === "function") {
+          await tool.validateApprovedLegacy(input, context);
+        } else {
+          if (error?.code === "schema_mismatch") error.safeDiagnostics = canonicalSchemaDiagnostic({ ...error.safeDiagnostics, ...context?.schemaDiagnosticContext, tool: name, schemaVersion: tool.inputSchema?.schemaVersion || tool.inputSchema?.version || "1", argumentKeys: Object.keys(input), validationLayer: "hands_tool_registry" });
+          throw error;
+        }
+      }
       if (policy) await policy.authorize(tool, input, context);
 
       return tool.execute(input, context);

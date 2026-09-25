@@ -14,6 +14,15 @@ const digest = (value) => createHash("sha256").update(JSON.stringify(stable(valu
 const cleanList = (value, max = 40) => Array.isArray(value)
   ? [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))].slice(0, max)
   : [];
+const publicParent = (task) => Object.freeze({
+  id: task.id,
+  taskType: task.taskType,
+  status: task.status,
+  stateVersion: task.stateVersion,
+  projectId: task.projectId,
+  branch: task.branch,
+  startingCommit: task.startingCommit,
+});
 
 export function isChatCodingDelegationRequest(message) {
   const value = String(message || "");
@@ -72,7 +81,13 @@ export function createCodingDelegationService({ runtime, storage, ownerId, bindi
         verification: cleanList(input?.verification, 30),
       });
       const existing = await storage.getAutonomyTask(parentTaskId, ownerId);
-      if (existing) return { task: existing, codingJob: existing.metadata?.codingDelegation?.codingJob, duplicate: true };
+      if (existing) {
+        const prepared = existing.metadata?.codingDelegation, specificationHash = prepared?.codingJobHash;
+        if (existing.taskType !== "coding_orchestration" || !prepared?.codingJob || specificationHash !== codingSpecificationHash(prepared.codingJob)) {
+          throw Object.assign(new Error("The coding delegation identity is already bound to invalid or different durable inputs."), { code: "coding_delegation_identity_conflict" });
+        }
+        return { task: publicParent(existing), creationRequest: Object.freeze({ parentTaskId: existing.id, specificationHash }), duplicate: true };
+      }
       const task = await runtime.create({
         id: parentTaskId,
         title: `Codex delegation: ${objective.slice(0, 90)}`,
@@ -92,7 +107,11 @@ export function createCodingDelegationService({ runtime, storage, ownerId, bindi
           steps: [],
         },
       });
-      return { task, codingJob: job, duplicate: false };
+      return {
+        task: publicParent(task),
+        creationRequest: Object.freeze({ parentTaskId: task.id, specificationHash: task.metadata.codingDelegation.codingJobHash }),
+        duplicate: false,
+      };
     },
   });
 }

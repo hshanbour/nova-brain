@@ -129,7 +129,7 @@ export function registerWorkerTools(registry, { runtime, taskMigration, codingEx
     });
     registry.register({
       name: "coding_job_create",
-      description: "Create one owner-approved, repository-bound Codex coding job. Codex may inspect, implement, test, review, and create a local commit; push and deployment remain separately approval-bound.",
+      description: "Create one owner-approved Codex coding job from the exact compact creationRequest returned by coding_job_prepare. Never reconstruct or retransmit the full coding specification.",
       category: "coding_executor",
       capability: "write",
       riskLevel: RISK_LEVELS.HIGH_IMPACT,
@@ -138,23 +138,14 @@ export function registerWorkerTools(registry, { runtime, taskMigration, codingEx
       configurationStatus: "approval_required",
       approvalReason: "Owner approval is required before Codex may modify the bound development worktree.",
       inputSchema: schema({
-        version: number,
-        jobId: text,
         parentTaskId: text,
-        objective: text,
-        acceptanceCriteria: { type: "array" },
-        constraints: { type: "array" },
-        repository: { type: "object" },
-        projectId: text,
-        workspaceId: text,
-        delivery: { type: "object" },
-        verification: { type: "array" },
-      }, ["jobId", "parentTaskId", "objective", "acceptanceCriteria", "repository", "projectId", "workspaceId", "delivery"]),
-      validate: (input) => codingExecutor.validatePrepared(input),
-      execute: (input, context) => codingExecutor.create({
-        ...input,
-        approval: { buildApproved: true, approvalId: context?.approvalId },
-      }),
+        specificationHash: text,
+      }, ["parentTaskId", "specificationHash"]),
+      validate: (input) => codingExecutor.validateCreationHandle(input),
+      validateApprovedLegacy: (input) => codingExecutor.validatePrepared(input),
+      execute: (input, context) => Object.keys(input).every((key) => ["parentTaskId", "specificationHash"].includes(key))
+        ? codingExecutor.createFromHandle(input, { approvalId: context?.approvalId })
+        : codingExecutor.create({ ...input, approval: { buildApproved: true, approvalId: context?.approvalId } }),
     });
     registry.register({
       name: "coding_job_get",
