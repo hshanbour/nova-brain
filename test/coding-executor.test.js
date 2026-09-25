@@ -18,6 +18,16 @@ const runFile = promisify(execFile);
 const OWNER = "owner";
 const BASE = "a".repeat(40);
 
+function assertStrictOutputSchema(schema, path = "result") {
+  if (Array.isArray(schema?.anyOf)) schema.anyOf.forEach((entry, index) => assertStrictOutputSchema(entry, `${path}.anyOf[${index}]`));
+  if (schema?.type === "object") {
+    assert.equal(schema.additionalProperties, false, `${path}.additionalProperties`);
+    assert.deepEqual([...schema.required].sort(), Object.keys(schema.properties).sort(), `${path}.required`);
+    for (const [name, property] of Object.entries(schema.properties)) assertStrictOutputSchema(property, `${path}.${name}`);
+  }
+  if (schema?.type === "array") assertStrictOutputSchema(schema.items, `${path}[]`);
+}
+
 function harness({ prepared = false } = {}) {
   const canonical = immutableCodingSpecification(request({ approval: undefined }));
   const tasks = new Map([["parent-1", { id: "parent-1", ownerId: OWNER, projectId: "nova-brain", branch: "feature", currentCommit: BASE, status: "planning", stateVersion: 1, taskType: prepared ? "coding_orchestration" : "project", metadata: prepared ? { codingDelegation: { version: 1, codingJob: canonical, codingJobHash: codingSpecificationHash(canonical) } } : {} }]]);
@@ -307,7 +317,7 @@ test("structured executor results survive restart and active cancellation fails 
   assert.deepEqual(value.result.approvalsRequiredNext, ["push"]);
 });
 
-test("Codex CLI runner binds repository, strips secrets, verifies the local commit, and reports only measured usage", async (t) => {
+test("Codex CLI runner emits a strict-compatible schema and reaches a structured terminal result", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "nova-codex-runner-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await runFile("git", ["init", "-b", "feature"], { cwd: root });
@@ -330,7 +340,9 @@ test("Codex CLI runner binds repository, strips secrets, verifies the local comm
     environment: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, TEMP: process.env.TEMP, USERPROFILE: process.env.USERPROFILE, CODEX_HOME: process.env.CODEX_HOME, OPENAI_API_KEY: "must-not-leak" },
     async authProcess(command, args) { assert.equal(command, process.execPath);assert.deepEqual(args, ["login", "status"]);return { stdout: "", stderr: "", code: 0 }; },
     async spawnProcess(command, args, options) {
-      observed = { command, args, env: options.env, input: options.input, cwd: options.cwd };
+      const schema = JSON.parse(await readFile(args[args.indexOf("--output-schema") + 1], "utf8"));
+      assertStrictOutputSchema(schema);
+      observed = { command, args, env: options.env, input: options.input, cwd: options.cwd, schema };
       assert.notEqual(options.cwd, root);
       assert.equal((await runFile("git", ["rev-parse", "HEAD"], { cwd: options.cwd })).stdout.trim(), baseline);
       assert.equal((await runFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: options.cwd })).stdout.trim(), "HEAD");
@@ -349,6 +361,8 @@ test("Codex CLI runner binds repository, strips secrets, verifies the local comm
   const result = await runner(request({ repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline } }), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId });
   assert.equal(result.status, "completed");
   assert.equal(observed.command, process.execPath);
+  assert.deepEqual(observed.schema.properties.tests.items.required, ["command", "status", "summary"]);
+  assert.deepEqual(observed.schema.properties.tests.items.properties.summary.type, ["string", "null"]);
   assert.deepEqual(result.filesChanged, ["source.js"]);
   assert.deepEqual(result.usage, { input_tokens: 100, output_tokens: 25 });
   assert.equal(result.executor.billing, "codex_account_separate_from_nova_api_budget");

@@ -18,7 +18,7 @@ const RESULT_SCHEMA = Object.freeze({
     baseline: { type: "string" },
     finalLocalSha: { type: ["string", "null"] },
     filesChanged: { type: "array", items: { type: "string" } },
-    tests: { type: "array", items: { type: "object", additionalProperties: false, required: ["command", "status"], properties: { command: { type: "string" }, status: { type: "string", enum: ["passed", "failed", "not_run"] }, summary: { type: ["string", "null"] } } } },
+    tests: { type: "array", items: { type: "object", additionalProperties: false, required: ["command", "status", "summary"], properties: { command: { type: "string" }, status: { type: "string", enum: ["passed", "failed", "not_run"] }, summary: { type: ["string", "null"] } } } },
     limitations: { type: "array", items: { type: "string" } },
     pushOccurred: { type: "boolean" },
     deploymentOccurred: { type: "boolean" },
