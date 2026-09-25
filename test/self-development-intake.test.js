@@ -96,6 +96,25 @@ test("a bounded ownership certificate may validate a task-relevant truncated phy
   assert.deepEqual(result.sourcePaths,["assets/console.js"]);
 });
 
+test("scope resolver treats grounded ownership and test relationships as pre-read authority certificates",async()=>{
+  const calls=[],candidatePaths=["assets/console.js","assets/console.css","test/console-static.test.js"],candidateEvidence=[
+    {path:"assets/console.js",role:"source",inventory:true,matches:[{stepId:"2:search_code",query:"recent conversations drawer",line:33,text:'const recentsDrawer = document.querySelector("#recentsDrawer");',truncated:false}],ownership:{basis:"selector_binding",matchedTokens:["recent","drawer"],stepId:"2:search_code",line:33}},
+    {path:"assets/console.css",role:"source",inventory:true,matches:[{stepId:"2:search_code",query:"recent conversations drawer",line:14,text:".recents-drawer { position: fixed; }",truncated:false}],ownership:{basis:"selector_binding",matchedTokens:["recent","drawer"],stepId:"2:search_code",line:14}},
+    {path:"test/console-static.test.js",role:"focused_test",inventory:true,matches:[],relationship:{sourcePath:"assets/console.js",matchedTokens:["console"],basis:"existing_bound_commit_path_relation"}},
+  ],modelProvider={async generate(input){
+    calls.push(input);
+    assert.match(input.message,/ownership object is a deterministic repository-grounded certificate/);
+    assert.match(input.message,/may be extended with the requested new coverage/);
+    assert.match(input.message,/requested regression does not need to exist yet/);
+    assert.match(input.systemContext,/validated authority certificates, not suggestions/);
+    assert.match(input.systemContext,/Do not require post-freeze complete reads/);
+    return{type:"final",message:JSON.stringify({status:"resolved",sourcePaths:["assets/console.js","assets/console.css"],newSourcePaths:[],testPaths:["test/console-static.test.js"],constraintCoverage:[],unresolvedEvidence:[]}),providerUsage:{model:"gpt-6-luna",stage:"intake",inputTokens:100,cachedInputTokens:0,outputTokens:40,reasoningTokens:0,totalTokens:140}};
+  }},intake=createSelfDevelopmentIntake({modelProvider}),result=await intake.resolveScope({request:{userGoal:"Improve the Recent Conversations drawer keyboard and focus behavior.",acceptanceCriteria:["Keyboard navigation works.","Focused regression coverage is added."],constraints:[]},candidatePaths,candidateEvidence});
+  assert.equal(calls.length,1);
+  assert.deepEqual(result.sourcePaths,["assets/console.js","assets/console.css"]);
+  assert.deepEqual(result.testPaths,["test/console-static.test.js"]);
+});
+
 test("unresolvable scope is represented as a bounded blocked decision",async()=>{
   const intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"blocked",sourcePaths:[],testPaths:[],constraintCoverage:[{constraintIndex:0,disposition:"blocked",evidencePaths:[]}],unresolvedEvidence:[{category:"focused_test",concepts:["console activity test"]}]}])}),result=await intake.resolveScope({request:{userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"boundary",requirement:"Frontend only",enforcements:["scope_selection"]}]},candidatePaths:["assets/console.js","test/api.test.js"]});
   assert.equal(result.status,"blocked");assert.deepEqual(result.unresolvedEvidence,[{category:"focused_test",concepts:["console activity test"]}]);assert.equal(result.version,3);
