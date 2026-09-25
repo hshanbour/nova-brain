@@ -147,6 +147,9 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
       if (parent.projectId !== job.projectId || parent.branch !== job.repository.branch || parent.currentCommit !== job.repository.baseline) {
         fail("coding_parent_binding_changed", "The parent task no longer matches the trusted coding baseline.");
       }
+      const prepared=parent.metadata?.codingDelegation;
+      if(parent.taskType==="coding_orchestration"&&prepared?.codingJobHash!==hash({...job,approval:undefined}))
+        fail("coding_parent_specification_changed","The approved coding job no longer matches its prepared parent task.");
       const taskId = `coding_${hash([job.parentTaskId, job.jobId]).slice(0, 32)}`;
       const existing = await storage.getAutonomyTask(taskId, ownerId);
       const jobHash = hash(job);

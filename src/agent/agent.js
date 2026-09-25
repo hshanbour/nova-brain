@@ -181,7 +181,7 @@ export function createAgent({
             }
           }
         }
-        const allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
+        let allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
         const durable = speakerRestricted||existingTaskRoute ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, signal: executionSignal});
         executionSignal.throwIfAborted();
         if(durable?.clarificationRequired===true){
@@ -191,6 +191,10 @@ export function createAgent({
           await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:{message:response.message,providerUsage},completedAt:new Date().toISOString()});
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"durable_intake_clarification_required",status:"blocked",summary:"Durable intake requires one user decision."});
           return response;
+        }
+        if(durable?.codingDelegation===true){
+          allowedTaskTools=new Set(["coding_job_prepare","coding_job_create","coding_job_get"]);
+          systemContext=`${systemContext}\n\nCHAT-NATIVE CODEX DELEGATION: This request explicitly asks Nova to orchestrate Codex. Do not use self-development. First call coding_job_prepare with the bounded objective, acceptance criteria, constraints, and verification. Then call coding_job_create using the exact codingJob object returned by preparation, without changing repository, branch, baseline, delivery, identity, or scope authority. coding_job_create must stop at the owner approval boundary. Never request push or deployment.`;
         }
         if (durable?.task) {
           const durableTask = {
@@ -298,7 +302,7 @@ export function createAgent({
           try {
             executionSignal.throwIfAborted();
             if(allowedTaskTools&&!allowedTaskTools.has(call.name))throw Object.assign(new Error("Existing-task control cannot invoke this tool."),{code:"task_control_tool_forbidden"});
-            const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, signal: executionSignal });
+            const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, signal: executionSignal,delegationRequestFingerprint:durable?.requestFingerprint });
             executionSignal.throwIfAborted();
             execution.status = "completed";
             execution.result = result;
@@ -306,11 +310,16 @@ export function createAgent({
             await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "tool_completed", tool: call.name, status: "completed", summary: `${call.name} completed.` });
           } catch (error) {
             if (error instanceof ApprovalRequiredError) {
-              const approvalMessage = `Owner approval is required before Nova can run ${call.name}.`;
+              let approvalMessage = `Owner approval is required before Nova can run ${call.name}.`;
               execution.status = "waiting_for_approval"; execution.approvalId = error.approval.id; toolExecutions.push(execution);
+              let durableTask;
+              if(call.name==="coding_job_create"&&typeof call.arguments?.parentTaskId==="string"){
+                const parent=await storage.getAutonomyTask(call.arguments.parentTaskId,ownerId);
+                if(parent){const updated=await storage.updateAutonomyTask(parent.id,ownerId,{status:"waiting_for_approval",currentPhase:"approval",approvalState:{approvalId:error.approval.id,approved:false,tool:"coding_job_create",stepId:"delegation:create",arguments:error.approval.arguments}},parent.stateVersion);durableTask={id:updated.id,status:updated.status,projectId:updated.projectId,branch:updated.branch,startingCommit:updated.startingCommit,idempotent:false};approvalMessage=`Durable coding orchestration task ${updated.id} is waiting_for_approval. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`;}
+              }
               await storage.updateRun(run.id, ownerId, { status: "waiting_for_approval", currentStep: step, result: { providerUsage } });
               await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: approvalMessage });
-              return { id: randomUUID(), conversationId, message: approvalMessage, provider: modelProvider.name, toolCalls: toolExecutions, steps: step, runId: run.id, runStatus: "waiting_for_approval", approval: error.approval };
+              return { id: randomUUID(), conversationId, message: approvalMessage, provider: modelProvider.name, toolCalls: toolExecutions, steps: step, runId: run.id, runStatus: "waiting_for_approval", approval: error.approval,...(durableTask?{durableTask}:{}) };
             }
             execution.status = "failed";
             execution.error = safeToolError(error, call.name);

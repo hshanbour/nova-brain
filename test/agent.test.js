@@ -91,6 +91,20 @@ test("ordinary chat bypasses durable intake and keeps the synchronous model path
   assert.equal(result.provider, "scripted");
   assert.equal(result.message, "Normal chat");
 });
+test("Chat-native Codex delegation prepares a durable parent then stops at exactly one approval boundary",async()=>{
+  const storage=testStorage(),registry=createToolRegistry(),parentId="orchestration_"+"a".repeat(32),job={jobId:"job_"+"b".repeat(32),parentTaskId:parentId,objective:"Implement drawer accessibility.",acceptanceCriteria:["Keyboard focus works."],constraints:["Preserve Console behavior."],repository:{slug:"hshanbour/nova-brain",branch:"feature",baseline:"c".repeat(40)},projectId:"nova-brain",workspaceId:"nova-brain",delivery:{boundary:"local_commit",allowPush:false,allowDeploy:false},verification:["Run Console tests."]};
+  registry.register({name:"coding_job_prepare",available:true,async execute(){await storage.createAutonomyTask({id:parentId,ownerId:OWNER_ID,title:"Delegation",objective:job.objective,taskType:"coding_orchestration",projectId:"nova-brain",branch:"feature",startingCommit:job.repository.baseline,metadata:{autoDispatch:false}});return{task:await storage.getAutonomyTask(parentId,OWNER_ID),codingJob:job};}});
+  registry.register({name:"coding_job_create",available:true,async execute(){throw new ApprovalRequiredError({id:"approval-codex",tool:"coding_job_create",status:"pending",arguments:job});}});
+  registry.register({name:"coding_job_get",available:true,async execute(){return{};}});
+  const seen=[],agent=createTestAgent({storage,toolRegistry:registry,routeDurableRequest:async()=>({codingDelegation:true,requestFingerprint:"d".repeat(64)}),modelProvider:scriptedProvider([
+    {type:"tool_calls",toolCalls:[{id:"prepare",name:"coding_job_prepare",arguments:{objective:job.objective,acceptanceCriteria:job.acceptanceCriteria,constraints:job.constraints,verification:job.verification}}]},
+    {type:"tool_calls",toolCalls:[{id:"create",name:"coding_job_create",arguments:job}]},
+  ],input=>seen.push(input.tools.map(tool=>tool.name)))});
+  const result=await agent.run({message:"Use Codex to implement the drawer accessibility improvement."});
+  assert.equal(result.runStatus,"waiting_for_approval");assert.equal(result.approval.id,"approval-codex");assert.equal(result.durableTask.id,parentId);assert.equal(result.durableTask.status,"waiting_for_approval");
+  assert.deepEqual(seen,[['coding_job_prepare','coding_job_create','coding_job_get'],['coding_job_prepare','coding_job_create','coding_job_get']]);
+  assert.equal((await storage.listAutonomyTasks(OWNER_ID)).length,1);
+});
 test("existing-task continuation bypasses new-task intake and exposes only bounded task tools",async()=>{
   const storage=testStorage(),registry=createToolRegistry(),id="selfdev_c9fc28effbd72350c86c67abe4d69e36";let durableRoutes=0,recoveries=0,modelCalls=0;
   registry.register({name:"self_development_get",available:true,async execute(){return{id};}});

@@ -7,7 +7,7 @@ const schema = (properties = {}, required = []) => ({
   }),
   text = { type: "string" },
   number = { type: "number" };
-export function registerWorkerTools(registry, { runtime, taskMigration, codingExecutor }) {
+export function registerWorkerTools(registry, { runtime, taskMigration, codingExecutor, codingDelegation }) {
   registry.register({
     name: "autonomy_task_create",
     description: "Create a bounded durable autonomous task.",
@@ -120,6 +120,13 @@ export function registerWorkerTools(registry, { runtime, taskMigration, codingEx
         taskMigration.migrate(input, { actorType: "approved_internal_tool" }),
     });
   if (codingExecutor) {
+    if(codingDelegation)registry.register({
+      name:"coding_job_prepare",
+      description:"Prepare one durable, trusted-project Codex coding delegation from a natural Chat request. This does not start Codex; coding_job_create remains owner-approval-gated.",
+      category:"coding_executor",capability:"write",riskLevel:RISK_LEVELS.LOW_RISK_WRITE,autonomous:true,available:true,configurationStatus:"ready",
+      inputSchema:schema({objective:text,acceptanceCriteria:{type:"array"},constraints:{type:"array"},verification:{type:"array"},projectId:text},["objective","acceptanceCriteria"]),
+      execute:(input,context)=>codingDelegation.prepare(input,context),
+    });
     registry.register({
       name: "coding_job_create",
       description: "Create one owner-approved, repository-bound Codex coding job. Codex may inspect, implement, test, review, and create a local commit; push and deployment remain separately approval-bound.",

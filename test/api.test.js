@@ -5,6 +5,18 @@ import { createApp,createRemoteEvidenceComparator } from "../src/app.js";
 import { createApi } from "../src/http/api.js";
 import { OpenAIProviderError } from "../src/providers/openai-model-provider.js";
 import { ModelCostBudgetError } from "../src/providers/model-cost-budget.js";
+import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
+
+test("approved Chat-native coding delegation executes the exact tool and links its child without treating the Chat run as an autonomy task",async()=>{
+  const storage=createInMemoryStorage();await storage.initialize({owner:{id:"owner"},projects:[{id:"nova-brain",name:"Nova"}]});
+  const parent=await storage.createAutonomyTask({id:"orchestration_"+"a".repeat(32),ownerId:"owner",projectId:"nova-brain",title:"Delegation",objective:"Implement accessibility",taskType:"coding_orchestration",branch:"feature",startingCommit:"b".repeat(40),metadata:{codingDelegation:{version:1}}});
+  await storage.createRun({id:"chat-run",ownerId:"owner",projectId:"nova-brain",goal:"Use Codex",status:"waiting_for_approval"});
+  const args={jobId:"job_"+"c".repeat(32),parentTaskId:parent.id,objective:"Implement accessibility",acceptanceCriteria:["Keyboard works"],repository:{slug:"hshanbour/nova-brain",branch:"feature",baseline:"b".repeat(40)},projectId:"nova-brain",workspaceId:"nova-brain",delivery:{boundary:"local_commit",allowPush:false,allowDeploy:false}};
+  const approval=await storage.createApproval({id:"approval-coding",ownerId:"owner",projectId:"nova-brain",runId:"chat-run",tool:"coding_job_create",riskLevel:"HIGH_IMPACT",arguments:args});
+  let executed=0,taskLookups=0;const child={id:"coding_"+"d".repeat(32),status:"queued"},app=createApi({agent:{tools:{list(){return[];}},async run(){throw new Error("unused");}},config:{allowedOrigins:[],maxBodyBytes:64*1024},storage,initialize:async()=>{},ownerId:"owner",toolRegistry:{async execute(name,input,context){executed++;assert.equal(name,"coding_job_create");assert.deepEqual(input,args);assert.equal(context.approvalId,approval.id);return{task:child};}},workerRuntime:{async get(){taskLookups++;throw new Error("Chat run must not be treated as an autonomy task");},async control(){throw new Error("unused");}},logger:{info(){},error(){}}}),res=response();
+  await app.handle(request({method:"POST",url:`/api/approvals/${approval.id}/decision`,headers:{"content-type":"application/json"},body:JSON.stringify({decision:"approved"})}),res);
+  assert.equal(res.statusCode,200);assert.equal(executed,1);assert.equal(taskLookups,0);const updated=await storage.getAutonomyTask(parent.id,"owner");assert.equal(updated.status,"completed");assert.equal(updated.metadata.delegatedTaskId,child.id);
+});
 
 function request({ method, url, body, headers = {} }) {
   const stream = Readable.from(body ? [body] : []);

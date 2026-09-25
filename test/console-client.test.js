@@ -15,6 +15,10 @@ test("durable acknowledgement parser restores only an exact safe task identity",
     null,
   ]) assert.equal(durableTaskIdFromAcknowledgement(unsafe), null);
 });
+test("durable acknowledgement parser restores a Chat-native Codex orchestration identity",()=>{
+  const id="orchestration_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  assert.equal(durableTaskIdFromAcknowledgement(`Durable coding orchestration task ${id} is waiting_for_approval. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`),id);
+});
 
 test("conversation reload reconstructs each durable task identity exactly once", () => {
   const id = "selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", acknowledgement = `Durable self-development task ${id} is blocked. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`;
