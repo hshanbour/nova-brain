@@ -518,7 +518,76 @@ test("Codex process failures retain only bounded JSONL stage and error categorie
       assert.equal(error.safeDiagnostics.errorType, "model_error");
       assert.equal(error.safeDiagnostics.errorCode, "request_failed");
       assert.equal(error.safeDiagnostics.errorParam, "model");
+      assert.equal(error.safeDiagnostics.errorCategory, "turn.failed");
+      assert.equal(error.safeDiagnostics.errorMessage, null);
       assert.doesNotMatch(JSON.stringify(error.safeDiagnostics), /secret source content/);
+      return true;
+    },
+  );
+});
+
+test("Codex process failures retain bounded string and item error messages without raw payloads or secrets", async () => {
+  const longMessage = "x".repeat(500);
+  const stringScript = [
+    `console.log(JSON.stringify({type:"turn.started"}))`,
+    `console.log(JSON.stringify({type:"turn.failed",error:"Provider connection was interrupted."}))`,
+    `process.exit(1)`,
+  ].join(";");
+  await assert.rejects(
+    runCodexProcess(process.execPath, ["-e", stringScript]),
+    (error) => {
+      assert.equal(error.safeDiagnostics.lastEventType, "turn.failed");
+      assert.equal(error.safeDiagnostics.lastItemType, null);
+      assert.equal(error.safeDiagnostics.executorStage, "turn_failed");
+      assert.equal(error.safeDiagnostics.errorCategory, "turn.failed");
+      assert.equal(error.safeDiagnostics.errorMessage, "Provider connection was interrupted.");
+      assert.ok(error.safeDiagnostics.errorMessage.length <= 300);
+      return true;
+    },
+  );
+
+  const objectScript = `console.log(JSON.stringify({type:"item.completed",item:{type:"error",error:{category:"provider",type:"upstream_error",code:"request_failed",param:"model",message:"Provider request failed."}}}));process.exit(1)`;
+  await assert.rejects(
+    runCodexProcess(process.execPath, ["-e", objectScript]),
+    (error) => {
+      assert.equal(error.safeDiagnostics.lastEventType, "item.completed");
+      assert.equal(error.safeDiagnostics.lastItemType, "error");
+      assert.equal(error.safeDiagnostics.errorCategory, "provider");
+      assert.equal(error.safeDiagnostics.errorType, "upstream_error");
+      assert.equal(error.safeDiagnostics.errorCode, "request_failed");
+      assert.equal(error.safeDiagnostics.errorParam, "model");
+      assert.equal(error.safeDiagnostics.errorMessage, "Provider request failed.");
+      return true;
+    },
+  );
+
+  const boundedScript = `console.log(JSON.stringify({type:"item.completed",item:{type:"error",message:${JSON.stringify(longMessage)}}}));process.exit(1)`;
+  await assert.rejects(
+    runCodexProcess(process.execPath, ["-e", boundedScript]),
+    (error) => {
+      assert.equal(error.safeDiagnostics.errorCategory, "item.completed");
+      assert.equal(error.safeDiagnostics.errorMessage.length, 300);
+      assert.equal(error.safeDiagnostics.errorMessage, "x".repeat(300));
+      return true;
+    },
+  );
+
+  const secretScript = `console.log(JSON.stringify({type:"error",error:{message:"token=must-not-persist"}}));process.exit(1)`;
+  await assert.rejects(
+    runCodexProcess(process.execPath, ["-e", secretScript]),
+    (error) => {
+      assert.equal(error.safeDiagnostics.errorMessage, null);
+      assert.doesNotMatch(JSON.stringify(error.safeDiagnostics), /must-not-persist/);
+      return true;
+    },
+  );
+
+  const payloadScript = `console.log(JSON.stringify({type:"turn.failed",error:"{\\\"upstream\\\":\\\"body\\\"}"}));process.exit(1)`;
+  await assert.rejects(
+    runCodexProcess(process.execPath, ["-e", payloadScript]),
+    (error) => {
+      assert.equal(error.safeDiagnostics.errorMessage, null);
+      assert.doesNotMatch(JSON.stringify(error.safeDiagnostics), /upstream|body/);
       return true;
     },
   );

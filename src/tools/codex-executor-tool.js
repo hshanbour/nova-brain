@@ -7,6 +7,8 @@ import { RISK_LEVELS } from "../policy/action-policy.js";
 import { requireCodingTaskId } from "../autonomy/coding-executor.js";
 
 const SHA = /^[a-f0-9]{40}$/;
+const MAX_ERROR_MESSAGE = 300;
+const UNSAFE_ERROR_MESSAGE = /(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_-]{12,}|(?:api[_ -]?key|password|passcode|bearer|authorization|cookie|token|secret)\s*[:=]\s*\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----|seed\s+phrase\s*[:=]\s*\S+|\b(?:prompt|source|repository)\s+(?:content|text)\b)/i;
 const CODEX_COMMAND_ENVIRONMENT = Object.freeze([
   "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP",
   "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
@@ -32,6 +34,32 @@ const RESULT_SCHEMA = Object.freeze({
 });
 
 const safeEventAtom = (value) => typeof value === "string" && /^[A-Za-z0-9_.:\[\]-]{1,120}$/.test(value) ? value : null;
+const safeErrorMessage = (value) => {
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!normalized || /^[\[{]/.test(normalized) || UNSAFE_ERROR_MESSAGE.test(normalized)) return null;
+  return normalized.slice(0, MAX_ERROR_MESSAGE);
+};
+
+function safeErrorDetails(event, type, itemType) {
+  if (!["turn.failed", "error", "item.failed"].includes(type) && itemType !== "error") return null;
+  const candidates = [event.error, event.item?.error, itemType === "error" ? event.item : null].filter((value) => value != null);
+  let errorCategory = safeEventAtom(event.category), errorType = null, errorCode = null, errorParam = null, errorMessage = null;
+  for (const candidate of candidates) {
+    if (typeof candidate === "string") {
+      errorMessage ||= safeErrorMessage(candidate);
+      continue;
+    }
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    errorCategory ||= safeEventAtom(candidate.category);
+    errorType ||= safeEventAtom(candidate.type);
+    errorCode ||= safeEventAtom(candidate.code);
+    errorParam ||= safeEventAtom(candidate.param);
+    errorMessage ||= safeErrorMessage(candidate.message);
+  }
+  errorCategory ||= safeEventAtom(type) || safeEventAtom(itemType);
+  return { errorCategory, errorType, errorCode, errorParam, errorMessage };
+}
 
 function createCodexTraceSummary() {
   const summary = {
@@ -47,6 +75,8 @@ function createCodexTraceSummary() {
     errorType: null,
     errorCode: null,
     errorParam: null,
+    errorCategory: null,
+    errorMessage: null,
   };
   return {
     record(line) {
@@ -75,10 +105,12 @@ function createCodexTraceSummary() {
       }
       if (type === "turn.completed") summary.executorStage = summary.lastSuccessfulStage = "turn_completed";
       if (type === "turn.failed" || type === "error" || type === "item.failed") summary.executorStage = "turn_failed";
-      const error = event.error && typeof event.error === "object" ? event.error : event.item?.error && typeof event.item.error === "object" ? event.item.error : null;
-      summary.errorType = safeEventAtom(error?.type) || summary.errorType;
-      summary.errorCode = safeEventAtom(error?.code) || summary.errorCode;
-      summary.errorParam = safeEventAtom(error?.param) || summary.errorParam;
+      const error = safeErrorDetails(event, type, itemType);
+      summary.errorType = error?.errorType || summary.errorType;
+      summary.errorCode = error?.errorCode || summary.errorCode;
+      summary.errorParam = error?.errorParam || summary.errorParam;
+      summary.errorCategory = error?.errorCategory || summary.errorCategory;
+      summary.errorMessage = error?.errorMessage || summary.errorMessage;
     },
     diagnostics() { return { ...summary }; },
   };
