@@ -1,7 +1,7 @@
 import {reviewRemediationDescriptor} from "./review-remediation-scope.js";
 
 const ACTIVE=new Set(["queued","retrying","waiting","waiting_for_worker"]);
-const LOCAL=new Set(["apply_patch","validate_patch","run_focused_tests","run_full_tests","inspect_diff","review_commit","commit","integrate_commit"]);
+const LOCAL=new Set(["apply_patch","validate_patch","run_focused_tests","run_full_tests","inspect_diff","review_commit","commit","integrate_commit","delegate_coding"]);
 const ordinal=step=>Number.parseInt(step?.stepId,10);
 const HISTORICAL_DELIVERY_RECOVERY="historical_approved_delivery_max_steps_recovery";
 const HISTORICAL_DELIVERY_RUNTIME_RECOVERY="historical_approved_delivery_runtime_recovery";
@@ -56,7 +56,8 @@ export function createAutoDispatchService({storage,ownerId,approvedBranch="feat/
     let task,approvedDelivery=false;
     for(const item of tasks){
       const pendingScopeResolution=pendingStructuredScopeResolution(item);
-      const common=item.taskType==="self_development"&&item.branch===branch&&item.metadata?.autoDispatch!==false&&(ACTIVE.has(item.status)||pendingScopeResolution)&&item.status!=="waiting_for_approval"&&!item.leaseToken&&!item.leaseOwner&&(pendingScopeResolution||item.status!=="waiting"?(!item.nextRunAt||new Date(item.nextRunAt)<=clock()):(item.nextRunAt&&new Date(item.nextRunAt)<=clock()));if(!common)continue;
+      const supportedTask=item.taskType==="self_development"||(item.taskType==="coding_delegation"&&item.metadata?.codingJob?.repository?.slug===approvedRepository);
+      const common=supportedTask&&item.branch===branch&&item.metadata?.autoDispatch!==false&&(ACTIVE.has(item.status)||pendingScopeResolution)&&item.status!=="waiting_for_approval"&&!item.leaseToken&&!item.leaseOwner&&(pendingScopeResolution||item.status!=="waiting"?(!item.nextRunAt||new Date(item.nextRunAt)<=clock()):(item.nextRunAt&&new Date(item.nextRunAt)<=clock()));if(!common)continue;
       if(!item.approvalState){task=item;break;}
       const approval=await storage.getApproval(item.approvalState.approvalId,ownerId),steps=await storage.listAutonomySteps(item.id);if(isExactApprovedDelivery({task:item,approval,steps,approvedBranch,approvedRepository})){task=item;approvedDelivery=true;break;}
     }

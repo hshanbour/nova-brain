@@ -3,8 +3,9 @@ import {createToolRegistry} from "../tools/tool-registry.js";
 import {registerHandsTools} from "../tools/hands-runtime.js";
 import {canonicalSchemaDiagnostic,localSchemaDiagnostic} from "./schema-diagnostics.js";
 import {REVIEW_REMEDIATION_CLASS,reviewRemediationDescriptorForClass} from "./review-remediation-scope.js";
+import {registerCodexExecutorTool} from "../tools/codex-executor-tool.js";
 
-const ALLOWED=new Set(["repo_read_task_owned_local","repo_apply_patch","repo_validate_patch","test_run","test_run_full","repo_diff","repo_review_commit","git_commit","git_integrate_reviewed_commit"]);
+const ALLOWED=new Set(["repo_read_task_owned_local","repo_apply_patch","repo_validate_patch","test_run","test_run_full","repo_diff","repo_review_commit","git_commit","git_integrate_reviewed_commit","codex_execute"]);
 const SHA=/^[a-f0-9]{40}$/;
 function exactApprovedDelivery(task,job,{repository,branch}){
   const binding=job?.approvedDelivery;
@@ -31,9 +32,9 @@ export function createPersistentLocalWorker({client,root,branch="feat/nova-brain
   if(!root&&!registry)throw Object.assign(new Error("An explicit controlled repository root is required."),{code:"repository_context_unproven"});
   const controlledRoot=root||"injected-registry";
   const repositoryContext=Object.freeze({version:1,source:"persistent_worker_startup",repository,root:controlledRoot,branch});
-  const tools=registry||createToolRegistry();if(!registry)registerHandsTools(tools,{root:controlledRoot,environment:{...environment,VERCEL:"",NOVA_BRAIN_DEVELOPMENT_BRANCH:branch}});
+  const tools=registry||createToolRegistry();if(!registry){registerHandsTools(tools,{root:controlledRoot,environment:{...environment,VERCEL:"",NOVA_BRAIN_DEVELOPMENT_BRANCH:branch}});registerCodexExecutorTool(tools,{root:controlledRoot,repository,branch,activity:({context,phase,summary})=>client.request(`/api/admin/coding-jobs/${encodeURIComponent(context.taskId)}/progress`,{handoffId:context.handoffId,phase,summary}).catch(()=>{})});}
   async function handoff(task){
-    const key=`${task.id}:${task.stateVersion}:${task.stepType||"local"}`,deliveryCandidate=task.mode==="local_handoff"&&task.stepType==="push",claimed=await client.request("/api/admin/worker/handoff/claim",{workerId,runtimeVersion,repository,repositoryRoot:controlledRoot,continuationGenerationId:task.continuationGenerationId,capabilities:["repo_mutate_local","test_local","repo_read_remote",...(deliveryCandidate?["approved_delivery_git_push"]:[])],expectedBranch:task.branch,expectedCommit:task.expectedCommit,taskId:task.id,idempotencyKey:key});
+    const key=`${task.id}:${task.stateVersion}:${task.stepType||"local"}`,deliveryCandidate=task.mode==="local_handoff"&&task.stepType==="push",claimed=await client.request("/api/admin/worker/handoff/claim",{workerId,runtimeVersion,repository,repositoryRoot:controlledRoot,continuationGenerationId:task.continuationGenerationId,capabilities:["repo_mutate_local","test_local","repo_read_remote","codex_local",...(deliveryCandidate?["approved_delivery_git_push"]:[])],expectedBranch:task.branch,expectedCommit:task.expectedCommit,taskId:task.id,idempotencyKey:key});
     if(!claimed.claimed)return{worked:false,taskId:task.id};
     const job=claimed.handoff,approvedPush=exactApprovedDelivery(task,job,{repository,branch});
     if(!job||job.taskId!==task.id||job.branch!==branch||job.expectedCommit!==task.expectedCommit||(!ALLOWED.has(job.tool)&&!approvedPush)||!exactReviewRemediationScope(task,job,{repository,branch,root:controlledRoot,runtimeVersion,workerId})||!exactFullTestScope(task,job,{repository,branch,root:controlledRoot,runtimeVersion,workerId})||!exactExecutionScope(task,job,{repository,branch,root:controlledRoot,runtimeVersion,workerId}))throw Object.assign(new Error("Server returned an invalid bounded handoff."),{code:"invalid_handoff"});

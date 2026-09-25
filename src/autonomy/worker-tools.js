@@ -7,7 +7,7 @@ const schema = (properties = {}, required = []) => ({
   }),
   text = { type: "string" },
   number = { type: "number" };
-export function registerWorkerTools(registry, { runtime, taskMigration }) {
+export function registerWorkerTools(registry, { runtime, taskMigration, codingExecutor }) {
   registry.register({
     name: "autonomy_task_create",
     description: "Create a bounded durable autonomous task.",
@@ -119,4 +119,56 @@ export function registerWorkerTools(registry, { runtime, taskMigration }) {
       execute: (input) =>
         taskMigration.migrate(input, { actorType: "approved_internal_tool" }),
     });
+  if (codingExecutor) {
+    registry.register({
+      name: "coding_job_create",
+      description: "Create one owner-approved, repository-bound Codex coding job. Codex may inspect, implement, test, review, and create a local commit; push and deployment remain separately approval-bound.",
+      category: "coding_executor",
+      capability: "write",
+      riskLevel: RISK_LEVELS.HIGH_IMPACT,
+      autonomous: false,
+      available: true,
+      configurationStatus: "approval_required",
+      approvalReason: "Owner approval is required before Codex may modify the bound development worktree.",
+      inputSchema: schema({
+        jobId: text,
+        parentTaskId: text,
+        objective: text,
+        acceptanceCriteria: { type: "array" },
+        constraints: { type: "array" },
+        repository: { type: "object" },
+        projectId: text,
+        workspaceId: text,
+        delivery: { type: "object" },
+        verification: { type: "array" },
+      }, ["jobId", "parentTaskId", "objective", "acceptanceCriteria", "repository", "projectId", "workspaceId", "delivery"]),
+      execute: (input, context) => codingExecutor.create({
+        ...input,
+        approval: { buildApproved: true, approvalId: context?.approvalId },
+      }),
+    });
+    registry.register({
+      name: "coding_job_get",
+      description: "Read one bounded Codex coding job and its machine-readable result.",
+      category: "coding_executor",
+      capability: "read",
+      riskLevel: RISK_LEVELS.READ_ONLY,
+      available: true,
+      configurationStatus: "ready",
+      inputSchema: schema({ taskId: text }, ["taskId"]),
+      execute: ({ taskId }) => codingExecutor.get(taskId),
+    });
+    registry.register({
+      name: "coding_job_cancel",
+      description: "Cancel one bounded Codex coding job at the existing durable task boundary.",
+      category: "coding_executor",
+      capability: "write",
+      riskLevel: RISK_LEVELS.LOW_RISK_WRITE,
+      autonomous: true,
+      available: true,
+      configurationStatus: "ready",
+      inputSchema: schema({ taskId: text }, ["taskId"]),
+      execute: ({ taskId }) => codingExecutor.cancel(taskId),
+    });
+  }
 }

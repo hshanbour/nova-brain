@@ -190,6 +190,7 @@ export function createApi({
   developerSessionSmoke,
   developerWorkspaceHandoff,
   modelCostController,
+  codingExecutor,
   logger = console,
 }) {
   const recognitionEngines =
@@ -1668,6 +1669,13 @@ export function createApi({
           return;
         }
         const handoffClaim = pathname === "/api/admin/worker/handoff/claim";
+        const codingProgress = pathname.match(/^\/api\/admin\/coding-jobs\/([^/]+)\/progress$/);
+        if (codingExecutor && codingProgress && request.method === "POST") {
+          await ready();
+          authorizeLocalWorker(request, config.localWorkerToken);
+          sendJson(response, 200, await codingExecutor.progress(decodeURIComponent(codingProgress[1]), await readJsonBody(request, config.maxBodyBytes)));
+          return;
+        }
         if (
           autoDispatch &&
           request.method === "POST" &&

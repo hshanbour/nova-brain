@@ -48,6 +48,7 @@ export const STEP_CAPABILITIES = Object.freeze({
   retry_repair: "reasoning",
   summarize: "reasoning",
   wait: "scheduler",
+  delegate_coding: "codex_local",
 });
 const TERMINAL = new Set([
   "completed",
