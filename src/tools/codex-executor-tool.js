@@ -7,6 +7,10 @@ import { RISK_LEVELS } from "../policy/action-policy.js";
 import { requireCodingTaskId } from "../autonomy/coding-executor.js";
 
 const SHA = /^[a-f0-9]{40}$/;
+const CODEX_COMMAND_ENVIRONMENT = Object.freeze([
+  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP",
+  "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
+]);
 const RESULT_SCHEMA = Object.freeze({
   type: "object",
   additionalProperties: false,
@@ -108,6 +112,14 @@ export function runCodexProcess(command, args, { cwd, env, input, signal, onLine
 function safeEnvironment(environment) {
   const keep = ["PATH", "Path", "PATHEXT", "SYSTEMROOT", "SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA", "CODEX_HOME"];
   return Object.fromEntries(keep.filter((key) => typeof environment[key] === "string" && environment[key]).map((key) => [key, environment[key]]));
+}
+
+function codexCommandEnvironmentArgs() {
+  return [
+    "-c", 'shell_environment_policy.inherit="all"',
+    "-c", "shell_environment_policy.ignore_default_excludes=false",
+    ...CODEX_COMMAND_ENVIRONMENT.flatMap((name) => ["-c", `shell_environment_policy.filters.${name}="include"`]),
+  ];
 }
 
 async function requireLocalPath(path, { kind, directory = false } = {}) {
@@ -215,8 +227,9 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
       await writeFile(schemaPath, JSON.stringify(RESULT_SCHEMA), { encoding: "utf8", mode: 0o600 });
       try {
         await spawnProcess(executable, [
-          "exec", "--json", "--ephemeral", "--ignore-user-config", "--sandbox", "workspace-write",
-          "-c", "shell_environment_policy.inherit=none", "--output-schema", schemaPath, "--output-last-message", resultPath, "-C", cwd, "-",
+          "exec", "--json", "--ephemeral", "--ignore-user-config", "--approve-for-me",
+          ...codexCommandEnvironmentArgs(),
+          "--output-schema", schemaPath, "--output-last-message", resultPath, "-C", cwd, "-",
         ], {
           cwd,
           env,

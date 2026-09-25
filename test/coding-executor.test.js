@@ -435,7 +435,7 @@ test("Codex CLI runner emits a strict-compatible schema and reaches a structured
   const runner = createCodexCliRunner({
     executable: process.execPath,
     gitExecutable,
-    environment: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, TEMP: process.env.TEMP, USERPROFILE: process.env.USERPROFILE, CODEX_HOME: process.env.CODEX_HOME, OPENAI_API_KEY: "must-not-leak" },
+    environment: { PATH: process.env.PATH, PATHEXT: process.env.PATHEXT, SYSTEMROOT: process.env.SYSTEMROOT, WINDIR: process.env.WINDIR, TEMP: process.env.TEMP, TMP: process.env.TMP, USERPROFILE: process.env.USERPROFILE, HOMEDRIVE: process.env.HOMEDRIVE, HOMEPATH: process.env.HOMEPATH, LOCALAPPDATA: process.env.LOCALAPPDATA, APPDATA: process.env.APPDATA, CODEX_HOME: process.env.CODEX_HOME, OPENAI_API_KEY: "must-not-leak", GITHUB_TOKEN: "must-not-leak", VERCEL_TOKEN: "must-not-leak" },
     async authProcess(command, args) { assert.equal(command, process.execPath);assert.deepEqual(args, ["login", "status"]);return { stdout: "", stderr: "", code: 0 }; },
     async spawnProcess(command, args, options) {
       const schema = JSON.parse(await readFile(args[args.indexOf("--output-schema") + 1], "utf8"));
@@ -465,10 +465,22 @@ test("Codex CLI runner emits a strict-compatible schema and reaches a structured
   assert.deepEqual(result.usage, { input_tokens: 100, output_tokens: 25 });
   assert.equal(result.executor.billing, "codex_account_separate_from_nova_api_budget");
   assert.equal("OPENAI_API_KEY" in observed.env, false);
+  assert.equal("GITHUB_TOKEN" in observed.env, false);
+  assert.equal("VERCEL_TOKEN" in observed.env, false);
   assert.doesNotMatch(observed.input, /must-not-leak/);
   assert.ok(observed.args.includes("--ephemeral"));
   assert.ok(observed.args.includes("--ignore-user-config"));
-  assert.ok(observed.args.includes("workspace-write"));
+  assert.ok(observed.args.includes("--approve-for-me"));
+  assert.equal(observed.args.includes("--sandbox"), false);
+  assert.equal(observed.args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
+  assert.equal(observed.args.includes("--add-dir"), false);
+  const config = observed.args.filter((value, index) => observed.args[index - 1] === "-c");
+  assert.ok(config.includes('shell_environment_policy.inherit="all"'));
+  assert.ok(config.includes("shell_environment_policy.ignore_default_excludes=false"));
+  for (const name of ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA"]) {
+    assert.ok(config.includes(`shell_environment_policy.filters.${name}="include"`), name);
+  }
+  assert.equal(config.some((value) => /CODEX_HOME|OPENAI|GITHUB|VERCEL|TOKEN|SECRET|KEY/i.test(value)), false);
   assert.equal((await runFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim(), sourceHead);
   assert.equal((await runFile("git", ["status", "--porcelain=v1"], { cwd: root })).stdout.trim(), "");
   assert.equal((await runFile("git", ["rev-parse", `refs/nova/coding-jobs/${taskId}`], { cwd: root })).stdout.trim(), result.finalLocalSha);
