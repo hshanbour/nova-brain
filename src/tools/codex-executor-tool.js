@@ -27,10 +27,64 @@ const RESULT_SCHEMA = Object.freeze({
   },
 });
 
-function runProcess(command, args, { cwd, env, input, signal, onLine } = {}) {
+const safeEventAtom = (value) => typeof value === "string" && /^[A-Za-z0-9_.:\[\]-]{1,120}$/.test(value) ? value : null;
+
+function createCodexTraceSummary() {
+  const summary = {
+    jsonlEventCount: 0,
+    jsonlParseErrors: 0,
+    lastEventType: null,
+    lastItemType: null,
+    executorStage: "process_started",
+    lastSuccessfulStage: "process_started",
+    commandEvents: 0,
+    fileChangeEvents: 0,
+    testCommandEvents: 0,
+    errorType: null,
+    errorCode: null,
+    errorParam: null,
+  };
+  return {
+    record(line) {
+      let event;
+      try { event = JSON.parse(line); }
+      catch { summary.jsonlParseErrors += 1; return; }
+      if (!event || typeof event !== "object" || Array.isArray(event)) return;
+      summary.jsonlEventCount += 1;
+      const type = safeEventAtom(event.type);
+      const itemType = safeEventAtom(event.item?.type);
+      if (type) summary.lastEventType = type;
+      if (itemType) summary.lastItemType = itemType;
+      if (type === "thread.started") summary.executorStage = summary.lastSuccessfulStage = "session_started";
+      if (type === "turn.started") summary.executorStage = summary.lastSuccessfulStage = "turn_started";
+      if (itemType === "command_execution") {
+        summary.commandEvents += 1;
+        summary.executorStage = summary.lastSuccessfulStage = "repository_command";
+        if (/^(?:npm|node|pnpm|yarn|pytest|cargo|go)(?:\.exe)?\s+(?:run\s+)?test\b/i.test(String(event.item?.command || "").trim())) {
+          summary.testCommandEvents += 1;
+          summary.executorStage = summary.lastSuccessfulStage = "test_command";
+        }
+      }
+      if (["file_change", "file_write", "patch_apply"].includes(itemType)) {
+        summary.fileChangeEvents += 1;
+        summary.executorStage = summary.lastSuccessfulStage = "file_change";
+      }
+      if (type === "turn.completed") summary.executorStage = summary.lastSuccessfulStage = "turn_completed";
+      if (type === "turn.failed" || type === "error" || type === "item.failed") summary.executorStage = "turn_failed";
+      const error = event.error && typeof event.error === "object" ? event.error : event.item?.error && typeof event.item.error === "object" ? event.item.error : null;
+      summary.errorType = safeEventAtom(error?.type) || summary.errorType;
+      summary.errorCode = safeEventAtom(error?.code) || summary.errorCode;
+      summary.errorParam = safeEventAtom(error?.param) || summary.errorParam;
+    },
+    diagnostics() { return { ...summary }; },
+  };
+}
+
+export function runCodexProcess(command, args, { cwd, env, input, signal, onLine } = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], signal });
     let stdout = "", stderr = "", pending = "";
+    const trace = createCodexTraceSummary();
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -38,14 +92,14 @@ function runProcess(command, args, { cwd, env, input, signal, onLine } = {}) {
       pending += chunk;
       const lines = pending.split(/\r?\n/);
       pending = lines.pop() || "";
-      for (const line of lines) if (line.trim()) onLine?.(line);
+      for (const line of lines) if (line.trim()) { trace.record(line); onLine?.(line); }
     });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.once("error", reject);
     child.once("close", (code) => {
-      if (pending.trim()) onLine?.(pending);
+      if (pending.trim()) { trace.record(pending); onLine?.(pending); }
       if (code === 0) resolvePromise({ stdout, stderr, code });
-      else reject(Object.assign(new Error("Codex coding execution failed."), { code: signal?.aborted ? "coding_executor_cancelled" : "coding_executor_failed", safeDiagnostics: { exitCode: code, stderrBytes: Buffer.byteLength(stderr), stdoutBytes: Buffer.byteLength(stdout) } }));
+      else reject(Object.assign(new Error("Codex coding execution failed."), { code: signal?.aborted ? "coding_executor_cancelled" : "coding_executor_failed", safeDiagnostics: { exitCode: code, exitCategory: signal?.aborted ? "cancelled" : "process_exit_nonzero", resultCategory: "structured_result_unavailable", executorLaunched: true, stderrBytes: Buffer.byteLength(stderr), stdoutBytes: Buffer.byteLength(stdout), ...trace.diagnostics() } }));
     });
     child.stdin.end(input || "");
   });
@@ -101,7 +155,7 @@ function usageFromEvent(event) {
   return Object.fromEntries(Object.entries(usage).filter(([, value]) => Number.isFinite(value)));
 }
 
-export function createCodexCliRunner({ executable = "codex", gitExecutable = "git", environment = process.env, spawnProcess = runProcess, gitProcess = runProcess, authProcess = runProcess, clock = () => new Date() } = {}) {
+export function createCodexCliRunner({ executable = "codex", gitExecutable = "git", environment = process.env, spawnProcess = runCodexProcess, gitProcess = runCodexProcess, authProcess = runCodexProcess, clock = () => new Date() } = {}) {
   return async function run(job, { root, repository, branch, taskId, signal, onProgress } = {}) {
     taskId = requireCodingTaskId(taskId);
     const sourceRoot = resolve(root);

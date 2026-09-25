@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codingSpecificationHash, createCodingExecutorService, immutableCodingSpecification } from "../src/autonomy/coding-executor.js";
-import { createCodexCliRunner, registerCodexExecutorTool } from "../src/tools/codex-executor-tool.js";
+import { createCodexCliRunner, registerCodexExecutorTool, runCodexProcess } from "../src/tools/codex-executor-tool.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { createWorkerRuntime } from "../src/autonomy/worker-runtime.js";
@@ -362,6 +362,42 @@ test("Codex CLI runner binds repository, strips secrets, verifies the local comm
   assert.equal((await runFile("git", ["rev-parse", `refs/nova/coding-jobs/${taskId}`], { cwd: root })).stdout.trim(), result.finalLocalSha);
   assert.equal(result.executor.localRef, `refs/nova/coding-jobs/${taskId}`);
   assert.equal(((await runFile("git", ["worktree", "list", "--porcelain"], { cwd: root })).stdout.match(/^worktree /gm) || []).length, 1);
+});
+
+test("Codex process failures retain only bounded JSONL stage and error categories", async () => {
+  const script = [
+    `console.log(JSON.stringify({type:"thread.started"}))`,
+    `console.log(JSON.stringify({type:"turn.started"}))`,
+    `console.log(JSON.stringify({type:"item.completed",item:{type:"command_execution",command:"git status"}}))`,
+    `console.log(JSON.stringify({type:"turn.failed",error:{type:"model_error",code:"request_failed",param:"model",message:"secret source content must not persist"}}))`,
+    `process.exit(1)`,
+  ].join(";");
+  await assert.rejects(
+    runCodexProcess(process.execPath, ["-e", script]),
+    (error) => {
+      assert.equal(error.code, "coding_executor_failed");
+      assert.equal(error.safeDiagnostics.exitCode, 1);
+      assert.equal(error.safeDiagnostics.exitCategory, "process_exit_nonzero");
+      assert.equal(error.safeDiagnostics.resultCategory, "structured_result_unavailable");
+      assert.equal(error.safeDiagnostics.executorLaunched, true);
+      assert.equal(error.safeDiagnostics.stderrBytes, 0);
+      assert.ok(error.safeDiagnostics.stdoutBytes > 0);
+      assert.equal(error.safeDiagnostics.jsonlEventCount, 4);
+      assert.equal(error.safeDiagnostics.jsonlParseErrors, 0);
+      assert.equal(error.safeDiagnostics.lastEventType, "turn.failed");
+      assert.equal(error.safeDiagnostics.lastItemType, "command_execution");
+      assert.equal(error.safeDiagnostics.executorStage, "turn_failed");
+      assert.equal(error.safeDiagnostics.lastSuccessfulStage, "repository_command");
+      assert.equal(error.safeDiagnostics.commandEvents, 1);
+      assert.equal(error.safeDiagnostics.fileChangeEvents, 0);
+      assert.equal(error.safeDiagnostics.testCommandEvents, 0);
+      assert.equal(error.safeDiagnostics.errorType, "model_error");
+      assert.equal(error.safeDiagnostics.errorCode, "request_failed");
+      assert.equal(error.safeDiagnostics.errorParam, "model");
+      assert.doesNotMatch(JSON.stringify(error.safeDiagnostics), /secret source content/);
+      return true;
+    },
+  );
 });
 
 test("executor preflight fails safely for missing executables, workspace, or authentication", async (t) => {
