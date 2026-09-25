@@ -11,7 +11,13 @@ if($PreviewUrl -notmatch '^https://[a-z0-9.-]+\.vercel\.app/?$'){throw 'A protec
 
 $node=(Get-Command node.exe).Source
 $git=(Get-Command git.exe -ErrorAction Stop).Source
+$codex=(Get-Command codex.exe -CommandType Application -ErrorAction Stop).Source
 if(-not [System.IO.Path]::IsPathRooted($git) -or [System.IO.Path]::GetFileName($git) -ne 'git.exe'){throw 'A validated Git executable is required.'}
+if(-not [System.IO.Path]::IsPathRooted($codex) -or [System.IO.Path]::GetFileName($codex) -ne 'codex.exe' -or -not (Test-Path -LiteralPath $codex -PathType Leaf)){throw 'A validated Codex executable is required.'}
+$codexVersion=& $codex --version
+if($LASTEXITCODE -ne 0 -or $codexVersion -notmatch '^codex-cli '){throw 'The Codex executable failed its bounded version probe.'}
+$codexAuth=& $codex login status 2>&1
+if($LASTEXITCODE -ne 0){throw 'Codex authentication is unavailable to the persistent worker account.'}
 $sourceRoot=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if([string]::IsNullOrWhiteSpace($RepositoryRoot)){$RepositoryRoot=$sourceRoot}
 $root=(Resolve-Path -LiteralPath $RepositoryRoot).Path
@@ -56,27 +62,27 @@ try {
     Expand-Archive -LiteralPath $stagedArchive -DestinationPath $stagedRuntime
     Assert-RuntimeContent $stagedRuntime
     $stagedScript=Join-Path $stagedRuntime 'scripts\persistent-local-worker.js'
-    $verification=& $node $stagedScript --verify-runtime --runtime-version $runtimeVersion --repository-root $root
+    $verification=& $node $stagedScript --verify-runtime --runtime-version $runtimeVersion --repository-root $root --git-executable $git --codex-executable $codex
     if($LASTEXITCODE -ne 0){throw 'The staged worker runtime failed its bounded validation.'}
     $verified=$verification | ConvertFrom-Json
-    if(-not $verified.ok -or $verified.runtimeVersion -ne $runtimeVersion -or $verified.repositoryRoot -ne $root){throw 'The staged worker runtime binding could not be verified.'}
+    if(-not $verified.ok -or $verified.runtimeVersion -ne $runtimeVersion -or $verified.repositoryRoot -ne $root -or $verified.gitExecutable -ne $git -or $verified.codexExecutable -ne $codex){throw 'The staged worker runtime binding could not be verified.'}
     Move-Item -LiteralPath $stagedRuntime -Destination $finalRuntime
   }
   $script=Join-Path $finalRuntime 'scripts\persistent-local-worker.js'
   Assert-RuntimeContent $finalRuntime
-  $verification=& $node $script --verify-runtime --runtime-version $runtimeVersion --repository-root $root
+  $verification=& $node $script --verify-runtime --runtime-version $runtimeVersion --repository-root $root --git-executable $git --codex-executable $codex
   if($LASTEXITCODE -ne 0){throw 'The installed worker runtime failed its bounded validation.'}
   $verified=$verification | ConvertFrom-Json
-  if(-not $verified.ok -or $verified.runtimeVersion -ne $runtimeVersion -or $verified.repositoryRoot -ne $root){throw 'The installed worker runtime binding could not be verified.'}
+  if(-not $verified.ok -or $verified.runtimeVersion -ne $runtimeVersion -or $verified.repositoryRoot -ne $root -or $verified.gitExecutable -ne $git -or $verified.codexExecutable -ne $codex){throw 'The installed worker runtime binding could not be verified.'}
 
-  $arguments='"'+$script+'" --preview-url "'+$PreviewUrl.TrimEnd('/')+'" --repository-root "'+$root+'" --runtime-version "'+$runtimeVersion+'" --git-executable "'+$git+'" --credential-helper "'+$helper+'"'
+  $arguments='"'+$script+'" --preview-url "'+$PreviewUrl.TrimEnd('/')+'" --repository-root "'+$root+'" --runtime-version "'+$runtimeVersion+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'
   $taskAction=New-ScheduledTaskAction -Execute $node -Argument $arguments -WorkingDirectory $root
   $logonTrigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
   $watchdogTrigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650)
   $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   Register-ScheduledTask -TaskName $name -Action $taskAction -Trigger @($logonTrigger,$watchdogTrigger) -Settings $settings -Description 'Versioned Nova worker runtime with an independently bound task workspace.' -Force | Out-Null
   $installedAction=(Get-ScheduledTask -TaskName $name -ErrorAction Stop).Actions | Select-Object -First 1
-  if($installedAction.Execute -ne $node -or $installedAction.Arguments -notlike ('*"'+$script+'"*') -or $installedAction.Arguments -notlike ('*--repository-root "'+$root+'"*') -or $installedAction.Arguments -notlike ('*--runtime-version "'+$runtimeVersion+'"*') -or $installedAction.Arguments -notlike ('*--credential-helper "'+$helper+'"*')){throw 'The Scheduled Task immutable runtime binding could not be verified.'}
+  if($installedAction.Execute -ne $node -or $installedAction.Arguments -notlike ('*"'+$script+'"*') -or $installedAction.Arguments -notlike ('*--repository-root "'+$root+'"*') -or $installedAction.Arguments -notlike ('*--runtime-version "'+$runtimeVersion+'"*') -or $installedAction.Arguments -notlike ('*--git-executable "'+$git+'"*') -or $installedAction.Arguments -notlike ('*--codex-executable "'+$codex+'"*') -or $installedAction.Arguments -notlike ('*--credential-helper "'+$helper+'"*')){throw 'The Scheduled Task immutable runtime binding could not be verified.'}
   Start-ScheduledTask -TaskName $name
   [Console]::Out.Write('installed')
 } finally {

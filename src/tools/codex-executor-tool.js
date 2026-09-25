@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { RISK_LEVELS } from "../policy/action-policy.js";
 import { requireCodingTaskId } from "../autonomy/coding-executor.js";
 
@@ -56,6 +56,18 @@ function safeEnvironment(environment) {
   return Object.fromEntries(keep.filter((key) => typeof environment[key] === "string" && environment[key]).map((key) => [key, environment[key]]));
 }
 
+async function requireLocalPath(path, { kind, directory = false } = {}) {
+  const code = `coding_executor_${kind}_missing`;
+  if (typeof path !== "string" || !isAbsolute(path)) throw Object.assign(new Error(`The ${kind.replaceAll("_", " ")} is not bound to an absolute local path.`), { code });
+  try {
+    const value = await stat(path);
+    if (directory ? !value.isDirectory() : !value.isFile()) throw Object.assign(new Error("wrong path type"), { code: "ENOENT" });
+  } catch (cause) {
+    throw Object.assign(new Error(`The required ${kind.replaceAll("_", " ")} is unavailable.`), { code, safeDiagnostics: { resource: kind, pathExists: false }, cause });
+  }
+  return path;
+}
+
 function normalizeRemote(value) {
   const text = String(value || "").trim().replace(/\.git$/, "");
   return text.match(/(?:github\.com[:/])([^/]+\/[^/]+)$/i)?.[1] || text;
@@ -89,11 +101,26 @@ function usageFromEvent(event) {
   return Object.fromEntries(Object.entries(usage).filter(([, value]) => Number.isFinite(value)));
 }
 
-export function createCodexCliRunner({ executable = "codex", environment = process.env, spawnProcess = runProcess, gitProcess = runProcess, clock = () => new Date() } = {}) {
+export function createCodexCliRunner({ executable = "codex", gitExecutable = "git", environment = process.env, spawnProcess = runProcess, gitProcess = runProcess, authProcess = runProcess, clock = () => new Date() } = {}) {
   return async function run(job, { root, repository, branch, signal, onProgress } = {}) {
     const cwd = resolve(root);
     const env = safeEnvironment(environment);
-    const git = async (...args) => (await gitProcess("git", ["-c", `safe.directory=${cwd}`, "-C", cwd, ...args], { cwd, env, signal })).stdout.trim();
+    if (isAbsolute(executable)) await requireLocalPath(executable, { kind: "codex_executable" });
+    if (isAbsolute(gitExecutable)) await requireLocalPath(gitExecutable, { kind: "git_executable" });
+    await requireLocalPath(cwd, { kind: "workspace", directory: true });
+    try {
+      await authProcess(executable, ["login", "status"], { cwd, env, signal });
+    } catch (cause) {
+      throw Object.assign(new Error("Codex authentication is unavailable to the persistent worker."), { code: "coding_executor_auth_unavailable", safeDiagnostics: { resource: "codex_auth", exitCode: cause?.safeDiagnostics?.exitCode ?? null }, cause });
+    }
+    const git = async (...args) => {
+      try {
+        return (await gitProcess(gitExecutable, ["-c", `safe.directory=${cwd}`, "-C", cwd, ...args], { cwd, env, signal })).stdout.trim();
+      } catch (cause) {
+        if (cause?.code === "ENOENT") throw Object.assign(new Error("The bound Git executable became unavailable."), { code: "coding_executor_git_executable_missing", safeDiagnostics: { resource: "git_executable", pathExists: false }, cause });
+        throw cause;
+      }
+    };
     const [top, remote, actualBranch, head, dirty] = await Promise.all([
       git("rev-parse", "--show-toplevel"), git("remote", "get-url", "origin"), git("branch", "--show-current"), git("rev-parse", "HEAD"), git("status", "--porcelain=v1", "--untracked-files=all"),
     ]);
@@ -108,26 +135,31 @@ export function createCodexCliRunner({ executable = "codex", environment = proce
     const usage = {};
     const startedAt = clock().toISOString();
     try {
-      await spawnProcess(executable, [
-        "exec", "--json", "--ephemeral", "--ignore-user-config", "--sandbox", "workspace-write",
-        "-c", "shell_environment_policy.inherit=none", "--output-schema", schemaPath, "--output-last-message", resultPath, "-C", cwd, "-",
-      ], {
-        cwd,
-        env,
-        input: prompt(job),
-        signal,
-        onLine(line) {
-          let event;
-          try { event = JSON.parse(line); } catch { return; }
-          const measured = usageFromEvent(event);
-          if (measured) Object.assign(usage, measured);
-          const type = String(event.type || event.item?.type || "");
-          const command = String(event.item?.command || event.command || "");
-          if (/command|tool/.test(type) && /(?:^|\s)(?:npm|node|pnpm|yarn|pytest|cargo|go)\s+(?:run\s+)?test\b/i.test(command)) onProgress?.("testing", "Codex is running the approved local verification.");
-          else if (/command|tool/.test(type)) onProgress?.("implementing", "Codex is implementing in the bound project.");
-          else if (/turn\.started|thread\.started/.test(type)) onProgress?.("inspecting", "Codex is inspecting the bound project.");
-        },
-      });
+      try {
+        await spawnProcess(executable, [
+          "exec", "--json", "--ephemeral", "--ignore-user-config", "--sandbox", "workspace-write",
+          "-c", "shell_environment_policy.inherit=none", "--output-schema", schemaPath, "--output-last-message", resultPath, "-C", cwd, "-",
+        ], {
+          cwd,
+          env,
+          input: prompt(job),
+          signal,
+          onLine(line) {
+            let event;
+            try { event = JSON.parse(line); } catch { return; }
+            const measured = usageFromEvent(event);
+            if (measured) Object.assign(usage, measured);
+            const type = String(event.type || event.item?.type || "");
+            const command = String(event.item?.command || event.command || "");
+            if (/command|tool/.test(type) && /(?:^|\s)(?:npm|node|pnpm|yarn|pytest|cargo|go)\s+(?:run\s+)?test\b/i.test(command)) onProgress?.("testing", "Codex is running the approved local verification.");
+            else if (/command|tool/.test(type)) onProgress?.("implementing", "Codex is implementing in the bound project.");
+            else if (/turn\.started|thread\.started/.test(type)) onProgress?.("inspecting", "Codex is inspecting the bound project.");
+          },
+        });
+      } catch (cause) {
+        if (cause?.code === "ENOENT") throw Object.assign(new Error("The bound Codex executable became unavailable."), { code: "coding_executor_codex_executable_missing", safeDiagnostics: { resource: "codex_executable", pathExists: false }, cause });
+        throw cause;
+      }
       const resultText = await readFile(resultPath, "utf8");
       if (Buffer.byteLength(resultText) > 131_072 || /(?:sk-[A-Za-z0-9_-]{16,}|(?:api[_-]?key|password|passcode|bearer|authorization)\s*[:=]\s*\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----)/i.test(resultText)) {
         throw Object.assign(new Error("Codex returned an unsafe or oversized structured result."), { code: "coding_result_unsafe" });
@@ -162,7 +194,8 @@ export function createCodexCliRunner({ executable = "codex", environment = proce
   };
 }
 
-export function registerCodexExecutorTool(registry, { root, repository, branch, runner = createCodexCliRunner(), activity } = {}) {
+export function registerCodexExecutorTool(registry, { root, repository, branch, runner, codexExecutable, gitExecutable, activity } = {}) {
+  const executeRunner = runner || createCodexCliRunner({ executable: codexExecutable, gitExecutable });
   registry.register({
     name: "codex_execute",
     description: "Execute one approved, repository-bound coding job with Codex and return a structured local-commit result.",
@@ -177,7 +210,7 @@ export function registerCodexExecutorTool(registry, { root, repository, branch, 
       requireCodingTaskId(context.taskId);
       const emit = async (phase, summary) => activity?.({ job, context, phase, summary });
       await emit("inspecting", "Codex is inspecting the bound project.");
-      const result = await runner(job, { root, repository, branch, signal: context.signal, onProgress: emit });
+      const result = await executeRunner(job, { root, repository, branch, signal: context.signal, onProgress: emit });
       await emit(result.status === "completed" ? "reviewing" : result.status, result.status === "completed" ? "Codex completed implementation, tests, review, and a local commit." : result.summary);
       if (result.status !== "completed") {
         const error = new Error(result.failure?.message || result.summary || "Codex coding execution did not complete.");
