@@ -203,9 +203,32 @@ export function createApp({
       return validateExistingTaskControlRequest(request,await workerRuntime.get(request.taskId));
     },
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
-      if(isChatCodingDelegationRequest(message))return{codingDelegation:true,requestFingerprint:codingDelegationFingerprint(message)};
-      if (context?.voice === true || !isDurableSelfDevelopmentRequest(message)) return null;
-      return selfDevelopment.createTrustedIntake(message, {signal, costContext:{runId},originConversationId:conversationId,originRunId:runId});
+      if(context?.voice===true)return null;
+      const bound=await storage.listConversationBoundTasks(OWNER_ID,conversationId,{limit:20}),workflowCandidates=bound
+        .filter(task=>!(task.taskType==="coding_orchestration"&&task.metadata?.delegatedTaskId))
+        .slice(0,8)
+        .map(task=>({
+          id:task.id,
+          taskType:task.taskType,
+          status:task.status,
+          stateVersion:task.stateVersion,
+          currentPhase:task.currentPhase||null,
+          errorCode:task.errorCode||null,
+          currentCommit:task.currentCommit||null,
+          approvalPending:task.status==="waiting_for_approval"&&task.approvalState?.approved!==true,
+          parentTaskId:task.parentTaskId||task.metadata?.parentTaskId||null,
+          delegatedTaskId:task.metadata?.delegatedTaskId||null,
+          allowedTransitions:[
+            "existing_workflow_question",
+            "task_status",
+            ...(!["completed","cancelled","expired"].includes(task.status)?["existing_workflow_continue"]:[]),
+            ...(task.status==="waiting_for_approval"?["approval_decision"]:[]),
+          ],
+        }));
+      const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message);
+      if(!workflowCandidates.length&&!implementationSignal&&!codingSignal)return null;
+      const routed=await selfDevelopment.resolveTrustedTurn(message,{workflowCandidates,signal,costContext:{runId},originConversationId:conversationId,originRunId:runId});
+      return routed?.codingDelegation?{...routed,requestFingerprint:codingDelegationFingerprint(message)}:routed;
     },
     logger,
   });

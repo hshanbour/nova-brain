@@ -88,6 +88,7 @@ const EXISTING_TASK_CONTROL_TOOLS = new Set([
 ]);
 const CANONICAL_DURABLE_ACKNOWLEDGEMENT=/^Durable (?:self-development|coding orchestration) task (?:selfdev|orchestration|coding)_[a-f0-9]{32} is [a-z_]+\. Track it in Activity; Nova's Persistent Local Worker can continue it independently\.$/;
 const taskControlTools=route=>new Set(route?.action==="recovery"?[...EXISTING_TASK_CONTROL_TOOLS]:["self_development_get"]);
+const ROUTED_CREATION_TOOLS=new Set(["self_development_create","coding_job_prepare","coding_job_create"]);
 
 function toolActivityMetadata(name,args,error){
   if(name==="coding_job_create"){
@@ -237,13 +238,19 @@ export function createAgent({
         let allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
         const durable = speakerRestricted||existingTaskRoute ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, conversationId, signal: executionSignal});
         executionSignal.throwIfAborted();
+        if(durable?.providerUsage)providerUsage.push(durable.providerUsage);
         if(durable?.clarificationRequired===true){
-          if(durable.providerUsage)providerUsage.push(durable.providerUsage);
           const response={id:randomUUID(),conversationId,message:durable.message,provider:"durable_intake",toolCalls:[],steps:0,runId:run.id,runStatus:"clarification_required"};
           await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
           await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:{message:response.message,providerUsage},completedAt:new Date().toISOString()});
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"durable_intake_clarification_required",status:"blocked",summary:"Durable intake requires one user decision."});
           return response;
+        }
+        if(durable?.workflow){
+          const workflow=durable.workflow;
+          allowedTaskTools=new Set();
+          systemContext=`${systemContext}\n\nBOUND DURABLE WORKFLOW: This turn remains attached to exactly ${workflow.id}, type ${workflow.taskType}, stateVersion ${workflow.stateVersion}, status ${workflow.status}, phase ${workflow.currentPhase||"unknown"}. The trusted server resolved action ${workflow.action}. Answer or explain within this workflow context. Do not create another task, invent an approval, broaden repository authority, or perform a mutation. Any future state transition must use a separately exposed server-owned exact control.`;
+          await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"conversation_workflow_routed",status:"completed",summary:"Conversation turn remained attached to its trusted durable workflow.",metadata:{taskId:workflow.id,taskType:workflow.taskType,status:workflow.status,stateVersion:workflow.stateVersion,route:workflow.action}});
         }
         if(durable?.codingDelegation===true){
           allowedTaskTools=new Set(["coding_job_prepare","coding_job_create","coding_job_get"]);
@@ -262,7 +269,7 @@ export function createAgent({
           context:trustedContext,
           systemContext,
           conversationHistory,
-          tools: speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>!allowedTaskTools||allowedTaskTools.has(tool.name)),
+          tools: speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name)),
           toolResults,
           continuationToken,
           signal: executionSignal,
@@ -328,6 +335,7 @@ export function createAgent({
           try {
             executionSignal.throwIfAborted();
             if(allowedTaskTools&&!allowedTaskTools.has(call.name))throw Object.assign(new Error("Existing-task control cannot invoke this tool."),{code:"task_control_tool_forbidden"});
+            if(!allowedTaskTools&&ROUTED_CREATION_TOOLS.has(call.name))throw Object.assign(new Error("Durable creation requires the authoritative turn-routing path."),{code:"task_control_tool_forbidden"});
             const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, conversationId, signal: executionSignal,delegationRequestFingerprint:durable?.requestFingerprint });
             executionSignal.throwIfAborted();
             execution.status = "completed";

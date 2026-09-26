@@ -450,7 +450,7 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
       await runFile("git", ["add", "source.js"], { cwd: options.cwd });
       await runFile("git", ["commit", "-m", "implement change"], { cwd: options.cwd });
       const finalSha = (await runFile("git", ["rev-parse", "HEAD"], { cwd: options.cwd })).stdout.trim();
-      const output = { status: "completed", summary: "Implemented and tested.", repository: "hshanbour/nova-brain", baseline, finalLocalSha: finalSha, filesChanged: ["source.js"], tests: [{ command: "node --test", status: "passed", summary: null }], limitations: [], pushOccurred: false, deploymentOccurred: false, approvalsRequiredNext: ["push"], failure: null };
+      const output = { status: "completed", summary: "Implemented and tested.", repository: "model-copy-is-advisory", baseline: "f".repeat(40), finalLocalSha: finalSha, filesChanged: ["model-reported.js"], tests: [{ command: "node --test", status: "passed", summary: null }], limitations: [], pushOccurred: false, deploymentOccurred: false, approvalsRequiredNext: ["push"], failure: null };
       await writeFile(args[args.indexOf("--output-last-message") + 1], JSON.stringify(output));
       options.onLine(JSON.stringify({ type: "turn.started" }));
       options.onLine(JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "git status" } }));
@@ -469,7 +469,10 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
   assert.equal(observed.command, process.execPath);
   assert.deepEqual(observed.schema.properties.tests.items.required, ["command", "status", "summary"]);
   assert.deepEqual(observed.schema.properties.tests.items.properties.summary.type, ["string", "null"]);
+  assert.equal(result.repository, "hshanbour/nova-brain");
+  assert.equal(result.baseline, baseline);
   assert.deepEqual(result.filesChanged, ["source.js"]);
+  assert.deepEqual(result.executor.resultConsistency, { filesChangedMatch: false, reportedFilesCount: 1, authoritativeFilesCount: 1 });
   assert.deepEqual(result.usage, { input_tokens: 100, output_tokens: 25 });
   assert.equal(result.executor.billing, "codex_account_separate_from_nova_api_budget");
   assert.deepEqual(progress.map(({ phase }) => phase), ["inspecting", "implementing", "testing"]);

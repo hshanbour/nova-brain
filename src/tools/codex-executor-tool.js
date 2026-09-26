@@ -324,8 +324,23 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
         throw Object.assign(new Error("A completed coding job must return the exact new local commit."), { code: "coding_result_commit_invalid" });
       }
       const filesChanged = finalSha === job.repository.baseline ? [] : (await git("diff", "--name-only", `${job.repository.baseline}..${finalSha}`)).split(/\r?\n/).filter(Boolean).map((path) => path.replaceAll("\\", "/"));
-      if (JSON.stringify([...new Set(parsed.filesChanged)].sort()) !== JSON.stringify([...new Set(filesChanged)].sort())) {
-        throw Object.assign(new Error("Codex result files do not match the committed diff."), { code: "coding_result_files_mismatch" });
+      const reportedFiles = [...new Set(parsed.filesChanged)].sort();
+      const authoritativeFiles = [...new Set(filesChanged)].sort();
+      const filesChangedMatch = JSON.stringify(reportedFiles) === JSON.stringify(authoritativeFiles);
+      const [sourceHeadAfter, sourceBranchAfter, sourceDirtyAfter] = await Promise.all([
+        sourceGit("rev-parse", "HEAD"), sourceGit("branch", "--show-current"), sourceGit("status", "--porcelain=v1", "--untracked-files=all"),
+      ]);
+      if (sourceHeadAfter !== sourceHead || sourceBranchAfter !== branch || sourceDirtyAfter) {
+        throw Object.assign(new Error("Codex changed the trusted source workspace outside the isolated coding worktree."), {
+          code: "coding_source_workspace_changed",
+          safeDiagnostics: {
+            stage: "result_validation",
+            headUnchanged: sourceHeadAfter === sourceHead,
+            branchUnchanged: sourceBranchAfter === branch,
+            clean: !sourceDirtyAfter,
+            executorLaunched: true,
+          },
+        });
       }
       try {
         await sourceGit("update-ref", localRef, finalSha, "0".repeat(40));
@@ -334,12 +349,26 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
       }
       return Object.freeze({
         ...parsed,
-        commitSha: parsed.finalLocalSha,
+        repository: job.repository.slug,
+        baseline: job.repository.baseline,
+        finalLocalSha: finalSha,
+        commitSha: finalSha,
         filesChanged,
         pushOccurred: false,
         deploymentOccurred: false,
         usage: Object.keys(usage).length ? usage : null,
-        executor: { type: "codex_cli", startedAt, completedAt: clock().toISOString(), billing: "codex_account_separate_from_nova_api_budget", localRef },
+        executor: {
+          type: "codex_cli",
+          startedAt,
+          completedAt: clock().toISOString(),
+          billing: "codex_account_separate_from_nova_api_budget",
+          localRef,
+          resultConsistency: {
+            filesChangedMatch,
+            reportedFilesCount: reportedFiles.length,
+            authoritativeFilesCount: authoritativeFiles.length,
+          },
+        },
       });
     } finally {
       if (worktreeAdded) await gitAt(sourceRoot, ["worktree", "remove", "--force", cwd], { cleanup: true }).catch(() => {});

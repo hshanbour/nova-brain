@@ -41,6 +41,29 @@ test("analysis-only intent remains a structured non-mutation classification",asy
   assert.equal(result.intent,"analysis_only");
 });
 
+test("one structured turn decision binds contextual follow-up to an exact trusted workflow",async()=>{
+  const calls=[],id=`coding_${"a".repeat(32)}`,intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"existing_workflow_question",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}],calls)}),result=await intake.resolveTurn("Why is shipping blocked?",{workflowCandidates:[{id,taskType:"coding_delegation",status:"completed",stateVersion:9,currentPhase:"completed",currentCommit:"b".repeat(40),allowedTransitions:["existing_workflow_question","task_status"]}]});
+  assert.equal(result.route,"existing_workflow_question");assert.equal(result.workflow.id,id);assert.equal(calls.length,1);assert.deepEqual(calls[0].responseFormat.schema,SELF_DEVELOPMENT_INTAKE_SCHEMAS.turn);assert.match(calls[0].systemContext,/single authoritative semantic turn resolver/);
+});
+
+test("turn resolver cannot invent workflow authority and uses normal clarification for ambiguity",async()=>{
+  const first=`selfdev_${"a".repeat(32)}`,second=`coding_${"b".repeat(32)}`,candidates=[{id:first,taskType:"self_development",status:"blocked",stateVersion:4,currentPhase:"approval"},{id:second,taskType:"coding_delegation",status:"completed",stateVersion:8,currentPhase:"completed"}];
+  const invented=createSelfDevelopmentIntake({modelProvider:provider([{route:"existing_workflow_continue",workflowId:`selfdev_${"f".repeat(32)}`,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])});
+  await assert.rejects(()=>invented.resolveTurn("Continue it",{workflowCandidates:candidates}),error=>error.code==="structured_turn_invalid"&&error.safeDiagnostics?.boundary==="workflow_binding");
+  const ambiguous=createSelfDevelopmentIntake({modelProvider:provider([{route:"clarification_required",workflowId:null,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:"Which workflow should I continue?"}])}),result=await ambiguous.resolveTurn("Continue the task",{workflowCandidates:candidates});
+  assert.equal(result.route,"clarification_required");assert.equal(result.clarificationQuestion,"Which workflow should I continue?");
+});
+
+test("new implementation is specified by the same authoritative turn decision",async()=>{
+  const intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"new_implementation",workflowId:null,objective:"Implement the new Console control",acceptanceCriteria:["The control works."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["Console control"],clarificationQuestion:""}])}),result=await intake.resolveTurn("Implement the new Console control");
+  assert.equal(result.route,"new_implementation");assert.equal(result.specification.intent,"implementation");assert.equal(result.specification.status,"ready");assert.equal(result.specification.objective,"Implement the new Console control");
+});
+
+test("explicit Codex delegation is routed by the same semantic decision without task authority",async()=>{
+  const intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"coding_delegation",workflowId:null,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn("Use Codex to implement the approved local change");
+  assert.equal(result.route,"coding_delegation");assert.equal(result.workflow,undefined);assert.equal(result.specification,undefined);
+});
+
 test("scope resolution can only narrow repository-evidenced candidates and covers constraints",async()=>{
   const calls=[],intake=createSelfDevelopmentIntake({modelProvider:provider([{status:"resolved",sourcePaths:["assets/console.js"],testPaths:["test/console-static.test.js"],constraintCoverage:[{constraintIndex:0,disposition:"respected",evidencePaths:["assets/console.js"]}],unresolvedEvidence:[]}],calls)}),request={userGoal:"Implement",acceptanceCriteria:["Works"],constraints:[{type:"exclude",requirement:"No Voice",enforcements:["scope_selection"]}]},candidateEvidence=[{path:"assets/console.js",role:"source",inventory:true,matches:[{stepId:"2:search_code",query:"recent conversations drawer",line:33,text:'const recentsDrawer = document.querySelector("#recentsDrawer");',truncated:false}]},{path:"assets/voice-input.js",role:"source",inventory:true,matches:[]},{path:"test/console-static.test.js",role:"focused_test",inventory:true,matches:[],relationship:{sourcePath:"assets/console.js",matchedTokens:["console"],basis:"existing_bound_commit_path_relation"}}],result=await intake.resolveScope({request,candidatePaths:["assets/console.js","assets/voice-input.js","test/console-static.test.js"],candidateEvidence});
   assert.deepEqual([...result.sourcePaths,...result.testPaths],["assets/console.js","test/console-static.test.js"]);

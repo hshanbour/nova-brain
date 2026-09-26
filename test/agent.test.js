@@ -75,25 +75,22 @@ test("explicit engineering intake creates a durable task before any model genera
   assert.equal(result.durableTask.id, "selfdev_trusted");
   assert.equal(result.durableTask.status, "queued");
 });
-test("model-mediated self-development creation returns the canonical durable acknowledgement immediately",async()=>{
+test("authoritative turn routing returns the canonical durable acknowledgement immediately",async()=>{
   const storage=testStorage(),registry=createToolRegistry(),taskId="selfdev_"+"b".repeat(32),conversationId="model-mediated-durable";let modelCalls=0;
-  registry.register({name:"self_development_create",available:true,async execute(_input,context){
-    assert.equal(context.conversationId,conversationId);
-    const task=await storage.createAutonomyTask({id:taskId,ownerId:OWNER_ID,projectId:"nova-brain",title:"Durable change",objective:"Implement the requested change.",taskType:"self_development",branch:"feature",startingCommit:"c".repeat(40),metadata:{terminalReporting:{version:1,conversationId,runId:context.runId}}});
+  const routeDurableRequest=async({conversationId:boundConversation,runId})=>{
+    assert.equal(boundConversation,conversationId);
+    const task=await storage.createAutonomyTask({id:taskId,ownerId:OWNER_ID,projectId:"nova-brain",title:"Durable change",objective:"Implement the requested change.",taskType:"self_development",branch:"feature",startingCommit:"c".repeat(40),metadata:{terminalReporting:{version:1,conversationId,runId}}});
     return{task,idempotent:false,dispatch:{status:"scheduled",durable:true}};
-  }});
-  const agent=createTestAgent({storage,toolRegistry:registry,modelProvider:scriptedProvider([
-    {type:"tool_calls",toolCalls:[{id:"create",name:"self_development_create",arguments:{userGoal:"Implement the requested change."}}]},
-    {type:"final",message:`Queued durable task ${taskId}.`},
-  ],()=>{modelCalls+=1;})});
+  };
+  const agent=createTestAgent({storage,toolRegistry:registry,routeDurableRequest,modelProvider:{name:"never",async generate(){modelCalls+=1;throw new Error("chat model must not run");}}});
   const result=await agent.run({message:"Please make the durable change.",conversationId});
-  assert.equal(modelCalls,1);
+  assert.equal(modelCalls,0);
   assert.equal(result.provider,"durable_runtime");
   assert.equal(result.runStatus,"durable_task_created");
   assert.deepEqual(result.durableTask,{id:taskId,status:"queued",projectId:"nova-brain",branch:"feature",startingCommit:"c".repeat(40),idempotent:false});
   assert.equal(result.message,`Durable self-development task ${taskId} is queued. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`);
   assert.doesNotMatch(result.message,/Queued durable task/);
-  assert.equal(result.toolCalls.length,1);
+  assert.equal(result.toolCalls.length,0);
   const messages=await storage.listMessages(conversationId,OWNER_ID);
   assert.deepEqual(messages.map(({role,content})=>({role,content})),[
     {role:"user",content:"Please make the durable change."},
@@ -115,28 +112,29 @@ test("model-mediated self-development creation returns the canonical durable ack
   assert.deepEqual(durableTaskRecordsFromMessages(finalMessages,conversationId).map(item=>item.taskId),[taskId]);
 });
 
-test("model output cannot forge a durable projection without a stored self-development task",async()=>{
-  const registry=createToolRegistry(),forged="selfdev_"+"f".repeat(32);
-  registry.register({name:"self_development_create",available:true,async execute(){return{task:{id:forged,status:"queued",taskType:"self_development"},idempotent:false};}});
+test("model output cannot bypass authoritative routing or forge a durable projection",async()=>{
+  const registry=createToolRegistry(),forged="selfdev_"+"f".repeat(32);let executed=0;
+  registry.register({name:"self_development_create",available:true,async execute(){executed+=1;return{task:{id:forged,status:"queued",taskType:"self_development"},idempotent:false};}});
   const agent=createTestAgent({toolRegistry:registry,modelProvider:scriptedProvider([
     {type:"tool_calls",toolCalls:[{id:"create",name:"self_development_create",arguments:{userGoal:"Make a change."}}]},
     {type:"final",message:`Durable self-development task ${forged} is queued. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`},
   ])});
   const result=await agent.run({message:"Make a change."});
+  assert.equal(executed,0);
   assert.equal(result.runStatus,"completed");
   assert.equal(result.durableTask,undefined);
   assert.equal(result.message,"Nova could not verify that durable task acknowledgement.");
   assert.deepEqual(durableTaskRecordsFromMessages([{role:"assistant",content:result.message}],result.conversationId),[]);
 });
-test("idempotent model-mediated creation reuses only the task bound to the same conversation",async()=>{
+test("idempotent authoritative creation reuses only the task bound to the same conversation",async()=>{
   const storage=testStorage(),registry=createToolRegistry(),taskId="selfdev_"+"d".repeat(32),conversationId="durable-replay";let created;
-  registry.register({name:"self_development_create",available:true,async execute(_input,context){
+  const routeDurableRequest=async({conversationId:boundConversation,runId})=>{
+    assert.equal(boundConversation,conversationId);
     const idempotent=Boolean(created);
-    if(!created)created=await storage.createAutonomyTask({id:taskId,ownerId:OWNER_ID,projectId:"nova-brain",title:"Replay",objective:"Replay safely.",taskType:"self_development",branch:"feature",startingCommit:"e".repeat(40),metadata:{terminalReporting:{version:1,conversationId,runId:context.runId}}});
+    if(!created)created=await storage.createAutonomyTask({id:taskId,ownerId:OWNER_ID,projectId:"nova-brain",title:"Replay",objective:"Replay safely.",taskType:"self_development",branch:"feature",startingCommit:"e".repeat(40),metadata:{terminalReporting:{version:1,conversationId,runId}}});
     return{task:await storage.getAutonomyTask(taskId,OWNER_ID),idempotent};
-  }});
-  const modelProvider=scriptedProvider([{type:"tool_calls",toolCalls:[{id:"create",name:"self_development_create",arguments:{userGoal:"Replay safely."}}]}]);
-  const agent=createTestAgent({storage,toolRegistry:registry,modelProvider});
+  };
+  const agent=createTestAgent({storage,toolRegistry:registry,routeDurableRequest,modelProvider:{name:"never",async generate(){throw new Error("chat model must not run");}}});
   const first=await agent.run({message:"Replay safely.",conversationId}),second=await agent.run({message:"Replay safely.",conversationId});
   assert.equal(first.durableTask.id,taskId);assert.equal(second.durableTask.id,taskId);assert.equal(second.durableTask.idempotent,true);
   assert.deepEqual(durableTaskRecordsFromMessages(await storage.listMessages(conversationId,OWNER_ID),conversationId).map(item=>item.taskId),[taskId]);
@@ -192,6 +190,14 @@ test("existing-task continuation bypasses new-task intake and exposes only bound
   assert.equal((await storage.listAutonomyTasks(OWNER_ID)).length,0);
   assert.equal((await storage.listActivity(OWNER_ID,{runId:result.runId})).some(item=>item.action==="existing_task_control_routed"),true);
 });
+test("semantic workflow follow-up remains read-only and cannot create another task",async()=>{
+  const registry=createToolRegistry(),id=`coding_${"e".repeat(32)}`,observed=[];let creations=0;
+  registry.register({name:"self_development_create",available:true,async execute(){creations+=1;return{task:{id:"unexpected"}};}});
+  registry.register({name:"coding_job_create",available:true,async execute(){creations+=1;return{task:{id:"unexpected"}};}});
+  const agent=createTestAgent({toolRegistry:registry,routeDurableRequest:async()=>({workflow:{id,taskType:"coding_delegation",status:"completed",stateVersion:12,currentPhase:"completed",action:"existing_workflow_question"},providerUsage:{model:"gpt-6-luna",stage:"intake"}}),modelProvider:scriptedProvider([{type:"final",message:"Shipping is still waiting on a separate delivery capability."}],input=>observed.push(input))});
+  const result=await agent.run({message:"Keep this shipping request and explain why shipping is blocked.",conversationId:"workflow-chat"});
+  assert.equal(result.message,"Shipping is still waiting on a separate delivery capability.");assert.equal(creations,0);assert.deepEqual(observed[0].tools,[]);assert.match(observed[0].systemContext,new RegExp(id));assert.match(observed[0].systemContext,/Do not create another task/);
+});
 test("exact recovery dispatch cannot execute a broader tool and binds a missing version to the inspected task",async()=>{
   const registry=createToolRegistry(),id="selfdev_c9fc28effbd72350c86c67abe4d69e36";let creations=0,recoveries=0,modelCalls=0;
   registry.register({name:"self_development_get",available:true,async execute(){return{id};}});
@@ -245,7 +251,7 @@ test("caller AbortSignal stops only the active synchronous run", async () => {
   assert.equal((await storage.listRuns(OWNER_ID))[0].status, "cancelled");
 });
 
-test("agent returns structured redacted tool errors for known validation failures",async()=>{const registry=createToolRegistry();registry.register({name:"self_development_create",async execute(){throw Object.assign(new Error("The requested project could not be resolved to Nova Brain."),{code:"project_not_found"});}});const agent=createTestAgent({toolRegistry:registry,modelProvider:scriptedProvider([{type:"tool_calls",toolCalls:[{id:"create-1",name:"self_development_create",arguments:{userGoal:"Improve dictation"}}]},{type:"final",message:"I need corrected project context."}])}),result=await agent.run({message:"Improve dictation",conversationId:"structured-self-development-error"});assert.deepEqual(result.toolCalls[0].error,{code:"project_not_found",message:"The requested project could not be resolved to Nova Brain."});assert.doesNotMatch(JSON.stringify(result),/password|token|stack/i);});
+test("agent returns structured redacted tool errors for known validation failures",async()=>{const registry=createToolRegistry();registry.register({name:"project_lookup",async execute(){throw Object.assign(new Error("The requested project could not be resolved to Nova Brain."),{code:"project_not_found"});}});const agent=createTestAgent({toolRegistry:registry,modelProvider:scriptedProvider([{type:"tool_calls",toolCalls:[{id:"lookup-1",name:"project_lookup",arguments:{project:"unknown"}}]},{type:"final",message:"I need corrected project context."}])}),result=await agent.run({message:"Inspect the project",conversationId:"structured-project-error"});assert.deepEqual(result.toolCalls[0].error,{code:"project_not_found",message:"The requested project could not be resolved to Nova Brain."});assert.doesNotMatch(JSON.stringify(result),/password|token|stack/i);});
 
 test("unverified and non-owner voice turns cannot retrieve owner memories or prior conversation history",async()=>{
   const storage=testStorage();await storage.createMemory({id:"private-memory",ownerId:OWNER_ID,category:"identity",content:"OWNER SECRET VALUE",privacy:"private",sensitivity:"sensitive",scope:"global",provenance:"owner-explicit",status:"active"});await storage.ensureConversation({id:"shared-voice",ownerId:OWNER_ID});await storage.appendMessage({conversationId:"shared-voice",ownerId:OWNER_ID,role:"assistant",content:"PRIVATE PRIOR TURN"});

@@ -47,6 +47,10 @@ test("conversation follow-up resolves the newest active bound task without falli
   const f=await fixture();await terminal(f,{id:"selfdev_"+"1".repeat(32)});const active=await f.storage.createAutonomyTask({id:"selfdev_"+"2".repeat(32),ownerId:OWNER,title:"Active",objective:"Work",taskType:"self_development",metadata:{terminalReporting:{version:1,conversationId:CONVERSATION}}});await f.storage.updateAutonomyTask(active.id,OWNER,{status:"running",currentPhase:"planning"},active.stateVersion);
   const result=await f.reporter.latestForConversation(CONVERSATION);assert.equal(result.task.id,active.id);assert.match(result.message,/Status: running/);assert.match(result.message,/No terminal result is available yet/);
 });
+test("conversation workflow lookup cannot leak a task into another conversation",async()=>{
+  const f=await fixture(),task=await terminal(f,{id:"selfdev_"+"9".repeat(32)}),own=await f.storage.listConversationBoundTasks(OWNER,CONVERSATION,{limit:20}),other=await f.storage.listConversationBoundTasks(OWNER,OTHER,{limit:20});
+  assert.deepEqual(own.map(item=>item.id),[task.id]);assert.deepEqual(other,[]);assert.equal(await f.reporter.latestForConversation(OTHER),null);
+});
 
 test("read-only result questions route generally while mutation requests do not",()=>{
   for(const message of ["What changed?","Show me the tests.","What commit did it make?","What happened with that task?","Show me the completed result."])assert.equal(isConversationTaskResultQuestion(message),true,message);

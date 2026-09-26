@@ -414,10 +414,18 @@ test("chat-native canonical intent survives harmless objective paraphrases",asyn
     assert.equal(result.request.intent,"implementation",objective);assert.equal(result.task.metadata.selfDevelopment.intent,"implementation",objective);
   }
 });
-test("chat-native intent disagreement fails closed before durable creation",async()=>{
+test("legacy lexical candidate defers to structured analysis without a conflict or durable creation",async()=>{
   const f=await fixture({structuredIntake:{async specify(){return{version:1,status:"ready",intent:"analysis_only",objective:"Analyze the Console control.",acceptanceCriteria:["Describe the current behavior."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["New conversation"],clarificationQuestion:"",specificationHash:"5".repeat(64)};}}});
-  await assert.rejects(()=>f.service.createTrustedIntake("Implement the Nova Console shortcut hint"),error=>error.code==="structured_intake_intent_conflict"&&error.safeDiagnostics?.deterministicIntent==="implementation"&&error.safeDiagnostics?.structuredIntent==="analysis_only");
+  const result=await f.service.createTrustedIntake("Implement the Nova Console shortcut hint");
+  assert.equal(result.ordinaryChat,true);
   assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,0);
+});
+test("unified turn routing creates only from its authoritative decision and keeps workflow follow-up bound",async()=>{
+  const workflowId=`coding_${"d".repeat(32)}`,implementation={version:1,status:"ready",intent:"implementation",objective:"Implement a new Console control",acceptanceCriteria:["The control works."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["Console control"],clarificationQuestion:"",specificationHash:"8".repeat(64)},decisions=[{route:"existing_workflow_question",workflow:{id:workflowId,taskType:"coding_delegation",status:"completed",stateVersion:9,currentPhase:"completed"},providerUsage:{stage:"intake"}},{route:"new_implementation",specification:implementation,providerUsage:{stage:"intake"}}],f=await fixture({structuredIntake:{async resolveTurn(){return decisions.shift();}}});
+  const followup=await f.service.resolveTrustedTurn("Why is shipping blocked?",{workflowCandidates:[{id:workflowId,taskType:"coding_delegation",status:"completed",stateVersion:9}]});
+  assert.equal(followup.workflow.id,workflowId);assert.equal(followup.workflow.action,"existing_workflow_question");assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,0);
+  const created=await f.service.resolveTrustedTurn("Implement a new unrelated Console control",{workflowCandidates:[{id:workflowId,taskType:"coding_delegation",status:"completed",stateVersion:9}]});
+  assert.equal(created.turnRoute,"new_implementation");assert.equal(created.task.taskType,"self_development");assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,1);
 });
 test("direct callers cannot elevate lexical analysis intent through intake metadata",async()=>{
   const f=await fixture(),request=input({userGoal:"Inspect the harmless Console architecture",intake:{version:1,sourceRequestHash:"6".repeat(64),specificationHash:"7".repeat(64),canonicalIntent:"implementation"}}),result=await f.service.create(request);
@@ -1332,46 +1340,27 @@ test("chat tool contract requires only a natural-language goal and schedules dur
   assert.deepEqual(result.dispatch, { status: "scheduled", durable: true });
   assert.equal(result.task.metadata.autoDispatch, true);
 });
-test("real agent chat creates one inspectable durable task and can close the harmless probe", async () => {
+test("real authoritative Chat routing creates one inspectable durable task and can close the harmless probe", async () => {
   const f = await fixture(),
     registry = createToolRegistry();
   registerSelfDevelopmentTools(registry, { service: f.service });
-  let turn = 0;
   const modelProvider = {
       name: "chat-probe",
-      async generate({ toolResults }) {
-        if (turn++ === 0)
-          return {
-            type: "tool_calls",
-            toolCalls: [
-              {
-                id: "self-create",
-                name: "self_development_create",
-                arguments: {
-                  userGoal: "Inspect the composer dictation integration",
-                },
-              },
-            ],
-          };
-        assert.equal(toolResults[0].output.ok, true);
-        return {
-          type: "final",
-          message: `Created ${toolResults[0].output.result.task.id}`,
-        };
-      },
+      async generate() { throw new Error("chat model must not mediate durable creation"); },
     },
     agent = createAgent({
       storage: f.storage,
       ownerId: OWNER,
       modelProvider,
       toolRegistry: registry,
+      routeDurableRequest:({message,conversationId,runId,signal})=>f.service.createTrustedIntake(message,{originConversationId:conversationId,originRunId:runId,signal}),
     }),
     result = await agent.run({
       message: "Improve Nova's composer dictation microphone infrastructure",
       conversationId: "self-development-chat-probe",
     }),
-    created = result.toolCalls[0].result.task;
-  assert.match(result.message, new RegExp(created.id));
+    created = result.durableTask;
+  assert.match(result.message, new RegExp(created.id));assert.equal(result.toolCalls.length,0);
   const persisted=(await f.service.get(created.id)).task;
   assert.equal(persisted.status, "queued");
   assert.deepEqual(persisted.metadata.terminalReporting,{version:1,conversationId:"self-development-chat-probe",runId:result.runId});

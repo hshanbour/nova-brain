@@ -1520,8 +1520,11 @@ export function createSelfDevelopmentService({
     let specification;
     try{specification=await structuredIntake.specify(userGoal,{signal,costContext});}
     catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;throw new SelfDevelopmentError(error?.code||"structured_intake_invalid","Nova could not establish a safe durable task specification.",409,error?.safeDiagnostics);}
-    if(specification.intent!=="implementation")throw new SelfDevelopmentError("structured_intake_intent_conflict","Deterministic durable routing and structured intake intent did not agree.",409,{boundary:"canonical_intent",deterministicIntent:"implementation",structuredIntent:specification.intent||null});
+    if(specification.intent!=="implementation")return{ordinaryChat:true,providerUsage:specification.providerUsage||null};
     if(specification.status!=="ready")return{clarificationRequired:true,message:specification.clarificationQuestion||"The implementation request requires clarification.",providerUsage:specification.providerUsage||null};
+    return createTrustedSpecification(userGoal,specification,{signal,originConversationId,originRunId});
+  }
+  async function createTrustedSpecification(userGoal,specification,{signal,originConversationId,originRunId}={}){
     return create({
       userGoal:specification.objective,
       acceptanceCriteria:specification.acceptanceCriteria,
@@ -1534,6 +1537,20 @@ export function createSelfDevelopmentService({
         patch: { files: [] },
       },
     }, { signal, canonicalIntent: specification.intent, canonicalConstraintBindings: true, originConversationId, originRunId });
+  }
+  async function resolveTrustedTurn(userGoal,{workflowCandidates=[],signal,costContext,originConversationId,originRunId}={}){
+    if(!structuredIntake?.resolveTurn)throw new SelfDevelopmentError("structured_intake_unavailable","Unified turn routing is unavailable.",503);
+    let decision;
+    try{decision=await structuredIntake.resolveTurn(userGoal,{workflowCandidates,signal,costContext});}
+    catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;throw new SelfDevelopmentError(error?.code||"structured_turn_invalid","Nova could not safely resolve this turn.",409,error?.safeDiagnostics);}
+    if(decision.route==="new_implementation"){
+      const created=await createTrustedSpecification(userGoal,decision.specification,{signal,originConversationId,originRunId});
+      return{...created,providerUsage:decision.providerUsage||null,turnRoute:decision.route};
+    }
+    if(decision.route==="clarification_required")return{clarificationRequired:true,message:decision.clarificationQuestion||"Which existing workflow should Nova use?",providerUsage:decision.providerUsage||null,turnRoute:decision.route};
+    if(["existing_workflow_continue","existing_workflow_question","task_status"].includes(decision.route))return{workflow:{...decision.workflow,action:decision.route},providerUsage:decision.providerUsage||null,turnRoute:decision.route};
+    if(decision.route==="coding_delegation")return{codingDelegation:true,providerUsage:decision.providerUsage||null,turnRoute:decision.route};
+    return{ordinaryChat:true,providerUsage:decision.providerUsage||null,turnRoute:decision.route};
   }
   async function get(taskId) {
     const task = await runtime.get(taskId);
@@ -3753,6 +3770,7 @@ export function createSelfDevelopmentService({
     plan,
     create,
     createTrustedIntake,
+    resolveTrustedTurn,
     get,
     repair,
     requestEscalatedRepair,
