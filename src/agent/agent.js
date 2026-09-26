@@ -86,6 +86,7 @@ const EXISTING_TASK_CONTROL_TOOLS = new Set([
   "self_development_get",
   "self_development_scope_recover",
 ]);
+const CANONICAL_DURABLE_ACKNOWLEDGEMENT=/^Durable (?:self-development|coding orchestration) task (?:selfdev|orchestration|coding)_[a-f0-9]{32} is [a-z_]+\. Track it in Activity; Nova's Persistent Local Worker can continue it independently\.$/;
 const taskControlTools=route=>new Set(route?.action==="recovery"?[...EXISTING_TASK_CONTROL_TOOLS]:["self_development_get"]);
 
 function toolActivityMetadata(name,args,error){
@@ -167,6 +168,38 @@ export function createAgent({
       const providerUsage = [];
       let continuationToken;
       let toolResults = [];
+      const completeDurableSelfDevelopment = async ({ task, idempotent = false, steps = 0, toolCalls = [] }) => {
+        const durableTask = {
+          id: task.id,
+          status: task.status,
+          projectId: task.projectId,
+          branch: task.branch,
+          startingCommit: task.startingCommit,
+          idempotent: idempotent === true,
+        };
+        const response = {
+          id: randomUUID(),
+          conversationId,
+          message: `Durable self-development task ${durableTask.id} is ${durableTask.status}. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`,
+          provider: "durable_runtime",
+          toolCalls,
+          steps,
+          runId: run.id,
+          runStatus: "durable_task_created",
+          durableTask,
+          timing: {
+            contextRetrievalMs: contextRetrievalCompletedAt-contextRetrievalStartedAt,
+            preModelMs: Date.now()-requestStartedAt,
+            agentFirstResponseMs: 0,
+            agentCompleteMs: 0,
+            totalMs: Date.now()-requestStartedAt,
+          },
+        };
+        await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: response.message });
+        await storage.updateRun(run.id, ownerId, { status: "completed", currentStep: steps, result: { message: response.message, durableTask, providerUsage }, completedAt: new Date().toISOString() });
+        await storage.appendActivity({ ownerId, projectId: durableTask.projectId, runId: run.id, action: "durable_task_routed", status: "completed", summary: `Created durable task ${durableTask.id}.`, metadata: durableTask });
+        return response;
+      };
 
       try {
         const existingTaskRoute=speakerRestricted?null:await routeExistingTaskRequest({message,conversationId,context:trustedContext,requestId,signal:executionSignal});
@@ -217,36 +250,7 @@ export function createAgent({
           systemContext=`${systemContext}\n\nCHAT-NATIVE CODEX DELEGATION: This request explicitly asks Nova to orchestrate Codex. Do not use self-development. First call coding_job_prepare with the bounded objective, acceptance criteria, constraints, and verification. Then call coding_job_create using only the exact compact creationRequest returned by preparation. Never reconstruct or retransmit the full coding specification. coding_job_create must stop at the owner approval boundary. Never request push or deployment.`;
         }
         if (durable?.task) {
-          const durableTask = {
-            id: durable.task.id,
-            status: durable.task.status,
-            projectId: durable.task.projectId,
-            branch: durable.task.branch,
-            startingCommit: durable.task.startingCommit,
-            idempotent: durable.idempotent === true,
-          };
-          const response = {
-            id: randomUUID(),
-            conversationId,
-            message: `Durable self-development task ${durableTask.id} is ${durableTask.status}. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`,
-            provider: "durable_runtime",
-            toolCalls: [],
-            steps: 0,
-            runId: run.id,
-            runStatus: "durable_task_created",
-            durableTask,
-            timing: {
-              contextRetrievalMs: contextRetrievalCompletedAt-contextRetrievalStartedAt,
-              preModelMs: Date.now()-requestStartedAt,
-              agentFirstResponseMs: 0,
-              agentCompleteMs: 0,
-              totalMs: Date.now()-requestStartedAt,
-            },
-          };
-          await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: response.message });
-          await storage.updateRun(run.id, ownerId, { status: "completed", currentStep: 0, result: { message: response.message, durableTask }, completedAt: new Date().toISOString() });
-          await storage.appendActivity({ ownerId, projectId: durableTask.projectId, runId: run.id, action: "durable_task_routed", status: "completed", summary: `Created durable task ${durableTask.id}.`, metadata: durableTask });
-          return response;
+          return completeDurableSelfDevelopment({ task: durable.task, idempotent: durable.idempotent });
         }
         for (let step = 1; step <= maxSteps; step += 1) {
         executionSignal.throwIfAborted();
@@ -275,10 +279,11 @@ export function createAgent({
         const agentGenerationCompletedAt=Date.now();
 
         if (generated.type === "final") {
+          const modelMessage=enforceSpeakerIdentityContract(generated.message, trustedContext.speaker);
           const response = {
             id: randomUUID(),
             conversationId,
-            message: enforceSpeakerIdentityContract(generated.message, trustedContext.speaker),
+            message: CANONICAL_DURABLE_ACKNOWLEDGEMENT.test(modelMessage) ? "Nova could not verify that durable task acknowledgement." : modelMessage,
             provider: modelProvider.name,
             toolCalls: toolExecutions,
             steps: step
@@ -317,6 +322,7 @@ export function createAgent({
             name: call.name,
             arguments: call.arguments
           };
+          let createdDurableTask = null;
           await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "tool_started", tool: call.name, status: "running", summary: `Started ${call.name}.`, metadata:toolActivityMetadata(call.name,call.arguments) });
 
           try {
@@ -328,6 +334,10 @@ export function createAgent({
             execution.result = result;
             toolResults.push({ id: call.id, output: { ok: true, result } });
             await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "tool_completed", tool: call.name, status: "completed", summary: `${call.name} completed.` });
+            if(call.name==="self_development_create"&&typeof result?.task?.id==="string"){
+              const storedTask=await storage.getAutonomyTask(result.task.id,ownerId);
+              if(storedTask?.taskType==="self_development"&&storedTask.metadata?.terminalReporting?.conversationId===conversationId)createdDurableTask={task:storedTask,idempotent:result.idempotent===true};
+            }
           } catch (error) {
             if (error instanceof ApprovalRequiredError) {
               let approvalMessage = `Owner approval is required before Nova can run ${call.name}.`;
@@ -351,6 +361,7 @@ export function createAgent({
           }
 
           toolExecutions.push(execution);
+          if(createdDurableTask)return completeDurableSelfDevelopment({...createdDurableTask,steps:step,toolCalls:toolExecutions});
         }
       }
 

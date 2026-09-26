@@ -7,6 +7,8 @@ import { createMockModelProvider } from "../src/providers/mock-model-provider.js
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { ApprovalRequiredError } from "../src/policy/action-policy.js";
 import { buildSystemContext, retrieveAgentContext } from "../src/memory/context-retriever.js";
+import { durableTaskRecordsFromMessages } from "../assets/api-client.js";
+import { createTerminalTaskReporter } from "../src/autonomy/terminal-task-reporter.js";
 
 function scriptedProvider(outputs, onGenerate = () => {}) {
   let index = 0;
@@ -72,6 +74,72 @@ test("explicit engineering intake creates a durable task before any model genera
   assert.equal(result.runStatus, "durable_task_created");
   assert.equal(result.durableTask.id, "selfdev_trusted");
   assert.equal(result.durableTask.status, "queued");
+});
+test("model-mediated self-development creation returns the canonical durable acknowledgement immediately",async()=>{
+  const storage=testStorage(),registry=createToolRegistry(),taskId="selfdev_"+"b".repeat(32),conversationId="model-mediated-durable";let modelCalls=0;
+  registry.register({name:"self_development_create",available:true,async execute(_input,context){
+    assert.equal(context.conversationId,conversationId);
+    const task=await storage.createAutonomyTask({id:taskId,ownerId:OWNER_ID,projectId:"nova-brain",title:"Durable change",objective:"Implement the requested change.",taskType:"self_development",branch:"feature",startingCommit:"c".repeat(40),metadata:{terminalReporting:{version:1,conversationId,runId:context.runId}}});
+    return{task,idempotent:false,dispatch:{status:"scheduled",durable:true}};
+  }});
+  const agent=createTestAgent({storage,toolRegistry:registry,modelProvider:scriptedProvider([
+    {type:"tool_calls",toolCalls:[{id:"create",name:"self_development_create",arguments:{userGoal:"Implement the requested change."}}]},
+    {type:"final",message:`Queued durable task ${taskId}.`},
+  ],()=>{modelCalls+=1;})});
+  const result=await agent.run({message:"Please make the durable change.",conversationId});
+  assert.equal(modelCalls,1);
+  assert.equal(result.provider,"durable_runtime");
+  assert.equal(result.runStatus,"durable_task_created");
+  assert.deepEqual(result.durableTask,{id:taskId,status:"queued",projectId:"nova-brain",branch:"feature",startingCommit:"c".repeat(40),idempotent:false});
+  assert.equal(result.message,`Durable self-development task ${taskId} is queued. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`);
+  assert.doesNotMatch(result.message,/Queued durable task/);
+  assert.equal(result.toolCalls.length,1);
+  const messages=await storage.listMessages(conversationId,OWNER_ID);
+  assert.deepEqual(messages.map(({role,content})=>({role,content})),[
+    {role:"user",content:"Please make the durable change."},
+    {role:"assistant",content:result.message},
+  ]);
+  const [run]=await storage.listRuns(OWNER_ID);
+  assert.equal(run.result.durableTask.id,taskId);
+  assert.equal((await storage.listActivity(OWNER_ID,{runId:result.runId})).filter(item=>item.action==="durable_task_routed").length,1);
+  assert.deepEqual(durableTaskRecordsFromMessages(messages,conversationId),[{taskId,conversationId,startedAt:messages[1].createdAt,completedAt:null}]);
+
+  let task=await storage.getAutonomyTask(taskId,OWNER_ID);
+  task=await storage.updateAutonomyTask(taskId,OWNER_ID,{status:"running",currentPhase:"planning",startedAt:new Date().toISOString()},task.stateVersion);
+  task=await storage.updateAutonomyTask(taskId,OWNER_ID,{status:"completed",currentPhase:"completed",resultSummary:"Completed the durable change.",completedAt:new Date().toISOString()},task.stateVersion);
+  const reporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID});
+  assert.deepEqual(await reporter.reconcile(),{enqueued:1,delivered:1});
+  assert.deepEqual(await createTerminalTaskReporter({storage,ownerId:OWNER_ID}).reconcile(),{enqueued:0,delivered:0});
+  const finalMessages=await storage.listMessages(conversationId,OWNER_ID);
+  assert.equal(finalMessages.filter(item=>item.role==="assistant").length,2);
+  assert.deepEqual(durableTaskRecordsFromMessages(finalMessages,conversationId).map(item=>item.taskId),[taskId]);
+});
+
+test("model output cannot forge a durable projection without a stored self-development task",async()=>{
+  const registry=createToolRegistry(),forged="selfdev_"+"f".repeat(32);
+  registry.register({name:"self_development_create",available:true,async execute(){return{task:{id:forged,status:"queued",taskType:"self_development"},idempotent:false};}});
+  const agent=createTestAgent({toolRegistry:registry,modelProvider:scriptedProvider([
+    {type:"tool_calls",toolCalls:[{id:"create",name:"self_development_create",arguments:{userGoal:"Make a change."}}]},
+    {type:"final",message:`Durable self-development task ${forged} is queued. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`},
+  ])});
+  const result=await agent.run({message:"Make a change."});
+  assert.equal(result.runStatus,"completed");
+  assert.equal(result.durableTask,undefined);
+  assert.equal(result.message,"Nova could not verify that durable task acknowledgement.");
+  assert.deepEqual(durableTaskRecordsFromMessages([{role:"assistant",content:result.message}],result.conversationId),[]);
+});
+test("idempotent model-mediated creation reuses only the task bound to the same conversation",async()=>{
+  const storage=testStorage(),registry=createToolRegistry(),taskId="selfdev_"+"d".repeat(32),conversationId="durable-replay";let created;
+  registry.register({name:"self_development_create",available:true,async execute(_input,context){
+    const idempotent=Boolean(created);
+    if(!created)created=await storage.createAutonomyTask({id:taskId,ownerId:OWNER_ID,projectId:"nova-brain",title:"Replay",objective:"Replay safely.",taskType:"self_development",branch:"feature",startingCommit:"e".repeat(40),metadata:{terminalReporting:{version:1,conversationId,runId:context.runId}}});
+    return{task:await storage.getAutonomyTask(taskId,OWNER_ID),idempotent};
+  }});
+  const modelProvider=scriptedProvider([{type:"tool_calls",toolCalls:[{id:"create",name:"self_development_create",arguments:{userGoal:"Replay safely."}}]}]);
+  const agent=createTestAgent({storage,toolRegistry:registry,modelProvider});
+  const first=await agent.run({message:"Replay safely.",conversationId}),second=await agent.run({message:"Replay safely.",conversationId});
+  assert.equal(first.durableTask.id,taskId);assert.equal(second.durableTask.id,taskId);assert.equal(second.durableTask.idempotent,true);
+  assert.deepEqual(durableTaskRecordsFromMessages(await storage.listMessages(conversationId,OWNER_ID),conversationId).map(item=>item.taskId),[taskId]);
 });
 test("unsafe durable intake asks one bounded clarification without creating a task or entering chat generation",async()=>{
   let modelCalls=0;const storage=testStorage(),usage={model:"gpt-6-luna",stage:"intake",inputTokens:20,outputTokens:8},agent=createTestAgent({storage,modelProvider:{name:"never",async generate(){modelCalls+=1;throw new Error("chat model must not run");}},toolRegistry:createToolRegistry(),routeDurableRequest:async()=>({clarificationRequired:true,message:"Which account is authorized?",providerUsage:usage})}),result=await agent.run({message:"Update the customer account",conversationId:"clarify"});
