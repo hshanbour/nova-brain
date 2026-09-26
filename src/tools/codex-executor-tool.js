@@ -183,10 +183,21 @@ function parseStatus(value) {
   return String(value || "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).replaceAll("\\", "/"));
 }
 
-function prompt(job) {
+function requireOwnerApproval(job) {
+  if (job?.approval?.buildApproved !== true || typeof job.approval.approvalId !== "string" || !job.approval.approvalId.trim()) {
+    throw Object.assign(new Error("The coding job does not carry verified owner approval."), {
+      code: "coding_executor_owner_approval_unverified",
+      safeDiagnostics: { stage: "approval_preflight", executorLaunched: false },
+    });
+  }
+  return true;
+}
+
+function prompt(job, { ownerApprovalVerified }) {
   return JSON.stringify({
     contract: "nova_codex_coding_job_v1",
     role: "You are Codex, Nova's bounded coding executor. Inspect, implement, test, review, and create one local commit when successful.",
+    executionAuthorization: { ownerApprovalVerified },
     authority: {
       repository: job.repository,
       workspaceId: job.workspaceId,
@@ -207,9 +218,14 @@ function usageFromEvent(event) {
   return Object.fromEntries(Object.entries(usage).filter(([, value]) => Number.isFinite(value)));
 }
 
+function isTestCommand(command) {
+  return /\b(?:npm|pnpm|yarn)(?:\.cmd|\.exe)?\s+(?:run\s+)?test\b|\bnode(?:\.exe)?\s+--test\b|\bpytest(?:\.exe)?\b|\bcargo(?:\.exe)?\s+test\b|\bgo(?:\.exe)?\s+test\b/i.test(command);
+}
+
 export function createCodexCliRunner({ executable = "codex", gitExecutable = "git", environment = process.env, spawnProcess = runCodexProcess, gitProcess = runCodexProcess, authProcess = runCodexProcess, clock = () => new Date() } = {}) {
   return async function run(job, { root, repository, branch, taskId, signal, onProgress } = {}) {
     taskId = requireCodingTaskId(taskId);
+    const ownerApprovalVerified = requireOwnerApproval(job);
     const sourceRoot = resolve(root);
     if (isAbsolute(executable)) await requireLocalPath(executable, { kind: "codex_executable" });
     await requireLocalPath(gitExecutable, { kind: "git_executable" });
@@ -273,17 +289,18 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
         ], {
           cwd,
           env,
-          input: prompt(job),
+          input: prompt(job, { ownerApprovalVerified }),
           signal,
           onLine(line) {
             let event;
             try { event = JSON.parse(line); } catch { return; }
             const measured = usageFromEvent(event);
             if (measured) Object.assign(usage, measured);
-            const type = String(event.type || event.item?.type || "");
+            const type = String(event.type || "");
+            const itemType = String(event.item?.type || "");
             const command = String(event.item?.command || event.command || "");
-            if (/command|tool/.test(type) && /(?:^|\s)(?:npm|node|pnpm|yarn|pytest|cargo|go)\s+(?:run\s+)?test\b/i.test(command)) onProgress?.("testing", "Codex is running the approved local verification.");
-            else if (/command|tool/.test(type)) onProgress?.("implementing", "Codex is implementing in the bound project.");
+            if (/command|tool/.test(itemType) && isTestCommand(command)) onProgress?.("testing", "Codex is running the approved local verification.");
+            else if (/command|tool/.test(itemType)) onProgress?.("implementing", "Codex is implementing in the bound project.");
             else if (/turn\.started|thread\.started/.test(type)) onProgress?.("inspecting", "Codex is inspecting the bound project.");
           },
         });

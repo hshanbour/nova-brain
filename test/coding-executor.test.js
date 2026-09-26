@@ -415,7 +415,7 @@ test("structured executor results survive restart and active cancellation fails 
   assert.deepEqual(value.result.approvalsRequiredNext, ["push"]);
 });
 
-test("Codex CLI runner emits a strict-compatible schema and reaches a structured terminal result", async (t) => {
+test("Codex CLI runner projects verified owner approval, emits a strict-compatible schema, and reaches a structured terminal result", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "nova-codex-runner-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await runFile("git", ["init", "-b", "feature"], { cwd: root });
@@ -452,12 +452,19 @@ test("Codex CLI runner emits a strict-compatible schema and reaches a structured
       const finalSha = (await runFile("git", ["rev-parse", "HEAD"], { cwd: options.cwd })).stdout.trim();
       const output = { status: "completed", summary: "Implemented and tested.", repository: "hshanbour/nova-brain", baseline, finalLocalSha: finalSha, filesChanged: ["source.js"], tests: [{ command: "node --test", status: "passed", summary: null }], limitations: [], pushOccurred: false, deploymentOccurred: false, approvalsRequiredNext: ["push"], failure: null };
       await writeFile(args[args.indexOf("--output-last-message") + 1], JSON.stringify(output));
+      options.onLine(JSON.stringify({ type: "turn.started" }));
+      options.onLine(JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "git status" } }));
+      options.onLine(JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "npm test" } }));
       options.onLine(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 100, output_tokens: 25 } }));
       return { stdout: "", stderr: "", code: 0 };
     },
   });
   const taskId = `coding_${"c".repeat(32)}`;
-  const result = await runner(request({ repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline } }), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId });
+  const progress = [];
+  const result = await runner(request({
+    repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline },
+    constraints: ["Stop before Codex starts unless and until the normal owner-approval process authorises it."],
+  }), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId, onProgress: (phase, summary) => progress.push({ phase, summary }) });
   assert.equal(result.status, "completed");
   assert.equal(observed.command, process.execPath);
   assert.deepEqual(observed.schema.properties.tests.items.required, ["command", "status", "summary"]);
@@ -465,10 +472,16 @@ test("Codex CLI runner emits a strict-compatible schema and reaches a structured
   assert.deepEqual(result.filesChanged, ["source.js"]);
   assert.deepEqual(result.usage, { input_tokens: 100, output_tokens: 25 });
   assert.equal(result.executor.billing, "codex_account_separate_from_nova_api_budget");
+  assert.deepEqual(progress.map(({ phase }) => phase), ["inspecting", "implementing", "testing"]);
   assert.equal("OPENAI_API_KEY" in observed.env, false);
   assert.equal("GITHUB_TOKEN" in observed.env, false);
   assert.equal("VERCEL_TOKEN" in observed.env, false);
   assert.equal("UNTRUSTED_TOOL_DIRECTORY" in observed.env, false);
+  const projected = JSON.parse(observed.input);
+  assert.deepEqual(projected.executionAuthorization, { ownerApprovalVerified: true });
+  assert.equal("approval" in projected, false);
+  assert.doesNotMatch(observed.input, /approval-1/);
+  assert.match(projected.constraints[0], /Stop before Codex starts/);
   assert.equal(observed.env.PATH.split(delimiter)[0].toLowerCase(), dirname(gitExecutable).toLowerCase());
   assert.equal(observed.env.PATH.includes(join(root, "untrusted-tools")), false);
   assert.doesNotMatch(observed.input, /must-not-leak/);
@@ -490,6 +503,27 @@ test("Codex CLI runner emits a strict-compatible schema and reaches a structured
   assert.equal((await runFile("git", ["rev-parse", `refs/nova/coding-jobs/${taskId}`], { cwd: root })).stdout.trim(), result.finalLocalSha);
   assert.equal(result.executor.localRef, `refs/nova/coding-jobs/${taskId}`);
   assert.equal(((await runFile("git", ["worktree", "list", "--porcelain"], { cwd: root })).stdout.match(/^worktree /gm) || []).length, 1);
+});
+
+test("Codex CLI runner fails closed before launch when server-verified owner approval is absent", async () => {
+  let launched = false;
+  const runner = createCodexCliRunner({
+    executable: process.execPath,
+    gitExecutable: process.execPath,
+    async spawnProcess() { launched = true; throw new Error("must not launch"); },
+  });
+  await assert.rejects(
+    runner(request({ approval: undefined, ownerApprovalVerified: true }), {
+      root: process.cwd(),
+      repository: "hshanbour/nova-brain",
+      branch: "feature",
+      taskId: `coding_${"d".repeat(32)}`,
+    }),
+    (error) => error.code === "coding_executor_owner_approval_unverified"
+      && error.safeDiagnostics.stage === "approval_preflight"
+      && error.safeDiagnostics.executorLaunched === false,
+  );
+  assert.equal(launched, false);
 });
 
 test("Codex process failures retain only bounded JSONL stage and error categories", async () => {
