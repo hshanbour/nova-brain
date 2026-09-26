@@ -18,6 +18,7 @@ import { ApprovalRequiredError } from "../src/policy/action-policy.js";
 import { createAgent } from "../src/agent/agent.js";
 import {bindImplementationPlan,canonicalContentHash,lifecycleHash,planLifecycleMetadata} from "../src/autonomy/self-development-plan-lifecycle.js";
 import {authorizeNewSourcePath} from "../src/autonomy/source-creation-authority.js";
+import {createTerminalTaskReporter} from "../src/autonomy/terminal-task-reporter.js";
 
 const OWNER = "owner",
   SHA = "a".repeat(40),
@@ -1371,10 +1372,19 @@ test("real agent chat creates one inspectable durable task and can close the har
     }),
     created = result.toolCalls[0].result.task;
   assert.match(result.message, new RegExp(created.id));
-  assert.equal((await f.service.get(created.id)).task.status, "queued");
+  const persisted=(await f.service.get(created.id)).task;
+  assert.equal(persisted.status, "queued");
+  assert.deepEqual(persisted.metadata.terminalReporting,{version:1,conversationId:"self-development-chat-probe",runId:result.runId});
   const cancelled = await f.runtime.control(created.id, "cancel");
   assert.equal(cancelled.status, "cancelled");
   assert.equal((await f.storage.listAutonomyTasks(OWNER)).length, 1);
+  const reporter=createTerminalTaskReporter({storage:f.storage,ownerId:OWNER});
+  assert.deepEqual(await reporter.reconcile(),{enqueued:1,delivered:1});
+  assert.deepEqual(await createTerminalTaskReporter({storage:f.storage,ownerId:OWNER}).reconcile(),{enqueued:0,delivered:0});
+  const reports=(await f.storage.listMessages("self-development-chat-probe",OWNER,{limit:20})).filter(message=>message.role==="assistant"&&message.content.includes("Task report"));
+  assert.equal(reports.length,1);assert.match(reports[0].content,/Status: cancelled/);
+  await f.storage.ensureConversation({id:"unrelated-conversation",ownerId:OWNER});
+  assert.equal(await reporter.latestForConversation("unrelated-conversation"),null);
 });
 
 const discoveredPath = "docs/self-development-live-acceptance.md";

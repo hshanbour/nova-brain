@@ -136,6 +136,7 @@ export function createWorkerRuntime({
     throw new Error(
       "Worker runtime requires storage, ownerId, and Hands tools.",
     );
+  const activeExecutions = new Map();
   const activity = (task, action, status, summary, metadata = {}) =>
     storage.appendActivity({
       ownerId,
@@ -198,12 +199,23 @@ export function createWorkerRuntime({
         retryable: false,
       });
     if (action === "cancel") {
+      if (task.status === "cancelled") return task;
+      if (TERMINAL.has(task.status))
+        throw new WorkerError("invalid_task_transition", "A terminal task cannot be cancelled again.", { retryable: false });
       await storage.releaseAutonomyLocks(id);
-      return storage.updateAutonomyTask(id, ownerId, {
+      const cancelled=await storage.updateAutonomyTask(id, ownerId, {
         status: "cancelled",
         completedAt: iso(clock),
+        nextRunAt: null,
         blockedReason: "Cancelled by owner.",
-      });
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+      },task.stateVersion);
+      if(!cancelled)throw new WorkerError("version_conflict","Task changed before cancellation could be persisted.",{retryable:false});
+      activeExecutions.get(id)?.abort(new WorkerError("task_cancelled","Task was cancelled by its owner.",{retryable:false}));
+      await activity(cancelled,"autonomy_task_cancelled","cancelled","Autonomous task cancelled by owner.");
+      return cancelled;
     }
     if (action === "pause" && !TERMINAL.has(task.status))
       return storage.updateAutonomyTask(id, ownerId, {
@@ -629,11 +641,16 @@ export function createWorkerRuntime({
       const rawArgs = plan.required_inputs.arguments || plan.required_inputs;
       const args = resolveTaskReferences(rawArgs, task);
       if(type==="apply_patch"&&task.taskType==="self_development"&&rawArgs?.files==="$IMPLEMENTATION_FILES")args.planProvenance=assertActiveImplementationPlan(task,args.files||[]);
-      const result = await toolRegistry.execute(tool, args, {
-        runId: task.id,
-        projectId: task.projectId,
-        approvalId: task.approvalState?.approvalId,
-      });
+      const current=await storage.getAutonomyTask(task.id,ownerId);
+      if(!current||current.status==="cancelled"||current.leaseToken!==task.leaseToken)return{claimed:true,status:current?.status||"cancelled",task:current};
+      const executionController=new AbortController();
+      activeExecutions.set(task.id,executionController);
+      let result;
+      try{
+        result=await toolRegistry.execute(tool,args,{runId:task.id,projectId:task.projectId,approvalId:task.approvalState?.approvalId,signal:executionController.signal});
+      }finally{
+        if(activeExecutions.get(task.id)===executionController)activeExecutions.delete(task.id);
+      }
       if(["plan_implementation","plan_repair"].includes(type)&&result?.evidenceExpansion){await completeEvidenceExpansion(task,step,plan,result);return{claimed:true,status:"queued",stepType:type,result:redact(result)};}
       if(type==="plan_implementation"&&result?.planningBlocked){await completePlanningBlocked(task,step,result);return{claimed:true,status:"blocked",stepType:type,result:redact(result)};}
       if(type==="plan_implementation"&&result?.noChangeCandidate){await completeNoChangePlanning(task,step,result);return{claimed:true,status:"queued",stepType:type,result:redact(result)};}
@@ -645,6 +662,11 @@ export function createWorkerRuntime({
         result: redact(result),
       };
     } catch (error) {
+      const current=await storage.getAutonomyTask(task.id,ownerId);
+      if(current?.status==="cancelled"){
+        await storage.updateAutonomyStep(task.id,step.stepId,{status:"failed",errorCode:"task_cancelled",result:{message:"Task cancelled by owner."},completedAt:iso(clock)});
+        return{claimed:true,status:"cancelled",task:current};
+      }
       if (error instanceof ApprovalRequiredError) {
         await storage.updateAutonomyStep(task.id, step.stepId, {
           status: "waiting",
@@ -774,7 +796,7 @@ export function createWorkerRuntime({
       result: redact(result),
       completedAt: iso(clock),
     });
-    await storage.updateAutonomyTask(task.id, ownerId, {
+    const updated=await storage.updateAutonomyTask(task.id, ownerId, {
       status,
       currentStep: task.currentStep + 1,
       currentPhase: step.stepType,
@@ -792,6 +814,7 @@ export function createWorkerRuntime({
       ...(status === "completed" ? { completedAt: iso(clock) } : {}),
       ...(step.stepType === "push" ? { approvalState: null } : {}),
     });
+    if(!updated)return;
     await activity(
       task,
       "autonomy_step_completed",
@@ -828,6 +851,7 @@ export function createWorkerRuntime({
       leaseExpiresAt: null,
       ...(runtimeExpiration?{metadata:{...task.metadata,runtimeExpiration}}:recoveryMetadata?{metadata:recoveryMetadata}:{}),
     });
+    if(!updated){const current=await storage.getAutonomyTask(task.id,ownerId);return{claimed:true,status:current?.status||status,task:current};}
     await activity(
       task,
       `autonomy_task_${status}`,

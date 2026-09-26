@@ -919,7 +919,7 @@ export function createPostgresStorage({ connectionString }) {
       return autonomyTaskRow(
         (
           await run(
-            `UPDATE nova_autonomy_tasks SET ${sets.join(",")},state_version=state_version+1,updated_at=now() WHERE id=$1 AND owner_id=$2 AND ($${versionParameter}::bigint IS NULL OR state_version=$${versionParameter}) RETURNING *`,
+            `UPDATE nova_autonomy_tasks SET ${sets.join(",")},state_version=state_version+1,updated_at=now() WHERE id=$1 AND owner_id=$2 AND status<>'cancelled' AND ($${versionParameter}::bigint IS NULL OR state_version=$${versionParameter}) RETURNING *`,
             params,
           )
         )[0],

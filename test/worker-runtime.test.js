@@ -15,6 +15,18 @@ test("durable claim leases prevent duplicates and abandoned leases recover",asyn
 
 test("priority next_run scheduling pause resume and cancellation are durable",async()=>{const f=await fixture();const later=await task(f.runtime,[step("inspect_repo")],{priority:10,nextRunAt:"2026-01-01T00:01:00.000Z"});const now=await task(f.runtime,[step("inspect_repo")],{priority:1});assert.equal((await f.runtime.tick()).claimed,true);await f.runtime.tick();await f.runtime.control(later.id,"pause");assert.equal((await f.runtime.tick()).claimed,false);await f.runtime.control(later.id,"resume");assert.equal((await f.runtime.tick()).claimed,true);await f.runtime.control(later.id,"cancel");assert.equal((await f.runtime.get(later.id)).status,"cancelled");assert.equal((await f.runtime.get(now.id)).currentStep,1);});
 
+test("owner cancellation fences an in-flight claimed worker and stale terminal overwrites",async()=>{
+  let started;const startedPromise=new Promise(resolve=>{started=resolve;}),f=await fixture({execute(_name,_input,{signal}){started();return new Promise((resolve,reject)=>{signal.addEventListener("abort",()=>reject(signal.reason),{once:true});});}});
+  const created=await task(f.runtime,[step("apply_patch","repo_apply_patch",{})]);
+  const running=f.runtime.tick({idempotencyKey:"claimed-before-cancel"});await startedPromise;
+  const cancelled=await f.runtime.control(created.id,"cancel");
+  assert.equal(cancelled.status,"cancelled");assert.equal(cancelled.leaseToken,null);
+  assert.equal((await running).status,"cancelled");
+  assert.equal(await f.storage.updateAutonomyTask(created.id,OWNER,{status:"failed",errorCode:"stale_worker"}),null);
+  const final=await f.runtime.get(created.id);assert.equal(final.status,"cancelled");assert.equal(final.errorCode,null);assert.equal(final.stateVersion,cancelled.stateVersion);
+  assert.equal((await f.runtime.tick()).claimed,false);
+});
+
 test("step fingerprints make completed actions idempotent",async()=>{const f=await fixture();const created=await task(f.runtime,[step("inspect_repo","repo_list",{})]);await f.runtime.tick({idempotencyKey:"claim-1"});await f.storage.updateAutonomyTask(created.id,OWNER,{status:"queued",currentStep:0,nextRunAt:"2026-01-01T00:00:00.000Z"});const replay=await f.runtime.tick({idempotencyKey:"claim-2"});assert.equal(replay.idempotent,true);assert.equal(f.calls.length,1);assert.equal((await f.runtime.steps(created.id)).length,1);});
 
 test("retryable failures back off and stop at max retries while non-retryable failures stop immediately",async()=>{let failures=0;const f=await fixture({execute(){failures++;const error=new WorkerError("network_error","temporary");throw error;}});const created=await task(f.runtime,[step("inspect_repo")],{maxRetries:1});let result=await f.runtime.tick();assert.equal(result.status,"retrying");f.advance(1000);result=await f.runtime.tick();assert.equal(result.status,"failed");assert.equal((await f.runtime.get(created.id)).retryCount,1);const g=await fixture({execute(){throw new WorkerError("invalid_patch","bad",{retryable:false});}});await task(g.runtime,[step("apply_patch")]);assert.equal((await g.runtime.tick()).status,"failed");assert.equal(g.calls.length,1);});

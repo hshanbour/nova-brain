@@ -587,6 +587,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async updateAutonomyTask(id, ownerId, patch, expectedVersion) {
       const current = autonomyTasks.get(id);
       if (!current || current.ownerId !== ownerId || (expectedVersion!==undefined&&current.stateVersion!==expectedVersion)) return null;
+      // Cancellation is a terminal fence against stale claimed-worker writes.
+      if (current.status === "cancelled") return null;
       if (
         patch.maxSteps !== undefined &&
         (!Number.isInteger(patch.maxSteps) ||
