@@ -8,32 +8,39 @@ $name='NovaBrain Persistent Local Worker'
 if($Action -eq 'status'){ $task=Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue; if($null -eq $task){[Console]::Out.Write('not_installed')}else{[Console]::Out.Write('installed')}; exit }
 if($Action -eq 'uninstall'){ Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue; [Console]::Out.Write('uninstalled'); exit }
 if($PreviewUrl -notmatch '^https://[a-z0-9.-]+\.vercel\.app/?$'){throw 'A protected HTTPS Vercel Preview URL is required.'}
+. (Join-Path $PSScriptRoot 'windows-native-process.ps1')
 
 $node=(Get-Command node.exe).Source
 $git=(Get-Command git.exe -ErrorAction Stop).Source
 $codex=(Get-Command codex.exe -CommandType Application -ErrorAction Stop).Source
 if(-not [System.IO.Path]::IsPathRooted($git) -or [System.IO.Path]::GetFileName($git) -ne 'git.exe'){throw 'A validated Git executable is required.'}
 if(-not [System.IO.Path]::IsPathRooted($codex) -or [System.IO.Path]::GetFileName($codex) -ne 'codex.exe' -or -not (Test-Path -LiteralPath $codex -PathType Leaf)){throw 'A validated Codex executable is required.'}
-$codexVersion=& $codex --version
-if($LASTEXITCODE -ne 0 -or $codexVersion -notmatch '^codex-cli '){throw 'The Codex executable failed its bounded version probe.'}
-$codexAuth=& $codex login status 2>&1
-if($LASTEXITCODE -ne 0){throw 'Codex authentication is unavailable to the persistent worker account.'}
+$codexVersionProbe=Invoke-NovaNativeProbe -FilePath $codex -ArgumentValues @('--version')
+$codexVersion=$codexVersionProbe.Output -join "`n"
+if($codexVersionProbe.ExitCode -ne 0 -or $codexVersion -notmatch '^codex-cli '){throw 'The Codex executable failed its bounded version probe.'}
+$codexAuthProbe=Invoke-NovaNativeProbe -FilePath $codex -ArgumentValues @('login','status')
+if($codexAuthProbe.ExitCode -ne 0){throw 'Codex authentication is unavailable to the persistent worker account.'}
 $sourceRoot=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if([string]::IsNullOrWhiteSpace($RepositoryRoot)){$RepositoryRoot=$sourceRoot}
 $root=(Resolve-Path -LiteralPath $RepositoryRoot).Path
-$runtimeVersion=(& $git -C $sourceRoot rev-parse HEAD).Trim()
-if($LASTEXITCODE -ne 0 -or $runtimeVersion -notmatch '^[0-9a-f]{40}$'){throw 'The trusted worker runtime source commit could not be resolved.'}
-$runtimeSourceChanges=@(& $git -C $sourceRoot status --porcelain=v1 --untracked-files=all -- scripts src package.json package-lock.json)
-if($LASTEXITCODE -ne 0 -or $runtimeSourceChanges.Count -ne 0){throw 'The trusted worker runtime source contains uncommitted content.'}
-$runtimeFiles=@(& $git -C $sourceRoot ls-tree -r --name-only $runtimeVersion -- scripts src package.json package-lock.json)
-if($LASTEXITCODE -ne 0 -or $runtimeFiles.Count -eq 0){throw 'The trusted worker runtime manifest could not be resolved.'}
+$runtimeVersionProbe=Invoke-NovaNativeProbe -FilePath $git -ArgumentValues @('-C',$sourceRoot,'rev-parse','HEAD')
+$runtimeVersion=($runtimeVersionProbe.Output -join "`n").Trim()
+if($runtimeVersionProbe.ExitCode -ne 0 -or $runtimeVersion -notmatch '^[0-9a-f]{40}$'){throw 'The trusted worker runtime source commit could not be resolved.'}
+$runtimeSourceProbe=Invoke-NovaNativeProbe -FilePath $git -ArgumentValues @('-C',$sourceRoot,'status','--porcelain=v1','--untracked-files=all','--','scripts','src','package.json','package-lock.json')
+$runtimeSourceChanges=@($runtimeSourceProbe.Output)
+if($runtimeSourceProbe.ExitCode -ne 0 -or $runtimeSourceChanges.Count -ne 0){throw 'The trusted worker runtime source contains uncommitted content.'}
+$runtimeFilesProbe=Invoke-NovaNativeProbe -FilePath $git -ArgumentValues @('-C',$sourceRoot,'ls-tree','-r','--name-only',$runtimeVersion,'--','scripts','src','package.json','package-lock.json')
+$runtimeFiles=@($runtimeFilesProbe.Output)
+if($runtimeFilesProbe.ExitCode -ne 0 -or $runtimeFiles.Count -eq 0){throw 'The trusted worker runtime manifest could not be resolved.'}
 function Assert-RuntimeContent([string]$CandidateRoot){
   foreach($relative in $runtimeFiles){
     $candidate=Join-Path $CandidateRoot $relative
     if(-not (Test-Path -LiteralPath $candidate -PathType Leaf)){throw 'The worker runtime snapshot is incomplete.'}
-    $expected=(& $git -C $sourceRoot rev-parse ($runtimeVersion+':'+$relative)).Trim()
-    $actual=(& $git hash-object --no-filters -- $candidate).Trim()
-    if($LASTEXITCODE -ne 0 -or $actual -ne $expected){throw 'The worker runtime snapshot does not match its immutable commit.'}
+    $expectedProbe=Invoke-NovaNativeProbe -FilePath $git -ArgumentValues @('-C',$sourceRoot,'rev-parse',($runtimeVersion+':'+$relative))
+    $actualProbe=Invoke-NovaNativeProbe -FilePath $git -ArgumentValues @('hash-object','--no-filters','--',$candidate)
+    $expected=($expectedProbe.Output -join "`n").Trim()
+    $actual=($actualProbe.Output -join "`n").Trim()
+    if($expectedProbe.ExitCode -ne 0 -or $actualProbe.ExitCode -ne 0 -or $actual -ne $expected){throw 'The worker runtime snapshot does not match its immutable commit.'}
   }
 }
 
@@ -44,10 +51,12 @@ if(-not (Test-Path -LiteralPath $helper -PathType Leaf)){throw 'The prevalidated
 $credentialPrefix='NovaBrain/LocalWorker/'
 $novaTarget=$credentialPrefix+('NOVA_LOCAL_WORKER_'+'TOKEN')
 $vercelTarget=$credentialPrefix+('VERCEL_AUTOMATION_'+'BYPASS')
-$novaStatus=& $helper status $novaTarget
-if($LASTEXITCODE -ne 0 -or $novaStatus -notin @('configured','missing')){throw 'The stable Windows credential helper failed its bounded status probe.'}
-$vercelStatus=& $helper status $vercelTarget
-if($LASTEXITCODE -ne 0 -or $vercelStatus -notin @('configured','missing')){throw 'The stable Windows credential helper failed its bounded status probe.'}
+$novaStatusProbe=Invoke-NovaNativeProbe -FilePath $helper -ArgumentValues @('status',$novaTarget)
+$novaStatus=$novaStatusProbe.Output -join "`n"
+if($novaStatusProbe.ExitCode -ne 0 -or $novaStatus -notin @('configured','missing')){throw 'The stable Windows credential helper failed its bounded status probe.'}
+$vercelStatusProbe=Invoke-NovaNativeProbe -FilePath $helper -ArgumentValues @('status',$vercelTarget)
+$vercelStatus=$vercelStatusProbe.Output -join "`n"
+if($vercelStatusProbe.ExitCode -ne 0 -or $vercelStatus -notin @('configured','missing')){throw 'The stable Windows credential helper failed its bounded status probe.'}
 
 $versions=Join-Path $runtime 'worker-runtimes'
 New-Item -ItemType Directory -Path $versions -Force | Out-Null
@@ -57,22 +66,22 @@ $stagedArchive=$stagedRuntime+'.zip'
 try {
   if(-not (Test-Path -LiteralPath $finalRuntime -PathType Container)){
     New-Item -ItemType Directory -Path $stagedRuntime | Out-Null
-    & $git -c core.autocrlf=false -C $sourceRoot archive --format=zip --output=$stagedArchive $runtimeVersion -- scripts src package.json package-lock.json
-    if($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $stagedArchive -PathType Leaf)){throw 'The canonical worker runtime export failed.'}
+    $archiveProbe=Invoke-NovaNativeProbe -FilePath $git -ArgumentValues @('-c','core.autocrlf=false','-C',$sourceRoot,'archive','--format=zip',('--output='+$stagedArchive),$runtimeVersion,'--','scripts','src','package.json','package-lock.json')
+    if($archiveProbe.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $stagedArchive -PathType Leaf)){throw 'The canonical worker runtime export failed.'}
     Expand-Archive -LiteralPath $stagedArchive -DestinationPath $stagedRuntime
     Assert-RuntimeContent $stagedRuntime
     $stagedScript=Join-Path $stagedRuntime 'scripts\persistent-local-worker.js'
-    $verification=& $node $stagedScript --verify-runtime --runtime-version $runtimeVersion --repository-root $root --git-executable $git --codex-executable $codex
-    if($LASTEXITCODE -ne 0){throw 'The staged worker runtime failed its bounded validation.'}
-    $verified=$verification | ConvertFrom-Json
+    $verificationProbe=Invoke-NovaNativeProbe -FilePath $node -ArgumentValues @($stagedScript,'--verify-runtime','--runtime-version',$runtimeVersion,'--repository-root',$root,'--git-executable',$git,'--codex-executable',$codex)
+    if($verificationProbe.ExitCode -ne 0){throw 'The staged worker runtime failed its bounded validation.'}
+    $verified=($verificationProbe.Output -join "`n") | ConvertFrom-Json
     if(-not $verified.ok -or $verified.runtimeVersion -ne $runtimeVersion -or $verified.repositoryRoot -ne $root -or $verified.gitExecutable -ne $git -or $verified.codexExecutable -ne $codex){throw 'The staged worker runtime binding could not be verified.'}
     Move-Item -LiteralPath $stagedRuntime -Destination $finalRuntime
   }
   $script=Join-Path $finalRuntime 'scripts\persistent-local-worker.js'
   Assert-RuntimeContent $finalRuntime
-  $verification=& $node $script --verify-runtime --runtime-version $runtimeVersion --repository-root $root --git-executable $git --codex-executable $codex
-  if($LASTEXITCODE -ne 0){throw 'The installed worker runtime failed its bounded validation.'}
-  $verified=$verification | ConvertFrom-Json
+  $verificationProbe=Invoke-NovaNativeProbe -FilePath $node -ArgumentValues @($script,'--verify-runtime','--runtime-version',$runtimeVersion,'--repository-root',$root,'--git-executable',$git,'--codex-executable',$codex)
+  if($verificationProbe.ExitCode -ne 0){throw 'The installed worker runtime failed its bounded validation.'}
+  $verified=($verificationProbe.Output -join "`n") | ConvertFrom-Json
   if(-not $verified.ok -or $verified.runtimeVersion -ne $runtimeVersion -or $verified.repositoryRoot -ne $root -or $verified.gitExecutable -ne $git -or $verified.codexExecutable -ne $codex){throw 'The installed worker runtime binding could not be verified.'}
 
   $arguments='"'+$script+'" --preview-url "'+$PreviewUrl.TrimEnd('/')+'" --repository-root "'+$root+'" --runtime-version "'+$runtimeVersion+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'
