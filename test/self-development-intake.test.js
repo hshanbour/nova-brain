@@ -53,9 +53,25 @@ test("explicit shipping remains bound to one eligible completed coding workflow"
   await assert.rejects(()=>ineligible.resolveTurn("Ship it",{workflowCandidates:[{id,taskType:"coding_delegation",status:"running",stateVersion:7,allowedTransitions:["existing_workflow_question"]}]}),error=>error.code==="structured_turn_invalid");
 });
 
-test("natural historical artifact continuation selects only a supplied server-owned candidate",async()=>{
-  const id=`coding_${"e".repeat(32)}`,intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"artifact_adoption",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn("Ship the completed drawer work",{workflowCandidates:[{id,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",objective:"Improve drawer keyboard behavior",allowedTransitions:["artifact_adoption"]}]});
-  assert.equal(result.route,"artifact_adoption");assert.equal(result.workflow.id,id);assert.equal(result.workflow.title,"Recent Conversations drawer accessibility");
+test("natural historical shipping and continuation intents normalize to the candidate's only safe adoption transition",async()=>{
+  const id=`coding_${"e".repeat(32)}`,candidate={id,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",objective:"Improve drawer keyboard behavior",allowedTransitions:["artifact_adoption"]},cases=[
+    ["Ship the completed Recent Conversations drawer work.","shipping_request"],
+    ["Deploy the completed drawer work.","shipping_request"],
+    ["Continue the completed drawer work.","existing_workflow_continue"],
+    ["Adopt the completed drawer work.","artifact_adoption"],
+  ];
+  for(const [message,route] of cases){
+    const intake=createSelfDevelopmentIntake({modelProvider:provider([{route,workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn(message,{workflowCandidates:[candidate]});
+    assert.equal(result.route,"artifact_adoption",message);assert.equal(result.workflow.id,id,message);assert.equal(result.workflow.title,"Recent Conversations drawer accessibility",message);
+  }
+});
+
+test("historical adoption normalization never repairs invented identity or unauthorized structured fields",async()=>{
+  const id=`coding_${"4".repeat(32)}`,candidate={id,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",allowedTransitions:["artifact_adoption"]},decision={route:"shipping_request",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""};
+  const invented=createSelfDevelopmentIntake({modelProvider:provider([{...decision,workflowId:`coding_${"5".repeat(32)}`}])});
+  await assert.rejects(()=>invented.resolveTurn("Ship the completed drawer work.",{workflowCandidates:[candidate]}),error=>error.code==="structured_turn_invalid"&&error.safeDiagnostics?.boundary==="workflow_binding");
+  const extra=createSelfDevelopmentIntake({modelProvider:provider([{...decision,objective:"Ship it directly"}])});
+  await assert.rejects(()=>extra.resolveTurn("Ship the completed drawer work.",{workflowCandidates:[candidate]}),error=>error.code==="structured_turn_invalid"&&error.safeDiagnostics?.boundary==="workflow_binding");
 });
 
 test("ambiguous historical artifact selection asks a normal clarification and grants no workflow authority",async()=>{
