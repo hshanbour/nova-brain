@@ -14,6 +14,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const projects = new Map();
   const conversations = new Map();
   const messages = new Map();
+  const taskReportOutbox = new Map();
   const memories = new Map();
   const speakerProfiles = new Map();
   const anonymousSpeakerProfiles = new Map();
@@ -126,12 +127,18 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         .slice(0, limit)
         .map(copy);
     },
-    async appendMessage({ conversationId, ownerId, role, content }) {
+    async appendMessage({ id = randomUUID(), conversationId, ownerId, role, content }) {
       const conversation = conversations.get(conversationId);
       if (!conversation || conversation.ownerId !== ownerId)
         throw new Error("Conversation not found.");
+      const existing = [...messages.values()].flat().find((item) => item.id === id);
+      if (existing) {
+        if (existing.conversationId !== conversationId || existing.ownerId !== ownerId || existing.role !== role || existing.content !== content)
+          throw new Error("Message identity conflict.");
+        return copy(existing);
+      }
       const entry = {
-        id: randomUUID(),
+        id,
         conversationId,
         ownerId,
         role,
@@ -145,6 +152,36 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       ]);
       conversation.updatedAt = entry.createdAt;
       return copy(entry);
+    },
+    async enqueueTaskReport(input) {
+      const conversation = conversations.get(input.conversationId), task = autonomyTasks.get(input.taskId);
+      if (!conversation || conversation.ownerId !== input.ownerId || !task || task.ownerId !== input.ownerId)
+        throw new Error("Invalid task report binding.");
+      const existing = taskReportOutbox.get(input.reportKey);
+      if (existing) {
+        if (JSON.stringify({...existing,createdAt:undefined,deliveredAt:undefined}) !== JSON.stringify({...copy(input),createdAt:undefined,deliveredAt:undefined}))
+          throw new Error("Task report identity conflict.");
+        return copy(existing);
+      }
+      const record={...copy(input),createdAt:now(clock),deliveredAt:null};
+      taskReportOutbox.set(record.reportKey,record);return copy(record);
+    },
+    async listPendingTaskReports(ownerId,{limit=50}={}) {
+      return [...taskReportOutbox.values()].filter(item=>item.ownerId===ownerId&&!item.deliveredAt).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)).slice(0,limit).map(copy);
+    },
+    async listTerminalTaskReportCandidates(ownerId,{limit=100}={}) {
+      const reported=new Set([...taskReportOutbox.values()].map(item=>`${item.taskId}:${item.terminalStateVersion}`));
+      return [...autonomyTasks.values()].filter(item=>item.ownerId===ownerId&&["completed","failed","blocked","cancelled","expired"].includes(item.status)&&item.metadata?.terminalReporting?.version===1&&!reported.has(`${item.id}:${item.stateVersion}`)).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).slice(0,limit).map(copy);
+    },
+    async listConversationBoundTasks(ownerId,conversationId,{limit=50}={}) {
+      return [...autonomyTasks.values()].filter(item=>item.ownerId===ownerId&&item.metadata?.terminalReporting?.conversationId===conversationId).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.updatedAt.localeCompare(a.updatedAt)).slice(0,limit).map(copy);
+    },
+    async deliverTaskReport(reportKey,ownerId) {
+      const record=taskReportOutbox.get(reportKey);
+      if(!record||record.ownerId!==ownerId)return null;
+      await this.appendMessage({id:record.messageId,conversationId:record.conversationId,ownerId,role:"assistant",content:record.content});
+      if(!record.deliveredAt)record.deliveredAt=now(clock);
+      return copy(record);
     },
     async listMessages(
       conversationId,

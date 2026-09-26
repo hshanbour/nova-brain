@@ -91,6 +91,13 @@ test("ordinary chat bypasses durable intake and keeps the synchronous model path
   assert.equal(result.provider, "scripted");
   assert.equal(result.message, "Normal chat");
 });
+test("conversation-bound read-only task report bypasses durable intake and model generation",async()=>{
+  const storage=testStorage(),task={id:"coding_"+"a".repeat(32),status:"completed",stateVersion:9,currentPhase:"completed",projectId:"nova-brain"};let modelCalls=0,durableRoutes=0,seenConversation;
+  const agent=createTestAgent({storage,toolRegistry:createToolRegistry(),routeExistingTaskRequest:async({conversationId})=>{seenConversation=conversationId;return{route:"conversation_task_report",action:"report",task,message:"Task report — coding result\nStatus: completed"};},routeDurableRequest:async()=>{durableRoutes+=1;throw new Error("durable intake must not run");},modelProvider:{name:"never",async generate(){modelCalls+=1;throw new Error("model must not run");}}});
+  const result=await agent.run({message:"Show me the completed result.",conversationId:"report-conversation"});
+  assert.equal(seenConversation,"report-conversation");assert.equal(result.runStatus,"task_reported");assert.equal(result.provider,"durable_runtime");assert.equal(modelCalls,0);assert.equal(durableRoutes,0);assert.match(result.message,/Status: completed/);
+  assert.deepEqual((await storage.listMessages("report-conversation",OWNER_ID)).map(item=>item.role),["user","assistant"]);
+});
 test("Chat-native Codex delegation prepares a durable parent then stops at exactly one compact-handle approval boundary",async()=>{
   const storage=testStorage(),registry=createToolRegistry(),parentId="orchestration_"+"a".repeat(32),job={jobId:"job_"+"b".repeat(32),parentTaskId:parentId,objective:"Implement drawer accessibility.",acceptanceCriteria:["Keyboard focus works."],constraints:["Preserve Console behavior."],repository:{slug:"hshanbour/nova-brain",branch:"feature",baseline:"c".repeat(40)},projectId:"nova-brain",workspaceId:"nova-brain",delivery:{boundary:"local_commit",allowPush:false,allowDeploy:false},verification:["Run Console tests."]},creationRequest={parentTaskId:parentId,specificationHash:"e".repeat(64)};
   registry.register({name:"coding_job_prepare",available:true,async execute(){await storage.createAutonomyTask({id:parentId,ownerId:OWNER_ID,title:"Delegation",objective:job.objective,taskType:"coding_orchestration",projectId:"nova-brain",branch:"feature",startingCommit:job.repository.baseline,metadata:{autoDispatch:false}});return{task:await storage.getAutonomyTask(parentId,OWNER_ID),creationRequest};}});

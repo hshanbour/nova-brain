@@ -108,6 +108,8 @@ test('terminal cards remain visible without Stop and stop polling while nontermi
   assert.match(source, /const cancellable=!terminal&&!task\.leaseOwner&&!task\.leaseToken&&!\["running","waiting_for_approval"\]\.includes\(task\.status\)/);
   assert.match(source, /if\(!terminal\)\{const stop=document\.createElement\("button"\)/);
   assert.match(source, /if\(!terminalTaskStates\.has\(task\.status\)\)record\.timer=setTimeout/);
+  assert.match(source, /else void syncTerminalTaskReport\(record\)/);
+  assert.match(source, /item\.content\.startsWith\(`Task report — \$\{record\.taskId\}\\n`\)/);
   assert.match(source, /card\.replaceChildren\(\)/);
   assert.match(source, /liveActivityRecords\.has\(stored\.taskId\)/);
 });

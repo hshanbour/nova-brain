@@ -1366,7 +1366,7 @@ export function createSelfDevelopmentService({
       );
     return remote.currentTip;
   }
-  async function create(input, { signal, canonicalIntent, canonicalConstraintBindings = false } = {}) {
+  async function create(input, { signal, canonicalIntent, canonicalConstraintBindings = false, originConversationId, originRunId } = {}) {
     const parsed = structure(input, { canonicalIntent, canonicalConstraintBindings }),
       request = Object.freeze({
         ...parsed,
@@ -1442,6 +1442,7 @@ export function createSelfDevelopmentService({
           ...(successorMetadata || {}),
           repairHistory: [],
           autoDispatch: true,
+          ...(originConversationId?{terminalReporting:{version:1,conversationId:originConversationId,runId:originRunId||null}}:{}),
         },
       });
     } catch (error) {
@@ -1508,7 +1509,7 @@ export function createSelfDevelopmentService({
       dispatch: { status: "scheduled", durable: true },
     };
   }
-  async function createTrustedIntake(userGoal, {signal,costContext} = {}) {
+  async function createTrustedIntake(userGoal, {signal,costContext,originConversationId,originRunId} = {}) {
     if (!isDurableSelfDevelopmentRequest(userGoal))
       throw new SelfDevelopmentError(
         "invalid_input",
@@ -1532,7 +1533,7 @@ export function createSelfDevelopmentService({
         focusedTests: specification.focusedTests,
         patch: { files: [] },
       },
-    }, { signal, canonicalIntent: specification.intent, canonicalConstraintBindings: true });
+    }, { signal, canonicalIntent: specification.intent, canonicalConstraintBindings: true, originConversationId, originRunId });
   }
   async function get(taskId) {
     const task = await runtime.get(taskId);

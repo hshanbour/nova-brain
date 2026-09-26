@@ -239,6 +239,12 @@ const benchmarkResultRow = (row) =>
     createdAt: date(row.created_at),
     updatedAt: date(row.updated_at),
   };
+const taskReportRow = (row) => row && ({
+  reportKey: row.report_key, taskId: row.task_id, ownerId: row.owner_id,
+  conversationId: row.conversation_id, terminalStateVersion: Number(row.terminal_state_version),
+  terminalStatus: row.terminal_status, messageId: row.message_id, content: row.content,
+  createdAt: date(row.created_at), deliveredAt: date(row.delivered_at),
+});
 const modelCostReservationRow = (row) => row && ({
   id: row.id,
   ownerId: row.owner_id,
@@ -379,17 +385,50 @@ export function createPostgresStorage({ connectionString }) {
         )
       ).map(conversationRow);
     },
-    async appendMessage({ conversationId, ownerId, role, content }) {
+    async appendMessage({ id = randomUUID(), conversationId, ownerId, role, content }) {
       const rows = await run(
-        `INSERT INTO nova_messages (id,conversation_id,owner_id,role,content) SELECT $1,$2,$3,$4,$5 WHERE EXISTS (SELECT 1 FROM nova_conversations WHERE id=$2 AND owner_id=$3) RETURNING *`,
-        [randomUUID(), conversationId, ownerId, role, content],
+        `INSERT INTO nova_messages (id,conversation_id,owner_id,role,content) SELECT $1,$2,$3,$4,$5 WHERE EXISTS (SELECT 1 FROM nova_conversations WHERE id=$2 AND owner_id=$3) ON CONFLICT (id) DO NOTHING RETURNING *`,
+        [id, conversationId, ownerId, role, content],
       );
-      if (!rows[0]) throw new Error("Conversation not found.");
+      const row=rows[0]||(await run("SELECT * FROM nova_messages WHERE id=$1",[id]))[0];
+      if (!row) throw new Error("Conversation not found.");
+      if(row.conversation_id!==conversationId||row.owner_id!==ownerId||row.role!==role||row.content!==content)throw new Error("Message identity conflict.");
       await run(
         "UPDATE nova_conversations SET updated_at=now() WHERE id=$1 AND owner_id=$2",
         [conversationId, ownerId],
       );
-      return messageRow(rows[0]);
+      return messageRow(row);
+    },
+    async enqueueTaskReport(input) {
+      const params=[input.reportKey,input.taskId,input.ownerId,input.conversationId,input.terminalStateVersion,input.terminalStatus,input.messageId,input.content];
+      const inserted=await run(`INSERT INTO nova_task_report_outbox (report_key,task_id,owner_id,conversation_id,terminal_state_version,terminal_status,message_id,content)
+        SELECT $1,$2,$3,$4,$5,$6,$7,$8 WHERE EXISTS (SELECT 1 FROM nova_autonomy_tasks WHERE id=$2 AND owner_id=$3) AND EXISTS (SELECT 1 FROM nova_conversations WHERE id=$4 AND owner_id=$3)
+        ON CONFLICT (report_key) DO NOTHING RETURNING *`,params);
+      const row=inserted[0]||(await run("SELECT * FROM nova_task_report_outbox WHERE report_key=$1 AND owner_id=$2",[input.reportKey,input.ownerId]))[0];
+      if(!row)throw new Error("Invalid task report binding.");
+      const record=taskReportRow(row);
+      for(const key of ["taskId","ownerId","conversationId","terminalStateVersion","terminalStatus","messageId","content"])
+        if(record[key]!==input[key])throw new Error("Task report identity conflict.");
+      return record;
+    },
+    async listPendingTaskReports(ownerId,{limit=50}={}) {
+      return (await run("SELECT * FROM nova_task_report_outbox WHERE owner_id=$1 AND delivered_at IS NULL ORDER BY created_at ASC,report_key ASC LIMIT $2",[ownerId,limit])).map(taskReportRow);
+    },
+    async listTerminalTaskReportCandidates(ownerId,{limit=100}={}) {
+      return (await run(`SELECT t.* FROM nova_autonomy_tasks t WHERE t.owner_id=$1 AND t.status IN ('completed','failed','blocked','cancelled','expired')
+        AND t.metadata->'terminalReporting'->>'version'='1'
+        AND NOT EXISTS (SELECT 1 FROM nova_task_report_outbox o WHERE o.task_id=t.id AND o.terminal_state_version=t.state_version)
+        ORDER BY t.updated_at DESC,t.id ASC LIMIT $2`,[ownerId,limit])).map(autonomyTaskRow);
+    },
+    async listConversationBoundTasks(ownerId,conversationId,{limit=50}={}) {
+      return (await run(`SELECT * FROM nova_autonomy_tasks WHERE owner_id=$1 AND metadata->'terminalReporting'->>'conversationId'=$2 ORDER BY created_at DESC,updated_at DESC,id ASC LIMIT $3`,[ownerId,conversationId,limit])).map(autonomyTaskRow);
+    },
+    async deliverTaskReport(reportKey,ownerId) {
+      const row=(await run("SELECT * FROM nova_task_report_outbox WHERE report_key=$1 AND owner_id=$2",[reportKey,ownerId]))[0];
+      if(!row)return null;
+      const record=taskReportRow(row);
+      await this.appendMessage({id:record.messageId,conversationId:record.conversationId,ownerId,role:"assistant",content:record.content});
+      return taskReportRow((await run("UPDATE nova_task_report_outbox SET delivered_at=COALESCE(delivered_at,now()) WHERE report_key=$1 AND owner_id=$2 RETURNING *",[reportKey,ownerId]))[0]);
     },
     async listMessages(
       conversationId,

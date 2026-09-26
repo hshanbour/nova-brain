@@ -104,6 +104,7 @@ export function createCodingDelegationService({ runtime, storage, ownerId, bindi
           autoDispatch: false,
           parentTask: true,
           codingDelegation: { version: 1, requestFingerprint, codingJob: job, codingJobHash: codingSpecificationHash(job) },
+          ...(context.conversationId?{terminalReporting:{version:1,conversationId:context.conversationId,runId:context.runId||null}}:{}),
           steps: [],
         },
       });

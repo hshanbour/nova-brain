@@ -383,8 +383,8 @@ test("trusted hybrid intake binds the approved project Preview to the fresh remo
     verifyRemote: async (request) => { requests.push(request); return { currentTip: freshTip, ancestors: {} }; },
   });
   const goal = "Implement a Nova Console intake improvement";
-  const first = await f.service.createTrustedIntake(goal);
-  const duplicate = await f.service.createTrustedIntake(goal);
+  const first = await f.service.createTrustedIntake(goal,{originConversationId:"conversation-1",originRunId:"run-1"});
+  const duplicate = await f.service.createTrustedIntake(goal,{originConversationId:"conversation-1",originRunId:"run-1"});
   assert.equal(first.task.startingCommit, freshTip);
   assert.equal(first.task.branch, BRANCH);
   assert.equal(first.request.repository, "hshanbour/nova-brain");
@@ -392,6 +392,7 @@ test("trusted hybrid intake binds the approved project Preview to the fresh remo
   assert.equal(first.idempotent, false);
   assert.equal(duplicate.idempotent, true);
   assert.equal(duplicate.task.id, first.task.id);
+  assert.deepEqual(first.task.metadata.terminalReporting,{version:1,conversationId:"conversation-1",runId:"run-1"});
   assert.equal((await f.storage.listAutonomyTasks(OWNER)).length, 1);
   assert.deepEqual(requests, [
     { repository: "hshanbour/nova-brain", branch: BRANCH, requiredAncestors: [] },

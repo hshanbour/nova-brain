@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -109,6 +109,20 @@ export const SCHEMA_STATEMENTS = Object.freeze([
   )`,
   `ALTER TABLE nova_autonomy_tasks ADD COLUMN IF NOT EXISTS state_version bigint NOT NULL DEFAULT 1`,
   `CREATE INDEX IF NOT EXISTS nova_autonomy_queue_idx ON nova_autonomy_tasks (status, next_run_at, priority DESC, created_at)`,
+  `CREATE TABLE IF NOT EXISTS nova_task_report_outbox (
+    report_key text PRIMARY KEY,
+    task_id text NOT NULL REFERENCES nova_autonomy_tasks(id) ON DELETE CASCADE,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    conversation_id text NOT NULL REFERENCES nova_conversations(id) ON DELETE CASCADE,
+    terminal_state_version bigint NOT NULL,
+    terminal_status text NOT NULL CHECK (terminal_status IN ('completed','failed','blocked','cancelled','expired')),
+    message_id text UNIQUE NOT NULL,
+    content text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    delivered_at timestamptz,
+    UNIQUE(task_id,terminal_state_version)
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_task_report_outbox_pending_idx ON nova_task_report_outbox (owner_id, delivered_at, created_at)`,
   `CREATE TABLE IF NOT EXISTS nova_autonomy_steps (
     task_id text NOT NULL REFERENCES nova_autonomy_tasks(id) ON DELETE CASCADE, step_id text NOT NULL,
     step_type text NOT NULL, capability text NOT NULL, operation_fingerprint text NOT NULL,
@@ -200,5 +214,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     FOREIGN KEY(owner_id,budget_id) REFERENCES nova_model_cost_budgets(owner_id,budget_id) ON DELETE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS nova_model_cost_task_idx ON nova_model_cost_reservations (owner_id,budget_id,task_id,created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11) ON CONFLICT (version) DO NOTHING`
 ]);

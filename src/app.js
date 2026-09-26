@@ -41,6 +41,7 @@ import { createDeveloperSessionSmoke } from "./autonomy/developer-session-smoke.
 import { createDeveloperWorkspaceHandoff } from "./autonomy/developer-workspace-handoff.js";
 import { configuredCodingBindings, createCodingExecutorService } from "./autonomy/coding-executor.js";
 import { codingDelegationFingerprint, createCodingDelegationService, isChatCodingDelegationRequest } from "./autonomy/coding-delegation.js";
+import {createTerminalTaskReporter,isConversationTaskResultQuestion} from "./autonomy/terminal-task-reporter.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -116,7 +117,8 @@ export function createApp({
     approvedBranch: config.developmentBranch,
     deploymentEnvironment: environment.VERCEL_ENV || "local",
   });
-  const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch});
+  const terminalReporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID});
+  const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,terminalReporter});
   const codingExecutor=typeof storage?.getAutonomyTask==="function"?createCodingExecutorService({
     runtime:workerRuntime,
     storage,
@@ -191,15 +193,19 @@ export function createApp({
     verifySpeakerAssertion: speakerAssertions.verify,
     validateSpeakerProfile: speakerIdentity.isActiveProfile,
     validateAnonymousSpeaker: speakerIdentity.isActiveAnonymous,
-    routeExistingTaskRequest: async ({message}) => {
+    routeExistingTaskRequest: async ({message,conversationId}) => {
+      if(isConversationTaskResultQuestion(message)){
+        const report=await terminalReporter.latestForConversation(conversationId);
+        if(report)return{route:"conversation_task_report",action:"report",...report};
+      }
       const request=parseExistingTaskControlRequest(message);
       if(!request)return null;
       return validateExistingTaskControlRequest(request,await workerRuntime.get(request.taskId));
     },
-    routeDurableRequest: async ({message, context, runId, signal}) => {
+    routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
       if(isChatCodingDelegationRequest(message))return{codingDelegation:true,requestFingerprint:codingDelegationFingerprint(message)};
       if (context?.voice === true || !isDurableSelfDevelopmentRequest(message)) return null;
-      return selfDevelopment.createTrustedIntake(message, {signal, costContext:{runId}});
+      return selfDevelopment.createTrustedIntake(message, {signal, costContext:{runId},originConversationId:conversationId,originRunId:runId});
     },
     logger,
   });

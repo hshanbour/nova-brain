@@ -109,14 +109,24 @@ async function refreshLiveActivity(record){
     const [activityResult,approvalResult]=await Promise.all([ownerMemoryClient.taskActivity(record.taskId).catch(()=>({activity:[]})),task.status==="waiting_for_approval"?ownerMemoryClient.approvals().catch(()=>({approvals:[]})):Promise.resolve({approvals:[]})]);
     renderLiveActivity(record,task,activityResult.activity||[],approvalResult.approvals||[]);
     if(!terminalTaskStates.has(task.status))record.timer=setTimeout(()=>refreshLiveActivity(record),4000);
+    else void syncTerminalTaskReport(record);
   }catch(cause){showLiveActivityError(record,cause.message);record.timer=setTimeout(()=>refreshLiveActivity(record),6000);}
+}
+async function syncTerminalTaskReport(record){
+  if(record.reportDelivered||record.conversationId!==client.conversationId)return;
+  try{
+    const result=await ownerMemoryClient.messages(record.conversationId,{limit:100}),report=(result.messages||[]).find(item=>item.role==="assistant"&&item.content.startsWith(`Task report — ${record.taskId}\n`));
+    if(record.conversationId!==client.conversationId)return;
+    if(report){if(!messages.querySelector(`[data-message-id="${report.id}"]`))addMessage({id:report.id,role:report.role,text:report.content});record.reportDelivered=true;return;}
+  }catch{}
+  record.reportAttempts=(record.reportAttempts||0)+1;if(record.reportAttempts<10)record.reportTimer=setTimeout(()=>syncTerminalTaskReport(record),2000);
 }
 function ensureLiveActivity(durableTask,{startedAt=new Date().toISOString()}={}){
   if(!/^(?:selfdev|orchestration|coding)_[a-f0-9]{32}$/.test(durableTask?.id||""))return null;
   let record=liveActivityRecords.get(durableTask.id);if(record)return record;
   record={taskId:durableTask.id,conversationId:client.conversationId||"",startedAt,node:createLiveActivityNode(durableTask.id),timer:null,completedAt:null};liveActivityRecords.set(record.taskId,record);persistLiveActivityRecords();void refreshLiveActivity(record);return record;
 }
-function stopLiveActivityPolling(){for(const record of liveActivityRecords.values())clearTimeout(record.timer);liveActivityRecords.clear();}
+function stopLiveActivityPolling(){for(const record of liveActivityRecords.values()){clearTimeout(record.timer);clearTimeout(record.reportTimer);}liveActivityRecords.clear();}
 function restoreLiveActivities(storedMessages=[]){
   const known=new Map(readLiveActivityRecords().filter(item=>item.conversationId===client.conversationId).map(item=>[item.taskId,item]));
   for(const item of durableTaskRecordsFromMessages(storedMessages,client.conversationId)){if(!known.has(item.taskId))known.set(item.taskId,{...item,startedAt:item.startedAt||new Date().toISOString()});}
@@ -163,7 +173,7 @@ async function selectConversation(id) {
   try {
     const storedMessages = await conversationHistory.select(id);
     clearConversation();
-    for (const stored of storedMessages) addMessage({ role: stored.role, text: stored.content });
+    for (const stored of storedMessages) addMessage({ id:stored.id,role: stored.role, text: stored.content });
     restoreLiveActivities(storedMessages);
     if (!storedMessages.length) welcome.hidden = false;
     recentsDrawer.hidden = true; await refreshRecents(); input.focus();
@@ -173,10 +183,11 @@ async function selectConversation(id) {
   }
 }
 
-function addMessage({ role, text, metadata, autoSpeak = false }) {
+function addMessage({ id,role, text, metadata, autoSpeak = false }) {
   welcome.hidden = true;
   const node = template.content.firstElementChild.cloneNode(true);
   const isNova = role === "assistant";
+  if(id)node.dataset.messageId=id;
   node.classList.add(isNova ? "nova-message" : "owner-message");
   node.querySelector(".avatar").textContent = isNova ? "N" : "Y";
   node.querySelector("strong").textContent = isNova ? "Nova" : "You";

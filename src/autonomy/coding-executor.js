@@ -265,7 +265,7 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
     }
     return { handle, job, parent, specificationHash };
   };
-  const createCanonical = async (job) => {
+  const createCanonical = async (job, parent = null) => {
       const specificationHash = codingSpecificationHash(job);
       const jobHash = hash(job);
       const rootTaskId = codingTaskIdentity(job);
@@ -312,6 +312,7 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
           parentTaskId: job.parentTaskId,
           requiredCapability: "codex_local",
           autoDispatch: true,
+          ...(parent?.metadata?.terminalReporting?{terminalReporting:parent.metadata.terminalReporting}:{}),
           steps: [{
             type: "delegate_coding",
             input: { tool: "codex_execute", arguments: job },
@@ -353,13 +354,13 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
       return { ok: true, specificationHash };
     },
     async createFromHandle(input, { approvalId } = {}) {
-      const { job } = await resolveCreationHandle(input);
+      const { job, parent } = await resolveCreationHandle(input);
       const approved = normalizeJob({ ...job, approval: { buildApproved: true, approvalId } }, trusted.get(job.projectId), { requireApproval: true });
-      return createCanonical(approved);
+      return createCanonical(approved,parent);
     },
     async create(input) {
-      const { job } = await validatePrepared(input, { requireApproval: true });
-      return createCanonical(job);
+      const { job, parent } = await validatePrepared(input, { requireApproval: true });
+      return createCanonical(job,parent);
     },
     async get(taskId) {
       taskId = requireCodingTaskId(taskId);

@@ -169,9 +169,16 @@ export function createAgent({
       let toolResults = [];
 
       try {
-        const existingTaskRoute=speakerRestricted?null:await routeExistingTaskRequest({message,context:trustedContext,requestId,signal:executionSignal});
+        const existingTaskRoute=speakerRestricted?null:await routeExistingTaskRequest({message,conversationId,context:trustedContext,requestId,signal:executionSignal});
         if(existingTaskRoute){
           const task=existingTaskRoute.task;
+          if(existingTaskRoute.action==="report"){
+            const response={id:randomUUID(),conversationId,message:existingTaskRoute.message,provider:"durable_runtime",toolCalls:[],steps:0,runId:run.id,runStatus:"task_reported",taskControl:{taskId:task.id,status:task.status,stateVersion:task.stateVersion}};
+            await storage.appendActivity({ownerId,projectId:task.projectId||null,runId:run.id,action:"conversation_task_reported",status:"completed",summary:"Returned the conversation-bound durable task report.",metadata:{taskId:task.id,status:task.status,stateVersion:task.stateVersion}});
+            await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
+            await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:{message:response.message,taskControl:response.taskControl,providerUsage},completedAt:new Date().toISOString()});
+            return response;
+          }
           systemContext=`${systemContext}\n\nEXISTING DURABLE TASK CONTROL: This turn targets exactly task ${task.id} at stateVersion ${task.stateVersion}, status ${task.status}, phase ${task.currentPhase||"unknown"}. Do not create a task or broaden authority. Use only the exposed task-bound tools, preserve exact task/version CAS, and fail closed if the requested transition is ineligible.`;
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"existing_task_control_routed",status:"completed",summary:"Existing durable task control routed to the bounded Chat tool path.",metadata:{route:existingTaskRoute.route,action:existingTaskRoute.action,taskId:task.id,status:task.status,stateVersion:task.stateVersion,expectedVersion:existingTaskRoute.expectedVersion}});
           if(existingTaskRoute.action==="recovery"){
@@ -195,7 +202,7 @@ export function createAgent({
           }
         }
         let allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
-        const durable = speakerRestricted||existingTaskRoute ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, signal: executionSignal});
+        const durable = speakerRestricted||existingTaskRoute ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, conversationId, signal: executionSignal});
         executionSignal.throwIfAborted();
         if(durable?.clarificationRequired===true){
           if(durable.providerUsage)providerUsage.push(durable.providerUsage);
@@ -315,7 +322,7 @@ export function createAgent({
           try {
             executionSignal.throwIfAborted();
             if(allowedTaskTools&&!allowedTaskTools.has(call.name))throw Object.assign(new Error("Existing-task control cannot invoke this tool."),{code:"task_control_tool_forbidden"});
-            const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, signal: executionSignal,delegationRequestFingerprint:durable?.requestFingerprint });
+            const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, conversationId, signal: executionSignal,delegationRequestFingerprint:durable?.requestFingerprint });
             executionSignal.throwIfAborted();
             execution.status = "completed";
             execution.result = result;
