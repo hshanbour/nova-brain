@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { codingSpecificationHash, createCodingExecutorService, immutableCodingSpecification } from "../src/autonomy/coding-executor.js";
 import { createCodexCliRunner, registerCodexExecutorTool, runCodexProcess } from "../src/tools/codex-executor-tool.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
@@ -435,7 +435,7 @@ test("Codex CLI runner emits a strict-compatible schema and reaches a structured
   const runner = createCodexCliRunner({
     executable: process.execPath,
     gitExecutable,
-    environment: { PATH: process.env.PATH, PATHEXT: process.env.PATHEXT, SYSTEMROOT: process.env.SYSTEMROOT, WINDIR: process.env.WINDIR, TEMP: process.env.TEMP, TMP: process.env.TMP, USERPROFILE: process.env.USERPROFILE, HOMEDRIVE: process.env.HOMEDRIVE, HOMEPATH: process.env.HOMEPATH, LOCALAPPDATA: process.env.LOCALAPPDATA, APPDATA: process.env.APPDATA, CODEX_HOME: process.env.CODEX_HOME, OPENAI_API_KEY: "must-not-leak", GITHUB_TOKEN: "must-not-leak", VERCEL_TOKEN: "must-not-leak" },
+    environment: { PATH: process.platform === "win32" ? `${process.env.SYSTEMROOT}\\System32` : "/usr/bin", PATHEXT: process.env.PATHEXT, SYSTEMROOT: process.env.SYSTEMROOT, WINDIR: process.env.WINDIR, TEMP: process.env.TEMP, TMP: process.env.TMP, USERPROFILE: process.env.USERPROFILE, HOMEDRIVE: process.env.HOMEDRIVE, HOMEPATH: process.env.HOMEPATH, LOCALAPPDATA: process.env.LOCALAPPDATA, APPDATA: process.env.APPDATA, CODEX_HOME: process.env.CODEX_HOME, UNTRUSTED_TOOL_DIRECTORY: join(root, "untrusted-tools"), OPENAI_API_KEY: "must-not-leak", GITHUB_TOKEN: "must-not-leak", VERCEL_TOKEN: "must-not-leak" },
     async authProcess(command, args) { assert.equal(command, process.execPath);assert.deepEqual(args, ["login", "status"]);return { stdout: "", stderr: "", code: 0 }; },
     async spawnProcess(command, args, options) {
       const schema = JSON.parse(await readFile(args[args.indexOf("--output-schema") + 1], "utf8"));
@@ -444,6 +444,7 @@ test("Codex CLI runner emits a strict-compatible schema and reaches a structured
       assert.notEqual(options.cwd, root);
       assert.equal((await runFile("git", ["rev-parse", "HEAD"], { cwd: options.cwd })).stdout.trim(), baseline);
       assert.equal((await runFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: options.cwd })).stdout.trim(), "HEAD");
+      assert.equal((await runFile("git", ["status", "--short", "--branch"], { cwd: options.cwd, env: options.env })).stdout.includes("HEAD"), true);
       await assert.rejects(readFile(join(options.cwd, "local-only.js")));
       await writeFile(join(options.cwd, "source.js"), "export const value = 2;\n");
       await runFile("git", ["add", "source.js"], { cwd: options.cwd });
@@ -467,6 +468,9 @@ test("Codex CLI runner emits a strict-compatible schema and reaches a structured
   assert.equal("OPENAI_API_KEY" in observed.env, false);
   assert.equal("GITHUB_TOKEN" in observed.env, false);
   assert.equal("VERCEL_TOKEN" in observed.env, false);
+  assert.equal("UNTRUSTED_TOOL_DIRECTORY" in observed.env, false);
+  assert.equal(observed.env.PATH.split(delimiter)[0].toLowerCase(), dirname(gitExecutable).toLowerCase());
+  assert.equal(observed.env.PATH.includes(join(root, "untrusted-tools")), false);
   assert.doesNotMatch(observed.input, /must-not-leak/);
   assert.ok(observed.args.includes("--ephemeral"));
   assert.ok(observed.args.includes("--ignore-user-config"));
@@ -601,6 +605,7 @@ test("executor preflight fails safely for missing executables, workspace, or aut
   const taskId = `coding_${"d".repeat(32)}`;
   await assert.rejects(createCodexCliRunner({ ...base, executable: missing })(request(), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId }), (error) => error.code === "coding_executor_codex_executable_missing");
   await assert.rejects(createCodexCliRunner({ ...base, gitExecutable: missing })(request(), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId }), (error) => error.code === "coding_executor_git_executable_missing");
+  await assert.rejects(createCodexCliRunner({ ...base, gitExecutable: "git" })(request(), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId }), (error) => error.code === "coding_executor_git_executable_missing");
   await assert.rejects(createCodexCliRunner(base)(request(), { root: missingWorkspace, repository: "hshanbour/nova-brain", branch: "feature", taskId }), (error) => error.code === "coding_executor_workspace_missing");
   let launched = false;
   const authFailure = createCodexCliRunner({ ...base, authProcess: async () => { throw Object.assign(new Error("not logged in"), { safeDiagnostics: { exitCode: 1 } }); }, spawnProcess: async () => { launched = true; } });

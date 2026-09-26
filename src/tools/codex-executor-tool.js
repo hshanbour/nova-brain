@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { RISK_LEVELS } from "../policy/action-policy.js";
 import { requireCodingTaskId } from "../autonomy/coding-executor.js";
 
@@ -141,9 +141,17 @@ export function runCodexProcess(command, args, { cwd, env, input, signal, onLine
   });
 }
 
-function safeEnvironment(environment) {
-  const keep = ["PATH", "Path", "PATHEXT", "SYSTEMROOT", "SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA", "CODEX_HOME"];
-  return Object.fromEntries(keep.filter((key) => typeof environment[key] === "string" && environment[key]).map((key) => [key, environment[key]]));
+function safeEnvironment(environment, gitExecutable) {
+  const keep = ["PATHEXT", "SYSTEMROOT", "SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA", "CODEX_HOME"];
+  const result = Object.fromEntries(keep.filter((key) => typeof environment[key] === "string" && environment[key]).map((key) => [key, environment[key]]));
+  const gitDirectory = dirname(gitExecutable), seen = new Set(), entries = [gitDirectory, ...String(environment.PATH || environment.Path || "").split(delimiter)].filter((entry) => {
+    const value = String(entry || "").trim(), identity = process.platform === "win32" ? value.toLowerCase() : value;
+    if (!value || seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+  result.PATH = entries.join(delimiter);
+  return result;
 }
 
 function codexCommandEnvironmentArgs() {
@@ -203,9 +211,9 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
   return async function run(job, { root, repository, branch, taskId, signal, onProgress } = {}) {
     taskId = requireCodingTaskId(taskId);
     const sourceRoot = resolve(root);
-    const env = safeEnvironment(environment);
     if (isAbsolute(executable)) await requireLocalPath(executable, { kind: "codex_executable" });
-    if (isAbsolute(gitExecutable)) await requireLocalPath(gitExecutable, { kind: "git_executable" });
+    await requireLocalPath(gitExecutable, { kind: "git_executable" });
+    const env = safeEnvironment(environment, gitExecutable);
     await requireLocalPath(sourceRoot, { kind: "workspace", directory: true });
     try {
       await authProcess(executable, ["login", "status"], { cwd: sourceRoot, env, signal });
