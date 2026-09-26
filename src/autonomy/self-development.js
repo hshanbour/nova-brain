@@ -1545,12 +1545,12 @@ export function createSelfDevelopmentService({
     catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;throw new SelfDevelopmentError(error?.code||"structured_turn_invalid","Nova could not safely resolve this turn.",409,error?.safeDiagnostics);}
     if(decision.route==="new_implementation"){
       const created=await createTrustedSpecification(userGoal,decision.specification,{signal,originConversationId,originRunId});
-      return{...created,providerUsage:decision.providerUsage||null,turnRoute:decision.route};
+      return{...created,providerUsage:decision.providerUsage||null,turnRoute:decision.route,routingDiagnostics:decision.routingDiagnostics||null};
     }
-    if(decision.route==="clarification_required")return{clarificationRequired:true,message:decision.clarificationQuestion||"Which existing workflow should Nova use?",providerUsage:decision.providerUsage||null,turnRoute:decision.route};
-    if(["existing_workflow_continue","existing_workflow_question","task_status","shipping_request","artifact_adoption"].includes(decision.route))return{workflow:{...decision.workflow,action:decision.route},shippingRequest:decision.route==="shipping_request",artifactAdoption:decision.route==="artifact_adoption",providerUsage:decision.providerUsage||null,turnRoute:decision.route};
-    if(decision.route==="coding_delegation")return{codingDelegation:true,providerUsage:decision.providerUsage||null,turnRoute:decision.route};
-    return{ordinaryChat:true,providerUsage:decision.providerUsage||null,turnRoute:decision.route};
+    if(decision.route==="clarification_required")return{clarificationRequired:true,message:decision.clarificationQuestion||"Which existing workflow should Nova use?",providerUsage:decision.providerUsage||null,turnRoute:decision.route,routingDiagnostics:decision.routingDiagnostics||null};
+    if(["existing_workflow_continue","existing_workflow_question","task_status","shipping_request","artifact_adoption"].includes(decision.route))return{workflow:{...decision.workflow,action:decision.route},shippingRequest:decision.route==="shipping_request",artifactAdoption:decision.route==="artifact_adoption",providerUsage:decision.providerUsage||null,turnRoute:decision.route,routingDiagnostics:decision.routingDiagnostics||null};
+    if(decision.route==="coding_delegation")return{codingDelegation:true,providerUsage:decision.providerUsage||null,turnRoute:decision.route,routingDiagnostics:decision.routingDiagnostics||null};
+    return{ordinaryChat:true,providerUsage:decision.providerUsage||null,turnRoute:decision.route,routingDiagnostics:decision.routingDiagnostics||null};
   }
   async function get(taskId) {
     const task = await runtime.get(taskId);

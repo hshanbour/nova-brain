@@ -42,58 +42,65 @@ test("analysis-only intent remains a structured non-mutation classification",asy
 });
 
 test("one structured turn decision binds contextual follow-up to an exact trusted workflow",async()=>{
-  const calls=[],id=`coding_${"a".repeat(32)}`,intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"existing_workflow_question",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}],calls)}),result=await intake.resolveTurn("Why is shipping blocked?",{workflowCandidates:[{id,taskType:"coding_delegation",status:"completed",stateVersion:9,currentPhase:"completed",currentCommit:"b".repeat(40),allowedTransitions:["existing_workflow_question","task_status"]}]});
-  assert.equal(result.route,"existing_workflow_question");assert.equal(result.workflow.id,id);assert.equal(calls.length,1);assert.deepEqual(calls[0].responseFormat.schema,SELF_DEVELOPMENT_INTAKE_SCHEMAS.turn);assert.match(calls[0].systemContext,/authoritative semantic turn resolver/);
+  const calls=[],id=`coding_${"a".repeat(32)}`,intake=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"workflow_question",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}],calls)}),result=await intake.resolveTurn("Why is shipping blocked?",{workflowCandidates:[{id,taskType:"coding_delegation",status:"completed",stateVersion:9,currentPhase:"completed",currentCommit:"b".repeat(40),allowedTransitions:["existing_workflow_question","task_status"]}]});
+  assert.equal(result.route,"existing_workflow_question");assert.equal(result.workflow.id,id);assert.equal(result.routingDiagnostics.semanticIntent,"workflow_question");assert.equal(calls.length,1);assert.deepEqual(calls[0].responseFormat.schema,SELF_DEVELOPMENT_INTAKE_SCHEMAS.turn);assert.match(calls[0].systemContext,/bounded semantic turn resolver/);
 });
 
 test("explicit shipping remains bound to one eligible completed coding workflow",async()=>{
-  const id=`coding_${"c".repeat(32)}`,intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"shipping_request",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn("Ship that completed artifact to Preview",{workflowCandidates:[{id,taskType:"coding_delegation",status:"completed",stateVersion:8,currentPhase:"completed",currentCommit:"d".repeat(40),allowedTransitions:["existing_workflow_question","shipping_request"]}]});
+  const id=`coding_${"c".repeat(32)}`,intake=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"workflow_action",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn("Ship that completed artifact to Preview",{workflowCandidates:[{id,taskType:"coding_delegation",status:"completed",stateVersion:8,currentPhase:"completed",currentCommit:"d".repeat(40),allowedTransitions:["existing_workflow_question","shipping_request"]}]});
   assert.equal(result.route,"shipping_request");assert.equal(result.workflow.id,id);
-  const ineligible=createSelfDevelopmentIntake({modelProvider:provider([{route:"shipping_request",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])});
-  await assert.rejects(()=>ineligible.resolveTurn("Ship it",{workflowCandidates:[{id,taskType:"coding_delegation",status:"running",stateVersion:7,allowedTransitions:["existing_workflow_question"]}]}),error=>error.code==="structured_turn_invalid");
+  const ineligible=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"workflow_action",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])});
+  await assert.rejects(()=>ineligible.resolveTurn("Ship it",{workflowCandidates:[{id,taskType:"coding_delegation",status:"running",stateVersion:7,allowedTransitions:["existing_workflow_question"]}]}),error=>error.code==="structured_turn_invalid"&&error.safeDiagnostics?.reason==="action_transition_unavailable");
 });
 
-test("natural historical shipping and continuation intents normalize to the candidate's only safe adoption transition",async()=>{
-  const id=`coding_${"e".repeat(32)}`,candidate={id,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",objective:"Improve drawer keyboard behavior",allowedTransitions:["artifact_adoption"]},cases=[
-    ["Ship the completed Recent Conversations drawer work.","shipping_request"],
-    ["Deploy the completed drawer work.","shipping_request"],
-    ["Continue the completed drawer work.","existing_workflow_continue"],
-    ["Adopt the completed drawer work.","artifact_adoption"],
+test("natural historical actions use one semantic class and the server derives the only safe adoption transition",async()=>{
+  const id=`coding_${"e".repeat(32)}`,candidate={id,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",objective:"Improve drawer keyboard behavior",allowedTransitions:["artifact_adoption"]},messages=[
+    "Ship the completed Recent Conversations drawer work.",
+    "Deploy the completed drawer work.",
+    "Continue the completed drawer work.",
+    "Adopt the completed drawer work.",
   ];
-  for(const [message,route] of cases){
-    const intake=createSelfDevelopmentIntake({modelProvider:provider([{route,workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn(message,{workflowCandidates:[candidate]});
-    assert.equal(result.route,"artifact_adoption",message);assert.equal(result.workflow.id,id,message);assert.equal(result.workflow.title,"Recent Conversations drawer accessibility",message);
+  for(const message of messages){
+    const intake=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"workflow_action",workflowId:id,route:"shipping_request",objective:"model prose is not authority",acceptanceCriteria:["ignored"],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:"ignored question"}])}),result=await intake.resolveTurn(message,{workflowCandidates:[candidate]});
+    assert.equal(result.route,"artifact_adoption",message);assert.equal(result.workflow.id,id,message);assert.equal(result.workflow.title,"Recent Conversations drawer accessibility",message);assert.equal(result.routingDiagnostics.serverDerivedTransition,"artifact_adoption");assert.deepEqual(result.routingDiagnostics.ignoredFieldNames,["implementationFields","clarificationQuestion"]);
   }
 });
 
-test("historical adoption normalization never repairs invented identity or unauthorized structured fields",async()=>{
-  const id=`coding_${"4".repeat(32)}`,candidate={id,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",allowedTransitions:["artifact_adoption"]},decision={route:"shipping_request",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""};
+test("server-derived transitions never repair invented identity or accept model-selected internal stages",async()=>{
+  const id=`coding_${"4".repeat(32)}`,candidate={id,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",allowedTransitions:["artifact_adoption"]},decision={turnIntent:"workflow_action",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""};
   const invented=createSelfDevelopmentIntake({modelProvider:provider([{...decision,workflowId:`coding_${"5".repeat(32)}`}])});
-  await assert.rejects(()=>invented.resolveTurn("Ship the completed drawer work.",{workflowCandidates:[candidate]}),error=>error.code==="structured_turn_invalid"&&error.safeDiagnostics?.boundary==="workflow_binding");
-  const extra=createSelfDevelopmentIntake({modelProvider:provider([{...decision,objective:"Ship it directly"}])});
-  await assert.rejects(()=>extra.resolveTurn("Ship the completed drawer work.",{workflowCandidates:[candidate]}),error=>error.code==="structured_turn_invalid"&&error.safeDiagnostics?.boundary==="workflow_binding");
+  await assert.rejects(()=>invented.resolveTurn("Ship the completed drawer work.",{workflowCandidates:[candidate]}),error=>error.code==="structured_turn_invalid"&&error.safeDiagnostics?.boundary==="workflow_binding"&&error.safeDiagnostics?.reason==="candidate_not_supplied");
+  const wrongStage=createSelfDevelopmentIntake({modelProvider:provider([{...decision,route:"shipping_request"}])}),derived=await wrongStage.resolveTurn("Ship the completed drawer work.",{workflowCandidates:[candidate]});
+  assert.equal(derived.route,"artifact_adoption");assert.equal(derived.routingDiagnostics.serverDerivedTransition,"artifact_adoption");
+});
+
+test("invalid semantic output retains only bounded candidate diagnostics",async()=>{
+  const id=`coding_${"8".repeat(32)}`,intake=createSelfDevelopmentIntake({modelProvider:{async generate(){return{type:"final",message:"not-json"};}}});
+  await assert.rejects(()=>intake.resolveTurn("Ship the completed drawer work.",{workflowCandidates:[{id,taskType:"coding_delegation",status:"completed",stateVersion:6,allowedTransitions:["artifact_adoption"]}]}),error=>{
+    assert.equal(error.code,"structured_intake_invalid");assert.deepEqual(error.safeDiagnostics,{version:1,candidateIds:[id],candidateTransitions:[{candidateId:id,transitions:["artifact_adoption"]}],boundary:"schema_parse",reason:"invalid_json",semanticIntent:null,semanticCandidateId:null,serverDerivedTransition:null,ignoredFieldNames:[]});return true;
+  });
 });
 
 test("ambiguous historical artifact selection asks a normal clarification and grants no workflow authority",async()=>{
-  const ids=[`coding_${"6".repeat(32)}`,`coding_${"7".repeat(32)}`],intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"clarification_required",workflowId:null,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:"Which completed website artifact should I use?"}])}),result=await intake.resolveTurn("Ship the completed website work",{workflowCandidates:ids.map((id,index)=>({id,taskType:"coding_delegation",status:"completed",stateVersion:4,title:`Website artifact ${index+1}`,allowedTransitions:["artifact_adoption"]}))});
+  const ids=[`coding_${"6".repeat(32)}`,`coding_${"7".repeat(32)}`],intake=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"clarification_required",workflowId:null,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:"Which completed website artifact should I use?"}])}),result=await intake.resolveTurn("Ship the completed website work",{workflowCandidates:ids.map((id,index)=>({id,taskType:"coding_delegation",status:"completed",stateVersion:4,title:`Website artifact ${index+1}`,allowedTransitions:["artifact_adoption"]}))});
   assert.equal(result.route,"clarification_required");assert.match(result.clarificationQuestion,/Which completed website artifact/);assert.equal("workflow" in result,false);
 });
 
 test("turn resolver cannot invent workflow authority and uses normal clarification for ambiguity",async()=>{
   const first=`selfdev_${"a".repeat(32)}`,second=`coding_${"b".repeat(32)}`,candidates=[{id:first,taskType:"self_development",status:"blocked",stateVersion:4,currentPhase:"approval"},{id:second,taskType:"coding_delegation",status:"completed",stateVersion:8,currentPhase:"completed"}];
-  const invented=createSelfDevelopmentIntake({modelProvider:provider([{route:"existing_workflow_continue",workflowId:`selfdev_${"f".repeat(32)}`,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])});
+  const invented=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"workflow_action",workflowId:`selfdev_${"f".repeat(32)}`,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])});
   await assert.rejects(()=>invented.resolveTurn("Continue it",{workflowCandidates:candidates}),error=>error.code==="structured_turn_invalid"&&error.safeDiagnostics?.boundary==="workflow_binding");
-  const ambiguous=createSelfDevelopmentIntake({modelProvider:provider([{route:"clarification_required",workflowId:null,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:"Which workflow should I continue?"}])}),result=await ambiguous.resolveTurn("Continue the task",{workflowCandidates:candidates});
+  const ambiguous=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"clarification_required",workflowId:null,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:"Which workflow should I continue?"}])}),result=await ambiguous.resolveTurn("Continue the task",{workflowCandidates:candidates});
   assert.equal(result.route,"clarification_required");assert.equal(result.clarificationQuestion,"Which workflow should I continue?");
 });
 
 test("new implementation is specified by the same authoritative turn decision",async()=>{
-  const intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"new_implementation",workflowId:null,objective:"Implement the new Console control",acceptanceCriteria:["The control works."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["Console control"],clarificationQuestion:""}])}),result=await intake.resolveTurn("Implement the new Console control");
+  const intake=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"new_implementation",workflowId:null,objective:"Implement the new Console control",acceptanceCriteria:["The control works."],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:["Console control"],clarificationQuestion:""}])}),result=await intake.resolveTurn("Implement the new Console control");
   assert.equal(result.route,"new_implementation");assert.equal(result.specification.intent,"implementation");assert.equal(result.specification.status,"ready");assert.equal(result.specification.objective,"Implement the new Console control");
 });
 
 test("explicit Codex delegation is routed by the same semantic decision without task authority",async()=>{
-  const intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"coding_delegation",workflowId:null,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn("Use Codex to implement the approved local change");
+  const intake=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"coding_delegation",workflowId:null,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn("Use Codex to implement the approved local change");
   assert.equal(result.route,"coding_delegation");assert.equal(result.workflow,undefined);assert.equal(result.specification,undefined);
 });
 

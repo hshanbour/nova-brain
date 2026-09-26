@@ -198,6 +198,18 @@ test("semantic workflow follow-up remains read-only and cannot create another ta
   const result=await agent.run({message:"Keep this shipping request and explain why shipping is blocked.",conversationId:"workflow-chat"});
   assert.equal(result.message,"Shipping is still waiting on a separate delivery capability.");assert.equal(creations,0);assert.deepEqual(observed[0].tools,[]);assert.match(observed[0].systemContext,new RegExp(id));assert.match(observed[0].systemContext,/Do not create another task/);
 });
+test("server-owned turn transition diagnostics persist without model prose",async()=>{
+  const storage=testStorage(),id=`coding_${"e".repeat(32)}`,diagnostics={version:1,candidateIds:[id],candidateTransitions:[{candidateId:id,transitions:["artifact_adoption"]}],semanticIntent:"workflow_action",semanticCandidateId:id,serverDerivedTransition:"artifact_adoption",ignoredFieldNames:["implementationFields"]};
+  const agent=createTestAgent({storage,toolRegistry:createToolRegistry(),routeDurableRequest:async()=>({workflow:{id,taskType:"coding_delegation",status:"completed",stateVersion:6,currentPhase:"completed",action:"artifact_adoption"},routingDiagnostics:diagnostics}),modelProvider:scriptedProvider([{type:"final",message:"The trusted artifact is ready for its server-owned transition."}])});
+  const result=await agent.run({message:"Ship the completed drawer work.",conversationId:"routing-diagnostics"}),activity=await storage.listActivity(OWNER_ID,{runId:result.runId});
+  const routed=activity.find(item=>item.action==="trusted_turn_routed");assert.deepEqual(routed.metadata,diagnostics);assert.doesNotMatch(JSON.stringify(routed),/Ship the completed drawer work|model prose/);
+});
+test("structured turn failures persist only bounded routing evidence",async()=>{
+  const storage=testStorage(),id=`coding_${"f".repeat(32)}`,safeDiagnostics={version:1,candidateIds:[id],candidateTransitions:[{candidateId:id,transitions:["artifact_adoption"]}],semanticIntent:"workflow_action",semanticCandidateId:id,serverDerivedTransition:null,ignoredFieldNames:[],boundary:"workflow_binding",reason:"action_transition_unavailable",prompt:"never persist"},error=Object.assign(new Error("private model output"),{code:"structured_turn_invalid",safeDiagnostics});
+  const agent=createTestAgent({storage,toolRegistry:createToolRegistry(),routeDurableRequest:async()=>{throw error;},modelProvider:{name:"never",async generate(){throw new Error("must not run");}}});
+  await assert.rejects(()=>agent.run({message:"Ship it.",conversationId:"routing-failure"}),error=>error.code==="structured_turn_invalid");
+  const [run]=await storage.listRuns(OWNER_ID),[failed]=await storage.listActivity(OWNER_ID,{runId:run.id});assert.equal(run.result.routingFailure.errorCode,"structured_turn_invalid");assert.equal(run.result.routingFailure.routing.reason,"action_transition_unavailable");assert.equal(failed.action,"run_failed");assert.doesNotMatch(JSON.stringify({run,failed}),/private model output|never persist/);
+});
 test("exact recovery dispatch cannot execute a broader tool and binds a missing version to the inspected task",async()=>{
   const registry=createToolRegistry(),id="selfdev_c9fc28effbd72350c86c67abe4d69e36";let creations=0,recoveries=0,modelCalls=0;
   registry.register({name:"self_development_get",available:true,async execute(){return{id};}});

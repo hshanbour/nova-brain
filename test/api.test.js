@@ -6,6 +6,7 @@ import { createApi } from "../src/http/api.js";
 import { OpenAIProviderError } from "../src/providers/openai-model-provider.js";
 import { ModelCostBudgetError } from "../src/providers/model-cost-budget.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
+import {createSelfDevelopmentIntake} from "../src/autonomy/self-development-intake.js";
 
 test("approved Chat-native coding delegation executes the exact tool and links its child without treating the Chat run as an autonomy task",async()=>{
   const storage=createInMemoryStorage();await storage.initialize({owner:{id:"owner"},projects:[{id:"nova-brain",name:"Nova"}]});
@@ -242,6 +243,13 @@ test("agent endpoint validates and processes JSON input", async () => {
     JSON.parse(res.body).message,
     "Nova is ready. I received: Hello Brian",
   );
+});
+
+test("historical drawer shipping language reaches the server-derived adoption transition without HTTP 409",async()=>{
+  const taskId=`coding_${"f".repeat(32)}`,decision={turnIntent:"workflow_action",workflowId:taskId,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""},intake=createSelfDevelopmentIntake({modelProvider:{async generate(){return{type:"final",message:JSON.stringify(decision)};}}});
+  const agent={tools:{list(){return[];}},async run({message}){const routed=await intake.resolveTurn(message,{workflowCandidates:[{id:taskId,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",allowedTransitions:["artifact_adoption"]}]});return{message:"The trusted historical artifact is ready for adoption.",turnRoute:routed.route,workflowId:routed.workflow.id};}},app=createApi({agent,config:{allowedOrigins:[],maxBodyBytes:64*1024},storage:{provider:"memory",durable:false},initialize:async()=>{},ownerId:"owner",logger:{info(){},error(){}}}),res=response();
+  await app.handle(request({method:"POST",url:"/api/agent",headers:{"content-type":"application/json"},body:JSON.stringify({message:"Ship the completed Recent Conversations drawer work."})}),res);
+  assert.equal(res.statusCode,200);assert.deepEqual(JSON.parse(res.body),{message:"The trusted historical artifact is ready for adoption.",turnRoute:"artifact_adoption",workflowId:taskId});
 });
 
 test("agent endpoint propagates a disconnected request into synchronous cancellation", async () => {

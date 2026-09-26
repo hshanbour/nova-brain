@@ -82,6 +82,20 @@ function toolErrorSummary(error, name) {
   return typeof error === "string" ? error : `${name} failed: ${error.code}.`;
 }
 
+const ROUTING_ID=/^(?:selfdev|coding|orchestration|shipping)_[a-f0-9]{32}$/;
+const ROUTING_INTENTS=new Set(["workflow_action","workflow_question","workflow_status","new_implementation","coding_delegation","ordinary_chat","clarification_required","exact_task_action"]);
+const ROUTING_TRANSITIONS=new Set(["existing_workflow_continue","existing_workflow_question","task_status","shipping_request","artifact_adoption","approval_decision"]);
+function safeRoutingDiagnostics(value){
+  if(!value||value.version!==1)return null;
+  const candidateIds=Array.isArray(value.candidateIds)?value.candidateIds.filter(id=>ROUTING_ID.test(id)).slice(0,8):[];
+  const candidateTransitions=Array.isArray(value.candidateTransitions)?value.candidateTransitions.filter(item=>candidateIds.includes(item?.candidateId)&&Array.isArray(item.transitions)).slice(0,8).map(item=>({candidateId:item.candidateId,transitions:[...new Set(item.transitions.filter(transition=>ROUTING_TRANSITIONS.has(transition)))].slice(0,8)})):[];
+  const semanticIntent=ROUTING_INTENTS.has(value.semanticIntent)?value.semanticIntent:null,semanticCandidateId=ROUTING_ID.test(value.semanticCandidateId||"")?value.semanticCandidateId:null,serverDerivedTransition=ROUTING_TRANSITIONS.has(value.serverDerivedTransition)?value.serverDerivedTransition:null,ignoredFieldNames=Array.isArray(value.ignoredFieldNames)?value.ignoredFieldNames.filter(name=>["implementationFields","clarificationQuestion"].includes(name)).slice(0,2):[];
+  const diagnostics={version:1,candidateIds,candidateTransitions,semanticIntent,semanticCandidateId,serverDerivedTransition,ignoredFieldNames};
+  if(typeof value.boundary==="string"&&/^[a-z0-9_:-]{1,80}$/i.test(value.boundary))diagnostics.boundary=value.boundary;
+  if(typeof value.reason==="string"&&/^[a-z0-9_:-]{1,120}$/i.test(value.reason))diagnostics.reason=value.reason;
+  return diagnostics;
+}
+
 const EXISTING_TASK_CONTROL_TOOLS = new Set([
   "self_development_get",
   "self_development_scope_recover",
@@ -240,6 +254,8 @@ export function createAgent({
         const durable = speakerRestricted||existingTaskRoute ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, conversationId, signal: executionSignal});
         executionSignal.throwIfAborted();
         if(durable?.providerUsage)providerUsage.push(durable.providerUsage);
+        const routingDiagnostics=safeRoutingDiagnostics(durable?.routingDiagnostics);
+        if(routingDiagnostics)await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"trusted_turn_routed",status:"completed",summary:"Trusted turn semantics were resolved and the legal transition was derived server-side.",metadata:routingDiagnostics});
         if(durable?.clarificationRequired===true){
           const response={id:randomUUID(),conversationId,message:durable.message,provider:"durable_intake",toolCalls:[],steps:0,runId:run.id,runStatus:"clarification_required"};
           await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
@@ -379,8 +395,9 @@ export function createAgent({
         const cancelled = error?.name === "AbortError";
         const bounded = error instanceof AgentStepLimitError || error instanceof AgentToolCallLimitError || error instanceof AgentDeadlineError;
         const summary = cancelled ? "Synchronous request stopped by the client." : bounded ? error.message : "Execution failed safely.";
-        await storage.updateRun(run.id, ownerId, { status: cancelled ? "cancelled" : "failed", error: summary, completedAt: new Date().toISOString() });
-        await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: cancelled ? "run_cancelled" : "run_failed", status: cancelled ? "cancelled" : "failed", summary });
+        const routingFailure=safeRoutingDiagnostics(error?.safeDiagnostics),failureMetadata=routingFailure?{errorCode:typeof error?.code==="string"?error.code.slice(0,120):"structured_turn_invalid",routing:routingFailure}:undefined;
+        await storage.updateRun(run.id, ownerId, { status: cancelled ? "cancelled" : "failed", error: summary,...(failureMetadata?{result:{routingFailure:failureMetadata}}:{}), completedAt: new Date().toISOString() });
+        await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: cancelled ? "run_cancelled" : "run_failed", status: cancelled ? "cancelled" : "failed", summary,...(failureMetadata?{metadata:failureMetadata}:{}) });
         error.runId ||= run.id;
         throw error;
       }
