@@ -88,3 +88,10 @@ test("preparation fails closed for ambiguous or arbitrary project authority and 
   await assert.rejects(f.service.prepare(request,{}),error=>error.code==="coding_delegation_unbound");
   assert.throws(()=>createCodingDelegationService({runtime:f.runtime,storage:f.storage,ownerId:OWNER,bindings:[{...BINDING,branch:"main"}],verifyRemote:async()=>({currentTip:BASE})}),error=>error.code==="coding_binding_invalid");
 });
+
+test("trusted artifact adoption is server-derived, conversation-bound, and hash-bound to current integration baseline",async()=>{
+  const f=await fixture(),artifact={version:1,sourceTaskId:`coding_${"9".repeat(32)}`,sourceStateVersion:7,repository:BINDING.repository,sourceBranch:"feat/old",commitSha:"c".repeat(40),artifactRef:`refs/nova/coding-jobs/coding_${"9".repeat(32)}`,filesChanged:["assets/console.js","test/console-static.test.js"]};
+  const first=await f.service.prepareTrustedArtifact({projectId:BINDING.projectId,trustedArtifact:artifact},{conversationId:"conversation-adopt",runId:"run-adopt"}),second=await f.service.prepareTrustedArtifact({projectId:BINDING.projectId,trustedArtifact:artifact},{conversationId:"conversation-adopt",runId:"run-adopt"});
+  assert.equal(first.duplicate,false);assert.equal(second.duplicate,true);const stored=await f.storage.getAutonomyTask(first.task.id,OWNER),job=stored.metadata.codingDelegation.codingJob;
+  assert.deepEqual(job.trustedArtifact,artifact);assert.equal(job.repository.baseline,BASE);assert.equal(stored.metadata.trustedArtifactAdoption.sourceTaskId,artifact.sourceTaskId);assert.deepEqual(stored.metadata.terminalReporting,{version:1,conversationId:"conversation-adopt",runId:"run-adopt"});assert.equal(stored.metadata.codingDelegation.codingJobHash,codingSpecificationHash(job));
+});

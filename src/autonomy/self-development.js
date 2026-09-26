@@ -1548,7 +1548,7 @@ export function createSelfDevelopmentService({
       return{...created,providerUsage:decision.providerUsage||null,turnRoute:decision.route};
     }
     if(decision.route==="clarification_required")return{clarificationRequired:true,message:decision.clarificationQuestion||"Which existing workflow should Nova use?",providerUsage:decision.providerUsage||null,turnRoute:decision.route};
-    if(["existing_workflow_continue","existing_workflow_question","task_status","shipping_request"].includes(decision.route))return{workflow:{...decision.workflow,action:decision.route},shippingRequest:decision.route==="shipping_request",providerUsage:decision.providerUsage||null,turnRoute:decision.route};
+    if(["existing_workflow_continue","existing_workflow_question","task_status","shipping_request","artifact_adoption"].includes(decision.route))return{workflow:{...decision.workflow,action:decision.route},shippingRequest:decision.route==="shipping_request",artifactAdoption:decision.route==="artifact_adoption",providerUsage:decision.providerUsage||null,turnRoute:decision.route};
     if(decision.route==="coding_delegation")return{codingDelegation:true,providerUsage:decision.providerUsage||null,turnRoute:decision.route};
     return{ordinaryChat:true,providerUsage:decision.providerUsage||null,turnRoute:decision.route};
   }

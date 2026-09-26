@@ -38,6 +38,27 @@ export function createCodingDelegationService({ runtime, storage, ownerId, bindi
       throw Object.assign(new Error("A trusted coding project binding is invalid."),{code:"coding_binding_invalid"});
     return [binding.projectId, Object.freeze({ ...binding })];
   }));
+  const persist=async({input,context,binding,requestFingerprint,remote,identityVersion="coding-delegation-v1",trustedArtifact})=>{
+      const objective = String(input?.objective || "").trim();
+      const acceptanceCriteria = cleanList(input?.acceptanceCriteria);
+      if (!objective || objective.length > 8_000 || acceptanceCriteria.length === 0) {
+        throw Object.assign(new Error("A bounded coding objective and acceptance criteria are required."), { code: "coding_delegation_invalid" });
+      }
+      const parentTaskId = `orchestration_${digest([identityVersion, requestFingerprint, binding.projectId, binding.repository, binding.branch, remote.currentTip, trustedArtifact||null]).slice(0, 32)}`;
+      const jobId = `job_${digest([parentTaskId, "codex-local-v1"]).slice(0, 32)}`;
+      const job = immutableCodingSpecification({
+        jobId,parentTaskId,objective,acceptanceCriteria,constraints:cleanList(input?.constraints),
+        repository:Object.freeze({slug:binding.repository,branch:binding.branch,baseline:remote.currentTip}),
+        projectId:binding.projectId,workspaceId:binding.workspaceId,
+        delivery:Object.freeze({boundary:"local_commit",allowPush:false,allowDeploy:false}),
+        verification:cleanList(input?.verification,30),trustedArtifact,
+      });
+      const existing=await storage.getAutonomyTask(parentTaskId,ownerId);
+      if(existing){const prepared=existing.metadata?.codingDelegation,specificationHash=prepared?.codingJobHash;if(existing.taskType!=="coding_orchestration"||!prepared?.codingJob||specificationHash!==codingSpecificationHash(prepared.codingJob))throw Object.assign(new Error("The coding delegation identity is already bound to invalid or different durable inputs."),{code:"coding_delegation_identity_conflict"});return{task:publicParent(existing),creationRequest:Object.freeze({parentTaskId:existing.id,specificationHash}),duplicate:true};}
+      const task=await runtime.create({id:parentTaskId,title:`Codex delegation: ${objective.slice(0,90)}`,objective,taskType:"coding_orchestration",projectId:binding.projectId,branch:binding.branch,startingCommit:remote.currentTip,currentCommit:remote.currentTip,maxSteps:1,maxRetries:0,maxRuntimeMinutes:120,metadata:{autoDispatch:false,parentTask:true,codingDelegation:{version:1,requestFingerprint,codingJob:job,codingJobHash:codingSpecificationHash(job)},...(trustedArtifact?{trustedArtifactAdoption:{version:1,sourceTaskId:trustedArtifact.sourceTaskId,sourceStateVersion:trustedArtifact.sourceStateVersion,specificationHash:codingSpecificationHash(job)}}:{}),...(context.conversationId?{terminalReporting:{version:1,conversationId:context.conversationId,runId:context.runId||null}}:{}),steps:[]}});
+      return{task:publicParent(task),creationRequest:Object.freeze({parentTaskId:task.id,specificationHash:task.metadata.codingDelegation.codingJobHash}),duplicate:false};
+  };
+  const selectBinding=requestedProject=>requestedProject?trusted.get(requestedProject):trusted.size===1?[...trusted.values()][0]:null;
   return Object.freeze({
     async prepare(input, context = {}) {
       const requestedProject = context.projectId || input?.projectId || null;
@@ -57,62 +78,19 @@ export function createCodingDelegationService({ runtime, storage, ownerId, bindi
       if (!/^[a-f0-9]{64}$/.test(requestFingerprint)) {
         throw Object.assign(new Error("The Chat delegation request is not bound to its original message."), { code: "coding_delegation_unbound" });
       }
-      const objective = String(input?.objective || "").trim();
-      const acceptanceCriteria = cleanList(input?.acceptanceCriteria);
-      if (!objective || objective.length > 8_000 || acceptanceCriteria.length === 0) {
-        throw Object.assign(new Error("A bounded coding objective and acceptance criteria are required."), { code: "coding_delegation_invalid" });
-      }
       const remote = await verifyRemote({ repository: binding.repository, branch: binding.branch, requiredAncestors: [], signal: context.signal });
       if (!SHA.test(remote?.currentTip || "")) {
         throw Object.assign(new Error("The trusted coding baseline could not be resolved."), { code: "coding_repository_not_resolved" });
       }
-      const parentTaskId = `orchestration_${digest(["coding-delegation-v1", requestFingerprint, binding.projectId, binding.repository, binding.branch, remote.currentTip]).slice(0, 32)}`;
-      const jobId = `job_${digest([parentTaskId, "codex-local-v1"]).slice(0, 32)}`;
-      const job = immutableCodingSpecification({
-        jobId,
-        parentTaskId,
-        objective,
-        acceptanceCriteria,
-        constraints: cleanList(input?.constraints),
-        repository: Object.freeze({ slug: binding.repository, branch: binding.branch, baseline: remote.currentTip }),
-        projectId: binding.projectId,
-        workspaceId: binding.workspaceId,
-        delivery: Object.freeze({ boundary: "local_commit", allowPush: false, allowDeploy: false }),
-        verification: cleanList(input?.verification, 30),
-      });
-      const existing = await storage.getAutonomyTask(parentTaskId, ownerId);
-      if (existing) {
-        const prepared = existing.metadata?.codingDelegation, specificationHash = prepared?.codingJobHash;
-        if (existing.taskType !== "coding_orchestration" || !prepared?.codingJob || specificationHash !== codingSpecificationHash(prepared.codingJob)) {
-          throw Object.assign(new Error("The coding delegation identity is already bound to invalid or different durable inputs."), { code: "coding_delegation_identity_conflict" });
-        }
-        return { task: publicParent(existing), creationRequest: Object.freeze({ parentTaskId: existing.id, specificationHash }), duplicate: true };
-      }
-      const task = await runtime.create({
-        id: parentTaskId,
-        title: `Codex delegation: ${objective.slice(0, 90)}`,
-        objective,
-        taskType: "coding_orchestration",
-        projectId: binding.projectId,
-        branch: binding.branch,
-        startingCommit: remote.currentTip,
-        currentCommit: remote.currentTip,
-        maxSteps: 1,
-        maxRetries: 0,
-        maxRuntimeMinutes: 120,
-        metadata: {
-          autoDispatch: false,
-          parentTask: true,
-          codingDelegation: { version: 1, requestFingerprint, codingJob: job, codingJobHash: codingSpecificationHash(job) },
-          ...(context.conversationId?{terminalReporting:{version:1,conversationId:context.conversationId,runId:context.runId||null}}:{}),
-          steps: [],
-        },
-      });
-      return {
-        task: publicParent(task),
-        creationRequest: Object.freeze({ parentTaskId: task.id, specificationHash: task.metadata.codingDelegation.codingJobHash }),
-        duplicate: false,
-      };
+      return persist({input,context,binding,requestFingerprint,remote});
+    },
+    async prepareTrustedArtifact(input,context={}){
+      const artifact=input?.trustedArtifact,requestedProject=context.projectId||input?.projectId||null,binding=selectBinding(requestedProject);
+      if(!binding||!artifact||artifact.repository!==binding.repository)throw Object.assign(new Error("The historical artifact does not match a trusted coding binding."),{code:"trusted_artifact_repository_rejected"});
+      const remote=await verifyRemote({repository:binding.repository,branch:binding.branch,requiredAncestors:[],signal:context.signal});
+      if(!SHA.test(remote?.currentTip||""))throw Object.assign(new Error("The current integration baseline could not be resolved."),{code:"coding_repository_not_resolved"});
+      const requestFingerprint=digest(["trusted-artifact-adoption-v1",artifact,context.conversationId||null]);
+      return persist({input:{...input,objective:`Integrate the trusted completed artifact ${artifact.sourceTaskId} at ${artifact.commitSha} onto the current ${binding.branch} baseline without changing its product intent.`,acceptanceCriteria:["The trusted historical artifact is ported without unrelated changes.","Relevant regression tests pass on the current integration baseline.","A new local-only coding artifact is retained for separate shipping approval."],constraints:["Use only the server-bound historical artifact provenance.","Do not push or deploy.",...(input?.constraints||[])],verification:["Verify the historical commit/ref identity before mutation.","Run focused and relevant broader tests.",...(input?.verification||[])]},context,binding,requestFingerprint,remote,identityVersion:"trusted-artifact-adoption-v1",trustedArtifact:artifact});
     },
   });
 }

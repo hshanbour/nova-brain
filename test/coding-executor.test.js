@@ -460,10 +460,12 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
     },
   });
   const taskId = `coding_${"c".repeat(32)}`;
+  const sourceTaskId=`coding_${"e".repeat(32)}`;
   const progress = [];
   const result = await runner(request({
     repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline },
     constraints: ["Stop before Codex starts unless and until the normal owner-approval process authorises it."],
+    trustedArtifact:{version:1,sourceTaskId,sourceStateVersion:6,repository:"hshanbour/nova-brain",sourceBranch:"feat/old",commitSha:sourceHead,artifactRef:`refs/nova/coding-jobs/${sourceTaskId}`,filesChanged:["local-only.js"]},
   }), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId, onProgress: (phase, summary) => progress.push({ phase, summary }) });
   assert.equal(result.status, "completed");
   assert.equal(observed.command, process.execPath);
@@ -505,6 +507,8 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
   assert.equal((await runFile("git", ["status", "--porcelain=v1"], { cwd: root })).stdout.trim(), "");
   assert.equal((await runFile("git", ["rev-parse", `refs/nova/coding-jobs/${taskId}`], { cwd: root })).stdout.trim(), result.finalLocalSha);
   assert.equal(result.executor.localRef, `refs/nova/coding-jobs/${taskId}`);
+  assert.deepEqual(result.executor.trustedArtifact,{sourceTaskId,commitSha:sourceHead,artifactRef:`refs/nova/coding-jobs/${sourceTaskId}`,refRecovered:true});
+  assert.equal((await runFile("git",["rev-parse",`refs/nova/coding-jobs/${sourceTaskId}`],{cwd:root})).stdout.trim(),sourceHead);
   assert.equal(((await runFile("git", ["worktree", "list", "--porcelain"], { cwd: root })).stdout.match(/^worktree /gm) || []).length, 1);
 });
 

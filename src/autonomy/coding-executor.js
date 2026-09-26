@@ -85,6 +85,7 @@ export function immutableCodingSpecification(value) {
     workspaceId: value.workspaceId,
     delivery: value.delivery,
     verification: value.verification,
+    ...(value.trustedArtifact ? { trustedArtifact: value.trustedArtifact } : {}),
   });
 }
 
@@ -180,6 +181,19 @@ function normalizeJob(input, binding, { requireApproval = true } = {}) {
     fail("coding_delivery_boundary_rejected", "Coding jobs are limited to a local commit; push and deployment require separate approval.", 403);
   }
   if (requireApproval && input.approval?.buildApproved !== true) fail("coding_build_approval_required", "The build stage requires explicit owner approval.", 403);
+  let trustedArtifact;
+  if (input.trustedArtifact !== undefined) {
+    const artifact=input.trustedArtifact;
+    if (!artifact || typeof artifact!=="object" || Array.isArray(artifact)
+      || Object.keys(artifact).some(key=>!["version","sourceTaskId","sourceStateVersion","repository","sourceBranch","commitSha","artifactRef","filesChanged"].includes(key))
+      || artifact.version!==1 || !CODING_TASK_ID.test(artifact.sourceTaskId||"") || !Number.isInteger(artifact.sourceStateVersion) || artifact.sourceStateVersion<1
+      || artifact.repository!==binding.repository || typeof artifact.sourceBranch!=="string" || !artifact.sourceBranch.trim()
+      || !SHA.test(artifact.commitSha||"") || artifact.artifactRef!==`refs/nova/coding-jobs/${artifact.sourceTaskId}`
+      || !Array.isArray(artifact.filesChanged) || artifact.filesChanged.length>100 || artifact.filesChanged.some(path=>typeof path!=="string"||!path||path.length>240||path.startsWith("/")||path.includes(".."))) {
+      fail("coding_trusted_artifact_invalid", "The trusted historical artifact provenance is invalid.", 409);
+    }
+    trustedArtifact=Object.freeze({version:1,sourceTaskId:artifact.sourceTaskId,sourceStateVersion:artifact.sourceStateVersion,repository:artifact.repository,sourceBranch:artifact.sourceBranch.trim(),commitSha:artifact.commitSha,artifactRef:artifact.artifactRef,filesChanged:Object.freeze([...new Set(artifact.filesChanged)])});
+  }
   const specification = immutableCodingSpecification({
     jobId,
     parentTaskId,
@@ -191,6 +205,7 @@ function normalizeJob(input, binding, { requireApproval = true } = {}) {
     workspaceId,
     delivery: Object.freeze({ boundary: "local_commit", allowPush: false, allowDeploy: false }),
     verification: strings(input.verification || [], "verification", { max: 30 }),
+    trustedArtifact,
   });
   return requireApproval
     ? Object.freeze({ ...specification, approval: Object.freeze({ buildApproved: true, approvalId: text(input.approval.approvalId, "approval.approvalId", 128) }) })

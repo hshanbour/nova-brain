@@ -43,6 +43,7 @@ import { configuredCodingBindings, createCodingExecutorService } from "./autonom
 import { codingDelegationFingerprint, createCodingDelegationService, isChatCodingDelegationRequest } from "./autonomy/coding-delegation.js";
 import {createTerminalTaskReporter,isConversationTaskResultQuestion} from "./autonomy/terminal-task-reporter.js";
 import {createArtifactDeliveryService,registerArtifactDeliveryTool} from "./autonomy/artifact-delivery.js";
+import {createTrustedArtifactContinuity,isExplicitTrustedArtifactRequest} from "./autonomy/trusted-artifact-continuity.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -170,6 +171,7 @@ export function createApp({
   const structuredIntake=createSelfDevelopmentIntake({modelProvider});
   const selfDevelopment=createSelfDevelopmentService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,currentCommit:environment.VERCEL_GIT_COMMIT_SHA,runtimeVersion:environment.VERCEL_GIT_COMMIT_SHA,verifyRemote,compareRemoteEvidence,verifyDeployment,structuredIntake,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
   const artifactDelivery=createArtifactDeliveryService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedRepository:environment.NOVA_BRAIN_GITHUB_REPOSITORY||"hshanbour/nova-brain",approvedBranch:config.developmentBranch,verifyRemote,findPreview,verifyDeployment,verifyHealth:verifyPreviewHealth});
+  const artifactContinuity=codingDelegation?createTrustedArtifactContinuity({storage,ownerId:OWNER_ID,approvedRepository:environment.NOVA_BRAIN_GITHUB_REPOSITORY||"hshanbour/nova-brain",approvedBranch:config.developmentBranch,verifyRemote,codingDelegation,artifactDelivery}):null;
   registerArtifactDeliveryTool(toolRegistry,{service:artifactDelivery});
   const selfDevelopmentExpiryRecovery=createSelfDevelopmentExpiryRecovery({storage,ownerId:OWNER_ID,verifyDeployment});
   registerSelfDevelopmentTools(toolRegistry,{service:selfDevelopment});
@@ -214,7 +216,7 @@ export function createApp({
     },
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
       if(context?.voice===true)return null;
-      const bound=await storage.listConversationBoundTasks(OWNER_ID,conversationId,{limit:20}),workflowCandidates=bound
+      const bound=await storage.listConversationBoundTasks(OWNER_ID,conversationId,{limit:20}),historical=artifactContinuity?await artifactContinuity.candidates({limit:8}):[],boundIds=new Set(bound.map(task=>task.id)),boundCandidates=bound
         .filter(task=>!(task.taskType==="coding_orchestration"&&task.metadata?.delegatedTaskId))
         .slice(0,8)
         .map(task=>({
@@ -235,11 +237,14 @@ export function createApp({
             ...(task.status==="waiting_for_approval"?["approval_decision"]:[]),
             ...(task.taskType==="coding_delegation"&&task.status==="completed"?["shipping_request"]:[]),
           ],
-        }));
+        })),historicalCandidates=historical.filter(task=>!boundIds.has(task.id)),explicitTaskId=String(message||"").match(/\bcoding_[a-f0-9]{32}\b/)?.[0]||null,preferred=explicitTaskId?[...boundCandidates,...historicalCandidates].filter(task=>task.id===explicitTaskId):[],workflowCandidates=[...new Map([...preferred,...boundCandidates.slice(0,6),...historicalCandidates].map(task=>[task.id,task])).values()].slice(0,8);
       const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message);
       if(!workflowCandidates.length&&!implementationSignal&&!codingSignal)return null;
+      const explicitArtifact=explicitTaskId&&historicalCandidates.find(task=>task.id===explicitTaskId);
+      if(explicitArtifact&&isExplicitTrustedArtifactRequest(message,explicitTaskId))return{...(await artifactContinuity.adopt(explicitTaskId,{conversationId,runId,signal})),providerUsage:null,turnRoute:"artifact_adoption"};
       const routed=await selfDevelopment.resolveTrustedTurn(message,{workflowCandidates,signal,costContext:{runId},originConversationId:conversationId,originRunId:runId});
       if(routed?.shippingRequest===true){const workflow=routed.workflow;if(!workflow||workflow.taskType!=="coding_delegation"||workflow.status!=="completed")throw Object.assign(new Error("Shipping requires one completed conversation-bound coding artifact."),{code:"artifact_delivery_source_invalid"});const created=await artifactDelivery.create(workflow.id,{conversationId,runId});return{...created,providerUsage:routed.providerUsage,turnRoute:routed.turnRoute};}
+      if(routed?.artifactAdoption===true){const adopted=await artifactContinuity.adopt(routed.workflow.id,{conversationId,runId,signal});return{...adopted,providerUsage:routed.providerUsage,turnRoute:routed.turnRoute};}
       return routed?.codingDelegation?{...routed,requestFingerprint:codingDelegationFingerprint(message)}:routed;
     },
     logger,

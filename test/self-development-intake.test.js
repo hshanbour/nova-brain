@@ -43,7 +43,7 @@ test("analysis-only intent remains a structured non-mutation classification",asy
 
 test("one structured turn decision binds contextual follow-up to an exact trusted workflow",async()=>{
   const calls=[],id=`coding_${"a".repeat(32)}`,intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"existing_workflow_question",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}],calls)}),result=await intake.resolveTurn("Why is shipping blocked?",{workflowCandidates:[{id,taskType:"coding_delegation",status:"completed",stateVersion:9,currentPhase:"completed",currentCommit:"b".repeat(40),allowedTransitions:["existing_workflow_question","task_status"]}]});
-  assert.equal(result.route,"existing_workflow_question");assert.equal(result.workflow.id,id);assert.equal(calls.length,1);assert.deepEqual(calls[0].responseFormat.schema,SELF_DEVELOPMENT_INTAKE_SCHEMAS.turn);assert.match(calls[0].systemContext,/single authoritative semantic turn resolver/);
+  assert.equal(result.route,"existing_workflow_question");assert.equal(result.workflow.id,id);assert.equal(calls.length,1);assert.deepEqual(calls[0].responseFormat.schema,SELF_DEVELOPMENT_INTAKE_SCHEMAS.turn);assert.match(calls[0].systemContext,/authoritative semantic turn resolver/);
 });
 
 test("explicit shipping remains bound to one eligible completed coding workflow",async()=>{
@@ -51,6 +51,16 @@ test("explicit shipping remains bound to one eligible completed coding workflow"
   assert.equal(result.route,"shipping_request");assert.equal(result.workflow.id,id);
   const ineligible=createSelfDevelopmentIntake({modelProvider:provider([{route:"shipping_request",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])});
   await assert.rejects(()=>ineligible.resolveTurn("Ship it",{workflowCandidates:[{id,taskType:"coding_delegation",status:"running",stateVersion:7,allowedTransitions:["existing_workflow_question"]}]}),error=>error.code==="structured_turn_invalid");
+});
+
+test("natural historical artifact continuation selects only a supplied server-owned candidate",async()=>{
+  const id=`coding_${"e".repeat(32)}`,intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"artifact_adoption",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn("Ship the completed drawer work",{workflowCandidates:[{id,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",objective:"Improve drawer keyboard behavior",allowedTransitions:["artifact_adoption"]}]});
+  assert.equal(result.route,"artifact_adoption");assert.equal(result.workflow.id,id);assert.equal(result.workflow.title,"Recent Conversations drawer accessibility");
+});
+
+test("ambiguous historical artifact selection asks a normal clarification and grants no workflow authority",async()=>{
+  const ids=[`coding_${"6".repeat(32)}`,`coding_${"7".repeat(32)}`],intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"clarification_required",workflowId:null,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:"Which completed website artifact should I use?"}])}),result=await intake.resolveTurn("Ship the completed website work",{workflowCandidates:ids.map((id,index)=>({id,taskType:"coding_delegation",status:"completed",stateVersion:4,title:`Website artifact ${index+1}`,allowedTransitions:["artifact_adoption"]}))});
+  assert.equal(result.route,"clarification_required");assert.match(result.clarificationQuestion,/Which completed website artifact/);assert.equal("workflow" in result,false);
 });
 
 test("turn resolver cannot invent workflow authority and uses normal clarification for ambiguity",async()=>{

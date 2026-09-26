@@ -261,7 +261,18 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
     const startedAt = clock().toISOString();
     let worktreeAdded = false;
     const localRef = `refs/nova/coding-jobs/${taskId}`;
+    let sourceArtifactRefRecovered=false;
     try {
+      if(job.trustedArtifact){
+        const artifact=job.trustedArtifact;
+        try{await sourceGit("cat-file","-e",`${artifact.commitSha}^{commit}`);}catch(cause){throw Object.assign(new Error("The trusted historical artifact commit is unavailable locally."),{code:"coding_executor_artifact_unavailable",safeDiagnostics:{stage:"artifact_preflight",sourceTaskId:artifact.sourceTaskId,commitExists:false,executorLaunched:false},cause});}
+        let resolved=null;
+        try{resolved=await sourceGit("rev-parse","--verify",artifact.artifactRef);}catch{}
+        if(resolved&&resolved!==artifact.commitSha)throw Object.assign(new Error("The trusted historical artifact ref points to a different commit."),{code:"coding_executor_artifact_ref_mismatch",safeDiagnostics:{stage:"artifact_preflight",sourceTaskId:artifact.sourceTaskId,commitExists:true,refMatches:false,executorLaunched:false}});
+        if(!resolved){
+          try{await sourceGit("update-ref",artifact.artifactRef,artifact.commitSha,"0".repeat(40));sourceArtifactRefRecovered=true;}catch(cause){throw Object.assign(new Error("The trusted historical artifact ref could not be recovered from its durable exact commit."),{code:"coding_executor_artifact_ref_unavailable",safeDiagnostics:{stage:"artifact_preflight",sourceTaskId:artifact.sourceTaskId,commitExists:true,refMatches:false,executorLaunched:false},cause});}
+        }
+      }
       try {
         await sourceGit("cat-file", "-e", `${job.repository.baseline}^{commit}`);
       } catch (cause) {
@@ -363,6 +374,7 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
           completedAt: clock().toISOString(),
           billing: "codex_account_separate_from_nova_api_budget",
           localRef,
+          ...(job.trustedArtifact?{trustedArtifact:{sourceTaskId:job.trustedArtifact.sourceTaskId,commitSha:job.trustedArtifact.commitSha,artifactRef:job.trustedArtifact.artifactRef,refRecovered:sourceArtifactRefRecovered}}:{}),
           resultConsistency: {
             filesChangedMatch,
             reportedFilesCount: reportedFiles.length,
