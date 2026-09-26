@@ -9,6 +9,7 @@ if($Action -eq 'status'){ $task=Get-ScheduledTask -TaskName $name -ErrorAction S
 if($Action -eq 'uninstall'){ Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue; [Console]::Out.Write('uninstalled'); exit }
 if($PreviewUrl -notmatch '^https://[a-z0-9.-]+\.vercel\.app/?$'){throw 'A protected HTTPS Vercel Preview URL is required.'}
 . (Join-Path $PSScriptRoot 'windows-native-process.ps1')
+. (Join-Path $PSScriptRoot 'windows-worker-replacement.ps1')
 
 $node=(Get-Command node.exe).Source
 $git=(Get-Command git.exe -ErrorAction Stop).Source
@@ -89,10 +90,128 @@ try {
   $logonTrigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
   $watchdogTrigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650)
   $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-  Register-ScheduledTask -TaskName $name -Action $taskAction -Trigger @($logonTrigger,$watchdogTrigger) -Settings $settings -Description 'Versioned Nova worker runtime with an independently bound task workspace.' -Force | Out-Null
-  $installedAction=(Get-ScheduledTask -TaskName $name -ErrorAction Stop).Actions | Select-Object -First 1
-  if($installedAction.Execute -ne $node -or $installedAction.Arguments -notlike ('*"'+$script+'"*') -or $installedAction.Arguments -notlike ('*--repository-root "'+$root+'"*') -or $installedAction.Arguments -notlike ('*--runtime-version "'+$runtimeVersion+'"*') -or $installedAction.Arguments -notlike ('*--git-executable "'+$git+'"*') -or $installedAction.Arguments -notlike ('*--codex-executable "'+$codex+'"*') -or $installedAction.Arguments -notlike ('*--credential-helper "'+$helper+'"*')){throw 'The Scheduled Task immutable runtime binding could not be verified.'}
-  Start-ScheduledTask -TaskName $name
+
+  $statusPath=Join-Path $runtime 'status.json'
+  $lockPath=Join-Path $runtime 'worker.lock'
+  function Read-WorkerStatus {
+    if(-not (Test-Path -LiteralPath $statusPath -PathType Leaf)){return $null}
+    try { return (Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json) } catch { return $null }
+  }
+  function Read-LockPid {
+    if(-not (Test-Path -LiteralPath $lockPath -PathType Leaf)){return 0}
+    try {$value=(Get-Content -LiteralPath $lockPath -Raw).Trim()} catch {return 0}
+    if($value -notmatch '^\d+$'){return -1}
+    return [int]$value
+  }
+  function Test-RecentTimestamp($value) {
+    if([string]::IsNullOrWhiteSpace([string]$value)){return $false}
+    try {
+      $age=([DateTimeOffset]::UtcNow-[DateTimeOffset]::Parse([string]$value).ToUniversalTime()).TotalSeconds
+      return $age -ge -5 -and $age -le 45
+    } catch { return $false }
+  }
+  function Get-WorkerSnapshot {
+    $task=Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    $status=Read-WorkerStatus
+    $lockPid=Read-LockPid
+    $workerPid=0
+    if($null -ne $status -and $null -ne $status.PSObject.Properties['pid']){$workerPid=[int]$status.pid}
+    $process=if($workerPid -gt 0){Get-Process -Id $workerPid -ErrorAction SilentlyContinue}else{$null}
+    $taskActionCurrent=if($null -ne $task){$task.Actions | Select-Object -First 1}else{$null}
+    $actionMatches=$null -ne $taskActionCurrent -and $taskActionCurrent.Execute -eq $node -and $taskActionCurrent.Arguments -eq $arguments -and $taskActionCurrent.WorkingDirectory -eq $root
+    $taskId=if($null -ne $status -and $null -ne $status.PSObject.Properties['taskId']){[string]$status.taskId}else{''}
+    $state=if($null -ne $status -and $null -ne $status.PSObject.Properties['state']){[string]$status.state}else{''}
+    $heartbeat=if($null -ne $status -and $null -ne $status.PSObject.Properties['lastHeartbeat']){[string]$status.lastHeartbeat}else{''}
+    $lastPoll=if($null -ne $status -and $null -ne $status.PSObject.Properties['lastSuccessfulPoll']){[string]$status.lastSuccessfulPoll}else{''}
+    $statusRuntime=if($null -ne $status -and $null -ne $status.PSObject.Properties['runtimeVersion']){[string]$status.runtimeVersion}else{''}
+    $statusPreview=if($null -ne $status -and $null -ne $status.PSObject.Properties['previewUrl']){[string]$status.previewUrl}else{''}
+    $owned=$workerPid -gt 0 -and $lockPid -eq $workerPid -and $null -ne $process
+    $idle=$state -in @('idle','polling') -and [string]::IsNullOrWhiteSpace($taskId)
+    $healthy=$owned -and $idle -and (Test-RecentTimestamp $heartbeat) -and (Test-RecentTimestamp $lastPoll)
+    $safeToReplace=($null -eq $process -and $lockPid -eq 0) -or ($null -ne $task -and $healthy)
+    $converged=$healthy -and $actionMatches -and $statusRuntime -eq $runtimeVersion -and $statusPreview -eq $PreviewUrl.TrimEnd('/') -and [string]$task.State -eq 'Running'
+    return [pscustomobject]@{
+      SafeToReplace=$safeToReplace; Healthy=$healthy; Converged=$converged; Pid=$workerPid
+      RuntimeVersion=$statusRuntime; PreviewUrl=$statusPreview
+      LastHeartbeat=$heartbeat; LastSuccessfulPoll=$lastPoll; LockPid=$lockPid
+    }
+  }
+
+  $priorTask=Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+  $priorTaskXml=if($null -ne $priorTask){Export-ScheduledTask -TaskName $name}else{$null}
+  $priorWasRunning=$null -ne $priorTask -and [string]$priorTask.State -eq 'Running'
+  $current=Get-WorkerSnapshot
+  $oldPid=[int]$current.Pid
+
+  $stopCurrent={ Stop-ScheduledTask -TaskName $name -ErrorAction Stop }
+  $awaitCurrentStopped={
+    $deadline=[DateTimeOffset]::UtcNow.AddSeconds(30)
+    do {
+      $alive=$null -ne (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)
+      if(-not $alive){
+        $owner=Read-LockPid
+        if($owner -eq $oldPid){Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop; $owner=Read-LockPid}
+        if($owner -eq 0){return $true}
+      }
+      Start-Sleep -Milliseconds 250
+    } while([DateTimeOffset]::UtcNow -lt $deadline)
+    return $false
+  }
+  $installReplacement={
+    Register-ScheduledTask -TaskName $name -Action $taskAction -Trigger @($logonTrigger,$watchdogTrigger) -Settings $settings -Description 'Versioned Nova worker runtime with an independently bound task workspace.' -Force | Out-Null
+    $installedAction=(Get-ScheduledTask -TaskName $name -ErrorAction Stop).Actions | Select-Object -First 1
+    if($installedAction.Execute -ne $node -or $installedAction.Arguments -ne $arguments -or $installedAction.WorkingDirectory -ne $root){throw 'The Scheduled Task immutable runtime binding could not be verified.'}
+  }
+  $startReplacement={ Start-ScheduledTask -TaskName $name -ErrorAction Stop }
+  $awaitReplacementConverged={
+    $deadline=[DateTimeOffset]::UtcNow.AddSeconds(75)
+    $first=$null
+    do {
+      $sample=Get-WorkerSnapshot
+      if($sample.Converged -and $sample.Pid -ne $oldPid){
+        if($null -eq $first -or $first.Pid -ne $sample.Pid){$first=$sample}
+        elseif([DateTimeOffset]::Parse($sample.LastHeartbeat) -gt [DateTimeOffset]::Parse($first.LastHeartbeat) -and [DateTimeOffset]::Parse($sample.LastSuccessfulPoll) -gt [DateTimeOffset]::Parse($first.LastSuccessfulPoll)){
+          return $sample
+        }
+      }
+      Start-Sleep -Milliseconds 500
+    } while([DateTimeOffset]::UtcNow -lt $deadline)
+    return $null
+  }
+  $rollback={
+    Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    $deadline=[DateTimeOffset]::UtcNow.AddSeconds(15)
+    do {
+      $owner=Read-LockPid
+      if($owner -eq 0 -or $null -eq (Get-Process -Id $owner -ErrorAction SilentlyContinue)){break}
+      Start-Sleep -Milliseconds 250
+    } while([DateTimeOffset]::UtcNow -lt $deadline)
+    if($owner -gt 0 -and $null -ne (Get-Process -Id $owner -ErrorAction SilentlyContinue)){throw 'The failed replacement worker could not be stopped during rollback.'}
+    $owner=Read-LockPid
+    if($owner -gt 0 -and $null -eq (Get-Process -Id $owner -ErrorAction SilentlyContinue)){Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue}
+    if($null -ne $priorTaskXml){
+      Register-ScheduledTask -TaskName $name -Xml $priorTaskXml -Force | Out-Null
+      if($priorWasRunning){
+        Start-ScheduledTask -TaskName $name -ErrorAction Stop
+        $restoreDeadline=[DateTimeOffset]::UtcNow.AddSeconds(75)
+        $restoreFirst=$null
+        do {
+          $restored=Get-WorkerSnapshot
+          if($restored.Healthy -and $restored.Pid -ne $oldPid){
+            if($null -eq $restoreFirst -or $restoreFirst.Pid -ne $restored.Pid){$restoreFirst=$restored}
+            elseif([DateTimeOffset]::Parse($restored.LastHeartbeat) -gt [DateTimeOffset]::Parse($restoreFirst.LastHeartbeat) -and [DateTimeOffset]::Parse($restored.LastSuccessfulPoll) -gt [DateTimeOffset]::Parse($restoreFirst.LastSuccessfulPoll)){return}
+          }
+          Start-Sleep -Milliseconds 500
+        } while([DateTimeOffset]::UtcNow -lt $restoreDeadline)
+        throw 'The prior persistent worker did not recover after replacement rollback.'
+      }
+    } else {
+      Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+    }
+  }
+
+  $cutover=Invoke-NovaWorkerCutover -Current $current -StopCurrent $stopCurrent -AwaitCurrentStopped $awaitCurrentStopped -InstallReplacement $installReplacement -StartReplacement $startReplacement -AwaitReplacementConverged $awaitReplacementConverged -Rollback $rollback
+  if($null -eq $cutover -or $cutover.Pid -le 0){throw 'The persistent worker replacement did not produce a verified worker identity.'}
   [Console]::Out.Write('installed')
 } finally {
   if(Test-Path -LiteralPath $stagedArchive){Remove-Item -LiteralPath $stagedArchive -Force}
