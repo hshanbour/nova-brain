@@ -7,20 +7,28 @@ function Invoke-NovaNativeProbe {
 
   $previousErrorActionPreference=$ErrorActionPreference
   $exitCode=-1
-  $output=@()
+  $stdout=@()
+  $stderr=@()
+  $stderrPath=[System.IO.Path]::GetTempFileName()
   try {
     # Windows PowerShell 5.1 promotes native stderr records according to
     # ErrorActionPreference even when the native process exits successfully.
-    # Native process exit status is the authoritative success boundary.
+    # Redirect stderr separately so native exit status remains authoritative
+    # without contaminating machine-readable stdout.
     $ErrorActionPreference='Continue'
-    $output=@(& $FilePath @ArgumentValues 2>&1)
+    $stdout=@(& $FilePath @ArgumentValues 2> $stderrPath)
     $exitCode=$LASTEXITCODE
+    if(Test-Path -LiteralPath $stderrPath -PathType Leaf){
+      $stderr=@([System.IO.File]::ReadAllLines($stderrPath))
+    }
   } finally {
     $ErrorActionPreference=$previousErrorActionPreference
+    if(Test-Path -LiteralPath $stderrPath){Remove-Item -LiteralPath $stderrPath -Force}
   }
 
   [pscustomobject]@{
     ExitCode=[int]$exitCode
-    Output=@($output | ForEach-Object { [string]$_ })
+    Stdout=@($stdout | ForEach-Object { [string]$_ })
+    Stderr=@($stderr | ForEach-Object { [string]$_ })
   }
 }
