@@ -42,6 +42,7 @@ import { createDeveloperWorkspaceHandoff } from "./autonomy/developer-workspace-
 import { configuredCodingBindings, createCodingExecutorService } from "./autonomy/coding-executor.js";
 import { codingDelegationFingerprint, createCodingDelegationService, isChatCodingDelegationRequest } from "./autonomy/coding-delegation.js";
 import {createTerminalTaskReporter,isConversationTaskResultQuestion} from "./autonomy/terminal-task-reporter.js";
+import {createArtifactDeliveryService,registerArtifactDeliveryTool} from "./autonomy/artifact-delivery.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -136,6 +137,13 @@ export function createApp({
     if(!response.ok)throw new Error("Preview verification failed.");
     const value=await response.json();return{id:value.id||value.uid,url:value.url,status:value.readyState||value.state,target:value.target,sha:value.gitSource?.sha||value.meta?.githubCommitSha,branch:value.gitSource?.ref||value.meta?.githubCommitRef};
   };
+  const findPreview=async ({commitSha,branch})=>{
+    const response=await fetch(`https://api.vercel.com/v6/deployments?projectId=${encodeURIComponent(environment.NOVA_BRAIN_VERCEL_PROJECT_ID||"")}&limit=100&target=preview`,{headers:{Authorization:`Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN||""}`}});
+    if(!response.ok)throw Object.assign(new Error("Preview discovery failed."),{code:"deployment_discovery_failed",retryable:true});
+    const values=(await response.json()).deployments||[],match=values.find(value=>(value.gitSource?.sha||value.meta?.githubCommitSha)===commitSha&&(value.gitSource?.ref||value.meta?.githubCommitRef)===branch&&value.target!=="production");
+    return match?{id:match.uid||match.id,url:match.url,status:match.readyState||match.state,target:match.target,sha:commitSha,branch}:null;
+  };
+  const verifyPreviewHealth=async ({deploymentId,commitSha,branch})=>{const deployment=await verifyDeployment({deploymentId});if(deployment.target==="production"||deployment.sha!==commitSha||deployment.branch!==branch)throw Object.assign(new Error("Preview source mismatch."),{code:"artifact_delivery_source_mismatch"});const response=await fetch(`https://${deployment.url}/api/health`,{headers:{...(environment.VERCEL_AUTOMATION_BYPASS_SECRET?{"x-vercel-protection-bypass":environment.VERCEL_AUTOMATION_BYPASS_SECRET}:{})}}),value=await response.json().catch(()=>({}));if(response.status!==200||value.status!=="online"||value.storage?.provider!=="postgres"||value.storage?.durable!==true||value.storage?.status!=="ready")throw Object.assign(new Error("Preview health is not ready."),{code:"preview_unavailable",retryable:true});return{status:200,url:`https://${deployment.url}/api/health`,health:"online",storage:"ready"};};
   const verifyRemote=async ({repository,branch,requiredAncestors,signal}) => {
       const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28",...(environment.NOVA_BRAIN_GITHUB_TOKEN?{Authorization:`Bearer ${environment.NOVA_BRAIN_GITHUB_TOKEN}`}:{})};
       const response=await fetch(`https://api.github.com/repos/${repository}/commits/${encodeURIComponent(branch)}`,{headers,signal});
@@ -161,6 +169,8 @@ export function createApp({
   toolRegistry.register({name:"self_development_plan_implementation",description:"Generate one evidence-bound structured implementation or repair plan for the exact durable Self-Development task.",category:"autonomy",capability:"reasoning",riskLevel:"READ_ONLY",available:true,configurationStatus:"ready",inputSchema:{type:"object",properties:{taskId:{type:"string"},candidatePaths:{type:"array"},authorizedCreatePaths:{type:"array"},currentCommit:{type:"string"},failureEvidence:{type:"object"}},required:["taskId","candidatePaths","currentCommit"],additionalProperties:false},execute:input=>implementationPlanner.generate(input)});
   const structuredIntake=createSelfDevelopmentIntake({modelProvider});
   const selfDevelopment=createSelfDevelopmentService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,currentCommit:environment.VERCEL_GIT_COMMIT_SHA,runtimeVersion:environment.VERCEL_GIT_COMMIT_SHA,verifyRemote,compareRemoteEvidence,verifyDeployment,structuredIntake,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
+  const artifactDelivery=createArtifactDeliveryService({runtime:workerRuntime,storage,ownerId:OWNER_ID,approvedRepository:environment.NOVA_BRAIN_GITHUB_REPOSITORY||"hshanbour/nova-brain",approvedBranch:config.developmentBranch,verifyRemote,findPreview,verifyDeployment,verifyHealth:verifyPreviewHealth});
+  registerArtifactDeliveryTool(toolRegistry,{service:artifactDelivery});
   const selfDevelopmentExpiryRecovery=createSelfDevelopmentExpiryRecovery({storage,ownerId:OWNER_ID,verifyDeployment});
   registerSelfDevelopmentTools(toolRegistry,{service:selfDevelopment});
   const speakerAssertions = createSpeakerAssertions({
@@ -223,11 +233,13 @@ export function createApp({
             "task_status",
             ...(!["completed","cancelled","expired"].includes(task.status)?["existing_workflow_continue"]:[]),
             ...(task.status==="waiting_for_approval"?["approval_decision"]:[]),
+            ...(task.taskType==="coding_delegation"&&task.status==="completed"?["shipping_request"]:[]),
           ],
         }));
       const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message);
       if(!workflowCandidates.length&&!implementationSignal&&!codingSignal)return null;
       const routed=await selfDevelopment.resolveTrustedTurn(message,{workflowCandidates,signal,costContext:{runId},originConversationId:conversationId,originRunId:runId});
+      if(routed?.shippingRequest===true){const workflow=routed.workflow;if(!workflow||workflow.taskType!=="coding_delegation"||workflow.status!=="completed")throw Object.assign(new Error("Shipping requires one completed conversation-bound coding artifact."),{code:"artifact_delivery_source_invalid"});const created=await artifactDelivery.create(workflow.id,{conversationId,runId});return{...created,providerUsage:routed.providerUsage,turnRoute:routed.turnRoute};}
       return routed?.codingDelegation?{...routed,requestFingerprint:codingDelegationFingerprint(message)}:routed;
     },
     logger,

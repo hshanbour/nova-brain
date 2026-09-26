@@ -86,9 +86,9 @@ const EXISTING_TASK_CONTROL_TOOLS = new Set([
   "self_development_get",
   "self_development_scope_recover",
 ]);
-const CANONICAL_DURABLE_ACKNOWLEDGEMENT=/^Durable (?:self-development|coding orchestration) task (?:selfdev|orchestration|coding)_[a-f0-9]{32} is [a-z_]+\. Track it in Activity; Nova's Persistent Local Worker can continue it independently\.$/;
+const CANONICAL_DURABLE_ACKNOWLEDGEMENT=/^Durable (?:self-development|coding orchestration|artifact delivery) task (?:selfdev|orchestration|coding|shipping)_[a-f0-9]{32} is [a-z_]+\. Track it in Activity; Nova's Persistent Local Worker can continue it independently\.$/;
 const taskControlTools=route=>new Set(route?.action==="recovery"?[...EXISTING_TASK_CONTROL_TOOLS]:["self_development_get"]);
-const ROUTED_CREATION_TOOLS=new Set(["self_development_create","coding_job_prepare","coding_job_create"]);
+const ROUTED_CREATION_TOOLS=new Set(["self_development_create","coding_job_prepare","coding_job_create","artifact_delivery_execute"]);
 
 function toolActivityMetadata(name,args,error){
   if(name==="coding_job_create"){
@@ -178,10 +178,11 @@ export function createAgent({
           startingCommit: task.startingCommit,
           idempotent: idempotent === true,
         };
+        const durableLabel=task.taskType==="artifact_delivery"?"artifact delivery":"self-development";
         const response = {
           id: randomUUID(),
           conversationId,
-          message: `Durable self-development task ${durableTask.id} is ${durableTask.status}. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`,
+          message: `Durable ${durableLabel} task ${durableTask.id} is ${durableTask.status}. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`,
           provider: "durable_runtime",
           toolCalls,
           steps,

@@ -46,6 +46,13 @@ test("one structured turn decision binds contextual follow-up to an exact truste
   assert.equal(result.route,"existing_workflow_question");assert.equal(result.workflow.id,id);assert.equal(calls.length,1);assert.deepEqual(calls[0].responseFormat.schema,SELF_DEVELOPMENT_INTAKE_SCHEMAS.turn);assert.match(calls[0].systemContext,/single authoritative semantic turn resolver/);
 });
 
+test("explicit shipping remains bound to one eligible completed coding workflow",async()=>{
+  const id=`coding_${"c".repeat(32)}`,intake=createSelfDevelopmentIntake({modelProvider:provider([{route:"shipping_request",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn("Ship that completed artifact to Preview",{workflowCandidates:[{id,taskType:"coding_delegation",status:"completed",stateVersion:8,currentPhase:"completed",currentCommit:"d".repeat(40),allowedTransitions:["existing_workflow_question","shipping_request"]}]});
+  assert.equal(result.route,"shipping_request");assert.equal(result.workflow.id,id);
+  const ineligible=createSelfDevelopmentIntake({modelProvider:provider([{route:"shipping_request",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])});
+  await assert.rejects(()=>ineligible.resolveTurn("Ship it",{workflowCandidates:[{id,taskType:"coding_delegation",status:"running",stateVersion:7,allowedTransitions:["existing_workflow_question"]}]}),error=>error.code==="structured_turn_invalid");
+});
+
 test("turn resolver cannot invent workflow authority and uses normal clarification for ambiguity",async()=>{
   const first=`selfdev_${"a".repeat(32)}`,second=`coding_${"b".repeat(32)}`,candidates=[{id:first,taskType:"self_development",status:"blocked",stateVersion:4,currentPhase:"approval"},{id:second,taskType:"coding_delegation",status:"completed",stateVersion:8,currentPhase:"completed"}];
   const invented=createSelfDevelopmentIntake({modelProvider:provider([{route:"existing_workflow_continue",workflowId:`selfdev_${"f".repeat(32)}`,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])});

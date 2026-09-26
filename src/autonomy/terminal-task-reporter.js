@@ -23,6 +23,12 @@ function codingResult(task,steps){
   return execution?.result?.diagnostics?.codingResult||execution?.result||null;
 }
 
+function shippingResult(task,steps){
+  const ordered=[...steps].sort((a,b)=>stepOrdinal(a)-stepOrdinal(b)),push=ordered.find(step=>step.stepType==="push"&&step.status==="completed"),deployment=ordered.find(step=>step.stepType==="deploy_preview"&&step.status==="completed"),verification=ordered.filter(step=>step.stepType==="verify_preview"&&step.status==="completed"),source=verification[0]?.result||deployment?.result||{},health=verification[1]?.result||{};
+  const workerRebindRequired=task.metadata?.artifactDelivery?.workerRebindRequired===true;
+  return{summary:task.resultSummary||"The approved artifact was pushed and its exact Preview passed source and health verification.",finalLocalSha:task.metadata?.artifactDelivery?.commitSha,pushOccurred:Boolean(push),deploymentOccurred:Boolean(deployment),deploymentId:source.deploymentId,previewUrl:source.url,healthStatus:health.status===200?"HTTP 200":bounded(health.health||"",80),workerRebindRequired,approvalsRequiredNext:workerRebindRequired?["Use the existing protected installer to bind the Persistent Local Worker to this exact runtime after separate owner approval."]:[]};
+}
+
 function testLines(raw,steps){
   const reported=Array.isArray(raw?.tests)?raw.tests.map(test=>{
     if(typeof test==="string")return bounded(test,300);
@@ -35,7 +41,7 @@ function testLines(raw,steps){
 
 export function renderTerminalTaskReport(task,steps=[]){
   if(!task||!TERMINAL.has(task.status))return null;
-  const raw=task.taskType==="coding_delegation"?codingResult(task,steps):null;
+  const raw=task.taskType==="coding_delegation"?codingResult(task,steps):task.taskType==="artifact_delivery"?shippingResult(task,steps):null;
   const summary=bounded(raw?.summary||task.resultSummary||task.blockedReason||({completed:"The durable task completed.",failed:"The durable task failed safely.",blocked:"The durable task is blocked.",cancelled:"The durable task was cancelled.",expired:"The durable task expired."}[task.status]),1200);
   const ordered=[...steps].sort((a,b)=>stepOrdinal(a)-stepOrdinal(b)),apply=[...ordered].reverse().find(step=>step.stepType==="apply_patch"&&step.status==="completed"),commitStep=[...ordered].reverse().find(step=>["commit","integrate_commit"].includes(step.stepType)&&step.status==="completed");
   const files=list(raw?.filesChanged||apply?.result?.changedFiles,40),tests=testLines(raw,steps),limitations=list(raw?.limitations,20);
@@ -46,6 +52,10 @@ export function renderTerminalTaskReport(task,steps=[]){
   if(files.length)lines.push("","Files changed:",bullet(files));
   if(tests.length)lines.push("","Tests:",bullet(tests));
   if(commit&&/^[a-f0-9]{40}$/.test(commit))lines.push("",`Local commit: ${commit}`);
+  if(raw?.deploymentId)lines.push(`Deployment ID: ${bounded(raw.deploymentId,160)}`);
+  if(raw?.previewUrl)lines.push(`Preview URL: ${bounded(raw.previewUrl,500)}`);
+  if(raw?.healthStatus)lines.push(`Health: ${bounded(raw.healthStatus,120)}`);
+  if(task.taskType==="artifact_delivery")lines.push(`Worker rebind: ${raw?.workerRebindRequired?"required through the separate protected installer":"not required for this product-only artifact"}.`);
   if(jobRef)lines.push(`Retained coding-job ref: ${jobRef}`);
   if(limitations.length)lines.push("","Limitations:",bullet(limitations));
   if(errorCode||reason)lines.push("",`Reason: ${errorCode?`${errorCode}${reason?" — ":""}`:""}${reason}`);

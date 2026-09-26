@@ -6,6 +6,7 @@ import {PLANNING_SCOPE_RECOVERY_CLASS,validatePlanningScopeReadEvidence} from ".
 import {EXECUTION_SCOPE_RECOVERY_CLASS,validateExecutionScopeEvidence} from "./execution-scope-recovery.js";
 import {fullTestScopeDescriptor,validateFullTestScopeEvidence} from "./full-test-scope-recovery.js";
 import {reviewRemediationDescriptor,validateReviewRemediationEvidence,acceptedReviewRemediationPlanBinding} from "./review-remediation-scope.js";
+import {ARTIFACT_DELIVERY_RUNTIME,ARTIFACT_DELIVERY_TASK_TYPE,isExactArtifactDeliveryApproval} from "./artifact-delivery.js";
 
 export const AUTONOMY_STATUSES = Object.freeze([
   "queued",
@@ -873,7 +874,8 @@ export function createWorkerRuntime({
     if (approval.status !== "approved")
       return stop(task, "cancelled", "approval_rejected");
     const durableApproval=await storage.getApproval(pending.approvalId,ownerId);
-    const exactSelfDevelopment=task.taskType==="self_development"&&pending.bindingSource==="approval_contract";
+    const exactSelfDevelopment=task.taskType==="self_development"&&pending.bindingSource==="approval_contract",exactArtifactDelivery=task.taskType===ARTIFACT_DELIVERY_TASK_TYPE&&pending.bindingSource==="artifact_delivery_contract";
+    if(exactArtifactDelivery&&!isExactArtifactDeliveryApproval({task,approval:durableApproval,approvedBranch,approvedRepository}))throw new WorkerError("approval_invalidated","Artifact delivery approval no longer matches its immutable source.",{retryable:false});
     if (
       pending.commitSha !== task.currentCommit ||
       pending.branch !== task.branch ||
@@ -885,16 +887,17 @@ export function createWorkerRuntime({
         pending.approvedStateVersion !== task.stateVersion ||
         pending.arguments?.approvedStateVersion !== task.stateVersion ||
         durableApproval?.arguments?.approvedStateVersion !== task.stateVersion
-      ))
+      ))||exactArtifactDelivery&&durableApproval?.status!=="approved"
     )
       throw new WorkerError(
         "approval_invalidated",
         "Task state changed after approval.",
         { retryable: false },
       );
-    const deliveryStateVersion=task.stateVersion+1,startedAt=iso(clock),deadline=iso(clock,5*60000),approvedDeliveryRuntime=exactSelfDevelopment?{recoveryClass:APPROVAL_CONTRACT_DELIVERY_RUNTIME,taskId:task.id,approvalId:pending.approvalId,approvedStateVersion:task.stateVersion,deliveryStateVersion,repository:approvedRepository,branch:task.branch,commitSha:task.currentCommit,reviewStepId:`${task.currentStep}:review_commit`,deliveryStepId:`${task.currentStep+1}:push`,maxAdditionalDeliverySteps:1,runtimeMinutes:5,startedAt,deadline,consumed:false}:null;
+    const deliveryStateVersion=task.stateVersion+1,startedAt=iso(clock),deadline=iso(clock,5*60000),approvedDeliveryRuntime=exactSelfDevelopment?{recoveryClass:APPROVAL_CONTRACT_DELIVERY_RUNTIME,taskId:task.id,approvalId:pending.approvalId,approvedStateVersion:task.stateVersion,deliveryStateVersion,repository:approvedRepository,branch:task.branch,commitSha:task.currentCommit,reviewStepId:`${task.currentStep}:review_commit`,deliveryStepId:`${task.currentStep+1}:push`,maxAdditionalDeliverySteps:1,runtimeMinutes:5,startedAt,deadline,consumed:false}:exactArtifactDelivery?{recoveryClass:ARTIFACT_DELIVERY_RUNTIME,taskId:task.id,approvalId:pending.approvalId,approvedStateVersion:task.stateVersion,deliveryStateVersion,repository:approvedRepository,branch:task.branch,commitSha:task.currentCommit,deliveryStepId:"1:push",maxAdditionalDeliverySteps:1,runtimeMinutes:5,startedAt,deadline,consumed:false}:null;
     return storage.updateAutonomyTask(task.id, ownerId, {
       status: "queued",
+      startedAt,
       nextRunAt: startedAt,
       blockedReason: null,
       approvalState: { ...pending, approved: true, deliveryStateVersion },

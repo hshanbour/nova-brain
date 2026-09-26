@@ -1,4 +1,5 @@
 import {reviewRemediationDescriptor} from "./review-remediation-scope.js";
+import {ARTIFACT_DELIVERY_TASK_TYPE,isExactArtifactDeliveryContinuation,isExactArtifactDeliveryPush} from "./artifact-delivery.js";
 
 const ACTIVE=new Set(["queued","retrying","waiting","waiting_for_worker"]);
 const LOCAL=new Set(["apply_patch","validate_patch","run_focused_tests","run_full_tests","inspect_diff","review_commit","commit","integrate_commit","delegate_coding"]);
@@ -41,6 +42,7 @@ function exactVersionBinding({task,approval,state,allowClaimed}){
 }
 
 export function isExactApprovedDelivery({task,approval,steps=[],approvedBranch="feat/nova-brain-mvp-foundation",approvedRepository="hshanbour/nova-brain",allowClaimed=false}={}){
+  if(task?.taskType===ARTIFACT_DELIVERY_TASK_TYPE)return isExactArtifactDeliveryPush({task,approval,steps,approvedBranch,approvedRepository,allowClaimed});
   const state=task?.approvalState,review=steps.filter(step=>step.stepType==="review_commit"&&step.status==="completed").at(-1),commit=steps.filter(step=>["commit","integrate_commit"].includes(step.stepType)&&step.status==="completed"&&ordinal(step)<ordinal(review)).at(-1),reviewedCommit=review?.result?.commitSha,committedCommit=commit?.result?.commitSha;
   const repository=exactRepository(task),historical=[HISTORICAL_DELIVERY_RECOVERY,HISTORICAL_DELIVERY_RUNTIME_RECOVERY,HISTORICAL_DELIVERY_HANDOFF_RECOVERY,HISTORICAL_DELIVERY_HANDOFF_RUNTIME_RECOVERY,HISTORICAL_DELIVERY_WORKER_CAPABILITY_RUNTIME_RECOVERY].includes(state?.bindingSource),repositoryBound=historical?state?.repository===approvedRepository:state?.repository===approvedRepository&&state?.arguments?.repository===approvedRepository&&approval?.arguments?.repository===approvedRepository;
   const afterReview=steps.filter(step=>ordinal(step)>task.currentStep),recoveringFailedPush=[HISTORICAL_DELIVERY_HANDOFF_RECOVERY,HISTORICAL_DELIVERY_HANDOFF_RUNTIME_RECOVERY,HISTORICAL_DELIVERY_WORKER_CAPABILITY_RUNTIME_RECOVERY].includes(state?.bindingSource)&&afterReview.length===1&&afterReview[0].stepId===state.stepId&&afterReview[0].stepType==="push"&&afterReview[0].status==="failed"&&afterReview[0].errorCode==="unexpected_error"&&afterReview[0].result?.message==="Tool is unavailable: git_push";
@@ -57,10 +59,10 @@ export function createAutoDispatchService({storage,ownerId,approvedBranch="feat/
     let task,approvedDelivery=false;
     for(const item of tasks){
       const pendingScopeResolution=pendingStructuredScopeResolution(item);
-      const supportedTask=item.taskType==="self_development"||(item.taskType==="coding_delegation"&&item.metadata?.codingJob?.repository?.slug===approvedRepository);
+      const supportedTask=item.taskType==="self_development"||(item.taskType==="coding_delegation"&&item.metadata?.codingJob?.repository?.slug===approvedRepository)||(item.taskType===ARTIFACT_DELIVERY_TASK_TYPE&&item.metadata?.artifactDelivery?.repository===approvedRepository);
       const common=supportedTask&&item.branch===branch&&item.metadata?.autoDispatch!==false&&(ACTIVE.has(item.status)||pendingScopeResolution)&&item.status!=="waiting_for_approval"&&!item.leaseToken&&!item.leaseOwner&&(pendingScopeResolution||item.status!=="waiting"?(!item.nextRunAt||new Date(item.nextRunAt)<=clock()):(item.nextRunAt&&new Date(item.nextRunAt)<=clock()));if(!common)continue;
       if(!item.approvalState){task=item;break;}
-      const approval=await storage.getApproval(item.approvalState.approvalId,ownerId),steps=await storage.listAutonomySteps(item.id);if(isExactApprovedDelivery({task:item,approval,steps,approvedBranch,approvedRepository})){task=item;approvedDelivery=true;break;}
+      const approval=await storage.getApproval(item.approvalState.approvalId,ownerId),steps=await storage.listAutonomySteps(item.id);if(isExactApprovedDelivery({task:item,approval,steps,approvedBranch,approvedRepository})){task=item;approvedDelivery=true;break;}if(isExactArtifactDeliveryContinuation({task:item,approval,approvedBranch,approvedRepository})){task=item;break;}
     }
     if(!task)return{dispatched:false};
     const scopeResolution=pendingStructuredScopeResolution(task),step=task.metadata?.steps?.[task.currentStep],stepType=scopeResolution?"resolve_scope":approvedDelivery?"push":step?.type,taskOwnedLocalRead=stepType==="read_files"&&step?.input?.tool==="repo_read_task_owned_local",mode=scopeResolution?"scope_resolution":approvedDelivery||task.status==="waiting_for_worker"||LOCAL.has(stepType)||taskOwnedLocalRead?"local_handoff":"task_tick";
