@@ -451,6 +451,7 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
       assert.equal((await runFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: options.cwd })).stdout.trim(), "HEAD");
       assert.equal((await runFile("git", ["status", "--short", "--branch"], { cwd: options.cwd, env: options.env })).stdout.includes("HEAD"), true);
       await assert.rejects(readFile(join(options.cwd, "local-only.js")));
+      await runFile("git", ["checkout", "-b", "codex/certified-result-binding"], { cwd: options.cwd });
       await writeFile(join(options.cwd, "source.js"), "export const value = 2;\n");
       await runFile("git", ["add", "source.js"], { cwd: options.cwd });
       await runFile("git", ["commit", "-m", "implement change"], { cwd: options.cwd });
@@ -515,6 +516,7 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
   assert.equal(await readFile(join(root, "human-notes.txt"), "utf8"), "unrelated untracked human work\n");
   assert.deepEqual(result.filesChanged, ["source.js"]);
   assert.equal((await runFile("git", ["rev-parse", `refs/nova/coding-jobs/${taskId}`], { cwd: root })).stdout.trim(), result.finalLocalSha);
+  await assert.rejects(runFile("git", ["rev-parse", "--verify", "refs/heads/codex/certified-result-binding"], { cwd: root }));
   assert.equal(result.executor.localRef, `refs/nova/coding-jobs/${taskId}`);
   assert.deepEqual(result.executor.trustedArtifact,{sourceTaskId,commitSha:sourceHead,artifactRef:`refs/nova/coding-jobs/${sourceTaskId}`,refRecovered:true});
   assert.equal((await runFile("git",["rev-parse",`refs/nova/coding-jobs/${sourceTaskId}`],{cwd:root})).stdout.trim(),sourceHead);
@@ -554,6 +556,77 @@ test("Codex CLI runner fences source branch movement while isolated work is acti
     (error) => error.code === "coding_source_workspace_changed" && error.safeDiagnostics.headUnchanged === false && error.safeDiagnostics.branchUnchanged === true,
   );
   assert.equal(((await runFile("git", ["worktree", "list", "--porcelain"], { cwd: root })).stdout.match(/^worktree /gm) || []).length, 1);
+});
+
+test("Codex CLI runner rejects unsafe remote, history, and pre-existing branch-ref changes with bounded diagnostics", async (t) => {
+  const scenarios = [
+    {
+      name: "remote",
+      async mutate(cwd) {
+        await runFile("git", ["remote", "set-url", "origin", "https://github.com/example/untrusted.git"], { cwd });
+        await writeFile(join(cwd, "source.js"), "export const value = 2;\n");
+        await runFile("git", ["add", "source.js"], { cwd });
+        await runFile("git", ["commit", "-m", "remote mutation"], { cwd });
+      },
+      predicate: (diagnostics) => diagnostics.remoteMatches === false && diagnostics.ancestryMatches === true,
+    },
+    {
+      name: "unrelated-history",
+      async mutate(cwd) {
+        await runFile("git", ["checkout", "--orphan", "codex/unrelated-history"], { cwd });
+        await runFile("git", ["rm", "-rf", "."], { cwd });
+        await writeFile(join(cwd, "unrelated.js"), "export const unrelated = true;\n");
+        await runFile("git", ["add", "unrelated.js"], { cwd });
+        await runFile("git", ["commit", "-m", "unrelated history"], { cwd });
+      },
+      predicate: (diagnostics) => diagnostics.remoteMatches === true && diagnostics.ancestryMatches === false,
+    },
+    {
+      name: "pre-existing-ref",
+      prepare: async (root, baseline) => runFile("git", ["branch", "protected-result", baseline], { cwd: root }),
+      async mutate(cwd) {
+        await runFile("git", ["checkout", "protected-result"], { cwd });
+        await writeFile(join(cwd, "source.js"), "export const value = 2;\n");
+        await runFile("git", ["add", "source.js"], { cwd });
+        await runFile("git", ["commit", "-m", "pre-existing ref mutation"], { cwd });
+      },
+      predicate: (diagnostics) => diagnostics.headRefsUnchanged === false,
+    },
+  ];
+
+  for (const [scenarioIndex, scenario] of scenarios.entries()) await t.test(scenario.name, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), `nova-codex-binding-${scenario.name}-`));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await runFile("git", ["init", "-b", "feature"], { cwd: root });
+    await runFile("git", ["config", "user.email", "nova@example.invalid"], { cwd: root });
+    await runFile("git", ["config", "user.name", "Nova Test"], { cwd: root });
+    await writeFile(join(root, "source.js"), "export const value = 1;\n");
+    await runFile("git", ["add", "source.js"], { cwd: root });
+    await runFile("git", ["commit", "-m", "baseline"], { cwd: root });
+    await runFile("git", ["remote", "add", "origin", "https://github.com/hshanbour/nova-brain.git"], { cwd: root });
+    const baseline = (await runFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+    await scenario.prepare?.(root, baseline);
+    const gitExecutable = process.platform === "win32" ? (await runFile("where.exe", ["git"])).stdout.split(/\r?\n/).find(Boolean) : (await runFile("which", ["git"])).stdout.trim();
+    const runner = createCodexCliRunner({
+      executable: process.execPath,
+      gitExecutable,
+      authProcess: async () => ({ stdout: "", stderr: "", code: 0 }),
+      async spawnProcess(command, args, options) {
+        await scenario.mutate(options.cwd);
+        const finalSha = (await runFile("git", ["rev-parse", "HEAD"], { cwd: options.cwd })).stdout.trim();
+        await writeFile(args[args.indexOf("--output-last-message") + 1], JSON.stringify({ status: "completed", summary: "Implemented.", repository: "hshanbour/nova-brain", baseline, finalLocalSha: finalSha, filesChanged: ["source.js"], tests: [], limitations: [], pushOccurred: false, deploymentOccurred: false, approvalsRequiredNext: ["push"], failure: null }));
+        return { stdout: "", stderr: "", code: 0 };
+      },
+    });
+    await assert.rejects(
+      runner(request({ repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline } }), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId: `coding_${String.fromCharCode(97 + scenarioIndex).repeat(32)}` }),
+      (error) => error.code === "coding_result_binding_changed"
+        && error.safeDiagnostics.stage === "result_binding"
+        && error.safeDiagnostics.executorLaunched === true
+        && scenario.predicate(error.safeDiagnostics),
+    );
+    assert.equal(((await runFile("git", ["worktree", "list", "--porcelain"], { cwd: root })).stdout.match(/^worktree /gm) || []).length, 1);
+  });
 });
 
 test("Codex CLI runner fails closed before launch when server-verified owner approval is absent", async () => {
