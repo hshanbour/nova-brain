@@ -216,14 +216,16 @@ export function createApp({
     },
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
       if(context?.voice===true)return null;
-      const bound=await storage.listConversationBoundTasks(OWNER_ID,conversationId,{limit:20}),historical=artifactContinuity?await artifactContinuity.candidates({limit:8}):[],boundIds=new Set(bound.map(task=>task.id)),boundCandidates=bound
+      const bound=await storage.listConversationBoundTasks(OWNER_ID,conversationId,{limit:20}),historical=artifactContinuity?await artifactContinuity.candidates({limit:8}):[],boundIds=new Set(bound.map(task=>task.id)),boundCandidates=await Promise.all(bound
         .filter(task=>!(task.taskType==="coding_orchestration"&&task.metadata?.delegatedTaskId))
         .slice(0,8)
-        .map(task=>({
+        .map(async task=>({
           id:task.id,
           taskType:task.taskType,
           status:task.status,
           stateVersion:task.stateVersion,
+          title:task.title||null,
+          objective:task.objective||null,
           currentPhase:task.currentPhase||null,
           errorCode:task.errorCode||null,
           currentCommit:task.currentCommit||null,
@@ -234,10 +236,11 @@ export function createApp({
             "existing_workflow_question",
             "task_status",
             ...(isTrustedArtifactContinuationCandidate(task)?["existing_workflow_continue"]:[]),
+            ...(codingExecutor&&await codingExecutor.retryEligibility(task.id,{conversationId})?["coding_retry_request"]:[]),
             ...(task.status==="waiting_for_approval"?["approval_decision"]:[]),
             ...(task.taskType==="coding_delegation"&&task.status==="completed"?["shipping_request"]:[]),
           ],
-        })),historicalCandidates=historical.filter(task=>!boundIds.has(task.id)),explicitTaskId=String(message||"").match(/\bcoding_[a-f0-9]{32}\b/)?.[0]||null,preferred=explicitTaskId?[...boundCandidates,...historicalCandidates].filter(task=>task.id===explicitTaskId):[],workflowCandidates=[...new Map([...preferred,...boundCandidates.slice(0,6),...historicalCandidates].map(task=>[task.id,task])).values()].slice(0,8);
+        }))),historicalCandidates=historical.filter(task=>!boundIds.has(task.id)),explicitTaskId=String(message||"").match(/\bcoding_[a-f0-9]{32}\b/)?.[0]||null,preferred=explicitTaskId?[...boundCandidates,...historicalCandidates].filter(task=>task.id===explicitTaskId):[],workflowCandidates=[...new Map([...preferred,...boundCandidates.slice(0,6),...historicalCandidates].map(task=>[task.id,task])).values()].slice(0,8);
       const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message);
       if(!workflowCandidates.length&&!implementationSignal&&!codingSignal)return null;
       const executeTransition=async(operation,diagnostics)=>{try{return await operation();}catch(error){error.safeDiagnostics={...error?.safeDiagnostics,...diagnostics,boundary:"transition_execution",reason:typeof error?.code==="string"?error.code.slice(0,120):"transition_failed"};throw error;}},explicitArtifact=explicitTaskId&&historicalCandidates.find(task=>task.id===explicitTaskId);
@@ -245,6 +248,7 @@ export function createApp({
       const routed=await selfDevelopment.resolveTrustedTurn(message,{workflowCandidates,signal,costContext:{runId},originConversationId:conversationId,originRunId:runId});
       if(routed?.shippingRequest===true){const workflow=routed.workflow;if(!workflow||workflow.taskType!=="coding_delegation"||workflow.status!=="completed")throw Object.assign(new Error("Shipping requires one completed conversation-bound coding artifact."),{code:"artifact_delivery_source_invalid",safeDiagnostics:{...routed.routingDiagnostics,boundary:"transition_validation",reason:"artifact_delivery_source_invalid"}});const created=await executeTransition(()=>artifactDelivery.create(workflow.id,{conversationId,runId}),routed.routingDiagnostics);return{...created,providerUsage:routed.providerUsage,turnRoute:routed.turnRoute,routingDiagnostics:routed.routingDiagnostics||null};}
       if(routed?.artifactAdoption===true){const adopted=await executeTransition(()=>artifactContinuity.adopt(routed.workflow.id,{conversationId,runId,signal}),routed.routingDiagnostics);return{...adopted,providerUsage:routed.providerUsage,turnRoute:routed.turnRoute,routingDiagnostics:routed.routingDiagnostics||null};}
+      if(routed?.codingRetryRequest===true){const retried=await executeTransition(()=>codingExecutor.requestRetry(routed.workflow.id,{conversationId,runId}),routed.routingDiagnostics);return{...retried,workflow:routed.workflow,providerUsage:routed.providerUsage,turnRoute:routed.turnRoute,routingDiagnostics:routed.routingDiagnostics||null};}
       if(routed?.workflow?.action==="existing_workflow_continue"){const continued=await executeTransition(()=>artifactContinuity.continueWorkflow(routed.workflow.id,{conversationId,runId,signal}),routed.routingDiagnostics);return{...continued,workflow:routed.workflow,providerUsage:routed.providerUsage,turnRoute:routed.turnRoute,routingDiagnostics:routed.routingDiagnostics||null};}
       return routed?.codingDelegation?{...routed,requestFingerprint:codingDelegationFingerprint(message)}:routed;
     },

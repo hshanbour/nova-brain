@@ -1895,7 +1895,7 @@ export function createApi({
                   result: execution,
                   completedAt: new Date().toISOString(),
                 });
-              if(codingParent&&execution?.task?.id)await storage.updateAutonomyTask(codingParent.id,ownerId,{status:"completed",currentPhase:"delegated_coding",completedAt:new Date().toISOString(),metadata:{...codingParent.metadata,delegatedTaskId:execution.task.id}},codingParent.stateVersion);
+              if(codingParent&&execution?.task?.id){const delegated=await storage.updateAutonomyTask(codingParent.id,ownerId,{status:"completed",currentPhase:"delegated_coding",completedAt:new Date().toISOString(),blockedReason:null,errorCode:null,approvalState:codingParent.approvalState?{...codingParent.approvalState,approved:true}:null,metadata:{...codingParent.metadata,delegatedTaskId:execution.task.id}},codingParent.stateVersion);if(!delegated)throw Object.assign(new Error("Coding parent changed before delegated child binding completed."),{code:"coding_parent_transition_conflict"});}
             } catch (error) {
               if (codingParent) {
                 const failureCode = /^[a-z0-9_:-]{1,80}$/.test(String(error?.code || "")) ? String(error.code) : "approved_action_failed";

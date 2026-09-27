@@ -65,6 +65,16 @@ test("imperative continuation and read-only status turns remain distinct for one
   }
 });
 
+test("natural coding retry is server-derived while questions remain read-only",async()=>{
+  const id=`coding_${"3".repeat(32)}`,candidate={id,taskType:"coding_delegation",status:"failed",stateVersion:4,currentPhase:"failed",title:"Recent Conversations drawer accessibility",objective:"Integrate the completed drawer artifact",errorCode:"coding_workspace_dirty",allowedTransitions:["existing_workflow_question","task_status","coding_retry_request"]};
+  for(const message of["Retry the failed drawer task.","Try the drawer task again."]){
+    const intake=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"workflow_action",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn(message,{workflowCandidates:[candidate]});
+    assert.equal(result.route,"coding_retry_request",message);assert.equal(result.workflow.id,id);assert.equal(result.routingDiagnostics.serverDerivedTransition,"coding_retry_request");
+  }
+  const inquiry=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"workflow_question",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await inquiry.resolveTurn("What happened to the drawer task?",{workflowCandidates:[candidate]});
+  assert.equal(result.route,"existing_workflow_question");assert.equal(result.routingDiagnostics.serverDerivedTransition,"existing_workflow_question");
+});
+
 test("natural historical actions use one semantic class and the server derives the only safe adoption transition",async()=>{
   const id=`coding_${"e".repeat(32)}`,candidate={id,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",objective:"Improve drawer keyboard behavior",allowedTransitions:["artifact_adoption"]},messages=[
     "Ship the completed Recent Conversations drawer work.",

@@ -84,7 +84,7 @@ function toolErrorSummary(error, name) {
 
 const ROUTING_ID=/^(?:selfdev|coding|orchestration|shipping)_[a-f0-9]{32}$/;
 const ROUTING_INTENTS=new Set(["workflow_action","workflow_question","workflow_status","new_implementation","coding_delegation","ordinary_chat","clarification_required","exact_task_action"]);
-const ROUTING_TRANSITIONS=new Set(["existing_workflow_continue","existing_workflow_question","task_status","shipping_request","artifact_adoption","approval_decision"]);
+const ROUTING_TRANSITIONS=new Set(["existing_workflow_continue","coding_retry_request","existing_workflow_question","task_status","shipping_request","artifact_adoption","approval_decision"]);
 function safeRoutingDiagnostics(value){
   if(!value||value.version!==1)return null;
   const candidateIds=Array.isArray(value.candidateIds)?value.candidateIds.filter(id=>ROUTING_ID.test(id)).slice(0,8):[];

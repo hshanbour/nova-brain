@@ -7,8 +7,10 @@ const TERMINAL = new Set(["completed", "failed", "cancelled", "expired", "blocke
 const RETRYABLE_TERMINAL = new Set(["failed", "cancelled", "blocked"]);
 const CODING_SPECIFICATION_VERSION = 1;
 const CODING_RETRY_CONTRACT_VERSION = 1;
+const CODING_RETRY_APPROVAL_VERSION = 1;
 const MAX_SUCCESSOR_DEPTH = 32;
 const CODING_TASK_ID = /^coding_[a-f0-9]{32}$/;
+const ORCHESTRATION_TASK_ID = /^orchestration_[a-f0-9]{32}$/;
 export const CODING_ACTIVE_PROGRESS_PHASES = Object.freeze(["preparing", "inspecting", "implementing", "testing", "reviewing"]);
 
 export class CodingExecutorError extends Error {
@@ -101,6 +103,17 @@ function codingSuccessorIdentity(specificationHash, predecessor) {
     specificationHash,
     predecessor.id,
     predecessor.stateVersion,
+  ]).slice(0, 32)}`;
+}
+
+function codingRetryApprovalIdentity({ parentTaskId, specificationHash, predecessorTaskId, predecessorStateVersion, parentStateVersion }) {
+  return `approval_coding_retry_${hash([
+    `coding-retry-approval-v${CODING_RETRY_APPROVAL_VERSION}`,
+    parentTaskId,
+    specificationHash,
+    predecessorTaskId,
+    predecessorStateVersion,
+    parentStateVersion,
   ]).slice(0, 32)}`;
 }
 
@@ -280,6 +293,46 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
     }
     return { handle, job, parent, specificationHash };
   };
+  const resolveRetryLineage = async (taskId, { conversationId } = {}) => {
+    taskId = requireCodingTaskId(taskId);
+    const requested = await storage.getAutonomyTask(taskId, ownerId);
+    if (!requested || requested.taskType !== "coding_delegation") fail("coding_retry_task_not_found", "The coding task was not found.", 404);
+    if (!RETRYABLE_TERMINAL.has(requested.status) || requested.leaseOwner || requested.leaseToken) fail("coding_retry_unavailable", "This coding task is not eligible for a fresh approved retry.");
+    const parentTaskId = requested.metadata?.parentTaskId;
+    if (!ORCHESTRATION_TASK_ID.test(parentTaskId || "")) fail("coding_retry_parent_invalid", "The coding retry parent is invalid.");
+    const parent = await storage.getAutonomyTask(parentTaskId, ownerId);
+    const prepared = parent?.metadata?.codingDelegation;
+    if (!parent || parent.taskType !== "coding_orchestration" || !prepared?.codingJob || typeof prepared.codingJobHash !== "string") fail("coding_retry_parent_invalid", "The coding retry parent is invalid.");
+    const originConversationId = parent.metadata?.terminalReporting?.conversationId;
+    if (typeof conversationId === "string" && conversationId && originConversationId !== conversationId) fail("coding_retry_conversation_unbound", "Coding retry requires the original trusted conversation.", 403);
+    if (requested.metadata?.terminalReporting?.conversationId && requested.metadata.terminalReporting.conversationId !== originConversationId) fail("coding_retry_conversation_unbound", "Coding retry conversation binding changed.", 403);
+    const binding = trusted.get(prepared.codingJob.projectId);
+    const job = normalizeJob(prepared.codingJob, binding, { requireApproval: false });
+    const specificationHash = codingSpecificationHash(job);
+    if (prepared.codingJobHash !== specificationHash || job.parentTaskId !== parent.id || parent.projectId !== job.projectId || parent.branch !== job.repository.branch || parent.currentCommit !== job.repository.baseline) fail("coding_parent_specification_changed", "The canonical coding specification or parent binding changed.");
+    const rootTaskId = codingTaskIdentity(job);
+    let currentId = rootTaskId, predecessor = null, current = null;
+    for (let generation = 0; generation <= MAX_SUCCESSOR_DEPTH; generation += 1) {
+      current = await storage.getAutonomyTask(currentId, ownerId);
+      if (!current) break;
+      verifyStoredCodingIdentity(current, job, specificationHash);
+      verifyRetryLineage(current, { rootTaskId, predecessor, generation, specificationHash });
+      predecessor = current;
+      currentId = codingSuccessorIdentity(specificationHash, current);
+    }
+    if (!predecessor || predecessor.id !== requested.id) fail("coding_retry_predecessor_superseded", "A newer coding attempt already exists for this workflow.");
+    const retryApproval = parent.metadata?.codingRetryApproval;
+    const pendingRetry = parent.status === "waiting_for_approval"
+      && parent.currentPhase === "retry_waiting_for_approval"
+      && parent.approvalState?.bindingSource === "coding_retry"
+      && retryApproval?.version === CODING_RETRY_APPROVAL_VERSION
+      && retryApproval.predecessorTaskId === requested.id
+      && retryApproval.predecessorStateVersion === requested.stateVersion
+      && retryApproval.specificationHash === specificationHash
+      && parent.approvalState.approvalId === retryApproval.approvalId;
+    if (!pendingRetry && (!TERMINAL.has(parent.status) || parent.leaseOwner || parent.leaseToken || parent.metadata?.delegatedTaskId !== requested.id)) fail("coding_retry_parent_invalid", "The coding retry parent is not at an eligible terminal boundary.");
+    return { requested, parent, job, specificationHash, handle: Object.freeze({ parentTaskId: parent.id, specificationHash }), pendingRetry };
+  };
   const createCanonical = async (job, parent = null) => {
       const specificationHash = codingSpecificationHash(job);
       const jobHash = hash(job);
@@ -369,9 +422,53 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
       return { ok: true, specificationHash };
     },
     async createFromHandle(input, { approvalId } = {}) {
-      const { job, parent } = await resolveCreationHandle(input);
+      const { job, parent, specificationHash } = await resolveCreationHandle(input);
+      if (parent.approvalState?.bindingSource === "coding_retry") {
+        const retry = parent.metadata?.codingRetryApproval;
+        if (retry?.version !== CODING_RETRY_APPROVAL_VERSION || retry.approvalId !== approvalId || retry.specificationHash !== specificationHash || parent.status !== "waiting_for_approval" || parent.currentPhase !== "retry_waiting_for_approval" || parent.approvalState.approvalId !== approvalId || parent.approvalState.arguments?.parentTaskId !== parent.id || parent.approvalState.arguments?.specificationHash !== specificationHash) fail("coding_retry_approval_invalid", "The fresh coding retry approval is not bound to this exact lineage.");
+        try {
+          const lineage = await resolveRetryLineage(retry.predecessorTaskId, { conversationId: parent.metadata?.terminalReporting?.conversationId });
+          if (!lineage.pendingRetry || lineage.parent.stateVersion !== retry.waitingStateVersion) fail("coding_retry_approval_invalid", "The approved coding retry lineage changed before execution.");
+        } catch (error) {
+          if (error?.code !== "coding_retry_predecessor_superseded") throw error;
+          const predecessor = await storage.getAutonomyTask(retry.predecessorTaskId, ownerId), successor = predecessor ? await storage.getAutonomyTask(codingSuccessorIdentity(specificationHash, predecessor), ownerId) : null;
+          if (!predecessor || predecessor.stateVersion !== retry.predecessorStateVersion || !successor || successor.metadata?.codingRetry?.predecessorTaskId !== predecessor.id || successor.metadata?.codingRetry?.predecessorStateVersion !== predecessor.stateVersion || successor.metadata?.codingJob?.approval?.approvalId !== approvalId) fail("coding_retry_approval_invalid", "The approved coding retry lineage changed before execution.");
+          verifyStoredCodingIdentity(successor, job, specificationHash);
+        }
+      }
       const approved = normalizeJob({ ...job, approval: { buildApproved: true, approvalId } }, trusted.get(job.projectId), { requireApproval: true });
       return createCanonical(approved,parent);
+    },
+    async retryEligibility(taskId, { conversationId } = {}) {
+      try { await resolveRetryLineage(taskId, { conversationId }); return true; }
+      catch (error) { if (error instanceof CodingExecutorError) return false; throw error; }
+    },
+    async requestRetry(taskId, { conversationId, runId } = {}) {
+      const lineage = await resolveRetryLineage(taskId, { conversationId });
+      if (lineage.pendingRetry) {
+        const approval = await storage.getApproval(lineage.parent.approvalState.approvalId, ownerId);
+        if (!approval || approval.status !== "pending" || approval.tool !== "coding_job_create" || approval.runId !== lineage.parent.id || hash(approval.arguments) !== hash(lineage.handle)) fail("coding_retry_approval_invalid", "The pending coding retry approval is invalid.");
+        return { task: lineage.parent, approval, creationRequest: lineage.handle, idempotent: true, workflowContinued: true };
+      }
+      const approvalId = codingRetryApprovalIdentity({ parentTaskId: lineage.parent.id, specificationHash: lineage.specificationHash, predecessorTaskId: lineage.requested.id, predecessorStateVersion: lineage.requested.stateVersion, parentStateVersion: lineage.parent.stateVersion });
+      const approvalInput = { id: approvalId, ownerId, projectId: lineage.parent.projectId, runId: lineage.parent.id, tool: "coding_job_create", reason: "Owner approval is required before Codex retries this exact failed coding lineage.", riskLevel: "HIGH_IMPACT", arguments: lineage.handle };
+      let approval = await storage.getApproval(approvalId, ownerId);
+      if (!approval) {
+        try { approval = await storage.createApproval(approvalInput); }
+        catch (error) { if (error?.code !== "23505" && error?.cause?.code !== "23505") throw error; approval = await storage.getApproval(approvalId, ownerId); }
+      }
+      if (!approval || approval.status !== "pending" || approval.tool !== "coding_job_create" || approval.runId !== lineage.parent.id || hash(approval.arguments) !== hash(lineage.handle)) fail("coding_retry_approval_invalid", "The fresh coding retry approval could not be bound safely.");
+      const waitingStateVersion = lineage.parent.stateVersion + 1;
+      const record = Object.freeze({ version: CODING_RETRY_APPROVAL_VERSION, approvalId, predecessorTaskId: lineage.requested.id, predecessorStateVersion: lineage.requested.stateVersion, specificationHash: lineage.specificationHash, fromParentStateVersion: lineage.parent.stateVersion, waitingStateVersion, requestedRunId: typeof runId === "string" ? runId : null });
+      const updated = await storage.updateAutonomyTask(lineage.parent.id, ownerId, { status: "waiting_for_approval", currentPhase: "retry_waiting_for_approval", nextRunAt: null, completedAt: null, errorCode: null, blockedReason: "A fresh owner approval is required before retrying the failed Codex job.", approvalState: { approvalId, approved: false, tool: "coding_job_create", stepId: "delegation:retry", arguments: lineage.handle, bindingSource: "coding_retry", predecessorTaskId: lineage.requested.id, predecessorStateVersion: lineage.requested.stateVersion }, metadata: { ...lineage.parent.metadata, delegatedTaskId: null, codingRetryApproval: record, codingRetryApprovalHistory: [...(lineage.parent.metadata?.codingRetryApprovalHistory || []), record] } }, lineage.parent.stateVersion);
+      if (!updated) {
+        const current = await storage.getAutonomyTask(lineage.parent.id, ownerId);
+        const converged = current?.status === "waiting_for_approval" && current.approvalState?.approvalId === approvalId && current.metadata?.codingRetryApproval?.predecessorTaskId === lineage.requested.id;
+        if (!converged) { await storage.decideApproval?.(approvalId, ownerId, "rejected").catch(() => null); fail("coding_retry_version_conflict", "The coding workflow changed before retry approval was bound."); }
+        return { task: current, approval, creationRequest: lineage.handle, idempotent: true, workflowContinued: true };
+      }
+      await storage.appendActivity({ ownerId, projectId: updated.projectId, runId: updated.id, action: "coding_retry_approval_requested", tool: "coding_job_create", status: "waiting", summary: "The exact failed coding lineage awaits a fresh owner approval.", metadata: { taskId: updated.id, predecessorTaskId: lineage.requested.id, predecessorStateVersion: lineage.requested.stateVersion, approvalId, phase: "retry_waiting_for_approval" } });
+      return { task: updated, approval, creationRequest: lineage.handle, idempotent: false, workflowContinued: true };
     },
     async create(input) {
       const { job, parent } = await validatePrepared(input, { requireApproval: true });

@@ -53,6 +53,7 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(consoleJs, /Codex inspecting repository/);
   assert.match(consoleJs, /Running tests/);
   assert.match(consoleJs, /Creating local commit/);
+  assert.match(consoleJs, /Retry awaiting approval/);
   assert.match(consoleJs, /terminalTaskStates/);
   assert.match(consoleJs, /task\.status==="blocked"\|\|task\.status==="paused"\|\|terminalTaskStates\.has\(task\.status\)/);
   assert.ok(consoleJs.indexOf('task.status==="blocked"')<consoleJs.indexOf("/apply|patch|edit|mutat/"));
