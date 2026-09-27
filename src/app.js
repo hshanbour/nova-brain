@@ -43,7 +43,7 @@ import { configuredCodingBindings, createCodingExecutorService } from "./autonom
 import { codingDelegationFingerprint, createCodingDelegationService, isChatCodingDelegationRequest } from "./autonomy/coding-delegation.js";
 import {createTerminalTaskReporter,isConversationTaskResultQuestion} from "./autonomy/terminal-task-reporter.js";
 import {createArtifactDeliveryService,registerArtifactDeliveryTool} from "./autonomy/artifact-delivery.js";
-import {createTrustedArtifactContinuity,isExplicitTrustedArtifactRequest} from "./autonomy/trusted-artifact-continuity.js";
+import {createTrustedArtifactContinuity,isExplicitTrustedArtifactRequest,isTrustedArtifactContinuationCandidate} from "./autonomy/trusted-artifact-continuity.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -233,7 +233,7 @@ export function createApp({
           allowedTransitions:[
             "existing_workflow_question",
             "task_status",
-            ...(!["completed","cancelled","expired"].includes(task.status)?["existing_workflow_continue"]:[]),
+            ...(isTrustedArtifactContinuationCandidate(task)?["existing_workflow_continue"]:[]),
             ...(task.status==="waiting_for_approval"?["approval_decision"]:[]),
             ...(task.taskType==="coding_delegation"&&task.status==="completed"?["shipping_request"]:[]),
           ],
@@ -245,6 +245,7 @@ export function createApp({
       const routed=await selfDevelopment.resolveTrustedTurn(message,{workflowCandidates,signal,costContext:{runId},originConversationId:conversationId,originRunId:runId});
       if(routed?.shippingRequest===true){const workflow=routed.workflow;if(!workflow||workflow.taskType!=="coding_delegation"||workflow.status!=="completed")throw Object.assign(new Error("Shipping requires one completed conversation-bound coding artifact."),{code:"artifact_delivery_source_invalid",safeDiagnostics:{...routed.routingDiagnostics,boundary:"transition_validation",reason:"artifact_delivery_source_invalid"}});const created=await executeTransition(()=>artifactDelivery.create(workflow.id,{conversationId,runId}),routed.routingDiagnostics);return{...created,providerUsage:routed.providerUsage,turnRoute:routed.turnRoute,routingDiagnostics:routed.routingDiagnostics||null};}
       if(routed?.artifactAdoption===true){const adopted=await executeTransition(()=>artifactContinuity.adopt(routed.workflow.id,{conversationId,runId,signal}),routed.routingDiagnostics);return{...adopted,providerUsage:routed.providerUsage,turnRoute:routed.turnRoute,routingDiagnostics:routed.routingDiagnostics||null};}
+      if(routed?.workflow?.action==="existing_workflow_continue"){const continued=await executeTransition(()=>artifactContinuity.continueWorkflow(routed.workflow.id,{conversationId,runId,signal}),routed.routingDiagnostics);return{...continued,workflow:routed.workflow,providerUsage:routed.providerUsage,turnRoute:routed.turnRoute,routingDiagnostics:routed.routingDiagnostics||null};}
       return routed?.codingDelegation?{...routed,requestFingerprint:codingDelegationFingerprint(message)}:routed;
     },
     logger,

@@ -53,6 +53,18 @@ test("explicit shipping remains bound to one eligible completed coding workflow"
   await assert.rejects(()=>ineligible.resolveTurn("Ship it",{workflowCandidates:[{id,taskType:"coding_delegation",status:"running",stateVersion:7,allowedTransitions:["existing_workflow_question"]}]}),error=>error.code==="structured_turn_invalid"&&error.safeDiagnostics?.reason==="action_transition_unavailable");
 });
 
+test("imperative continuation and read-only status turns remain distinct for one queued recoverable workflow",async()=>{
+  const id=`orchestration_${"2".repeat(32)}`,candidate={id,taskType:"coding_orchestration",status:"queued",stateVersion:1,currentPhase:"queued",title:"Integrate trusted drawer",allowedTransitions:["existing_workflow_question","task_status","existing_workflow_continue"]};
+  for(const message of["Ship the completed Recent Conversations drawer work.","Continue the drawer task.","Finish it."]){
+    const intake=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"workflow_action",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn(message,{workflowCandidates:[candidate]});
+    assert.equal(result.route,"existing_workflow_continue",message);assert.equal(result.routingDiagnostics.semanticIntent,"workflow_action",message);assert.equal(result.routingDiagnostics.serverDerivedTransition,"existing_workflow_continue",message);
+  }
+  for(const [message,turnIntent,route] of[["What is happening with the drawer task?","workflow_question","existing_workflow_question"],["Is it still queued?","workflow_status","task_status"]]){
+    const intake=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent,workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])}),result=await intake.resolveTurn(message,{workflowCandidates:[candidate]});
+    assert.equal(result.route,route,message);assert.equal(result.routingDiagnostics.semanticIntent,turnIntent,message);
+  }
+});
+
 test("natural historical actions use one semantic class and the server derives the only safe adoption transition",async()=>{
   const id=`coding_${"e".repeat(32)}`,candidate={id,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",objective:"Improve drawer keyboard behavior",allowedTransitions:["artifact_adoption"]},messages=[
     "Ship the completed Recent Conversations drawer work.",

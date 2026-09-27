@@ -183,7 +183,7 @@ export function createAgent({
       const providerUsage = [];
       let continuationToken;
       let toolResults = [];
-      const completeDurableSelfDevelopment = async ({ task, idempotent = false, steps = 0, toolCalls = [] }) => {
+      const completeDurableSelfDevelopment = async ({ task, idempotent = false, steps = 0, toolCalls = [], workflowContinued = false }) => {
         const durableTask = {
           id: task.id,
           status: task.status,
@@ -192,7 +192,7 @@ export function createAgent({
           startingCommit: task.startingCommit,
           idempotent: idempotent === true,
         };
-        const durableLabel=task.taskType==="artifact_delivery"?"artifact delivery":"self-development";
+        const durableLabel=task.taskType==="artifact_delivery"?"artifact delivery":task.taskType==="coding_orchestration"?"coding orchestration":"self-development";
         const response = {
           id: randomUUID(),
           conversationId,
@@ -201,7 +201,7 @@ export function createAgent({
           toolCalls,
           steps,
           runId: run.id,
-          runStatus: "durable_task_created",
+          runStatus: workflowContinued?"durable_task_continued":"durable_task_created",
           durableTask,
           timing: {
             contextRetrievalMs: contextRetrievalCompletedAt-contextRetrievalStartedAt,
@@ -213,7 +213,7 @@ export function createAgent({
         };
         await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: response.message });
         await storage.updateRun(run.id, ownerId, { status: "completed", currentStep: steps, result: { message: response.message, durableTask, providerUsage }, completedAt: new Date().toISOString() });
-        await storage.appendActivity({ ownerId, projectId: durableTask.projectId, runId: run.id, action: "durable_task_routed", status: "completed", summary: `Created durable task ${durableTask.id}.`, metadata: durableTask });
+        await storage.appendActivity({ ownerId, projectId: durableTask.projectId, runId: run.id, action: workflowContinued?"conversation_workflow_transitioned":"durable_task_routed", status: "completed", summary: workflowContinued?`Continued durable task ${durableTask.id}.`:`Created durable task ${durableTask.id}.`, metadata: durableTask });
         return response;
       };
 
@@ -274,7 +274,7 @@ export function createAgent({
           systemContext=`${systemContext}\n\nCHAT-NATIVE CODEX DELEGATION: This request explicitly asks Nova to orchestrate Codex. Do not use self-development. First call coding_job_prepare with the bounded objective, acceptance criteria, constraints, and verification. Then call coding_job_create using only the exact compact creationRequest returned by preparation. Never reconstruct or retransmit the full coding specification. coding_job_create must stop at the owner approval boundary. Never request push or deployment.`;
         }
         if (durable?.task) {
-          return completeDurableSelfDevelopment({ task: durable.task, idempotent: durable.idempotent });
+          return completeDurableSelfDevelopment({ task: durable.task, idempotent: durable.idempotent, workflowContinued: durable.workflowContinued===true });
         }
         for (let step = 1; step <= maxSteps; step += 1) {
         executionSignal.throwIfAborted();
