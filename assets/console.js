@@ -70,6 +70,12 @@ function safeProgressLabel(task,activity=[]){
   if(task.status==="waiting_for_approval")return"Waiting for your approval";
   if(task.status==="blocked"||task.status==="paused"||terminalTaskStates.has(task.status))return taskStatusLabels[task.status]||"Working on it…";
   const action=activity.find(item=>typeof item?.action==="string")?.action||"",phase=String(task.currentPhase||"");
+  if(/preparing_integration|trusted_artifact/.test(action+phase))return"Preparing integration";
+  if(/coding_executor_preparing/.test(action+phase))return"Starting Codex";
+  if(/coding_executor_inspecting/.test(action+phase))return"Codex inspecting repository";
+  if(/coding_executor_implementing/.test(action+phase))return"Codex editing";
+  if(/coding_executor_testing/.test(action+phase))return"Running tests";
+  if(/coding_executor_reviewing/.test(action+phase))return"Creating local commit";
   if(/deploy/.test(action+phase))return"Deploying Preview";
   if(/push/.test(action+phase))return"Pushing to GitHub";
   if(/review/.test(action+phase))return"Reviewing changes";
@@ -106,6 +112,8 @@ async function refreshLiveActivity(record){
   clearTimeout(record.timer);
   try{
     const detail=await ownerMemoryClient.task(record.taskId),task=detail.task;if(!task||task.id!==record.taskId)throw new Error("Task status is unavailable.");
+    const delegatedId=task.taskType==="coding_orchestration"&&/^coding_[a-f0-9]{32}$/.test(task.metadata?.delegatedTaskId||"")?task.metadata.delegatedTaskId:null;
+    if(delegatedId){liveActivityRecords.delete(record.taskId);record.taskId=delegatedId;record.node.dataset.taskId=delegatedId;liveActivityRecords.set(delegatedId,record);persistLiveActivityRecords();return refreshLiveActivity(record);}
     const [activityResult,approvalResult]=await Promise.all([ownerMemoryClient.taskActivity(record.taskId).catch(()=>({activity:[]})),task.status==="waiting_for_approval"?ownerMemoryClient.approvals().catch(()=>({approvals:[]})):Promise.resolve({approvals:[]})]);
     renderLiveActivity(record,task,activityResult.activity||[],approvalResult.approvals||[]);
     if(!terminalTaskStates.has(task.status))record.timer=setTimeout(()=>refreshLiveActivity(record),4000);
