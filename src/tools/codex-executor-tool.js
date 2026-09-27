@@ -245,14 +245,13 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
       }
     };
     const sourceGit = (...args) => gitAt(sourceRoot, args);
-    const [top, remote, actualBranch, sourceHead, dirty] = await Promise.all([
-      sourceGit("rev-parse", "--show-toplevel"), sourceGit("remote", "get-url", "origin"), sourceGit("branch", "--show-current"), sourceGit("rev-parse", "HEAD"), sourceGit("status", "--porcelain=v1", "--untracked-files=all"),
+    const [top, remote, actualBranch, sourceHead] = await Promise.all([
+      sourceGit("rev-parse", "--show-toplevel"), sourceGit("remote", "get-url", "origin"), sourceGit("branch", "--show-current"), sourceGit("rev-parse", "HEAD"),
     ]);
     const sourceBinding = { topLevelMatches: resolve(top).toLowerCase() === sourceRoot.toLowerCase(), repositoryMatches: normalizeRemote(remote) === repository, branchMatches: actualBranch === branch };
     if (!sourceBinding.topLevelMatches || !sourceBinding.repositoryMatches || !sourceBinding.branchMatches) {
       throw Object.assign(new Error("The local coding workspace does not match the trusted repository binding."), { code: "coding_workspace_binding_changed", safeDiagnostics: { stage: "repository_preflight", ...sourceBinding, executorLaunched: false } });
     }
-    if (dirty) throw Object.assign(new Error("The local coding workspace must be clean before delegation."), { code: "coding_workspace_dirty", safeDiagnostics: { stage: "repository_preflight", sourceHead, clean: false, executorLaunched: false } });
     const temporary = await mkdtemp(join(tmpdir(), "nova-codex-job-"));
     const cwd = join(temporary, "workspace");
     const schemaPath = join(temporary, "result.schema.json");
@@ -338,17 +337,16 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
       const reportedFiles = [...new Set(parsed.filesChanged)].sort();
       const authoritativeFiles = [...new Set(filesChanged)].sort();
       const filesChangedMatch = JSON.stringify(reportedFiles) === JSON.stringify(authoritativeFiles);
-      const [sourceHeadAfter, sourceBranchAfter, sourceDirtyAfter] = await Promise.all([
-        sourceGit("rev-parse", "HEAD"), sourceGit("branch", "--show-current"), sourceGit("status", "--porcelain=v1", "--untracked-files=all"),
+      const [sourceHeadAfter, sourceBranchAfter] = await Promise.all([
+        sourceGit("rev-parse", "HEAD"), sourceGit("branch", "--show-current"),
       ]);
-      if (sourceHeadAfter !== sourceHead || sourceBranchAfter !== branch || sourceDirtyAfter) {
-        throw Object.assign(new Error("Codex changed the trusted source workspace outside the isolated coding worktree."), {
+      if (sourceHeadAfter !== sourceHead || sourceBranchAfter !== branch) {
+        throw Object.assign(new Error("The trusted source workspace binding changed during isolated coding execution."), {
           code: "coding_source_workspace_changed",
           safeDiagnostics: {
             stage: "result_validation",
             headUnchanged: sourceHeadAfter === sourceHead,
             branchUnchanged: sourceBranchAfter === branch,
-            clean: !sourceDirtyAfter,
             executorLaunched: true,
           },
         });

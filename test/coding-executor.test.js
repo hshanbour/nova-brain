@@ -430,6 +430,11 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
   await runFile("git", ["add", "local-only.js"], { cwd: root });
   await runFile("git", ["commit", "-m", "newer local checkout"], { cwd: root });
   const sourceHead = (await runFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+  await writeFile(join(root, "source.js"), "export const value = 98; // staged human work\n");
+  await runFile("git", ["add", "source.js"], { cwd: root });
+  await writeFile(join(root, "source.js"), "export const value = 99; // unrelated human work\n");
+  await writeFile(join(root, "human-notes.txt"), "unrelated untracked human work\n");
+  const sourceStatusBefore = (await runFile("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root })).stdout;
   const gitExecutable = process.platform === "win32" ? (await runFile("where.exe", ["git"])).stdout.split(/\r?\n/).find(Boolean) : (await runFile("which", ["git"])).stdout.trim();
   let observed;
   const runner = createCodexCliRunner({
@@ -504,11 +509,50 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
   }
   assert.equal(config.some((value) => /CODEX_HOME|OPENAI|GITHUB|VERCEL|TOKEN|SECRET|KEY/i.test(value)), false);
   assert.equal((await runFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim(), sourceHead);
-  assert.equal((await runFile("git", ["status", "--porcelain=v1"], { cwd: root })).stdout.trim(), "");
+  assert.equal((await runFile("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root })).stdout, sourceStatusBefore);
+  assert.equal(await readFile(join(root, "source.js"), "utf8"), "export const value = 99; // unrelated human work\n");
+  assert.equal((await runFile("git", ["show", ":source.js"], { cwd: root })).stdout, "export const value = 98; // staged human work\n");
+  assert.equal(await readFile(join(root, "human-notes.txt"), "utf8"), "unrelated untracked human work\n");
+  assert.deepEqual(result.filesChanged, ["source.js"]);
   assert.equal((await runFile("git", ["rev-parse", `refs/nova/coding-jobs/${taskId}`], { cwd: root })).stdout.trim(), result.finalLocalSha);
   assert.equal(result.executor.localRef, `refs/nova/coding-jobs/${taskId}`);
   assert.deepEqual(result.executor.trustedArtifact,{sourceTaskId,commitSha:sourceHead,artifactRef:`refs/nova/coding-jobs/${sourceTaskId}`,refRecovered:true});
   assert.equal((await runFile("git",["rev-parse",`refs/nova/coding-jobs/${sourceTaskId}`],{cwd:root})).stdout.trim(),sourceHead);
+  assert.equal(((await runFile("git", ["worktree", "list", "--porcelain"], { cwd: root })).stdout.match(/^worktree /gm) || []).length, 1);
+});
+
+test("Codex CLI runner fences source branch movement while isolated work is active", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "nova-codex-source-fence-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await runFile("git", ["init", "-b", "feature"], { cwd: root });
+  await runFile("git", ["config", "user.email", "nova@example.invalid"], { cwd: root });
+  await runFile("git", ["config", "user.name", "Nova Test"], { cwd: root });
+  await writeFile(join(root, "source.js"), "export const value = 1;\n");
+  await runFile("git", ["add", "source.js"], { cwd: root });
+  await runFile("git", ["commit", "-m", "baseline"], { cwd: root });
+  await runFile("git", ["remote", "add", "origin", "https://github.com/hshanbour/nova-brain.git"], { cwd: root });
+  const baseline = (await runFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+  const gitExecutable = process.platform === "win32" ? (await runFile("where.exe", ["git"])).stdout.split(/\r?\n/).find(Boolean) : (await runFile("which", ["git"])).stdout.trim();
+  const runner = createCodexCliRunner({
+    executable: process.execPath,
+    gitExecutable,
+    authProcess: async () => ({ stdout: "", stderr: "", code: 0 }),
+    async spawnProcess(command, args, options) {
+      await writeFile(join(options.cwd, "source.js"), "export const value = 2;\n");
+      await runFile("git", ["add", "source.js"], { cwd: options.cwd });
+      await runFile("git", ["commit", "-m", "isolated change"], { cwd: options.cwd });
+      const finalSha = (await runFile("git", ["rev-parse", "HEAD"], { cwd: options.cwd })).stdout.trim();
+      await writeFile(join(root, "human-commit.txt"), "concurrent branch movement\n");
+      await runFile("git", ["add", "human-commit.txt"], { cwd: root });
+      await runFile("git", ["commit", "-m", "concurrent human commit"], { cwd: root });
+      await writeFile(args[args.indexOf("--output-last-message") + 1], JSON.stringify({ status: "completed", summary: "Implemented.", repository: "hshanbour/nova-brain", baseline, finalLocalSha: finalSha, filesChanged: ["source.js"], tests: [], limitations: [], pushOccurred: false, deploymentOccurred: false, approvalsRequiredNext: ["push"], failure: null }));
+      return { stdout: "", stderr: "", code: 0 };
+    },
+  });
+  await assert.rejects(
+    runner(request({ repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline } }), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId: `coding_${"f".repeat(32)}` }),
+    (error) => error.code === "coding_source_workspace_changed" && error.safeDiagnostics.headUnchanged === false && error.safeDiagnostics.branchUnchanged === true,
+  );
   assert.equal(((await runFile("git", ["worktree", "list", "--porcelain"], { cwd: root })).stdout.match(/^worktree /gm) || []).length, 1);
 });
 
