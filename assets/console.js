@@ -1,7 +1,7 @@
 import { createNovaClient } from "./api-client.js";
 import { ownerMemoryClient } from "./memory-client.js";
 import { selectWorkspace } from "./workspace-navigation.js";
-import { conversationTitle, createConversationHistory } from "./conversation-history.js";
+import { conversationTitle, createConversationHistory, createRecentsDrawer } from "./conversation-history.js";
 import { MICROPHONE_LANGUAGES, createComposerVoiceControl } from "./voice-input.js";
 import { createVoiceOutput, hasLanguageVoice } from "./voice-output.js";
 import { createVoiceV2Client } from "./voice-v2-client.js";
@@ -31,6 +31,11 @@ let memoryRecords = [];
 const conversationKey = "nova.activeConversationId";
 const conversationHistory = createConversationHistory({ client, api: ownerMemoryClient, key: conversationKey });
 const recentsDrawer = document.querySelector("#recentsDrawer");
+const recentsDialog = createRecentsDrawer({
+  drawer: recentsDrawer, opener: document.querySelector("#historyButton"),
+  closeButton: document.querySelector("#closeRecentsButton"), fallback: input, conversationView: messages,
+  background: document.querySelector(".app-shell")
+});
 let voiceMessageSequence = 0;
 let voiceV2;
 function showVoiceDiagnostic(message) { const target=document.querySelector("#voiceDiagnostic");if(target)target.textContent=String(message||"").slice(0,240); }
@@ -135,6 +140,7 @@ function recentItems(conversations) {
 }
 
 function renderRecents(conversations) {
+  recentsDialog.beforeListUpdate();
   for (const list of [document.querySelector("#recentsList"), document.querySelector("#mobileRecentsList")]) {
     if (!conversations.length) list.innerHTML = '<p class="recents-state">No previous conversations yet.</p>';
     else list.replaceChildren(...recentItems(conversations));
@@ -142,6 +148,7 @@ function renderRecents(conversations) {
 }
 
 function renderRecentsState(message, error = false) {
+  recentsDialog.beforeListUpdate();
   for (const list of [document.querySelector("#recentsList"), document.querySelector("#mobileRecentsList")]) list.innerHTML = `<p class="recents-state${error ? " error" : ""}">${message}</p>`;
 }
 
@@ -159,7 +166,7 @@ async function selectConversation(id) {
     for (const stored of storedMessages) addMessage({ role: stored.role, text: stored.content });
     restoreLiveActivities();
     if (!storedMessages.length) welcome.hidden = false;
-    recentsDrawer.hidden = true; await refreshRecents(); input.focus();
+    recentsDialog.close({ selected: true }); input.focus(); await refreshRecents();
   } catch (cause) {
     requestError.textContent = cause.message || "Conversation history could not be loaded."; requestError.hidden = false;
     await refreshRecents();
@@ -233,10 +240,7 @@ document.querySelector("#newChatButton").addEventListener("click", () => {
   stopVoiceActivity(); conversationHistory.startNew(); clearConversation(); renderRecents(conversationHistory.conversations); input.focus();
 });
 document.querySelector("#refreshRecentsButton").addEventListener("click", refreshRecents);
-document.querySelector("#historyButton").addEventListener("click", () => { recentsDrawer.hidden = false; refreshRecents(); });
-document.querySelector("#closeRecentsButton").addEventListener("click", () => { recentsDrawer.hidden = true; });
-recentsDrawer.addEventListener("click", (event) => { if (event.target === recentsDrawer) recentsDrawer.hidden = true; });
-document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !recentsDrawer.hidden) recentsDrawer.hidden = true; });
+document.querySelector("#historyButton").addEventListener("click", () => { refreshRecents(); });
 for (const list of document.querySelectorAll(".recents-list")) list.addEventListener("click", (event) => { const button = event.target.closest("[data-conversation-id]"); if (button) selectConversation(button.dataset.conversationId); });
 fetch("/api/health").then((response) => response.ok ? response.json() : Promise.reject()).then((health) => { providerStatus.textContent = `${health.provider} provider · Ready`; }).catch(() => { providerStatus.textContent = "Status unavailable"; });
 resizeInput();
