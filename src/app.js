@@ -31,7 +31,7 @@ import { createTaskMigrationService } from "./autonomy/task-migration.js";
 import { createLocalWorkerHandoff } from "./autonomy/local-worker-handoff.js";
 import { createGithubWriteAttestation } from "./autonomy/github-write-attestation.js";
 import { createPostAttestationRecovery } from "./autonomy/post-attestation-recovery.js";
-import { createSelfDevelopmentService, isDurableSelfDevelopmentRequest, parseExistingTaskControlRequest, validateExistingTaskControlRequest } from "./autonomy/self-development.js";
+import { createSelfDevelopmentService, isDurableSelfDevelopmentRequest, parseExistingTaskControlRequest, SelfDevelopmentError, validateExistingTaskControlRequest } from "./autonomy/self-development.js";
 import { createSelfDevelopmentIntake } from "./autonomy/self-development-intake.js";
 import { createSelfDevelopmentExpiryRecovery } from "./autonomy/self-development-expiry-recovery.js";
 import { registerSelfDevelopmentTools } from "./autonomy/self-development-tools.js";
@@ -44,6 +44,7 @@ import { codingDelegationFingerprint, createCodingDelegationService, isChatCodin
 import {createTerminalTaskReporter,isConversationTaskResultQuestion} from "./autonomy/terminal-task-reporter.js";
 import {createArtifactDeliveryService,registerArtifactDeliveryTool} from "./autonomy/artifact-delivery.js";
 import {createTrustedArtifactContinuity,isExplicitTrustedArtifactRequest,isTrustedArtifactContinuationCandidate} from "./autonomy/trusted-artifact-continuity.js";
+import {resolveExplicitCodingRetryRequest} from "./autonomy/explicit-coding-retry.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -216,6 +217,10 @@ export function createApp({
     },
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
       if(context?.voice===true)return null;
+      let explicitRetry;
+      try{explicitRetry=await resolveExplicitCodingRetryRequest({message,conversationId,runId,loadTask:id=>workerRuntime.get(id),codingExecutor});}
+      catch(error){if(error instanceof SelfDevelopmentError)throw error;throw new SelfDevelopmentError(error?.code||"explicit_coding_retry_invalid","Nova could not safely resolve the explicit coding retry target.",error?.statusCode||409,error?.safeDiagnostics);}
+      if(explicitRetry)return explicitRetry;
       const bound=await storage.listConversationBoundTasks(OWNER_ID,conversationId,{limit:20}),historical=artifactContinuity?await artifactContinuity.candidates({limit:8}):[],boundIds=new Set(bound.map(task=>task.id)),boundCandidates=await Promise.all(bound
         .filter(task=>!(task.taskType==="coding_orchestration"&&task.metadata?.delegatedTaskId))
         .slice(0,8)
