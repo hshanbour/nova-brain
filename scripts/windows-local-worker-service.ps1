@@ -127,13 +127,19 @@ try {
     $statusPreview=if($null -ne $status -and $null -ne $status.PSObject.Properties['previewUrl']){[string]$status.previewUrl}else{''}
     $owned=$workerPid -gt 0 -and $lockPid -eq $workerPid -and $null -ne $process
     $idle=$state -in @('idle','polling') -and [string]::IsNullOrWhiteSpace($taskId)
+    $runtimeMatches=$statusRuntime -eq $runtimeVersion
+    $previewMatches=$statusPreview -eq $PreviewUrl.TrimEnd('/')
+    $taskRunning=$null -ne $task -and [string]$task.State -eq 'Running'
     $healthy=$owned -and $idle -and (Test-RecentTimestamp $heartbeat) -and (Test-RecentTimestamp $lastPoll)
     $safeToReplace=($null -eq $process -and $lockPid -eq 0) -or ($null -ne $task -and $healthy)
-    $converged=$healthy -and $actionMatches -and $statusRuntime -eq $runtimeVersion -and $statusPreview -eq $PreviewUrl.TrimEnd('/') -and [string]$task.State -eq 'Running'
+    $converged=$healthy -and $actionMatches -and $runtimeMatches -and $previewMatches -and $taskRunning
     return [pscustomobject]@{
       SafeToReplace=$safeToReplace; Healthy=$healthy; Converged=$converged; Pid=$workerPid
       RuntimeVersion=$statusRuntime; PreviewUrl=$statusPreview
       LastHeartbeat=$heartbeat; LastSuccessfulPoll=$lastPoll; LockPid=$lockPid
+      State=$state
+      TerminalFailure=$state -in @('fatal','stopped')
+      BindingMismatch=$owned -and (-not $actionMatches -or -not $runtimeMatches -or -not $previewMatches -or -not $taskRunning)
     }
   }
 
@@ -164,19 +170,7 @@ try {
   }
   $startReplacement={ Start-ScheduledTask -TaskName $name -ErrorAction Stop }
   $awaitReplacementConverged={
-    $deadline=[DateTimeOffset]::UtcNow.AddSeconds(75)
-    $first=$null
-    do {
-      $sample=Get-WorkerSnapshot
-      if($sample.Converged -and $sample.Pid -ne $oldPid){
-        if($null -eq $first -or $first.Pid -ne $sample.Pid){$first=$sample}
-        elseif([DateTimeOffset]::Parse($sample.LastHeartbeat) -gt [DateTimeOffset]::Parse($first.LastHeartbeat) -and [DateTimeOffset]::Parse($sample.LastSuccessfulPoll) -gt [DateTimeOffset]::Parse($first.LastSuccessfulPoll)){
-          return $sample
-        }
-      }
-      Start-Sleep -Milliseconds 500
-    } while([DateTimeOffset]::UtcNow -lt $deadline)
-    return $null
+    return Wait-NovaWorkerConvergence -GetSnapshot { Get-WorkerSnapshot } -OldPid $oldPid -StartupTimeoutSeconds 195 -PollAdvanceTimeoutSeconds 30 -SampleIntervalMilliseconds 500
   }
   $rollback={
     Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
