@@ -105,8 +105,9 @@ test('every authoritative terminal state freezes elapsed time across restoration
   } finally { Date.now = originalNow; }
   assert.equal(frozen, '1m 7s');
   assert.equal(elapsedLabel(startedAt, null, false), '');
-  assert.match(source, /endedAt=terminal\?\(task\.completedAt\|\|task\.updatedAt\|\|record\.completedAt\|\|null\):null/);
-  assert.match(source, /elapsedLabel\(record\.startedAt,endedAt,!terminal\)/);
+  assert.match(source, /endedAt=terminal\?\(task\.completedAt\|\|task\.updatedAt\|\|record\.completedAt\|\|null\):truth&&!active\?/);
+  assert.match(source, /elapsedLabel\(truth\?\.activeElapsedStartedAt\|\|record\.startedAt,endedAt,active\)/);
+  assert.match(source, /pulse\.hidden=!active/);
 });
 
 test('terminal cards remain visible without Stop and stop polling while nonterminal cancellation rules remain intact', async () => {

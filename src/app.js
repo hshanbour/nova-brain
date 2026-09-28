@@ -45,6 +45,7 @@ import {createTerminalTaskReporter,isConversationTaskResultQuestion} from "./aut
 import {createArtifactDeliveryService,registerArtifactDeliveryTool} from "./autonomy/artifact-delivery.js";
 import {createTrustedArtifactContinuity,isExplicitTrustedArtifactRequest,isTrustedArtifactContinuationCandidate} from "./autonomy/trusted-artifact-continuity.js";
 import {resolveExplicitCodingRetryRequest} from "./autonomy/explicit-coding-retry.js";
+import {createExecutionTruthService} from "./autonomy/execution-truth.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -85,6 +86,7 @@ export function createApp({
     approvedBranch: config.developmentBranch,
   });
   const toolRegistry = createToolRegistry({ policy });
+  const executionTruth=createExecutionTruthService({storage,ownerId:OWNER_ID});
   registerDeveloperTools(toolRegistry, {
     environment,
     storage,
@@ -97,6 +99,7 @@ export function createApp({
     ownerId: OWNER_ID,
     toolRegistry,
     approvedBranch: config.developmentBranch,
+    executionTruth,
     capabilities: environment.VERCEL
       ? ["repo_read_remote", "reasoning", "scheduler", "vercel_preview"]
       : [
@@ -119,9 +122,10 @@ export function createApp({
     ownerId: OWNER_ID,
     approvedBranch: config.developmentBranch,
     deploymentEnvironment: environment.VERCEL_ENV || "local",
+    executionTruth,
   });
   const terminalReporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID});
-  const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,terminalReporter});
+  const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,terminalReporter,executionTruth});
   const codingExecutor=typeof storage?.getAutonomyTask==="function"?createCodingExecutorService({
     runtime:workerRuntime,
     storage,
@@ -132,6 +136,7 @@ export function createApp({
       repository:environment.NOVA_BRAIN_GITHUB_REPOSITORY||"hshanbour/nova-brain",
       branch:config.developmentBranch,
     }),
+    executionTruth,
   }):null;
   const codingBindings=configuredCodingBindings(environment,{projectId:"nova-brain",workspaceId:"nova-brain",repository:environment.NOVA_BRAIN_GITHUB_REPOSITORY||"hshanbour/nova-brain",branch:config.developmentBranch});
   const verifyDeployment = async ({deploymentId}) => {
@@ -311,6 +316,7 @@ export function createApp({
     developerWorkspaceHandoff,
     modelCostController,
     codingExecutor,
+    executionTruth,
     logger,
   });
   return Object.freeze({ ...api, initialize, workerRuntime });

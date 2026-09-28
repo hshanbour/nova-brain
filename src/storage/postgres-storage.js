@@ -180,6 +180,7 @@ const autonomyStepRow = (row) =>
     completedAt: date(row.completed_at),
     createdAt: date(row.created_at),
   };
+const executionAttemptRow=(row)=>row&&({id:row.id,taskId:row.task_id,ownerId:row.owner_id,handoffId:row.handoff_id,workerId:row.worker_id,generation:Number(row.generation),fenceToken:row.fence_token,status:row.status,phase:row.phase,executorStarted:row.executor_started,claimedAt:date(row.claimed_at),lastHeartbeatAt:date(row.last_heartbeat_at),lastProgressAt:date(row.last_progress_at),leaseExpiresAt:date(row.lease_expires_at),endedAt:date(row.ended_at),terminalReason:row.terminal_reason,metadata:row.metadata});
 const approvalRow = (row) =>
   row && {
     id: row.id,
@@ -1008,6 +1009,12 @@ export function createPostgresStorage({ connectionString }) {
         ).length > 0
       );
     },
+    async createExecutionAttempt(input){const rows=await run(`WITH task AS (SELECT id FROM nova_autonomy_tasks WHERE id=$2 AND owner_id=$3), generation AS (SELECT COALESCE(MAX(generation),0)+1 AS value FROM nova_execution_attempts WHERE task_id=$2), inserted AS (INSERT INTO nova_execution_attempts (id,task_id,owner_id,handoff_id,worker_id,generation,fence_token,status,phase,executor_started,claimed_at,last_heartbeat_at,lease_expires_at,metadata) SELECT $1,$2,$3,$4,$5,generation.value,$6,'preparing','preparing',false,now(),now(),now()+($7::int*interval '1 millisecond'),$8::jsonb FROM task,generation WHERE NOT EXISTS (SELECT 1 FROM nova_execution_attempts WHERE task_id=$2 AND status IN ('preparing','executing')) ON CONFLICT DO NOTHING RETURNING *) SELECT * FROM inserted`,[input.id,input.taskId,input.ownerId,input.handoffId,input.workerId,input.fenceToken,input.leaseMs,json(input.metadata)]);if(rows[0])return executionAttemptRow(rows[0]);return executionAttemptRow((await run(`SELECT * FROM nova_execution_attempts WHERE task_id=$1 AND owner_id=$2 AND handoff_id=$3 AND worker_id=$4 AND status IN ('preparing','executing') ORDER BY generation DESC LIMIT 1`,[input.taskId,input.ownerId,input.handoffId,input.workerId]))[0]);},
+    async getActiveExecutionAttempt(taskId,ownerId){return executionAttemptRow((await run(`SELECT * FROM nova_execution_attempts WHERE task_id=$1 AND owner_id=$2 AND status IN ('preparing','executing') ORDER BY generation DESC LIMIT 1`,[taskId,ownerId]))[0]);},
+    async getLatestExecutionAttempt(taskId,ownerId){return executionAttemptRow((await run(`SELECT * FROM nova_execution_attempts WHERE task_id=$1 AND owner_id=$2 ORDER BY generation DESC LIMIT 1`,[taskId,ownerId]))[0]);},
+    async listActiveExecutionAttempts(ownerId){return(await run(`SELECT * FROM nova_execution_attempts WHERE owner_id=$1 AND status IN ('preparing','executing') ORDER BY claimed_at`,[ownerId])).map(executionAttemptRow);},
+    async heartbeatExecutionAttempt(input){return executionAttemptRow((await run(`UPDATE nova_execution_attempts SET status=CASE WHEN executor_started OR $8::boolean THEN 'executing' ELSE 'preparing' END,phase=COALESCE($7,phase),executor_started=executor_started OR $8::boolean,last_heartbeat_at=now(),last_progress_at=CASE WHEN $9::boolean THEN now() ELSE last_progress_at END,lease_expires_at=now()+($10::int*interval '1 millisecond') WHERE id=$1 AND task_id=$2 AND owner_id=$3 AND handoff_id=$4 AND worker_id=$5 AND generation=$6 AND fence_token=$11 AND status IN ('preparing','executing') AND lease_expires_at>now() RETURNING *`,[input.id,input.taskId,input.ownerId,input.handoffId,input.workerId,input.generation,input.phase||null,input.executorStarted===true,input.progress===true,input.leaseMs,input.fenceToken]))[0]);},
+    async finishExecutionAttempt(input){return executionAttemptRow((await run(`UPDATE nova_execution_attempts SET status=$7,terminal_reason=$8,ended_at=now(),lease_expires_at=now() WHERE id=$1 AND task_id=$2 AND owner_id=$3 AND handoff_id=$4 AND worker_id=$5 AND generation=$6 AND fence_token=$9 AND status IN ('preparing','executing') RETURNING *`,[input.id,input.taskId,input.ownerId,input.handoffId,input.workerId,input.generation,input.status,input.reason||null,input.fenceToken]))[0]);},
     async recordAutonomyStep(input) {
       return autonomyStepRow(
         (

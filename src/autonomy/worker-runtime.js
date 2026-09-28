@@ -132,6 +132,7 @@ export function createWorkerRuntime({
   leaseMs = 30000,
   approvedBranch = "feat/nova-brain-mvp-foundation",
   approvedRepository = "hshanbour/nova-brain",
+  executionTruth,
 } = {}) {
   if (!storage || !ownerId || !toolRegistry)
     throw new Error(
@@ -981,8 +982,8 @@ export function createWorkerRuntime({
     workerId,
     capabilities: [...capabilities],
     create,
-    get: (id) => storage.getAutonomyTask(id, ownerId),
-    list: (options) => storage.listAutonomyTasks(ownerId, options),
+    get: async(id) => {const task=await storage.getAutonomyTask(id,ownerId);return task&&executionTruth?executionTruth.project(task):task;},
+    list: async(options) => {const tasks=await storage.listAutonomyTasks(ownerId,options);return executionTruth?Promise.all(tasks.map(task=>executionTruth.project(task))):tasks;},
     steps: (id) => storage.listAutonomySteps(id),
     control,
     tick,

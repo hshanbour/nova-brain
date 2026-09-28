@@ -11,7 +11,7 @@ const CODING_RETRY_APPROVAL_VERSION = 1;
 const MAX_SUCCESSOR_DEPTH = 32;
 const CODING_TASK_ID = /^coding_[a-f0-9]{32}$/;
 const ORCHESTRATION_TASK_ID = /^orchestration_[a-f0-9]{32}$/;
-export const CODING_ACTIVE_PROGRESS_PHASES = Object.freeze(["preparing", "inspecting", "implementing", "testing", "reviewing"]);
+export const CODING_ACTIVE_PROGRESS_PHASES = Object.freeze(["preparing", "executing", "inspecting", "implementing", "testing", "reviewing"]);
 
 export class CodingExecutorError extends Error {
   constructor(code, message, statusCode = 409, safeDiagnostics = undefined) {
@@ -250,7 +250,7 @@ function publicResult(task, steps) {
   });
 }
 
-export function createCodingExecutorService({ runtime, storage, ownerId, bindings = [] } = {}) {
+export function createCodingExecutorService({ runtime, storage, ownerId, bindings = [], executionTruth } = {}) {
   if (!runtime?.create || !runtime?.get || !runtime?.steps || !runtime?.control || !storage?.getAutonomyTask) {
     throw new Error("Coding executor requires the durable task runtime and storage.");
   }
@@ -493,6 +493,7 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
         fail("coding_progress_stale", "Coding progress does not match the active durable handoff.");
       }
       const summary = text(input.summary, "summary", 300);
+      if(executionTruth){const supplied=input.executionAttempt,attempt=await executionTruth.attemptForTask(task.id);if(!attempt||attempt.handoffId!==handoffId||!supplied||supplied.id!==attempt.id||supplied.generation!==attempt.generation||supplied.fenceToken!==attempt.fenceToken)fail("execution_attempt_stale","Coding progress does not match the fenced execution attempt.",409);await executionTruth.heartbeat({id:attempt.id,taskId:task.id,handoffId,workerId:task.metadata.localHandoff.workerId,generation:attempt.generation,fenceToken:attempt.fenceToken},{phase,executorStarted:phase!=="preparing",progress:true});}
       await storage.appendActivity({
         ownerId,
         projectId: task.projectId,

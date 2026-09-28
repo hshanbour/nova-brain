@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -109,6 +109,29 @@ export const SCHEMA_STATEMENTS = Object.freeze([
   )`,
   `ALTER TABLE nova_autonomy_tasks ADD COLUMN IF NOT EXISTS state_version bigint NOT NULL DEFAULT 1`,
   `CREATE INDEX IF NOT EXISTS nova_autonomy_queue_idx ON nova_autonomy_tasks (status, next_run_at, priority DESC, created_at)`,
+  `CREATE TABLE IF NOT EXISTS nova_execution_attempts (
+    id text PRIMARY KEY,
+    task_id text NOT NULL REFERENCES nova_autonomy_tasks(id) ON DELETE CASCADE,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    handoff_id text NOT NULL,
+    worker_id text NOT NULL,
+    generation integer NOT NULL CHECK (generation > 0),
+    fence_token text NOT NULL,
+    status text NOT NULL CHECK (status IN ('preparing','executing','interrupted','completed','failed','cancelled','superseded')),
+    phase text NOT NULL,
+    executor_started boolean NOT NULL DEFAULT false,
+    claimed_at timestamptz NOT NULL,
+    last_heartbeat_at timestamptz NOT NULL,
+    last_progress_at timestamptz,
+    lease_expires_at timestamptz NOT NULL,
+    ended_at timestamptz,
+    terminal_reason text,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE(task_id,generation),
+    UNIQUE(task_id,handoff_id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS nova_execution_attempts_one_active_idx ON nova_execution_attempts (task_id) WHERE status IN ('preparing','executing')`,
+  `CREATE INDEX IF NOT EXISTS nova_execution_attempts_owner_active_idx ON nova_execution_attempts (owner_id,status,lease_expires_at)`,
   `CREATE TABLE IF NOT EXISTS nova_task_report_outbox (
     report_key text PRIMARY KEY,
     task_id text NOT NULL REFERENCES nova_autonomy_tasks(id) ON DELETE CASCADE,
@@ -214,5 +237,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     FOREIGN KEY(owner_id,budget_id) REFERENCES nova_model_cost_budgets(owner_id,budget_id) ON DELETE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS nova_model_cost_task_idx ON nova_model_cost_reservations (owner_id,budget_id,task_id,created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12) ON CONFLICT (version) DO NOTHING`
 ]);

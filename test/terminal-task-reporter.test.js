@@ -5,7 +5,7 @@ import {createTerminalTaskReporter,isConversationTaskResultQuestion,renderTermin
 import {SCHEMA_STATEMENTS,SCHEMA_VERSION} from "../src/storage/schema.js";
 
 const OWNER="owner",CONVERSATION="conversation-a",OTHER="conversation-b";
-test("schema eleven adds a durable unique terminal report outbox",()=>{assert.equal(SCHEMA_VERSION,11);const sql=SCHEMA_STATEMENTS.find(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_task_report_outbox"));assert.match(sql,/PRIMARY KEY/);assert.match(sql,/UNIQUE\(task_id,terminal_state_version\)/);assert.match(sql,/message_id text UNIQUE/);});
+test("schema eleven adds a durable unique terminal report outbox",()=>{assert.ok(SCHEMA_VERSION>=11);const sql=SCHEMA_STATEMENTS.find(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_task_report_outbox"));assert.match(sql,/PRIMARY KEY/);assert.match(sql,/UNIQUE\(task_id,terminal_state_version\)/);assert.match(sql,/message_id text UNIQUE/);});
 async function fixture(){
   let tick=0;const storage=createInMemoryStorage({clock:()=>new Date(Date.UTC(2026,8,26,0,0,tick++))});
   await storage.initialize({owner:{id:OWNER,fullName:"Owner"},projects:[{id:"nova-brain",name:"Nova"}]});

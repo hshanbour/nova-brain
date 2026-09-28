@@ -21,6 +21,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const voiceUtterances = new Map();
   const runs = new Map();
   const autonomyTasks = new Map();
+  const executionAttempts = new Map();
   const autonomySteps = new Map();
   const rejectedReviewEvidence = new Map();
   const autonomyLocks = new Map();
@@ -760,6 +761,17 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       task.updatedAt = now(clock);
       return true;
     },
+    async createExecutionAttempt(input) {
+      const task=autonomyTasks.get(input.taskId);if(!task||task.ownerId!==input.ownerId)return null;
+      const existing=[...executionAttempts.values()].find(item=>item.taskId===input.taskId&&["preparing","executing"].includes(item.status));
+      if(existing)return existing.handoffId===input.handoffId&&existing.workerId===input.workerId?copy(existing):null;
+      const generation=Math.max(0,...[...executionAttempts.values()].filter(item=>item.taskId===input.taskId).map(item=>item.generation||0))+1,timestamp=now(clock),attempt={id:input.id,taskId:input.taskId,ownerId:input.ownerId,handoffId:input.handoffId,workerId:input.workerId,generation,fenceToken:input.fenceToken,status:input.status||"preparing",phase:input.phase||"preparing",executorStarted:false,claimedAt:timestamp,lastHeartbeatAt:timestamp,lastProgressAt:null,leaseExpiresAt:new Date(clock().getTime()+input.leaseMs).toISOString(),endedAt:null,terminalReason:null,metadata:copy(input.metadata||{})};executionAttempts.set(attempt.id,attempt);return copy(attempt);
+    },
+    async getActiveExecutionAttempt(taskId,ownerId){return copy([...executionAttempts.values()].filter(item=>item.taskId===taskId&&item.ownerId===ownerId&&["preparing","executing"].includes(item.status)).sort((a,b)=>b.generation-a.generation)[0]||null);},
+    async getLatestExecutionAttempt(taskId,ownerId){return copy([...executionAttempts.values()].filter(item=>item.taskId===taskId&&item.ownerId===ownerId).sort((a,b)=>b.generation-a.generation)[0]||null);},
+    async listActiveExecutionAttempts(ownerId){return [...executionAttempts.values()].filter(item=>item.ownerId===ownerId&&["preparing","executing"].includes(item.status)).map(copy);},
+    async heartbeatExecutionAttempt(input){const item=executionAttempts.get(input.id),timestamp=clock();if(!item||item.ownerId!==input.ownerId||item.taskId!==input.taskId||item.handoffId!==input.handoffId||item.workerId!==input.workerId||item.generation!==input.generation||item.fenceToken!==input.fenceToken||!["preparing","executing"].includes(item.status)||new Date(item.leaseExpiresAt)<=timestamp)return null;item.status=input.executorStarted||item.executorStarted?"executing":"preparing";item.executorStarted=item.executorStarted||input.executorStarted===true;if(input.phase)item.phase=input.phase;item.lastHeartbeatAt=timestamp.toISOString();if(input.progress)item.lastProgressAt=timestamp.toISOString();item.leaseExpiresAt=new Date(timestamp.getTime()+input.leaseMs).toISOString();return copy(item);},
+    async finishExecutionAttempt(input){const item=executionAttempts.get(input.id);if(!item||item.ownerId!==input.ownerId||item.taskId!==input.taskId||item.handoffId!==input.handoffId||item.workerId!==input.workerId||item.generation!==input.generation||item.fenceToken!==input.fenceToken||!["preparing","executing"].includes(item.status))return null;item.status=input.status;item.terminalReason=input.reason||null;item.endedAt=now(clock);item.leaseExpiresAt=item.endedAt;return copy(item);},
     async recordAutonomyStep(input) {
       const key = `${input.taskId}:${input.stepId}`;
       const fingerprint = [...autonomySteps.values()].find(

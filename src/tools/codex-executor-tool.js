@@ -117,10 +117,10 @@ function createCodexTraceSummary() {
   };
 }
 
-export function runCodexProcess(command, args, { cwd, env, input, signal, onLine } = {}) {
+export function runCodexProcess(command, args, { cwd, env, input, signal, onLine, onSpawn } = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], signal });
-    let stdout = "", stderr = "", pending = "";
+    let stdout = "", stderr = "", pending = "", settled = false;
     const trace = createCodexTraceSummary();
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -132,13 +132,18 @@ export function runCodexProcess(command, args, { cwd, env, input, signal, onLine
       for (const line of lines) if (line.trim()) { trace.record(line); onLine?.(line); }
     });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.once("error", reject);
+    child.once("error", (error) => { if (!settled) { settled = true; reject(error); } });
+    child.once("spawn", async () => {
+      try { await onSpawn?.({ pid: child.pid }); child.stdin.end(input || ""); }
+      catch (error) { if (!settled) { settled = true; child.kill(); reject(error); } }
+    });
     child.once("close", (code) => {
+      if (settled) return;
+      settled = true;
       if (pending.trim()) { trace.record(pending); onLine?.(pending); }
       if (code === 0) resolvePromise({ stdout, stderr, code });
       else reject(Object.assign(new Error("Codex coding execution failed."), { code: signal?.aborted ? "coding_executor_cancelled" : "coding_executor_failed", safeDiagnostics: { exitCode: code, exitCategory: signal?.aborted ? "cancelled" : "process_exit_nonzero", resultCategory: "structured_result_unavailable", executorLaunched: true, stderrBytes: Buffer.byteLength(stderr), stdoutBytes: Buffer.byteLength(stdout), ...trace.diagnostics() } }));
     });
-    child.stdin.end(input || "");
   });
 }
 
@@ -312,6 +317,7 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
           env,
           input: prompt(job, { ownerApprovalVerified }),
           signal,
+          onSpawn: () => onProgress?.("executing", "Codex started and is waiting for its first bounded activity event."),
           onLine(line) {
             let event;
             try { event = JSON.parse(line); } catch { return; }
@@ -449,7 +455,7 @@ export function registerCodexExecutorTool(registry, { root, repository, branch, 
     async execute(job, context = {}) {
       requireCodingTaskId(context.taskId);
       const emit = async (phase, summary) => activity?.({ job, context, phase, summary });
-      await emit("inspecting", "Codex is inspecting the bound project.");
+      await emit("preparing", "Preparing the isolated coding environment.");
       const result = await executeRunner(job, { root, repository, branch, taskId: context.taskId, signal: context.signal, onProgress: emit });
       if (result.status !== "completed") {
         const error = new Error(result.failure?.message || result.summary || "Codex coding execution did not complete.");

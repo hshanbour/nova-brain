@@ -335,7 +335,7 @@ test("nonterminal progress stays separate while a structured Codex terminal resu
   const worker = createPersistentLocalWorker({ client, root: "C:/bound", repository: "hshanbour/nova-brain", branch: "feature", runtimeVersion: "c".repeat(40), workerId: "local-worker", registry });
   await assert.rejects(worker.runOnce(), (error) => error.code === "tests_failed");
   const progressCalls = calls.filter((call) => call.path.includes("/coding-jobs/"));
-  assert.deepEqual(progressCalls.map((call) => call.body.phase), ["inspecting"]);
+  assert.deepEqual(progressCalls.map((call) => call.body.phase), ["preparing"]);
   assert.equal(progressCalls.some((call) => ["blocked", "failed", "cancelled"].includes(call.body.phase)), false);
   assert.equal(calls.some((call) => call.path.endsWith("/complete")), false);
   const failure = calls.find((call) => call.path.endsWith("/fail"));
@@ -445,6 +445,7 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
     environment: { PATH: process.platform === "win32" ? `${process.env.SYSTEMROOT}\\System32` : "/usr/bin", PATHEXT: process.env.PATHEXT, SYSTEMROOT: process.env.SYSTEMROOT, WINDIR: process.env.WINDIR, TEMP: process.env.TEMP, TMP: process.env.TMP, USERPROFILE: process.env.USERPROFILE, HOMEDRIVE: process.env.HOMEDRIVE, HOMEPATH: process.env.HOMEPATH, LOCALAPPDATA: process.env.LOCALAPPDATA, APPDATA: process.env.APPDATA, CODEX_HOME: process.env.CODEX_HOME, UNTRUSTED_TOOL_DIRECTORY: join(root, "untrusted-tools"), OPENAI_API_KEY: "must-not-leak", GITHUB_TOKEN: "must-not-leak", VERCEL_TOKEN: "must-not-leak" },
     async authProcess(command, args) { assert.equal(command, process.execPath);assert.deepEqual(args, ["login", "status"]);return { stdout: "", stderr: "", code: 0 }; },
     async spawnProcess(command, args, options) {
+      await options.onSpawn?.({ pid: 4242 });
       const schema = JSON.parse(await readFile(args[args.indexOf("--output-schema") + 1], "utf8"));
       assertStrictOutputSchema(schema);
       observed = { command, args, env: options.env, input: options.input, cwd: options.cwd, schema };
@@ -487,7 +488,7 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
   assert.deepEqual(result.executor.resultConsistency, { filesChangedMatch: false, reportedFilesCount: 1, authoritativeFilesCount: 1 });
   assert.deepEqual(result.usage, { input_tokens: 100, output_tokens: 25 });
   assert.equal(result.executor.billing, "codex_account_separate_from_nova_api_budget");
-  assert.deepEqual(progress.map(({ phase }) => phase), ["inspecting", "implementing", "testing"]);
+  assert.deepEqual(progress.map(({ phase }) => phase), ["executing", "inspecting", "implementing", "testing"]);
   assert.equal("OPENAI_API_KEY" in observed.env, false);
   assert.equal("GITHUB_TOKEN" in observed.env, false);
   assert.equal("VERCEL_TOKEN" in observed.env, false);

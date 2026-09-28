@@ -12,7 +12,7 @@ export function createCodingProgressReporter(client){
   return async({context,phase,summary})=>{
     const taskId=requireCodingTaskId(context?.taskId);
     if(!CODING_ACTIVE_PROGRESS_PHASES.includes(phase))throw Object.assign(new Error("Coding progress phase is invalid."),{code:"coding_progress_invalid"});
-    return client.request(`/api/admin/coding-jobs/${encodeURIComponent(taskId)}/progress`,{handoffId:context.handoffId,phase,summary});
+    return client.request(`/api/admin/coding-jobs/${encodeURIComponent(taskId)}/progress`,{handoffId:context.handoffId,phase,summary,executionAttempt:context.executionAttempt});
   };
 }
 function exactApprovedDelivery(task,job,{repository,branch}){
@@ -46,18 +46,20 @@ export function createPersistentLocalWorker({client,root,branch="feat/nova-brain
     if(!claimed.claimed)return{worked:false,taskId:task.id};
     const job=claimed.handoff,approvedPush=exactApprovedDelivery(task,job,{repository,branch});
     if(!job||job.taskId!==task.id||job.branch!==branch||job.expectedCommit!==task.expectedCommit||(!ALLOWED.has(job.tool)&&!approvedPush)||!exactReviewRemediationScope(task,job,{repository,branch,root:controlledRoot,runtimeVersion,workerId})||!exactFullTestScope(task,job,{repository,branch,root:controlledRoot,runtimeVersion,workerId})||!exactExecutionScope(task,job,{repository,branch,root:controlledRoot,runtimeVersion,workerId}))throw Object.assign(new Error("Server returned an invalid bounded handoff."),{code:"invalid_handoff"});
-    const context={taskId:task.id,handoffId:job.handoffId,stepId:job.stepId,stepType:job.stepType,tool:job.tool,schemaVersion:"1",validationLayer:"local_worker",payloadProvenance:"server_handoff",continuationGenerationId:task.continuationGenerationId};
+    const attempt=job.executionAttempt,attemptPayload=attempt?{id:attempt.id,generation:attempt.generation,fenceToken:attempt.fenceToken}:null,heartbeat=async(phase,executorStarted=false,progress=false)=>attempt?client.request(`/api/admin/worker/execution-attempts/${encodeURIComponent(attempt.id)}/heartbeat`,{taskId:task.id,handoffId:job.handoffId,workerId,generation:attempt.generation,fenceToken:attempt.fenceToken,phase,executorStarted,progress}):null;
+    const context={taskId:task.id,handoffId:job.handoffId,stepId:job.stepId,stepType:job.stepType,tool:job.tool,schemaVersion:"1",validationLayer:"local_worker",payloadProvenance:"server_handoff",continuationGenerationId:task.continuationGenerationId,executionAttempt:attemptPayload};
     try{
       if(job.tool==="codex_execute")requireCodingTaskId(task.id);
       if(!job.arguments||typeof job.arguments!=="object"||Array.isArray(job.arguments))throw Object.assign(new Error("Handoff arguments must be an object."),{code:"schema_mismatch",safeDiagnostics:canonicalSchemaDiagnostic({...context,fieldPath:"handoff.arguments",expected:{type:"object"},received:job.arguments,validationCode:"invalid_type"})});
-      const started=Date.now(),raw=await tools.execute(job.tool,job.arguments,{taskId:task.id,runId:task.id,handoffId:job.handoffId,stepId:job.stepId,workerId,runtimeVersion,projectId:"nova-brain",continuationGenerationId:context.continuationGenerationId,...(job.reviewRemediationScope?{reviewRemediationScope:job.reviewRemediationScope}:{}),...(job.executionScope?{executionScope:job.executionScope}:{}),...(job.fullTestScope?{fullTestScope:job.fullTestScope}:{}),approvalId:approvedPush?job.approvedDelivery.approvalId:undefined,schemaDiagnosticContext:{...context,validationLayer:"hands_tool_registry",payloadProvenance:"server_handoff_arguments"},repositoryContext:{...repositoryContext,expectedHead:job.expectedCommit,source:"persistent_worker_handoff"}});
+      await heartbeat("preparing",false,true);const executorStarted=job.tool!=="codex_execute";if(executorStarted)await heartbeat("executing",true,true);const controller=new AbortController(),timer=attempt?setInterval(()=>heartbeat(null,executorStarted,false).catch(()=>controller.abort(Object.assign(new Error("Execution attempt heartbeat was fenced."),{code:"execution_attempt_stale"}))),15000):null;
+      const started=Date.now();let raw;try{raw=await tools.execute(job.tool,job.arguments,{taskId:task.id,runId:task.id,handoffId:job.handoffId,stepId:job.stepId,workerId,runtimeVersion,projectId:"nova-brain",continuationGenerationId:context.continuationGenerationId,executionAttempt:attemptPayload,signal:controller.signal,...(job.reviewRemediationScope?{reviewRemediationScope:job.reviewRemediationScope}:{}),...(job.executionScope?{executionScope:job.executionScope}:{}),...(job.fullTestScope?{fullTestScope:job.fullTestScope}:{}),approvalId:approvedPush?job.approvedDelivery.approvalId:undefined,schemaDiagnosticContext:{...context,validationLayer:"hands_tool_registry",payloadProvenance:"server_handoff_arguments"},repositoryContext:{...repositoryContext,expectedHead:job.expectedCommit,source:"persistent_worker_handoff"}});}finally{if(timer)clearInterval(timer);}
       if(raw?.ok===false)throw Object.assign(new Error(raw.error?.message||"Bounded local step failed."),{code:raw.error?.code||"worker_failed",safeDiagnostics:raw.error?.evidence});
       const result=raw?.ok===undefined?{...raw,ok:true}:raw;
-      const completed=await client.request(`/api/admin/worker/handoff/${encodeURIComponent(job.handoffId)}/complete`,{taskId:task.id,workerId,idempotencyKey:key,result:{...result,durationMs:result.durationMs??Date.now()-started}});
+      const completed=await client.request(`/api/admin/worker/handoff/${encodeURIComponent(job.handoffId)}/complete`,{taskId:task.id,workerId,idempotencyKey:key,executionAttempt:attemptPayload,result:{...result,durationMs:result.durationMs??Date.now()-started}});
       return{worked:true,taskId:task.id,status:completed.status};
     }catch(error){
       if(error.code==="schema_mismatch")error.safeDiagnostics=canonicalSchemaDiagnostic({...context,...error.safeDiagnostics});
-      await client.request(`/api/admin/worker/handoff/${encodeURIComponent(job.handoffId)}/fail`,{taskId:task.id,workerId,idempotencyKey:key,error:{code:error.code||"worker_failed",message:String(error.message).slice(0,300),...(error.safeDiagnostics?{diagnostics:error.safeDiagnostics}:{})}});
+      await client.request(`/api/admin/worker/handoff/${encodeURIComponent(job.handoffId)}/fail`,{taskId:task.id,workerId,idempotencyKey:key,executionAttempt:attemptPayload,error:{code:error.code||"worker_failed",message:String(error.message).slice(0,300),...(error.safeDiagnostics?{diagnostics:error.safeDiagnostics}:{})}});
       if(error.code==="schema_mismatch")error.localDiagnostic=localSchemaDiagnostic(error.safeDiagnostics);
       throw error;
     }

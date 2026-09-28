@@ -191,6 +191,7 @@ export function createApi({
   developerWorkspaceHandoff,
   modelCostController,
   codingExecutor,
+  executionTruth,
   logger = console,
 }) {
   const recognitionEngines =
@@ -1669,6 +1670,10 @@ export function createApi({
           return;
         }
         const handoffClaim = pathname === "/api/admin/worker/handoff/claim";
+        const executionHeartbeat=pathname.match(/^\/api\/admin\/worker\/execution-attempts\/([^/]+)\/heartbeat$/);
+        if(executionTruth&&executionHeartbeat&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);if(input.id&&input.id!==decodeURIComponent(executionHeartbeat[1])){sendJson(response,409,{error:"Execution attempt ID does not match route.",code:"execution_attempt_stale"});return;}try{sendJson(response,200,{attempt:await executionTruth.heartbeat({...input,id:decodeURIComponent(executionHeartbeat[1])},{phase:input.phase||null,executorStarted:input.executorStarted===true,progress:input.progress===true})});}catch(error){if(error?.code==="execution_attempt_stale"){sendJson(response,409,{error:error.message,code:error.code});return;}throw error;}return;
+        }
         const codingProgress = pathname.match(/^\/api\/admin\/coding-jobs\/([^/]+)\/progress$/);
         if (codingExecutor && codingProgress && request.method === "POST") {
           await ready();

@@ -71,10 +71,10 @@ export function verifyLocalWorkerWorkspaceProof(proof,signature,token){
   return Object.freeze({actorType:"scoped_local_worker",workspaceProof:proof});
 }
 
-export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/nova-brain-mvp-foundation",clock=()=>new Date(),leaseMs=120000,deploymentEnvironment="preview"}={}){
+export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/nova-brain-mvp-foundation",clock=()=>new Date(),leaseMs=120000,deploymentEnvironment="preview",executionTruth=null}={}){
   if(!storage||!ownerId)throw new Error("Local Worker handoff requires storage and ownerId.");
   const activity=(task,action,status,summary,metadata={})=>storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action,status,summary,metadata:redact({taskId:task.id,...metadata})});
-  const response=(task,handoff)=>({handoffId:handoff.id,taskId:task.id,stepId:handoff.stepId,stepType:handoff.stepType,repository:"hshanbour/nova-brain",branch:task.branch,expectedCommit:task.currentCommit,tool:handoff.tool,arguments:redact(handoff.arguments),...(handoff.reviewRemediationScope?{reviewRemediationScope:handoff.reviewRemediationScope}:{}),...(handoff.approvedDelivery?{approvedDelivery:handoff.approvedDelivery}:{}),...(handoff.executionScope?{executionScope:handoff.executionScope}:{}),...(handoff.fullTestScope?{fullTestScope:handoff.fullTestScope}:{}),idempotencyKey:handoff.idempotencyKey,deadline:handoff.expiresAt});
+  const response=async(task,handoff)=>{let executionAttempt=null;if(executionTruth){const attempt=await executionTruth.attemptForTask(task.id);if(attempt?.handoffId===handoff.id&&attempt?.workerId===handoff.workerId)executionAttempt={id:attempt.id,generation:attempt.generation,fenceToken:attempt.fenceToken};}return{handoffId:handoff.id,taskId:task.id,stepId:handoff.stepId,stepType:handoff.stepType,repository:"hshanbour/nova-brain",branch:task.branch,expectedCommit:task.currentCommit,tool:handoff.tool,arguments:redact(handoff.arguments),...(handoff.reviewRemediationScope?{reviewRemediationScope:handoff.reviewRemediationScope}:{}),...(handoff.approvedDelivery?{approvedDelivery:handoff.approvedDelivery}:{}),...(handoff.executionScope?{executionScope:handoff.executionScope}:{}),...(handoff.fullTestScope?{fullTestScope:handoff.fullTestScope}:{}),...(executionAttempt?{executionAttempt}:{}),idempotencyKey:handoff.idempotencyKey,deadline:handoff.expiresAt};};
   const executionApproval=async(task,record)=>{const approval=await storage.getApproval(record.approvalId,ownerId);if(approval?.status!=="approved"||approval.tool!==EXECUTION_SCOPE_RECOVERY_TOOL||approval.runId!==task.id||approval.ownerId!==ownerId||approval.projectId!==task.projectId||hash(approval.arguments)!==hash(record.approvalArguments))throw new HandoffError("execution_scope_approval_required","The exact owner-approved execution contract must remain approved.",403);};
   const fullTestApproval=async(task,record)=>{const descriptor=fullTestScopeDescriptor(task),approval=await storage.getApproval(record.approvalId,ownerId);if(!descriptor||record.recoveryClass!==descriptor.recoveryClass||approval?.status!=="approved"||approval.tool!==descriptor.tool||approval.runId!==task.id||approval.ownerId!==ownerId||approval.projectId!==task.projectId||hash(approval.arguments)!==hash(record.approvalArguments))throw new HandoffError("full_test_scope_approval_required","The exact owner-approved full-test contract must remain approved.",403);};
   async function claim(input){
@@ -83,7 +83,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     if(input.expectedBranch!==approvedBranch||["main","master"].includes(input.expectedBranch))throw new HandoffError("branch_not_allowed","Only the approved feature branch may be handed off.",403);
     boundedString(input.expectedCommit,"expectedCommit",64);
     const capabilities=[...new Set(Array.isArray(input.capabilities)?input.capabilities:[])].filter(value=>["repo_mutate_local","test_local","repo_read_remote","approved_delivery_git_push","codex_local"].includes(value));
-    const before=await storage.getAutonomyTask(taskId,ownerId);if(!before)return{claimed:false};
+    if(executionTruth)await executionTruth.reconcile({workerId});const before=await storage.getAutonomyTask(taskId,ownerId);if(!before)return{claimed:false};
     if(before.branch!==input.expectedBranch)throw new HandoffError("branch_mismatch","Task branch does not match.");
     if(before.currentCommit!==input.expectedCommit)throw new HandoffError("commit_mismatch","Task commit does not match.");
     if(reviewRemediationDescriptor(before))return claimReviewRemediation(before,input,workerId,idempotencyKey,capabilities);
@@ -109,9 +109,9 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     }
     // Validate even an idempotent active-handoff request before returning it.
     if(recoveredRead)validateRecoveredLocalReadContext(before,await storage.listAutonomySteps(before.id),{...claimContext,workerId,allowFirstBind:true},clock);
-    const active=before.metadata?.localHandoff;
-    if(active&&new Date(active.expiresAt)>clock()){
-      if(active.workerId===workerId&&active.idempotencyKey===idempotencyKey)return{claimed:true,idempotent:true,handoff:response(before,active)};
+    const active=before.metadata?.localHandoff,activeTruth=executionTruth&&active?await executionTruth.project(before):null,activeFresh=activeTruth?.executionTruth?.active===true;
+    if(active&&(activeFresh||new Date(active.expiresAt)>clock())){
+      if(active.workerId===workerId&&active.idempotencyKey===idempotencyKey)return{claimed:true,idempotent:true,handoff:await response(before,active)};
       return{claimed:false};
     }
     if(!SAFE_STATUSES.has(before.status)&&!(active&&new Date(active.expiresAt)<=clock()))return{claimed:false};
@@ -159,7 +159,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     let approvedDelivery=null;
     if(planned.type==="push"){const approval=await storage.getApproval(before.approvalState?.approvalId,ownerId),steps=await storage.listAutonomySteps(before.id);if(!isExactApprovedDelivery({task:before,approval,steps,approvedBranch}))throw new HandoffError("approved_delivery_invalid","Only the exact immutable approved delivery may be handed off.",409);const artifact=before.taskType===ARTIFACT_DELIVERY_TASK_TYPE,pushes=steps.filter(step=>step.stepType==="push"),successfulPush=pushes.some(step=>step.status==="completed"),review=steps.filter(step=>step.stepType==="review_commit"&&step.status==="completed").at(-1),repository=artifact?artifactDeliveryRepository(before):before.metadata?.selfDevelopment?.repository;approvedDelivery=Object.freeze({contractVersion:1,taskType:before.taskType,taskId:before.id,approvalId:approval.id,approved:approval.status==="approved",revoked:approval.status==="revoked",reviewedCommit:artifact?before.currentCommit:review?.result?.commitSha,repository,branch:before.branch,logicalStepId:`${before.currentStep+1}:push`,localHandoff:true,reviewHistoryImmutable:true,postReviewMutation:false,deliveryConsumed:before.metadata?.approvedDeliveryRuntime?.consumed===true,gitPushSucceeded:successfulPush,secondLogicalPush:pushes.length>1,repositoryProvenanceValid:repository==="hshanbour/nova-brain"});}
     const codingLeaseMs=planned.type==="delegate_coding"?Math.min(120*60000,Math.max(5*60000,(before.maxRuntimeMinutes||120)*60000)):null;
-    const scopedLeaseMs=fullTestProof?Math.min(300000,new Date(fullTestProof.record.activeContinuation.runtimeDeadline).getTime()-clock().getTime()):codingLeaseMs||leaseMs;
+    const scopedLeaseMs=executionTruth?60000:fullTestProof?Math.min(300000,new Date(fullTestProof.record.activeContinuation.runtimeDeadline).getTime()-clock().getTime()):codingLeaseMs||leaseMs;
     const handoffLeaseCap=codingLeaseMs||300000;
     const handoff={id:randomUUID(),workerId,idempotencyKey,stepId:`${before.currentStep+1}:${planned.type}`,stepType:planned.type,tool:definition.tool,arguments:redact(args),...(approvedDelivery?{approvedDelivery}:{}),...(executionScope?{executionScope}:{}),...(fullTestScope?{fullTestScope}:{}),branch:before.branch,expectedCommit:before.currentCommit,expiresAt:new Date(Math.min(clock().getTime()+Math.max(30000,Math.min(handoffLeaseCap,scopedLeaseMs)),executionProof?new Date(executionProof.record.activeContinuation.runtimeDeadline).getTime():fullTestProof?new Date(fullTestProof.record.activeContinuation.runtimeDeadline).getTime():Infinity)).toISOString(),fingerprint:hash([before.id,before.currentStep,planned.type,redact(planned.input),before.currentCommit])};
     const claimCapabilities=exactApprovedDelivery?[...capabilities,"github_write"]:capabilities;
@@ -169,24 +169,25 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     if(priorStep?.status==="failed")await storage.updateAutonomyStep(task.id,handoff.stepId,{status:"running",attempt:(priorStep.attempt||1)+1,result:null,errorCode:null,startedAt:nowIso(clock),completedAt:null});
     else await storage.recordAutonomyStep({taskId:task.id,stepId:handoff.stepId,stepType:handoff.stepType,capability:definition.capability,operationFingerprint:handoff.fingerprint,input:redact(recoveredRead?{tool:definition.tool,arguments:args}:planned.input),status:"running"});
     handoff.expectedVersion=task.stateVersion+1;
-    const updated=await storage.updateAutonomyTask(task.id,ownerId,{status:"running",metadata:{...task.metadata,localHandoff:handoff}},task.stateVersion);
+    let updated=await storage.updateAutonomyTask(task.id,ownerId,{status:"running",metadata:{...task.metadata,localHandoff:handoff}},task.stateVersion);
     if(!updated)throw new HandoffError("version_conflict","Task changed while creating the handoff.");
+    if(executionTruth)await executionTruth.start({task:updated,handoff,workerId});
     await activity(updated,"local_worker_handoff_created","running",`${handoff.stepType} handed to a controlled local worker.`,{handoffId:handoff.id,stepId:handoff.stepId,workerId});
-    return{claimed:true,idempotent:false,handoff:response(updated,handoff)};
+    return{claimed:true,idempotent:false,handoff:await response(updated,handoff)};
   }
   async function reviewRemediationApproval(task,record){
     const descriptor=reviewRemediationDescriptor(task),approval=await storage.getApproval(record.approvalId,ownerId);
     if(!descriptor||record.recoveryClass!==descriptor.recoveryClass||approval?.status!=="approved"||approval.tool!==descriptor.tool||approval.runId!==task.id||approval.ownerId!==ownerId||approval.projectId!==task.projectId||hash(approval.arguments)!==hash(record.approvalArguments))throw new HandoffError("review_remediation_approval_required","The exact review-remediation owner approval must remain approved.",403);
   }
   async function claimReviewRemediation(before,input,workerId,idempotencyKey,capabilities){
-    const active=before.metadata?.localHandoff,descriptor=reviewRemediationDescriptor(before);
+    const active=before.metadata?.localHandoff,activeTruth=executionTruth&&active?await executionTruth.project(before):null,activeFresh=activeTruth?.executionTruth?.active===true,descriptor=reviewRemediationDescriptor(before);
     const deadline=Date.parse(before.metadata[descriptor.historyKey]?.at(-1)?.activeContinuation?.runtimeDeadline),expired=Number.isFinite(deadline)&&deadline<=clock().getTime();
     const steps=await storage.listAutonomySteps(before.id),{record,history,firstBind}=validateReviewRemediationContext(before,steps,{runtimeVersion:input.runtimeVersion,generationId:input.continuationGenerationId,repository:input.repository,root:input.repositoryRoot,branch:input.expectedBranch,workerId,allowFirstBind:true},expired?()=>new Date(deadline-1):clock);
     await reviewRemediationApproval(before,record);
     if(active&&(active.workerId!==workerId||active.idempotencyKey!==idempotencyKey))return{claimed:false};
-    if(active&&new Date(active.expiresAt)<=clock()){await stopReviewRemediation(before,active,{code:"review_remediation_handoff_expired",message:"The one-time handoff expired."});throw new HandoffError("handoff_expired","Review remediation stopped without retry.");}
+    if(active&&!activeFresh&&new Date(active.expiresAt)<=clock()){await stopReviewRemediation(before,active,{code:"review_remediation_handoff_expired",message:"The one-time handoff expired."});throw new HandoffError("handoff_expired","Review remediation stopped without retry.");}
     if(expired){const planned=before.metadata.steps[before.currentStep];await stopReviewRemediation(before,{stepId:`${before.currentStep+1}:${planned.type}`,stepType:planned.type},{code:"review_remediation_runtime_expired",message:"The bounded remediation runtime expired."});return{claimed:false,code:"review_remediation_runtime_expired"};}
-    if(active){if(active.workerId===workerId&&active.idempotencyKey===idempotencyKey)return{claimed:true,idempotent:true,handoff:response(before,active)};return{claimed:false};}
+    if(active){if(active.workerId===workerId&&active.idempotencyKey===idempotencyKey)return{claimed:true,idempotent:true,handoff:await response(before,active)};return{claimed:false};}
     if(!SAFE_STATUSES.has(before.status))return{claimed:false};
     const planned=before.metadata.steps[before.currentStep],definition=LOCAL_STEPS[planned?.type],stepId=`${before.currentStep+1}:${planned?.type}`;
     const allowed=new Set([...record.readStepIds,record.validateStepId,record.applyStepId,record.focusedStepId,record.fullTestStepId]);
@@ -202,16 +203,17 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     else if(planned.type==="run_focused_tests"&&hash(args)!==hash({files:record.focusedTests}))throw new HandoffError("review_remediation_tests_changed","Focused tests must match the accepted remediation plan.");
     else if(planned.type==="run_full_tests"&&hash(args)!==hash({}))throw new HandoffError("review_remediation_tests_changed","Only the unfiltered full suite is authorized.");
     const bound={...record,...(firstBind?{workerBindingState:"bound",workerId,boundAt:nowIso(clock)}:{}),claimedStepIds:[...record.claimedStepIds,stepId]};
-    const scopedLeaseMs=Math.min(300000,new Date(record.activeContinuation.runtimeDeadline).getTime()-clock().getTime());
+    const scopedLeaseMs=executionTruth?60000:Math.min(300000,new Date(record.activeContinuation.runtimeDeadline).getTime()-clock().getTime());
     const handoff={id:randomUUID(),workerId,idempotencyKey,stepId,stepType:planned.type,tool:definition.tool,arguments:redact(args),reviewRemediationScope:reviewRemediationScopePayload(bound),branch:before.branch,expectedCommit:before.currentCommit,expiresAt:new Date(clock().getTime()+scopedLeaseMs).toISOString(),fingerprint:hash([before.id,before.currentStep,planned.type,redact(planned.input),before.currentCommit,record.activeContinuation.generationId])};
     const task=await storage.claimAutonomyTask({ownerId,workerId:`local:${workerId}`,capabilities,leaseMs:scopedLeaseMs,idempotencyKey,taskId:before.id,expectedBranch:input.expectedBranch,expectedCommit:input.expectedCommit,expectedVersion:before.stateVersion,claimMetadata:{[descriptor.historyKey]:[...history.slice(0,-1),bound]}});
     if(!task)return{claimed:false};
     if(definition.lock&&!await storage.acquireAutonomyLock({lockKey:`${task.projectId||"repo"}:${task.branch}`,taskId:task.id,leaseToken:task.leaseToken,expiresAt:task.leaseExpiresAt})){await stopReviewRemediation(task,handoff,{code:"branch_locked",message:"The bound repository branch is locked."});return{claimed:false,code:"branch_locked"};}
     await storage.recordAutonomyStep({taskId:task.id,stepId,stepType:planned.type,capability:definition.capability,operationFingerprint:handoff.fingerprint,input:redact({tool:definition.tool,arguments:args}),status:"running"});
     handoff.expectedVersion=task.stateVersion+1;
-    const updated=await storage.updateAutonomyTask(task.id,ownerId,{status:"running",metadata:{...task.metadata,localHandoff:handoff}},task.stateVersion);
+    let updated=await storage.updateAutonomyTask(task.id,ownerId,{status:"running",metadata:{...task.metadata,localHandoff:handoff}},task.stateVersion);
     if(!updated)throw new HandoffError("version_conflict","Task changed while its remediation handoff was created.");
-    return{claimed:true,idempotent:false,handoff:response(updated,handoff)};
+    if(executionTruth)await executionTruth.start({task:updated,handoff,workerId});
+    return{claimed:true,idempotent:false,handoff:await response(updated,handoff)};
   }
   async function finishReviewRemediation(task,handoff,result,{failed=false,errorCode}={}){
     const descriptor=reviewRemediationDescriptor(task),latest=task.metadata[descriptor.historyKey].at(-1),{record}=validateReviewRemediationContext(task,await storage.listAutonomySteps(task.id),{runtimeVersion:latest.runtimeVersion,generationId:task.metadata.activeContinuation.generationId,repository:latest.repository,root:latest.workspaceRoot,branch:task.branch,workerId:handoff.workerId},clock);
@@ -246,9 +248,10 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     const task=await storage.getAutonomyTask(taskId,ownerId);if(!task)throw new HandoffError("handoff_not_found","Handoff was not found.",404);
     if((task.metadata?.completedHandoffs||[]).includes(handoffId))return{idempotent:true,task:publicTask(task)};
     const handoff=task.metadata?.localHandoff;if(!handoff||handoff.id!==handoffId||handoff.workerId!==workerId||handoff.idempotencyKey!==idempotencyKey)throw new HandoffError("handoff_mismatch","Handoff does not match the active task.",403);
+    if(executionTruth){const supplied=input?.executionAttempt,attempt=await executionTruth.attemptForTask(taskId);if(!attempt||attempt.handoffId!==handoffId||attempt.workerId!==workerId||!supplied||supplied.id!==attempt.id||supplied.generation!==attempt.generation||supplied.fenceToken!==attempt.fenceToken)throw new HandoffError("execution_attempt_stale","Execution attempt fencing does not match the active handoff.",409);await executionTruth.heartbeat({id:attempt.id,taskId,ownerId,handoffId,workerId,generation:attempt.generation,fenceToken:attempt.fenceToken},{phase:null,executorStarted:false,progress:false});}
     if(task.stateVersion!==handoff.expectedVersion)throw new HandoffError("version_conflict","Task changed while the local step was running.");
     if(task.branch!==handoff.branch||task.currentCommit!==handoff.expectedCommit)throw new HandoffError("task_binding_changed","Task branch or commit changed while the local step was running.");
-    if(new Date(handoff.expiresAt)<=clock()){await recover(task,handoff,"local_worker_handoff_expired");throw new HandoffError("handoff_expired",handoff.executionScope||handoff.fullTestScope?"The single-use handoff expired and was stopped without retry.":"Handoff expired and was safely requeued.");}
+    if(!executionTruth&&new Date(handoff.expiresAt)<=clock()){await recover(task,handoff,"local_worker_handoff_expired");throw new HandoffError("handoff_expired",handoff.executionScope||handoff.fullTestScope?"The single-use handoff expired and was stopped without retry.":"Handoff expired and was safely requeued.");}
     const result=redact(failed?input.error:input.result);if(!result||typeof result!=="object"||Array.isArray(result)||JSON.stringify(result).length>200000)throw new HandoffError("invalid_handoff_result","Structured bounded result is required.",400);
     if(!failed&&result.ok!==true)throw new HandoffError("invalid_handoff_result","Successful result must report ok=true.",400);
     if(!failed&&["commit","integrate_commit"].includes(handoff.stepType)&&!/^[a-f0-9]{40}$/.test(result.commitSha||""))throw new HandoffError("invalid_handoff_result","Commit result requires an exact SHA.",400);
@@ -368,6 +371,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     await storage.releaseAutonomyLocks(task.id,task.leaseToken);await storage.releaseAutonomyLease(task.id,ownerId,task.leaseToken);const updated=await storage.updateAutonomyTask(task.id,ownerId,{status:"queued",nextRunAt:nowIso(clock),metadata:{...task.metadata,localHandoff:null},blockedReason:null,errorCode:"worker_crash"});await activity(updated,action,"retrying","Expired local Worker handoff was safely requeued.",{handoffId:handoff.id,stepId:handoff.stepId});return updated;
   }
   const inspect=async(handoffId,taskId)=>{const task=await storage.getAutonomyTask(taskId,ownerId),handoff=task?.metadata?.localHandoff;if(!handoff||handoff.id!==handoffId)throw new HandoffError("handoff_not_found","Handoff was not found.",404);return{handoffId,taskId,status:task.status,stepId:handoff.stepId,stepType:handoff.stepType,deadline:handoff.expiresAt};};
-  return Object.freeze({claim,complete:(id,input)=>finish(id,input),fail:(id,input)=>finish(id,input,{failed:true}),inspect});
+  const finishFenced=async(id,input,options)=>{const result=await finish(id,input,options);const attempt=input?.executionAttempt;if(executionTruth&&attempt)await executionTruth.finish({id:attempt.id,taskId:input.taskId,handoffId:id,workerId:input.workerId,generation:attempt.generation,fenceToken:attempt.fenceToken},{status:options?.failed?"failed":"completed",reason:options?.failed?(input.error?.code||"worker_failed"):"handoff_completed"});return result;};
+  return Object.freeze({claim,complete:(id,input)=>finishFenced(id,input),fail:(id,input)=>finishFenced(id,input,{failed:true}),inspect});
 }
 function publicTask(task){return{id:task.id,status:task.status,currentStep:task.currentStep,currentPhase:task.currentPhase,currentCommit:task.currentCommit,branch:task.branch,stateVersion:task.stateVersion,approvalState:task.approvalState?{tool:task.approvalState.tool,branch:task.approvalState.branch,commitSha:task.approvalState.commitSha}:null};}
