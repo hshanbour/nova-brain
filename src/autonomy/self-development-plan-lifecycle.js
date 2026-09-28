@@ -54,6 +54,15 @@ export function taskRuntimeWindow(task,now=new Date()){
   return Object.freeze({scope:continuation?.runtimeStartedAt?"active_continuation":"task",startedAt:new Date(startedMs).toISOString(),deadline:new Date(deadlineMs).toISOString(),elapsedMs:Math.max(0,now.getTime()-startedMs),maxRuntimeMs,expired:deadlineMs<=now.getTime(),continuationGenerationId:continuation?.generationId||null});
 }
 
+export function assertRecoveryRuntimePolicy(before,after,now=new Date()){
+  const terminal=new Set(["completed","failed","blocked","cancelled","expired"]),active=new Set(["queued","retrying","waiting","waiting_for_worker","planning","running"]);
+  if(!terminal.has(before?.status)||!active.has(after?.status))throw Object.assign(new Error("A terminal-to-active recovery transition is required."),{code:"recovery_runtime_transition_invalid",retryable:false});
+  const previous=taskRuntimeWindow(before,now),next=taskRuntimeWindow(after,now);
+  if(next.expired)throw Object.assign(new Error("Recovery cannot reactivate a task with an exhausted runtime deadline."),{code:"recovery_runtime_deadline_exhausted",retryable:false});
+  const sameWindow=previous.startedAt===next.startedAt&&previous.deadline===next.deadline&&previous.continuationGenerationId===next.continuationGenerationId;
+  return Object.freeze({policy:sameWindow?"existing_runtime_deadline":"bounded_recovery_generation",scope:next.scope,startedAt:next.startedAt,deadline:next.deadline,continuationGenerationId:next.continuationGenerationId});
+}
+
 export function createActiveContinuation({task,startStep,plannedSteps,repairLimit=2,recoveryClass,runtimeStartedAt,runtimeMinutes=15}){
   const maxSteps=Math.min(30,Math.max(1,plannedSteps+Math.max(0,Math.min(3,repairLimit))*2));
   const boundedRuntimeMinutes=Math.max(5,Math.min(120,Number(runtimeMinutes)||15)),started=runtimeStartedAt?new Date(runtimeStartedAt).toISOString():null;
