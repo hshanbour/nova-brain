@@ -1,4 +1,4 @@
-import { createNovaClient, durableTaskRecordsFromMessages } from "./api-client.js";
+import { createNovaClient, durableTaskRecordsFromMessages, isDurableTaskId } from "./api-client.js";
 import { ownerMemoryClient } from "./memory-client.js";
 import { selectWorkspace } from "./workspace-navigation.js";
 import { conversationTitle, createConversationHistory } from "./conversation-history.js";
@@ -63,8 +63,8 @@ const terminalTaskStates=new Set(["completed","failed","cancelled","expired","bl
 const taskStatusLabels=Object.freeze({queued:"Queued",planning:"Planning",running:"Working on it…",waiting:"Waiting",waiting_for_worker:"Waiting for worker",waiting_for_approval:"Waiting for approval",retrying:"Retrying",blocked:"Blocked",completed:"Completed",failed:"Failed",cancelled:"Cancelled",expired:"Expired",paused:"Paused"});
 const executionStateLabels=Object.freeze({queued:"Queued",waiting_for_worker:"Waiting for worker",waiting_for_approval:"Waiting for approval",waiting:"Waiting",retrying:"Retrying",preparing:"Preparing",executing:"Working on it…",recovering:"Recovering interrupted work",stalled:"Execution stalled",terminal:"Completed"});
 const taskErrorLabels=Object.freeze({implementation_scope_required:"Implementation scope needs attention.",structured_scope_unresolved:"A safe implementation scope could not be resolved.",structured_scope_recovery_exhausted:"Scope recovery was exhausted safely.",implementation_prerequisite_unresolved:"An implementation prerequisite is unresolved.",max_runtime_reached:"The bounded runtime expired.",test_failed:"Tests failed.",repair_limit_reached:"The bounded repair limit was reached.",review_rejected:"Review found an issue that must be resolved."});
-const approvalToolLabels=Object.freeze({git_push:"Push to GitHub",preview_deploy:"Deploy Preview",self_development_protected_change:"Protected change",coding_job_create:"Start approved Codex coding job"});
-function readLiveActivityRecords(){try{const value=JSON.parse(localStorage.getItem(liveActivityStorageKey)||"[]");return Array.isArray(value)?value.filter(item=>/^(?:selfdev|orchestration|coding)_[a-f0-9]{32}$/.test(item?.taskId||"")&&typeof item.conversationId==="string").slice(-20):[];}catch{return[];}}
+const approvalToolLabels=Object.freeze({git_push:"Push to GitHub",preview_deploy:"Deploy Preview",self_development_protected_change:"Protected change",coding_job_create:"Start approved Codex coding job",artifact_delivery_execute:"Ship approved artifact"});
+function readLiveActivityRecords(){try{const value=JSON.parse(localStorage.getItem(liveActivityStorageKey)||"[]");return Array.isArray(value)?value.filter(item=>isDurableTaskId(item?.taskId)&&typeof item.conversationId==="string").slice(-20):[];}catch{return[];}}
 function persistLiveActivityRecords(){try{const retained=readLiveActivityRecords().filter(item=>!liveActivityRecords.has(item.taskId)),current=[...liveActivityRecords.values()].map(({taskId,conversationId,startedAt,completedAt})=>({taskId,conversationId,startedAt,completedAt:completedAt||null}));localStorage.setItem(liveActivityStorageKey,JSON.stringify([...retained,...current].slice(-20)));}catch{}}
 function elapsedLabel(startedAt,endedAt,live=true){const start=new Date(startedAt).valueOf(),end=endedAt?new Date(endedAt).valueOf():live?Date.now():Number.NaN;if(!Number.isFinite(start)||!Number.isFinite(end))return"";const seconds=Math.max(0,Math.floor((end-start)/1000)),minutes=Math.floor(seconds/60),hours=Math.floor(minutes/60);return hours?`${hours}h ${minutes%60}m`:minutes?`${minutes}m ${seconds%60}s`:`${seconds}s`;}
 function safeProgressLabel(task,activity=[]){
@@ -134,7 +134,7 @@ async function syncTerminalTaskReport(record){
   record.reportAttempts=(record.reportAttempts||0)+1;if(record.reportAttempts<10)record.reportTimer=setTimeout(()=>syncTerminalTaskReport(record),2000);
 }
 function ensureLiveActivity(durableTask,{startedAt=new Date().toISOString()}={}){
-  if(!/^(?:selfdev|orchestration|coding)_[a-f0-9]{32}$/.test(durableTask?.id||""))return null;
+  if(!isDurableTaskId(durableTask?.id))return null;
   let record=liveActivityRecords.get(durableTask.id);if(record)return record;
   record={taskId:durableTask.id,conversationId:client.conversationId||"",startedAt,node:createLiveActivityNode(durableTask.id),timer:null,completedAt:null};liveActivityRecords.set(record.taskId,record);persistLiveActivityRecords();void refreshLiveActivity(record);return record;
 }
@@ -243,7 +243,8 @@ async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,si
       catch (error) { preparationError = error; }
     }
     document.querySelector("#thinkingMessage")?.remove();
-    if(result.durableTask?.id)ensureLiveActivity(result.durableTask);else addMessage({ role: "assistant", text: result.message, metadata: result, autoSpeak: autoSpeakResponse });
+    const liveActivity=result.durableTask?.id?ensureLiveActivity(result.durableTask):null;
+    if(!liveActivity)addMessage({ role: "assistant", text: result.message, metadata: result, autoSpeak: autoSpeakResponse });
     providerStatus.textContent = `${result.provider || "Agent"} provider · Ready`;
     void refreshRecents(); return { ...result, preparedAssistant, preparationError };
   } catch (error) {

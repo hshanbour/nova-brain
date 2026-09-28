@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createNovaClient, durableTaskIdFromAcknowledgement, durableTaskRecordsFromMessages, NovaApiError } from "../assets/api-client.js";
+import { createNovaClient, durableTaskIdFromAcknowledgement, durableTaskRecordsFromMessages, isDurableTaskId, NovaApiError } from "../assets/api-client.js";
 import { ownerMemoryClient } from "../assets/memory-client.js";
 
 const jsonResponse = (body, { ok = true, status = 200 } = {}) => ({ ok, status, async json() { return body; } });
@@ -18,6 +18,15 @@ test("durable acknowledgement parser restores only an exact safe task identity",
 test("durable acknowledgement parser restores a Chat-native Codex orchestration identity",()=>{
   const id="orchestration_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   assert.equal(durableTaskIdFromAcknowledgement(`Durable coding orchestration task ${id} is waiting_for_approval. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`),id);
+});
+
+test("durable task identity includes artifact delivery and rejects unknown prefixes",()=>{
+  const id="shipping_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",acknowledgement=`Durable artifact delivery task ${id} is waiting_for_approval. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`;
+  assert.equal(isDurableTaskId(id),true);
+  assert.equal(durableTaskIdFromAcknowledgement(acknowledgement),id);
+  assert.deepEqual(durableTaskRecordsFromMessages([{role:"assistant",content:acknowledgement,createdAt:"2026-09-28T19:02:07.007Z"}],"conversation-shipping"),[{taskId:id,conversationId:"conversation-shipping",startedAt:"2026-09-28T19:02:07.007Z",completedAt:null}]);
+  assert.equal(isDurableTaskId("future_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),false);
+  assert.equal(durableTaskIdFromAcknowledgement("Durable artifact delivery task future_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa is waiting_for_approval. Track it in Activity; Nova's Persistent Local Worker can continue it independently."),null);
 });
 
 test("conversation reload reconstructs each durable task identity exactly once", () => {

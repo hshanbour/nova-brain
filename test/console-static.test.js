@@ -40,6 +40,11 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(consoleJs, /createComposerVoiceControl/);
   assert.match(consoleJs, /voiceControl\.commit\(\); stopVoiceActivity\(\); input\.value = ""/);
   assert.match(consoleJs, /result\.durableTask\?\.id/);
+  assert.match(consoleJs, /isDurableTaskId\(durableTask\?\.id\)/);
+  assert.match(consoleJs, /isDurableTaskId\(item\?\.taskId\)/);
+  assert.match(consoleJs, /const liveActivity=result\.durableTask\?\.id\?ensureLiveActivity\(result\.durableTask\):null/);
+  assert.match(consoleJs, /if\(!liveActivity\)addMessage/);
+  assert.match(consoleJs, /artifact_delivery_execute:"Ship approved artifact"/);
   assert.match(consoleJs, /restoreLiveActivities\(storedMessages\)/);
   assert.match(consoleJs, /restoreLiveActivities\(restored\.messages\)/);
   assert.match(consoleJs, /durableTaskRecordsFromMessages\(storedMessages,client\.conversationId\)/);
