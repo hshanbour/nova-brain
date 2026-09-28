@@ -125,11 +125,18 @@ try {
     $lastPoll=if($null -ne $status -and $null -ne $status.PSObject.Properties['lastSuccessfulPoll']){[string]$status.lastSuccessfulPoll}else{''}
     $statusRuntime=if($null -ne $status -and $null -ne $status.PSObject.Properties['runtimeVersion']){[string]$status.runtimeVersion}else{''}
     $statusPreview=if($null -ne $status -and $null -ne $status.PSObject.Properties['previewUrl']){[string]$status.previewUrl}else{''}
+    $proof=if($null -ne $status -and $null -ne $status.PSObject.Properties['repositoryProof']){$status.repositoryProof}else{$null}
     $owned=$workerPid -gt 0 -and $lockPid -eq $workerPid -and $null -ne $process
     $idle=$state -in @('idle','polling') -and [string]::IsNullOrWhiteSpace($taskId)
     $runtimeMatches=$statusRuntime -eq $runtimeVersion
     $previewMatches=$statusPreview -eq $PreviewUrl.TrimEnd('/')
     $taskRunning=$null -ne $task -and [string]$task.State -eq 'Running'
+    $currentRuntimeValid=$statusRuntime -match '^[0-9a-f]{40}$'
+    $currentPreviewValid=$statusPreview -match '^https://[a-z0-9.-]+\.vercel\.app$'
+    $currentScript=if($currentRuntimeValid){Join-Path (Join-Path $versions $statusRuntime) 'scripts\persistent-local-worker.js'}else{''}
+    $currentArguments=if($currentRuntimeValid -and $currentPreviewValid){'"'+$currentScript+'" --preview-url "'+$statusPreview+'" --repository-root "'+$root+'" --runtime-version "'+$statusRuntime+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'}else{''}
+    $currentActionMatches=$null -ne $taskActionCurrent -and $taskActionCurrent.Execute -eq $node -and $taskActionCurrent.Arguments -eq $currentArguments -and $taskActionCurrent.WorkingDirectory -eq $root
+    $repositoryMatches=$null -ne $proof -and [string]$proof.root -eq $root -and [string]$proof.repository -eq 'hshanbour/nova-brain' -and [string]$proof.branch -eq 'feat/nova-brain-mvp-foundation' -and [string]$proof.head -match '^[0-9a-f]{40}$'
     $healthy=$owned -and $idle -and (Test-RecentTimestamp $heartbeat) -and (Test-RecentTimestamp $lastPoll)
     $safeToReplace=($null -eq $process -and $lockPid -eq 0) -or ($null -ne $task -and $healthy)
     $converged=$healthy -and $actionMatches -and $runtimeMatches -and $previewMatches -and $taskRunning
@@ -138,6 +145,9 @@ try {
       RuntimeVersion=$statusRuntime; PreviewUrl=$statusPreview
       LastHeartbeat=$heartbeat; LastSuccessfulPoll=$lastPoll; LockPid=$lockPid
       State=$state
+      ProcessAlive=$null -ne $process
+      SingletonViolation=$workerPid -gt 0 -and $lockPid -gt 0 -and $lockPid -ne $workerPid
+      CurrentBindingMismatch=$owned -and (-not $currentActionMatches -or -not $repositoryMatches -or -not $taskRunning)
       TerminalFailure=$state -in @('fatal','stopped')
       BindingMismatch=$owned -and (-not $actionMatches -or -not $runtimeMatches -or -not $previewMatches -or -not $taskRunning)
     }
@@ -147,6 +157,11 @@ try {
   $priorTaskXml=if($null -ne $priorTask){Export-ScheduledTask -TaskName $name}else{$null}
   $priorWasRunning=$null -ne $priorTask -and [string]$priorTask.State -eq 'Running'
   $current=Get-WorkerSnapshot
+  if($current.Converged -ne $true){
+    $safeIdle=Wait-NovaExistingWorkerSafeIdle -GetSnapshot { Get-WorkerSnapshot } -ExpectedPid ([int]$current.Pid) -SafeIdleTimeoutSeconds 270 -ConfirmationTimeoutSeconds 30 -SampleIntervalMilliseconds 500
+    if($safeIdle.Ready -ne $true){throw "The existing persistent worker did not reach a verified safe idle boundary (reason=$($safeIdle.Reason); pid=$($safeIdle.Pid); state=$($safeIdle.State))."}
+    $current=$safeIdle.Snapshot
+  }
   $oldPid=[int]$current.Pid
 
   $stopCurrent={ Stop-ScheduledTask -TaskName $name -ErrorAction Stop }

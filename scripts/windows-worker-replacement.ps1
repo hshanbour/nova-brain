@@ -1,5 +1,62 @@
 Set-StrictMode -Version Latest
 
+function Wait-NovaExistingWorkerSafeIdle {
+  param(
+    [Parameter(Mandatory = $true)][scriptblock]$GetSnapshot,
+    [Parameter(Mandatory = $true)][int]$ExpectedPid,
+    [int]$SafeIdleTimeoutSeconds = 270,
+    [int]$ConfirmationTimeoutSeconds = 30,
+    [int]$SampleIntervalMilliseconds = 500,
+    [scriptblock]$GetNow = { [DateTimeOffset]::UtcNow },
+    [scriptblock]$Wait = { param([int]$Milliseconds) Start-Sleep -Milliseconds $Milliseconds }
+  )
+
+  $deadline=(& $GetNow).AddSeconds($SafeIdleTimeoutSeconds)
+  $first=$null
+  $confirmationDeadline=$null
+  $lastState='unknown'
+  do {
+    $sample=& $GetSnapshot
+    $now=& $GetNow
+    if($null -ne $sample){
+      $samplePid=if($null -ne $sample.PSObject.Properties['Pid']){[int]$sample.Pid}else{0}
+      $state=if($null -ne $sample.PSObject.Properties['State']){[string]$sample.State}else{''}
+      if(-not [string]::IsNullOrWhiteSpace($state)){$lastState=$state}
+      if($ExpectedPid -le 0){
+        if($sample.SafeToReplace -eq $true){return [pscustomobject]@{Ready=$true;Reason=$null;Pid=$samplePid;State=$lastState;Snapshot=$sample}}
+        return [pscustomobject]@{Ready=$false;Reason='unexpected_existing_worker';Pid=$samplePid;State=$lastState;Snapshot=$sample}
+      }
+      if($samplePid -ne $ExpectedPid){return [pscustomobject]@{Ready=$false;Reason='process_changed';Pid=$samplePid;State=$lastState;Snapshot=$sample}}
+      if($sample.ProcessAlive -ne $true){return [pscustomobject]@{Ready=$false;Reason='process_lost';Pid=$samplePid;State=$lastState;Snapshot=$sample}}
+      if([int]$sample.LockPid -ne $ExpectedPid){return [pscustomobject]@{Ready=$false;Reason='lock_changed';Pid=$samplePid;State=$lastState;Snapshot=$sample}}
+      if($sample.SingletonViolation -eq $true){return [pscustomobject]@{Ready=$false;Reason='singleton_violation';Pid=$samplePid;State=$lastState;Snapshot=$sample}}
+      if($sample.CurrentBindingMismatch -eq $true){return [pscustomobject]@{Ready=$false;Reason='binding_mismatch';Pid=$samplePid;State=$lastState;Snapshot=$sample}}
+      if($sample.TerminalFailure -eq $true){return [pscustomobject]@{Ready=$false;Reason='terminal_state';Pid=$samplePid;State=$lastState;Snapshot=$sample}}
+      if($sample.SafeToReplace -eq $true){
+        if($null -eq $first){
+          $first=$sample
+          $confirmationDeadline=$now.AddSeconds($ConfirmationTimeoutSeconds)
+        } else {
+          try {
+            $heartbeatAdvanced=[DateTimeOffset]::Parse([string]$sample.LastHeartbeat) -gt [DateTimeOffset]::Parse([string]$first.LastHeartbeat)
+            $pollAdvanced=[DateTimeOffset]::Parse([string]$sample.LastSuccessfulPoll) -gt [DateTimeOffset]::Parse([string]$first.LastSuccessfulPoll)
+          } catch {
+            $heartbeatAdvanced=$false
+            $pollAdvanced=$false
+          }
+          if($heartbeatAdvanced -and $pollAdvanced){return [pscustomobject]@{Ready=$true;Reason=$null;Pid=$samplePid;State=$lastState;Snapshot=$sample}}
+          if($now -ge $confirmationDeadline){return [pscustomobject]@{Ready=$false;Reason='idle_confirmation_timeout';Pid=$samplePid;State=$lastState;Snapshot=$sample}}
+        }
+      } else {
+        $first=$null
+        $confirmationDeadline=$null
+      }
+    }
+    & $Wait $SampleIntervalMilliseconds
+  } while((& $GetNow) -lt $deadline)
+  return [pscustomobject]@{Ready=$false;Reason='safe_idle_timeout';Pid=$ExpectedPid;State=$lastState;Snapshot=$sample}
+}
+
 function Wait-NovaWorkerConvergence {
   param(
     [Parameter(Mandatory = $true)][scriptblock]$GetSnapshot,
