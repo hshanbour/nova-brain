@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { codingSpecificationHash, createCodingExecutorService, immutableCodingSpecification } from "../src/autonomy/coding-executor.js";
 import { createCodexCliRunner, registerCodexExecutorTool, runCodexProcess } from "../src/tools/codex-executor-tool.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
@@ -438,12 +438,14 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
   const sourceHeadsBefore = (await runFile("git", ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs/heads"], { cwd: root })).stdout;
   const sourceConfigBefore = (await runFile("git", ["config", "--local", "--list"], { cwd: root })).stdout;
   const gitExecutable = process.platform === "win32" ? (await runFile("where.exe", ["git"])).stdout.split(/\r?\n/).find(Boolean) : (await runFile("which", ["git"])).stdout.trim();
+  const gitCalls = [];
   let observed;
   const runner = createCodexCliRunner({
     executable: process.execPath,
     gitExecutable,
     environment: { PATH: process.platform === "win32" ? `${process.env.SYSTEMROOT}\\System32` : "/usr/bin", PATHEXT: process.env.PATHEXT, SYSTEMROOT: process.env.SYSTEMROOT, WINDIR: process.env.WINDIR, TEMP: process.env.TEMP, TMP: process.env.TMP, USERPROFILE: process.env.USERPROFILE, HOMEDRIVE: process.env.HOMEDRIVE, HOMEPATH: process.env.HOMEPATH, LOCALAPPDATA: process.env.LOCALAPPDATA, APPDATA: process.env.APPDATA, CODEX_HOME: process.env.CODEX_HOME, UNTRUSTED_TOOL_DIRECTORY: join(root, "untrusted-tools"), OPENAI_API_KEY: "must-not-leak", GITHUB_TOKEN: "must-not-leak", VERCEL_TOKEN: "must-not-leak" },
     async authProcess(command, args) { assert.equal(command, process.execPath);assert.deepEqual(args, ["login", "status"]);return { stdout: "", stderr: "", code: 0 }; },
+    async gitProcess(command, args, options) { gitCalls.push([...args]);return runFile(command, args, options); },
     async spawnProcess(command, args, options) {
       await options.onSpawn?.({ pid: 4242 });
       const schema = JSON.parse(await readFile(args[args.indexOf("--output-schema") + 1], "utf8"));
@@ -500,6 +502,11 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
   assert.match(projected.constraints[0], /Stop before Codex starts/);
   assert.equal(observed.env.PATH.split(delimiter)[0].toLowerCase(), dirname(gitExecutable).toLowerCase());
   assert.equal(observed.env.PATH.includes(join(root, "untrusted-tools")), false);
+  const cloneCall = gitCalls.find((args) => args.includes("clone"));
+  const cloneSafeDirectories = cloneCall.filter((value, index) => cloneCall[index - 1] === "-c" && value.startsWith("safe.directory=")).map((value) => value.slice("safe.directory=".length));
+  const expectedGitDirectory = (await runFile("git", ["rev-parse", "--absolute-git-dir"], { cwd: root })).stdout.trim();
+  assert.deepEqual(cloneSafeDirectories.map((value) => resolve(value).toLowerCase()), [resolve(root).toLowerCase(), resolve(expectedGitDirectory).toLowerCase()]);
+  assert.equal(cloneCall.includes("--global"), false);
   assert.doesNotMatch(observed.input, /must-not-leak/);
   assert.ok(observed.args.includes("--ephemeral"));
   assert.ok(observed.args.includes("--ignore-user-config"));

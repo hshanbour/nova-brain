@@ -242,18 +242,19 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
     } catch (cause) {
       throw Object.assign(new Error("Codex authentication is unavailable to the persistent worker."), { code: "coding_executor_auth_unavailable", safeDiagnostics: { resource: "codex_auth", exitCode: cause?.safeDiagnostics?.exitCode ?? null }, cause });
     }
-    const gitAt = async (cwd, args, { cleanup = false } = {}) => {
+    const gitAt = async (cwd, args, { cleanup = false, safeDirectories = [cwd] } = {}) => {
       try {
-        return (await gitProcess(gitExecutable, ["-c", `safe.directory=${cwd}`, "-C", cwd, ...args], { cwd: sourceRoot, env, signal: cleanup ? undefined : signal })).stdout.trim();
+        return (await gitProcess(gitExecutable, [...safeDirectories.flatMap((path) => ["-c", `safe.directory=${path}`]), "-C", cwd, ...args], { cwd: sourceRoot, env, signal: cleanup ? undefined : signal })).stdout.trim();
       } catch (cause) {
         if (cause?.code === "ENOENT") throw Object.assign(new Error("The bound Git executable became unavailable."), { code: "coding_executor_git_executable_missing", safeDiagnostics: { resource: "git_executable", pathExists: false }, cause });
         throw cause;
       }
     };
     const sourceGit = (...args) => gitAt(sourceRoot, args);
-    const [top, remote, actualBranch, sourceHead] = await Promise.all([
-      sourceGit("rev-parse", "--show-toplevel"), sourceGit("remote", "get-url", "origin"), sourceGit("branch", "--show-current"), sourceGit("rev-parse", "HEAD"),
+    const [top, sourceGitDirectory, remote, actualBranch, sourceHead] = await Promise.all([
+      sourceGit("rev-parse", "--show-toplevel"), sourceGit("rev-parse", "--absolute-git-dir"), sourceGit("remote", "get-url", "origin"), sourceGit("branch", "--show-current"), sourceGit("rev-parse", "HEAD"),
     ]);
+    await requireLocalPath(resolve(sourceGitDirectory), { kind: "git_directory", directory: true });
     const sourceBinding = { topLevelMatches: resolve(top).toLowerCase() === sourceRoot.toLowerCase(), repositoryMatches: normalizeRemote(remote) === repository, branchMatches: actualBranch === branch };
     if (!sourceBinding.topLevelMatches || !sourceBinding.repositoryMatches || !sourceBinding.branchMatches) {
       throw Object.assign(new Error("The local coding workspace does not match the trusted repository binding."), { code: "coding_workspace_binding_changed", safeDiagnostics: { stage: "repository_preflight", ...sourceBinding, executorLaunched: false } });
@@ -285,7 +286,7 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
         throw Object.assign(new Error("The approved coding baseline is unavailable in the trusted repository."), { code: "coding_executor_baseline_unavailable", safeDiagnostics: { stage: "workspace_preflight", expectedBaseline: job.repository.baseline, executorLaunched: false }, cause });
       }
       try {
-        await sourceGit("clone", "--no-hardlinks", "--no-checkout", "--", sourceRoot, cwd);
+        await gitAt(sourceRoot, ["clone", "--no-hardlinks", "--no-checkout", "--", sourceRoot, cwd], { safeDirectories: [sourceRoot, resolve(sourceGitDirectory)] });
         disposableRepositoryCreated = true;
       } catch (cause) {
         throw Object.assign(new Error("The disposable coding repository could not be created."), { code: "coding_executor_workspace_prepare_failed", safeDiagnostics: { stage: "repository_clone", expectedBaseline: job.repository.baseline, executorLaunched: false }, cause });
