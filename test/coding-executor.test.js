@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { codingSpecificationHash, createCodingExecutorService, immutableCodingSpecification } from "../src/autonomy/coding-executor.js";
@@ -435,6 +435,8 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
   await writeFile(join(root, "source.js"), "export const value = 99; // unrelated human work\n");
   await writeFile(join(root, "human-notes.txt"), "unrelated untracked human work\n");
   const sourceStatusBefore = (await runFile("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root })).stdout;
+  const sourceHeadsBefore = (await runFile("git", ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs/heads"], { cwd: root })).stdout;
+  const sourceConfigBefore = (await runFile("git", ["config", "--local", "--list"], { cwd: root })).stdout;
   const gitExecutable = process.platform === "win32" ? (await runFile("where.exe", ["git"])).stdout.split(/\r?\n/).find(Boolean) : (await runFile("which", ["git"])).stdout.trim();
   let observed;
   const runner = createCodexCliRunner({
@@ -447,6 +449,7 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
       assertStrictOutputSchema(schema);
       observed = { command, args, env: options.env, input: options.input, cwd: options.cwd, schema };
       assert.notEqual(options.cwd, root);
+      assert.equal((await runFile("git", ["rev-parse", "--absolute-git-dir"], { cwd: options.cwd })).stdout.trim().replaceAll("\\", "/").toLowerCase(), join(options.cwd, ".git").replaceAll("\\", "/").toLowerCase());
       assert.equal((await runFile("git", ["rev-parse", "HEAD"], { cwd: options.cwd })).stdout.trim(), baseline);
       assert.equal((await runFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: options.cwd })).stdout.trim(), "HEAD");
       assert.equal((await runFile("git", ["status", "--short", "--branch"], { cwd: options.cwd, env: options.env })).stdout.includes("HEAD"), true);
@@ -456,6 +459,7 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
       await runFile("git", ["add", "source.js"], { cwd: options.cwd });
       await runFile("git", ["commit", "-m", "implement change"], { cwd: options.cwd });
       const finalSha = (await runFile("git", ["rev-parse", "HEAD"], { cwd: options.cwd })).stdout.trim();
+      await runFile("git", ["checkout", "--detach", finalSha], { cwd: options.cwd });
       const output = { status: "completed", summary: "Implemented and tested.", repository: "model-copy-is-advisory", baseline: "f".repeat(40), finalLocalSha: finalSha, filesChanged: ["model-reported.js"], tests: [{ command: "node --test", status: "passed", summary: null }], limitations: [], pushOccurred: false, deploymentOccurred: false, approvalsRequiredNext: ["push"], failure: null };
       await writeFile(args[args.indexOf("--output-last-message") + 1], JSON.stringify(output));
       options.onLine(JSON.stringify({ type: "turn.started" }));
@@ -511,16 +515,79 @@ test("Codex CLI runner projects verified owner approval, emits a strict-compatib
   assert.equal(config.some((value) => /CODEX_HOME|OPENAI|GITHUB|VERCEL|TOKEN|SECRET|KEY/i.test(value)), false);
   assert.equal((await runFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim(), sourceHead);
   assert.equal((await runFile("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root })).stdout, sourceStatusBefore);
+  assert.equal((await runFile("git", ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs/heads"], { cwd: root })).stdout, sourceHeadsBefore);
+  assert.equal((await runFile("git", ["config", "--local", "--list"], { cwd: root })).stdout, sourceConfigBefore);
   assert.equal(await readFile(join(root, "source.js"), "utf8"), "export const value = 99; // unrelated human work\n");
   assert.equal((await runFile("git", ["show", ":source.js"], { cwd: root })).stdout, "export const value = 98; // staged human work\n");
   assert.equal(await readFile(join(root, "human-notes.txt"), "utf8"), "unrelated untracked human work\n");
   assert.deepEqual(result.filesChanged, ["source.js"]);
   assert.equal((await runFile("git", ["rev-parse", `refs/nova/coding-jobs/${taskId}`], { cwd: root })).stdout.trim(), result.finalLocalSha);
+  assert.equal((await runFile("git", ["for-each-ref", "--format=%(refname)", "refs/nova/coding-imports"], { cwd: root })).stdout, "");
   await assert.rejects(runFile("git", ["rev-parse", "--verify", "refs/heads/codex/certified-result-binding"], { cwd: root }));
   assert.equal(result.executor.localRef, `refs/nova/coding-jobs/${taskId}`);
   assert.deepEqual(result.executor.trustedArtifact,{sourceTaskId,commitSha:sourceHead,artifactRef:`refs/nova/coding-jobs/${sourceTaskId}`,refRecovered:true});
   assert.equal((await runFile("git",["rev-parse",`refs/nova/coding-jobs/${sourceTaskId}`],{cwd:root})).stdout.trim(),sourceHead);
   assert.equal(((await runFile("git", ["worktree", "list", "--porcelain"], { cwd: root })).stdout.match(/^worktree /gm) || []).length, 1);
+  await assert.rejects(stat(observed.cwd));
+});
+
+test("disposable coding repositories isolate repeated branch names across a failed attempt and its retry", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "nova-codex-disposable-retry-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await runFile("git", ["init", "-b", "feature"], { cwd: root });
+  await runFile("git", ["config", "user.email", "nova@example.invalid"], { cwd: root });
+  await runFile("git", ["config", "user.name", "Nova Test"], { cwd: root });
+  await writeFile(join(root, "source.js"), "export const value = 1;\n");
+  await runFile("git", ["add", "source.js"], { cwd: root });
+  await runFile("git", ["commit", "-m", "baseline"], { cwd: root });
+  await runFile("git", ["remote", "add", "origin", "https://github.com/hshanbour/nova-brain.git"], { cwd: root });
+  const baseline = (await runFile("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+  await runFile("git", ["branch", "codex/prior-live-audit", baseline], { cwd: root });
+  await writeFile(join(root, "source.js"), "export const value = 99; // human work\n");
+  await writeFile(join(root, "human-untracked.txt"), "human work\n");
+  const sourceStatus = (await runFile("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root })).stdout;
+  const sourceHeads = (await runFile("git", ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs/heads"], { cwd: root })).stdout;
+  const sourceConfig = (await runFile("git", ["config", "--local", "--list"], { cwd: root })).stdout;
+  const gitExecutable = process.platform === "win32" ? (await runFile("where.exe", ["git"])).stdout.split(/\r?\n/).find(Boolean) : (await runFile("which", ["git"])).stdout.trim();
+  const disposableRoots = [];
+  const runnerFor = (attempt, failsAfterExecution) => createCodexCliRunner({
+    executable: process.execPath,
+    gitExecutable,
+    authProcess: async () => ({ stdout: "", stderr: "", code: 0 }),
+    async spawnProcess(command, args, options) {
+      disposableRoots.push(options.cwd);
+      if (attempt === 2) await runFile("git", ["branch", "human/concurrent-desktop-work", baseline], { cwd: root });
+      await runFile("git", ["checkout", "-b", "codex/reused-integration-name"], { cwd: options.cwd });
+      await writeFile(join(options.cwd, "source.js"), `export const value = ${attempt + 1};\n`);
+      await runFile("git", ["add", "source.js"], { cwd: options.cwd });
+      await runFile("git", ["commit", "-m", `attempt ${attempt}`], { cwd: options.cwd });
+      const finalSha = (await runFile("git", ["rev-parse", "HEAD"], { cwd: options.cwd })).stdout.trim();
+      await runFile("git", ["checkout", "--detach", finalSha], { cwd: options.cwd });
+      await writeFile(args[args.indexOf("--output-last-message") + 1], JSON.stringify({ status: "completed", summary: "Implemented and tested.", repository: "hshanbour/nova-brain", baseline, finalLocalSha: finalSha, filesChanged: ["source.js"], tests: [{ command: "node --test", status: "passed", summary: null }], limitations: [], pushOccurred: failsAfterExecution, deploymentOccurred: false, approvalsRequiredNext: ["push"], failure: null }));
+      return { stdout: "", stderr: "", code: 0 };
+    },
+  });
+  const firstTask = `coding_${"a".repeat(32)}`;
+  await assert.rejects(
+    runnerFor(1, true)(request({ repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline } }), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId: firstTask }),
+    (error) => error.code === "coding_delivery_boundary_violated",
+  );
+  await assert.rejects(runFile("git", ["rev-parse", "--verify", `refs/nova/coding-jobs/${firstTask}`], { cwd: root }));
+  const secondTask = `coding_${"b".repeat(32)}`;
+  const result = await runnerFor(2, false)(request({ repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline } }), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId: secondTask });
+  assert.equal(result.status, "completed");
+  assert.equal((await runFile("git", ["rev-parse", `refs/nova/coding-jobs/${secondTask}`], { cwd: root })).stdout.trim(), result.finalLocalSha);
+  assert.equal((await runFile("git", ["for-each-ref", "--format=%(refname)", "refs/nova/coding-imports"], { cwd: root })).stdout, "");
+  await assert.rejects(runFile("git", ["rev-parse", "--verify", "refs/heads/codex/reused-integration-name"], { cwd: root }));
+  const parseRefs = (value) => new Map(value.trim().split(/\r?\n/).filter(Boolean).map((line) => line.split("\t")));
+  const sourceHeadsBefore = parseRefs(sourceHeads);
+  const sourceHeadsAfter = parseRefs((await runFile("git", ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs/heads"], { cwd: root })).stdout);
+  for (const [ref, sha] of sourceHeadsBefore) assert.equal(sourceHeadsAfter.get(ref), sha);
+  assert.equal(sourceHeadsAfter.get("refs/heads/human/concurrent-desktop-work"), baseline);
+  assert.equal(sourceHeadsAfter.size, sourceHeadsBefore.size + 1);
+  assert.equal((await runFile("git", ["config", "--local", "--list"], { cwd: root })).stdout, sourceConfig);
+  assert.equal((await runFile("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root })).stdout, sourceStatus);
+  for (const disposableRoot of disposableRoots) await assert.rejects(stat(disposableRoot));
 });
 
 test("Codex CLI runner fences source branch movement while isolated work is active", async (t) => {
@@ -558,7 +625,7 @@ test("Codex CLI runner fences source branch movement while isolated work is acti
   assert.equal(((await runFile("git", ["worktree", "list", "--porcelain"], { cwd: root })).stdout.match(/^worktree /gm) || []).length, 1);
 });
 
-test("Codex CLI runner rejects unsafe remote, history, and pre-existing branch-ref changes with bounded diagnostics", async (t) => {
+test("Codex CLI runner rejects unsafe remote, unrelated history, and dirty disposable results with bounded diagnostics", async (t) => {
   const scenarios = [
     {
       name: "remote",
@@ -582,15 +649,15 @@ test("Codex CLI runner rejects unsafe remote, history, and pre-existing branch-r
       predicate: (diagnostics) => diagnostics.remoteMatches === true && diagnostics.ancestryMatches === false,
     },
     {
-      name: "pre-existing-ref",
-      prepare: async (root, baseline) => runFile("git", ["branch", "protected-result", baseline], { cwd: root }),
+      name: "dirty-result",
       async mutate(cwd) {
-        await runFile("git", ["checkout", "protected-result"], { cwd });
         await writeFile(join(cwd, "source.js"), "export const value = 2;\n");
         await runFile("git", ["add", "source.js"], { cwd });
-        await runFile("git", ["commit", "-m", "pre-existing ref mutation"], { cwd });
+        await runFile("git", ["commit", "-m", "committed portion"], { cwd });
+        await writeFile(join(cwd, "uncommitted.txt"), "must fail closed\n");
       },
-      predicate: (diagnostics) => diagnostics.headRefsUnchanged === false,
+      expectedCode: "coding_result_uncommitted",
+      predicate: (diagnostics) => diagnostics.clean === false,
     },
   ];
 
@@ -620,7 +687,7 @@ test("Codex CLI runner rejects unsafe remote, history, and pre-existing branch-r
     });
     await assert.rejects(
       runner(request({ repository: { slug: "hshanbour/nova-brain", branch: "feature", baseline } }), { root, repository: "hshanbour/nova-brain", branch: "feature", taskId: `coding_${String.fromCharCode(97 + scenarioIndex).repeat(32)}` }),
-      (error) => error.code === "coding_result_binding_changed"
+      (error) => error.code === (scenario.expectedCode || "coding_result_binding_changed")
         && error.safeDiagnostics.stage === "result_binding"
         && error.safeDiagnostics.executorLaunched === true
         && scenario.predicate(error.safeDiagnostics),

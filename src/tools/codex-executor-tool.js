@@ -184,25 +184,6 @@ function parseStatus(value) {
   return String(value || "").split(/\r?\n/).filter(Boolean).map((line) => line.slice(3).replaceAll("\\", "/"));
 }
 
-function parseHeadRefs(value) {
-  return new Map(String(value || "").split(/\r?\n/).filter(Boolean).map((line) => {
-    const separator = line.indexOf("\t");
-    return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : [line, ""];
-  }));
-}
-
-function compareHeadRefs(before, after, finalBranch, finalSha) {
-  const changedExisting = [...before].some(([ref, sha]) => after.get(ref) !== sha);
-  const added = [...after].filter(([ref]) => !before.has(ref));
-  const finalRef = finalBranch === "HEAD" ? null : `refs/heads/${finalBranch}`;
-  const temporaryBranchRef = finalRef && added.length === 1 && added[0][0] === finalRef && added[0][1] === finalSha ? finalRef : null;
-  return {
-    unchanged: !changedExisting && (finalBranch === "HEAD" ? added.length === 0 : Boolean(temporaryBranchRef)),
-    temporaryBranchRef,
-    addedCount: added.length,
-  };
-}
-
 function requireOwnerApproval(job) {
   if (job?.approval?.buildApproved !== true || typeof job.approval.approvalId !== "string" || !job.approval.approvalId.trim()) {
     throw Object.assign(new Error("The coding job does not carry verified owner approval."), {
@@ -278,11 +259,10 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
     const resultPath = join(temporary, "result.json");
     const usage = {};
     const startedAt = clock().toISOString();
-    let worktreeAdded = false;
+    let disposableRepositoryCreated = false;
     const localRef = `refs/nova/coding-jobs/${taskId}`;
+    const exportRef = `refs/nova/coding-exports/${taskId}`;
     let sourceArtifactRefRecovered=false;
-    let temporaryBranchRef = null;
-    let temporaryBranchSha = null;
     try {
       if(job.trustedArtifact){
         const artifact=job.trustedArtifact;
@@ -300,18 +280,26 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
         throw Object.assign(new Error("The approved coding baseline is unavailable in the trusted repository."), { code: "coding_executor_baseline_unavailable", safeDiagnostics: { stage: "workspace_preflight", expectedBaseline: job.repository.baseline, executorLaunched: false }, cause });
       }
       try {
-        await sourceGit("worktree", "add", "--detach", cwd, job.repository.baseline);
-        worktreeAdded = true;
+        await sourceGit("clone", "--no-hardlinks", "--no-checkout", "--", sourceRoot, cwd);
+        disposableRepositoryCreated = true;
       } catch (cause) {
-        throw Object.assign(new Error("The isolated coding workspace could not be prepared."), { code: "coding_executor_workspace_prepare_failed", safeDiagnostics: { stage: "workspace_preparation", expectedBaseline: job.repository.baseline, executorLaunched: false }, cause });
+        throw Object.assign(new Error("The disposable coding repository could not be created."), { code: "coding_executor_workspace_prepare_failed", safeDiagnostics: { stage: "repository_clone", expectedBaseline: job.repository.baseline, executorLaunched: false }, cause });
       }
       const git = (...args) => gitAt(cwd, args);
-      const headRefsBefore = parseHeadRefs(await sourceGit("for-each-ref", "--format=%(refname)%09%(objectname)", "refs/heads"));
+      try {
+        await git("remote", "set-url", "origin", remote);
+        await git("config", "user.name", "Nova Coding Executor");
+        await git("config", "user.email", "nova-coding@nova.invalid");
+        await git("checkout", "--detach", job.repository.baseline);
+      } catch (cause) {
+        throw Object.assign(new Error("The disposable coding repository could not be bound to the approved baseline."), { code: "coding_executor_workspace_prepare_failed", safeDiagnostics: { stage: "repository_checkout", expectedBaseline: job.repository.baseline, executorLaunched: false }, cause });
+      }
       const [isolatedHead, isolatedBranch, isolatedRemote, isolatedDirty] = await Promise.all([
         git("rev-parse", "HEAD"), git("rev-parse", "--abbrev-ref", "HEAD"), git("remote", "get-url", "origin"), git("status", "--porcelain=v1", "--untracked-files=all"),
       ]);
-      if (isolatedHead !== job.repository.baseline || isolatedBranch !== "HEAD" || normalizeRemote(isolatedRemote) !== repository || isolatedDirty) {
-        throw Object.assign(new Error("The isolated coding workspace does not match the approved immutable baseline."), { code: "coding_executor_workspace_prepare_failed", safeDiagnostics: { stage: "workspace_preparation", expectedBaseline: job.repository.baseline, actualHead: isolatedHead, detached: isolatedBranch === "HEAD", repositoryMatches: normalizeRemote(isolatedRemote) === repository, clean: !isolatedDirty, executorLaunched: false } });
+      const isolatedTop = await git("rev-parse", "--show-toplevel");
+      if (isolatedHead !== job.repository.baseline || isolatedBranch !== "HEAD" || isolatedRemote !== remote || normalizeRemote(isolatedRemote) !== repository || isolatedDirty || resolve(isolatedTop).toLowerCase() !== resolve(cwd).toLowerCase()) {
+        throw Object.assign(new Error("The disposable coding repository does not match the approved immutable baseline."), { code: "coding_executor_workspace_prepare_failed", safeDiagnostics: { stage: "workspace_preparation", expectedBaseline: job.repository.baseline, actualHead: isolatedHead, detached: isolatedBranch === "HEAD", repositoryMatches: isolatedRemote === remote && normalizeRemote(isolatedRemote) === repository, clean: !isolatedDirty, independentGitMetadata: true, executorLaunched: false } });
       }
       await writeFile(schemaPath, JSON.stringify(RESULT_SCHEMA), { encoding: "utf8", mode: 0o600 });
       try {
@@ -346,14 +334,10 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
         throw Object.assign(new Error("Codex returned an unsafe or oversized structured result."), { code: "coding_result_unsafe" });
       }
       const parsed = JSON.parse(resultText);
-      const [finalSha, finalBranch, finalRemote, finalDirty, ancestry, headRefsText] = await Promise.all([
+      const [finalSha, finalBranch, finalRemote, finalDirty, ancestry] = await Promise.all([
         git("rev-parse", "HEAD"), git("rev-parse", "--abbrev-ref", "HEAD"), git("remote", "get-url", "origin"), git("status", "--porcelain=v1", "--untracked-files=all"),
         git("merge-base", "--is-ancestor", job.repository.baseline, "HEAD").then(() => "yes", () => "no"),
-        sourceGit("for-each-ref", "--format=%(refname)%09%(objectname)", "refs/heads"),
       ]);
-      const headRefs = compareHeadRefs(headRefsBefore, parseHeadRefs(headRefsText), finalBranch, finalSha);
-      temporaryBranchRef = headRefs.temporaryBranchRef;
-      temporaryBranchSha = temporaryBranchRef ? finalSha : null;
       const [sourceHeadAfter, sourceBranchAfter] = await Promise.all([
         sourceGit("rev-parse", "HEAD"), sourceGit("branch", "--show-current"),
       ]);
@@ -376,12 +360,11 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
         detached: finalBranch === "HEAD",
         remoteMatches: finalRemote === isolatedRemote && normalizeRemote(finalRemote) === repository,
         ancestryMatches: ancestry === "yes",
-        headRefsUnchanged: headRefs.unchanged,
-        temporaryBranchCreated: Boolean(temporaryBranchRef),
+        independentGitMetadata: true,
         clean: !finalDirty,
         executorLaunched: true,
       };
-      if (!bindingDiagnostics.remoteMatches || !bindingDiagnostics.ancestryMatches || !bindingDiagnostics.headRefsUnchanged) {
+      if (!bindingDiagnostics.remoteMatches || !bindingDiagnostics.ancestryMatches) {
         throw Object.assign(new Error("Codex changed the repository authority binding."), { code: "coding_result_binding_changed", safeDiagnostics: bindingDiagnostics });
       }
       if (finalDirty) throw Object.assign(new Error("Codex returned with uncommitted workspace changes."), { code: "coding_result_uncommitted", safeDiagnostics: bindingDiagnostics });
@@ -393,20 +376,32 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
       const reportedFiles = [...new Set(parsed.filesChanged)].sort();
       const authoritativeFiles = [...new Set(filesChanged)].sort();
       const filesChangedMatch = JSON.stringify(reportedFiles) === JSON.stringify(authoritativeFiles);
-      if (temporaryBranchRef) {
-        try {
-          await git("checkout", "--detach", finalSha);
-          await sourceGit("update-ref", "-d", temporaryBranchRef, finalSha);
-          temporaryBranchRef = null;
-          temporaryBranchSha = null;
-        } catch (cause) {
-          throw Object.assign(new Error("The isolated coding branch could not be removed safely."), { code: "coding_executor_branch_cleanup_failed", safeDiagnostics: { stage: "branch_cleanup", finalSha, executorLaunched: true }, cause });
-        }
-      }
       try {
-        await sourceGit("update-ref", localRef, finalSha, "0".repeat(40));
+        let retained = null;
+        try { retained = await sourceGit("rev-parse", "--verify", localRef); } catch {}
+        if (retained && retained !== finalSha) throw Object.assign(new Error("conflicting retained ref"), { code: "coding_executor_commit_retention_conflict" });
+        if (!retained) {
+          const importRef = `refs/nova/coding-imports/${taskId}/${finalSha}`;
+          await git("update-ref", exportRef, finalSha, "0".repeat(40));
+          try {
+            let staged = null;
+            try { staged = await sourceGit("rev-parse", "--verify", importRef); } catch {}
+            if (staged && staged !== finalSha) throw Object.assign(new Error("conflicting import ref"), { code: "coding_executor_commit_import_conflict" });
+            if (!staged) await sourceGit("fetch", "--no-tags", "--no-write-fetch-head", cwd, `${exportRef}:${importRef}`);
+            if (await sourceGit("rev-parse", "--verify", importRef) !== finalSha) throw Object.assign(new Error("imported staging ref mismatch"), { code: "coding_executor_commit_import_mismatch" });
+            try { await sourceGit("update-ref", localRef, finalSha, "0".repeat(40)); }
+            catch (cause) {
+              const concurrent = await sourceGit("rev-parse", "--verify", localRef).catch(() => null);
+              if (concurrent !== finalSha) throw cause;
+            }
+          } finally {
+            await sourceGit("update-ref", "-d", importRef, finalSha).catch(() => {});
+          }
+        }
+        const imported = await sourceGit("rev-parse", "--verify", localRef);
+        if (imported !== finalSha) throw Object.assign(new Error("imported ref mismatch"), { code: "coding_executor_commit_retention_mismatch" });
       } catch (cause) {
-        throw Object.assign(new Error("The verified local coding commit could not be retained."), { code: "coding_executor_commit_retention_failed", safeDiagnostics: { stage: "commit_retention", executorLaunched: true }, cause });
+        throw Object.assign(new Error("The verified disposable coding commit could not be retained."), { code: "coding_executor_commit_retention_failed", safeDiagnostics: { stage: "commit_import", finalSha: SHA.test(finalSha) ? finalSha : null, executorLaunched: true }, cause });
       }
       return Object.freeze({
         ...parsed,
@@ -433,9 +428,7 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
         },
       });
     } finally {
-      if (worktreeAdded) await gitAt(sourceRoot, ["worktree", "remove", "--force", cwd], { cleanup: true }).catch(() => {});
-      if (temporaryBranchRef && temporaryBranchSha) await gitAt(sourceRoot, ["update-ref", "-d", temporaryBranchRef, temporaryBranchSha], { cleanup: true }).catch(() => {});
-      await gitAt(sourceRoot, ["worktree", "prune"], { cleanup: true }).catch(() => {});
+      if (disposableRepositoryCreated) await rm(cwd, { recursive: true, force: true }).catch(() => {});
       await rm(temporary, { recursive: true, force: true });
     }
   };
