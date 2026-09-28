@@ -179,7 +179,8 @@ export function readConfig(environment = process.env) {
       ),
       vercelConfigured: Boolean(
         environment.NOVA_BRAIN_VERCEL_TOKEN &&
-          environment.NOVA_BRAIN_VERCEL_PROJECT_ID,
+          (environment.NOVA_BRAIN_VERCEL_PROJECT_ID || environment.VERCEL_PROJECT_ID) &&
+          (environment.NOVA_BRAIN_VERCEL_TEAM_ID || environment.VERCEL_TEAM_ID),
       ),
     }),
     allowedOrigins: parseOrigins(environment.CORS_ALLOWED_ORIGINS),

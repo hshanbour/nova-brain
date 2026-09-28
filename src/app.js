@@ -46,6 +46,7 @@ import {createArtifactDeliveryService,registerArtifactDeliveryTool} from "./auto
 import {createTrustedArtifactContinuity,isExplicitTrustedArtifactRequest,isTrustedArtifactContinuationCandidate} from "./autonomy/trusted-artifact-continuity.js";
 import {resolveExplicitCodingRetryRequest} from "./autonomy/explicit-coding-retry.js";
 import {createExecutionTruthService} from "./autonomy/execution-truth.js";
+import {createVercelPreviewClient} from "./deployment/vercel-preview-client.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -139,17 +140,7 @@ export function createApp({
     executionTruth,
   }):null;
   const codingBindings=configuredCodingBindings(environment,{projectId:"nova-brain",workspaceId:"nova-brain",repository:environment.NOVA_BRAIN_GITHUB_REPOSITORY||"hshanbour/nova-brain",branch:config.developmentBranch});
-  const verifyDeployment = async ({deploymentId}) => {
-    const response=await fetch(`https://api.vercel.com/v13/deployments/${encodeURIComponent(deploymentId)}`,{headers:{Authorization:`Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN||""}`}});
-    if(!response.ok)throw new Error("Preview verification failed.");
-    const value=await response.json();return{id:value.id||value.uid,url:value.url,status:value.readyState||value.state,target:value.target,sha:value.gitSource?.sha||value.meta?.githubCommitSha,branch:value.gitSource?.ref||value.meta?.githubCommitRef};
-  };
-  const findPreview=async ({commitSha,branch})=>{
-    const response=await fetch(`https://api.vercel.com/v6/deployments?projectId=${encodeURIComponent(environment.NOVA_BRAIN_VERCEL_PROJECT_ID||"")}&limit=100&target=preview`,{headers:{Authorization:`Bearer ${environment.NOVA_BRAIN_VERCEL_TOKEN||""}`}});
-    if(!response.ok)throw Object.assign(new Error("Preview discovery failed."),{code:"deployment_discovery_failed",retryable:true});
-    const values=(await response.json()).deployments||[],match=values.find(value=>(value.gitSource?.sha||value.meta?.githubCommitSha)===commitSha&&(value.gitSource?.ref||value.meta?.githubCommitRef)===branch&&value.target!=="production");
-    return match?{id:match.uid||match.id,url:match.url,status:match.readyState||match.state,target:match.target,sha:commitSha,branch}:null;
-  };
+  const {findPreview,verifyDeployment}=createVercelPreviewClient({environment});
   const verifyPreviewHealth=async ({deploymentId,commitSha,branch})=>{const deployment=await verifyDeployment({deploymentId});if(deployment.target==="production"||deployment.sha!==commitSha||deployment.branch!==branch)throw Object.assign(new Error("Preview source mismatch."),{code:"artifact_delivery_source_mismatch"});const response=await fetch(`https://${deployment.url}/api/health`,{headers:{...(environment.VERCEL_AUTOMATION_BYPASS_SECRET?{"x-vercel-protection-bypass":environment.VERCEL_AUTOMATION_BYPASS_SECRET}:{})}}),value=await response.json().catch(()=>({}));if(response.status!==200||value.status!=="online"||value.storage?.provider!=="postgres"||value.storage?.durable!==true||value.storage?.status!=="ready")throw Object.assign(new Error("Preview health is not ready."),{code:"preview_unavailable",retryable:true});return{status:200,url:`https://${deployment.url}/api/health`,health:"online",storage:"ready"};};
   const verifyRemote=async ({repository,branch,requiredAncestors,signal}) => {
       const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28",...(environment.NOVA_BRAIN_GITHUB_TOKEN?{Authorization:`Bearer ${environment.NOVA_BRAIN_GITHUB_TOKEN}`}:{})};
