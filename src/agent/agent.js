@@ -156,6 +156,7 @@ function bindWebCitations(message,sources){
 }
 
 const EXPLICIT_PUBLIC_BROWSER=/\b(?:use|with|via|through)\s+(?:the\s+)?(?:public|remote|isolated)?\s*browser\b|\bpublic\s+browser\b|\b(?:browse|open|inspect|navigate)\b[\s\S]{0,80}\b(?:interactive|rendered|dynamic|browser|javascript)\b|\b(?:interactive|rendered|dynamic|javascript)\b[\s\S]{0,80}\b(?:page|site|website)\b/i;
+const EXPLICIT_PUBLIC_WEB_RESEARCH=/\b(?:use|perform|conduct|do)\s+(?:public\s+)?web\s+research\b|\b(?:search|research)\s+(?:the\s+)?public\s+web\b/i;
 const SECRET_QUERY_KEY=/^(?:access_?token|api_?key|auth|authorization|credential|password|secret|signature|sig)$/i;
 function publicBrowserUrls(message){
   const urls=[];
@@ -178,8 +179,8 @@ function publicBrowserPresentation(message){
   return Object.freeze({version:1,requestedFields:Object.freeze(requestedFields)});
 }
 export function deriveWebAuthority(message){
-  const explicitBrowser=EXPLICIT_PUBLIC_BROWSER.test(message),ownerUrls=publicBrowserUrls(message),mentionedDomains=(String(message).match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b/gi)||[]).map(value=>value.toLowerCase()),ownerDomains=[...new Set(explicitBrowser?ownerUrls.map(value=>new URL(value).hostname.toLowerCase()):mentionedDomains)].slice(0,10);
-  return Object.freeze({autonomousDeep:true,explicitDeep:/\b(?:deep|in[- ]depth|comprehensive)\s+(?:web\s+)?research\b/i.test(message),explicitBrowser,ownerDomains:Object.freeze(ownerDomains),ownerUrls:Object.freeze(ownerUrls),navigation:publicBrowserNavigation(message),presentation:publicBrowserPresentation(message)});
+  const explicitBrowser=EXPLICIT_PUBLIC_BROWSER.test(message),explicitResearch=EXPLICIT_PUBLIC_WEB_RESEARCH.test(message),ownerUrls=publicBrowserUrls(message),mentionedDomains=(String(message).match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b/gi)||[]).map(value=>value.toLowerCase()),ownerDomains=[...new Set(explicitBrowser?ownerUrls.map(value=>new URL(value).hostname.toLowerCase()):mentionedDomains)].slice(0,10);
+  return Object.freeze({autonomousDeep:true,explicitDeep:/\b(?:deep|in[- ]depth|comprehensive)\s+(?:web\s+)?research\b/i.test(message),explicitBrowser,explicitResearch,ownerDomains:Object.freeze(ownerDomains),ownerUrls:Object.freeze(ownerUrls),navigation:publicBrowserNavigation(message),presentation:publicBrowserPresentation(message)});
 }
 
 export function createAgent({
@@ -323,7 +324,7 @@ export function createAgent({
           }
         }
         let allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
-        const durable = speakerRestricted||existingTaskRoute||webAuthority.explicitBrowser ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, conversationId, signal: executionSignal});
+        const durable = speakerRestricted||existingTaskRoute||webAuthority.explicitBrowser||webAuthority.explicitResearch ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, conversationId, signal: executionSignal});
         executionSignal.throwIfAborted();
         if(durable?.providerUsage)providerUsage.push(durable.providerUsage);
         const routingDiagnostics=safeRoutingDiagnostics(durable?.routingDiagnostics);
@@ -349,6 +350,10 @@ export function createAgent({
           allowedTaskTools=new Set(["web_research"]);
           systemContext=`${systemContext}\n\nEXPLICIT PUBLIC BROWSER: The owner explicitly requested the isolated public browser. Call web_research exactly once so the server can create the bounded browser task. Use only the exact owner-supplied URL and domain authority already bound by the server. Do not substitute hosted Search or hardened Page Read, invent a URL, broaden domains, authenticate, submit forms, upload, download, or perform writes.`;
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"public_browser_turn_routed",status:"completed",summary:"Explicit public-browser intent bypassed unrelated durable workflow candidates.",metadata:{urlCount:webAuthority.ownerUrls.length,domainCount:webAuthority.ownerDomains.length,navigationType:webAuthority.navigation?.type||null}});
+        }
+        if(webAuthority.explicitResearch&&!webAuthority.explicitBrowser){
+          allowedTaskTools=new Set(["web_research"]);
+          await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"public_web_turn_routed",status:"completed",summary:"Explicit public Web research bypassed unrelated durable workflow candidates.",metadata:{domainCount:webAuthority.ownerDomains.length,autonomousDeep:webAuthority.autonomousDeep===true}});
         }
         if(!allowedTaskTools&&readOnlyToolNames.has("web_research"))systemContext=`${systemContext}\n\nAUTONOMOUS PUBLIC WEB RESEARCH: Public read-only Search, Page Read, Browser, and deep research are already authorized within their existing server-enforced cost ceilings. Choose the cheapest sufficient depth, but use one deep web_research call for a broad multi-source comparison instead of retrying weaker calls. Never ask for approval merely because research is deep. Call web_research at most once, use no more than 8 sources, and let the server fail closed if the existing $0.50 deep-research operation cap or any global/task budget cannot cover the reservation. This authority never permits login, private data access, forms, messaging, purchases, or any external write.`;
         if (durable?.task) {

@@ -544,6 +544,14 @@ test("ordinary public business research receives autonomous deep authority witho
   assert.equal(calls,1);assert.equal(result.runStatus,"completed");assert.equal((await storage.listApprovals(OWNER_ID)).length,0);assert.match(observed[0].systemContext,/Never ask for approval merely because research is deep/);assert.match(result.message,/https:\/\/example\.com\/pricing/);
 });
 
+test("explicit public Web research bypasses an unrelated historical workflow candidate",async()=>{
+  const storage=testStorage(),registry=createToolRegistry();let durableRoutes=0,webCalls=0;
+  registry.register({name:"web_research",riskLevel:"READ_ONLY",async execute(args,context){webCalls+=1;assert.equal(args.depth,"deep");assert.equal(context.webAuthority.explicitResearch,true);return{version:1,researchId:"deep-routing",summary:"Public comparison complete.",sources:[{sourceId:"source_1",title:"Official evidence",url:"https://example.com/report",retrievedAt:"now",contentHash:"e".repeat(64)}],pages:[],limitations:[],usage:{searchCalls:4,fixedSearchCostUsd:0.04,estimatedCostUsd:0.041,costStatus:"settled"}};}});
+  const agent=createTestAgent({storage,toolRegistry:registry,routeDurableRequest:async()=>{durableRoutes+=1;throw new Error("unrelated historical workflow must not compete");},modelProvider:scriptedProvider([{type:"tool_calls",continuationToken:"deep",toolCalls:[{id:"deep-routing-1",name:"web_research",arguments:{query:"Compare UK booking systems and missed-call recovery competitors",purpose:"competitor_research",allowedDomains:[],freshnessDays:30,maxSources:8,depth:"deep",readMode:"auto",urls:[]}}]},{type:"final",message:"Business report complete."}])});
+  const result=await agent.run({message:"Use public Web research to compare UK booking systems, inspect pricing, and research missed-call recovery competitors.",conversationId:"explicit-web-routing"});
+  assert.equal(durableRoutes,0);assert.equal(webCalls,1);assert.equal(result.runStatus,"completed");const activity=await storage.listActivity(OWNER_ID,{runId:result.runId,limit:20});assert.equal(activity.filter(item=>item.action==="public_web_turn_routed").length,1);
+});
+
 test("unexpected web failures persist only bounded stage and type diagnostics",async()=>{
   const storage=testStorage(),registry=createToolRegistry();
   registry.register({name:"web_research",riskLevel:"READ_ONLY",async execute(){throw Object.assign(new Error("token=never-store raw provider body"),{code:"web_gateway_internal",safeDiagnostics:{stage:"pre_provider",errorType:"TypeError",secret:"never-store",responseBody:"never-store"}});}});
@@ -559,7 +567,7 @@ test("public-browser authority is derived only from exact owner URLs and bounded
 
 test("ordinary Web V1A authority continues to recognize owner-stated domains without a URL",()=>{
   const authority=deriveWebAuthority("Use Web research and only developers.openai.com for the answer.");
-  assert.equal(authority.explicitBrowser,false);assert.deepEqual(authority.ownerUrls,[]);assert.deepEqual(authority.ownerDomains,["developers.openai.com"]);assert.equal(authority.navigation,null);
+  assert.equal(authority.explicitBrowser,false);assert.equal(authority.explicitResearch,true);assert.deepEqual(authority.ownerUrls,[]);assert.deepEqual(authority.ownerDomains,["developers.openai.com"]);assert.equal(authority.navigation,null);
 });
 
 test("explicit public-browser intent does not depend on browser wording inside the URL",()=>{
