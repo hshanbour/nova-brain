@@ -47,6 +47,13 @@ test("hosted search uses only web_search and reconciles fixed action plus token 
   assert.equal((await controller.status()).spentUsd,result.usage.estimatedCostUsd);
 });
 
+test("server-authorized public deep research accepts a bounded multi-source search without owner approval",async()=>{
+  const {controller}=await costFixture();let request;
+  const adapter=createOpenAIWebSearchAdapter({apiKey:"test-key",costController:controller,fetchImpl:async(_url,init)=>{request=JSON.parse(init.body);return new Response(JSON.stringify(payload({searchCalls:4})),{status:200,headers:{"content-type":"application/json"}});}});
+  const result=await adapter.search(input({depth:"deep",maxSources:8}),{runId:"run-deep"});
+  assert.equal(request.tools[0].search_context_size,"medium");assert.equal(result.searchCalls,4);assert.equal(result.usage.fixedSearchCostUsd,0.04);assert.ok(result.usage.estimatedCostUsd<WEB_LIMITS.deepCapUsd);
+});
+
 test("hosted search rejects before provider invocation when the budget cannot cover fixed and token reservation",async()=>{
   const {controller}=await costFixture({globalBudgetUsd:0,taskBudgetUsd:0});let calls=0;
   const adapter=createOpenAIWebSearchAdapter({apiKey:"test-key",costController:controller,fetchImpl:async()=>{calls+=1;throw new Error("must not call");}});
@@ -170,6 +177,14 @@ test("domain, freshness, source, deep and per-run bounds are server enforced",as
   const cases=[input({allowedDomains:Array.from({length:11},()=>"example.com")}),input({freshnessDays:3651}),input({maxSources:9}),input({depth:"deep"})];
   for(const value of cases)await assert.rejects(()=>gateway.research(value,{webAuthority:Object.freeze({explicitDeep:false}),webUsage:{calls:0}}),WebGatewayError);
   await assert.rejects(()=>gateway.research(input(),{webAuthority:Object.freeze({explicitDeep:false}),webUsage:{calls:1}}),error=>error.code==="web_run_limit_reached");
+});
+
+test("autonomous deep research stays read-only, uses one call and remains within the existing cap",async()=>{
+  const storage=createInMemoryStorage();await storage.initialize({owner:{id:ownerId,fullName:"Owner",provenance:"test"}});let calls=0;
+  const gateway=createWebGateway({storage,ownerId,searchAdapter:{async search(value){calls+=1;assert.equal(value.depth,"deep");return{summary:"Multi-source evidence",actions:[{type:"search"}],searchCalls:1,sources:[{sourceId:"source_1",title:"Official",url:"https://example.com/report",domain:"example.com",retrievedAt:"now"}],usage:{costStatus:"settled",estimatedCostUsd:0.04}};}},pageReader:{async read(url){return{status:"completed",url,domain:"example.com",title:"Official",text:"Public evidence",contentHash:"c".repeat(64),retrievedAt:"now"};}}});
+  const authority=Object.freeze({autonomousDeep:true,explicitDeep:false,ownerDomains:Object.freeze([])}),webUsage={calls:0};
+  const result=await gateway.research(input({depth:"deep",purpose:"competitor_research",readMode:"auto"}),{runId:"autonomous-deep",webAuthority:authority,webUsage});
+  assert.equal(calls,1);assert.equal(webUsage.calls,1);assert.equal(result.usage.estimatedCostUsd,0.04);assert.equal(Object.isFrozen(authority),true);assert.deepEqual(await storage.listApprovals(ownerId),[]);
 });
 
 test("web_research is autonomous read-only and cannot manufacture approval or write authority",async()=>{

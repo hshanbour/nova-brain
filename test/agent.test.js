@@ -536,6 +536,14 @@ test("the exact explicit-browser request bypasses unrelated historical workflow 
   assert.equal(durableRoutes,0);assert.equal(webCalls,1);assert.equal(result.durableTask.id,taskId);assert.equal(result.durableTask.status,"queued");assert.deepEqual(observed[0].tools.map(tool=>tool.name),["web_research"]);const activity=await storage.listActivity(OWNER_ID,{runId:result.runId,limit:20});assert.equal(activity.filter(item=>item.action==="public_browser_turn_routed").length,1);assert.equal(activity.find(item=>item.action==="tool_started").summary,"Preparing the isolated public browser.");
 });
 
+test("ordinary public business research receives autonomous deep authority without approval",async()=>{
+  const storage=testStorage(),registry=createToolRegistry(),observed=[];let calls=0;
+  registry.register({name:"web_research",riskLevel:"READ_ONLY",async execute(args,context){calls+=1;assert.equal(args.depth,"deep");assert.equal(context.webAuthority.autonomousDeep,true);return{version:1,researchId:"deep-business",summary:"Compared public competitors.",sources:[{sourceId:"source_1",title:"Official pricing",url:"https://example.com/pricing",retrievedAt:"now",contentHash:"d".repeat(64)}],pages:[],limitations:[],usage:{searchCalls:4,fixedSearchCostUsd:0.04,estimatedCostUsd:0.041,costStatus:"settled"}};}});
+  const agent=createTestAgent({storage,toolRegistry:registry,modelProvider:scriptedProvider([{type:"tool_calls",continuationToken:"deep",toolCalls:[{id:"deep-1",name:"web_research",arguments:{query:"Compare UK booking systems and missed-call competitors",purpose:"competitor_research",allowedDomains:[],freshnessDays:30,maxSources:8,depth:"deep",readMode:"auto",urls:[]}}]},{type:"final",message:"Public business research complete."}],input=>observed.push(input))});
+  const result=await agent.run({message:"Compare UK booking systems, inspect pricing, and research missed-call competitors.",conversationId:"autonomous-deep-business"});
+  assert.equal(calls,1);assert.equal(result.runStatus,"completed");assert.equal((await storage.listApprovals(OWNER_ID)).length,0);assert.match(observed[0].systemContext,/Never ask for approval merely because research is deep/);assert.match(result.message,/https:\/\/example\.com\/pricing/);
+});
+
 test("unexpected web failures persist only bounded stage and type diagnostics",async()=>{
   const storage=testStorage(),registry=createToolRegistry();
   registry.register({name:"web_research",riskLevel:"READ_ONLY",async execute(){throw Object.assign(new Error("token=never-store raw provider body"),{code:"web_gateway_internal",safeDiagnostics:{stage:"pre_provider",errorType:"TypeError",secret:"never-store",responseBody:"never-store"}});}});
