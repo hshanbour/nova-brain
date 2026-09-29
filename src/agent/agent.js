@@ -300,7 +300,8 @@ export function createAgent({
       };
 
       try {
-        const existingTaskRoute=speakerRestricted?null:await routeExistingTaskRequest({message,conversationId,context:trustedContext,requestId,signal:executionSignal});
+        const durableWebResearch=!speakerRestricted&&durableResearchTaskService&&shouldUseDurableWebResearch(message,webAuthority);
+        const existingTaskRoute=speakerRestricted||durableWebResearch?null:await routeExistingTaskRequest({message,conversationId,context:trustedContext,requestId,signal:executionSignal});
         if(existingTaskRoute){
           const task=existingTaskRoute.task;
           if(existingTaskRoute.action==="report"){
@@ -333,7 +334,7 @@ export function createAgent({
           }
         }
         let allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
-        if(!speakerRestricted&&!existingTaskRoute&&durableResearchTaskService&&shouldUseDurableWebResearch(message,webAuthority)){
+        if(durableWebResearch){
           const prepared=await durableResearchTaskService.prepare({request:message,conversationId,runId:run.id,projectId:context.projectId||null,webAuthority});
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"public_web_research_handed_off",status:"completed",summary:"Long public Web research was durably owned before provider contact.",metadata:{taskId:prepared.task.id,idempotent:prepared.idempotent===true}});
           return completeDurableSelfDevelopment({task:prepared.task,idempotent:prepared.idempotent});
