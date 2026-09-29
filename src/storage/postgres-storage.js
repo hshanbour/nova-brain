@@ -263,10 +263,10 @@ const modelCostReservationRow = (row) => row && ({
   settledAt: date(row.settled_at),
 });
 
-export function createPostgresStorage({ connectionString }) {
-  if (!connectionString)
+export function createPostgresStorage({ connectionString, sqlClient } = {}) {
+  if (!connectionString && !sqlClient)
     throw new Error("A Postgres connection string is required.");
-  const sql = neon(connectionString);
+  const sql = sqlClient || neon(connectionString);
   let initialization;
   const run = (statement, params = []) => sql.query(statement, params);
 
@@ -799,6 +799,16 @@ export function createPostgresStorage({ connectionString }) {
         )[0],
       );
     },
+    async getRun(id, ownerId) {
+      return runRow(
+        (
+          await run(
+            "SELECT * FROM nova_execution_runs WHERE id=$1 AND owner_id=$2",
+            [id, ownerId],
+          )
+        )[0],
+      );
+    },
     async listRuns(ownerId, { projectId, limit = 50 } = {}) {
       return (
         await run(
@@ -1008,6 +1018,95 @@ export function createPostgresStorage({ connectionString }) {
           )
         ).length > 0
       );
+    },
+    async prepareAutonomyTaskBundle({ task, run: taskRun, step, activity }) {
+      if (
+        !task?.id ||
+        taskRun?.id !== task.id ||
+        step?.taskId !== task.id ||
+        activity?.runId !== task.id
+      )
+        throw Object.assign(
+          new Error("The autonomy task preparation binding is invalid."),
+          { code: "autonomy_task_preparation_invalid" },
+        );
+      const taskId = task.id;
+      const [runRows, taskRows, stepRows, activityRows] = await sql.transaction(
+        (transaction) => [
+          transaction.query(
+            "INSERT INTO nova_execution_runs (id,owner_id,project_id,conversation_id,goal,status) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+            [
+              taskRun.id,
+              taskRun.ownerId,
+              taskRun.projectId || null,
+              taskRun.conversationId || null,
+              taskRun.goal,
+              taskRun.status || "queued",
+            ],
+          ),
+          transaction.query(
+            `INSERT INTO nova_autonomy_tasks (id,owner_id,project_id,title,objective,task_type,status,priority,current_phase,current_step,max_steps,max_retries,max_runtime_minutes,branch,starting_commit,current_commit,checkpoint,next_run_at,metadata,retry_count,repair_iteration) VALUES ($1,$2,$3,$4,$5,$6,'queued',$7,'queued',0,$8,$9,$10,$11,$12,$12,$13::jsonb,COALESCE($14::timestamptz,now()),$15::jsonb,0,0) RETURNING *`,
+            [
+              taskId,
+              task.ownerId,
+              task.projectId || null,
+              task.title,
+              task.objective,
+              task.taskType || "developer",
+              task.priority || 0,
+              task.maxSteps || 30,
+              task.maxRetries ?? 3,
+              task.maxRuntimeMinutes || 30,
+              task.branch || null,
+              task.startingCommit || null,
+              JSON.stringify({
+                completedSteps: [],
+                pendingStep: null,
+                findings: [],
+              }),
+              task.nextRunAt || null,
+              JSON.stringify(task.metadata || {}),
+            ],
+          ),
+          transaction.query(
+            `INSERT INTO nova_autonomy_steps (task_id,step_id,step_type,capability,operation_fingerprint,status,attempt,input,started_at,completed_at,result,error_code) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,COALESCE($9::timestamptz,now()),$10,$11::jsonb,$12) RETURNING *`,
+            [
+              step.taskId,
+              step.stepId,
+              step.stepType,
+              step.capability,
+              step.operationFingerprint,
+              step.status || "running",
+              step.attempt || 1,
+              JSON.stringify(step.input || {}),
+              step.startedAt || null,
+              step.completedAt || null,
+              step.result === undefined ? null : JSON.stringify(step.result),
+              step.errorCode || null,
+            ],
+          ),
+          transaction.query(
+            "INSERT INTO nova_activity_events (id,owner_id,project_id,run_id,action,tool,status,summary,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) RETURNING *",
+            [
+              activity.id || randomUUID(),
+              activity.ownerId,
+              activity.projectId || null,
+              activity.runId,
+              activity.action,
+              activity.tool || null,
+              activity.status,
+              activity.summary,
+              JSON.stringify(activity.metadata || {}),
+            ],
+          ),
+        ],
+      );
+      return {
+        run: runRow(runRows[0]),
+        task: autonomyTaskRow(taskRows[0]),
+        step: autonomyStepRow(stepRows[0]),
+        activity: activityRow(activityRows[0]),
+      };
     },
     async createExecutionAttempt(input){const rows=await run(`WITH task AS (SELECT id FROM nova_autonomy_tasks WHERE id=$2 AND owner_id=$3), generation AS (SELECT COALESCE(MAX(generation),0)+1 AS value FROM nova_execution_attempts WHERE task_id=$2), inserted AS (INSERT INTO nova_execution_attempts (id,task_id,owner_id,handoff_id,worker_id,generation,fence_token,status,phase,executor_started,claimed_at,last_heartbeat_at,lease_expires_at,metadata) SELECT $1,$2,$3,$4,$5,generation.value,$6,'preparing','preparing',false,now(),now(),now()+($7::int*interval '1 millisecond'),$8::jsonb FROM task,generation WHERE NOT EXISTS (SELECT 1 FROM nova_execution_attempts WHERE task_id=$2 AND status IN ('preparing','executing')) ON CONFLICT DO NOTHING RETURNING *) SELECT * FROM inserted`,[input.id,input.taskId,input.ownerId,input.handoffId,input.workerId,input.fenceToken,input.leaseMs,json(input.metadata)]);if(rows[0])return executionAttemptRow(rows[0]);return executionAttemptRow((await run(`SELECT * FROM nova_execution_attempts WHERE task_id=$1 AND owner_id=$2 AND handoff_id=$3 AND worker_id=$4 AND status IN ('preparing','executing') ORDER BY generation DESC LIMIT 1`,[input.taskId,input.ownerId,input.handoffId,input.workerId]))[0]);},
     async getActiveExecutionAttempt(taskId,ownerId){return executionAttemptRow((await run(`SELECT * FROM nova_execution_attempts WHERE task_id=$1 AND owner_id=$2 AND status IN ('preparing','executing') ORDER BY generation DESC LIMIT 1`,[taskId,ownerId]))[0]);},

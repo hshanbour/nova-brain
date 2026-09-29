@@ -502,6 +502,10 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       runs.set(id, updated);
       return copy(updated);
     },
+    async getRun(id, ownerId) {
+      const run = runs.get(id);
+      return copy(run?.ownerId === ownerId ? run : null);
+    },
     async listRuns(ownerId, { projectId, limit = 50 } = {}) {
       return [...runs.values()]
         .filter(
@@ -555,6 +559,48 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       };
       autonomyTasks.set(task.id, task);
       return copy(task);
+    },
+    async prepareAutonomyTaskBundle({ task, run, step, activity: initialActivity }) {
+      if (
+        !task?.id ||
+        run?.id !== task.id ||
+        step?.taskId !== task.id ||
+        initialActivity?.runId !== task.id
+      )
+        throw Object.assign(
+          new Error("The autonomy task preparation binding is invalid."),
+          { code: "autonomy_task_preparation_invalid" },
+        );
+      if (
+        autonomyTasks.has(task.id) ||
+        runs.has(run.id) ||
+        autonomySteps.has(`${step.taskId}:${step.stepId}`)
+      )
+        throw Object.assign(
+          new Error("The autonomy task preparation already exists."),
+          { code: "autonomy_task_preparation_conflict" },
+        );
+      const activityLength = activity.length;
+      const priorSequence = sequence;
+      try {
+        const preparedRun = await this.createRun(run);
+        const preparedTask = await this.createAutonomyTask(task);
+        const preparedStep = await this.recordAutonomyStep(step);
+        const preparedActivity = await this.appendActivity(initialActivity);
+        return {
+          task: preparedTask,
+          run: preparedRun,
+          step: preparedStep,
+          activity: preparedActivity,
+        };
+      } catch (error) {
+        autonomySteps.delete(`${step.taskId}:${step.stepId}`);
+        autonomyTasks.delete(task.id);
+        runs.delete(run.id);
+        activity.splice(activityLength);
+        sequence = priorSequence;
+        throw error;
+      }
     },
     async getAutonomyTask(id, ownerId) {
       const task = autonomyTasks.get(id);

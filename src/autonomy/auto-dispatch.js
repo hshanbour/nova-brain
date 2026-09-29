@@ -61,6 +61,7 @@ export function createAutoDispatchService({storage,ownerId,approvedBranch="feat/
     for(const item of tasks){
       const pendingScopeResolution=pendingStructuredScopeResolution(item);
       const browserTask=item.taskType==="public_web_browser"&&item.metadata?.requiredCapability==="remote_public_browser";
+      if(browserTask&&!await storage.getRun(item.id,ownerId))continue;
       const supportedTask=browserTask||item.taskType==="self_development"||(item.taskType==="coding_delegation"&&item.metadata?.codingJob?.repository?.slug===approvedRepository)||(item.taskType===ARTIFACT_DELIVERY_TASK_TYPE&&item.metadata?.artifactDelivery?.repository===approvedRepository);
       const common=supportedTask&&(browserTask||item.branch===branch)&&item.metadata?.autoDispatch!==false&&(ACTIVE.has(item.status)||pendingScopeResolution)&&item.status!=="waiting_for_approval"&&!item.leaseToken&&!item.leaseOwner&&(pendingScopeResolution||item.status!=="waiting"?(!item.nextRunAt||new Date(item.nextRunAt)<=clock()):(item.nextRunAt&&new Date(item.nextRunAt)<=clock()));if(!common)continue;
       if(!item.approvalState){task=item;break;}

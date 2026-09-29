@@ -25,20 +25,25 @@ export function createDurableBrowserTaskService({storage,ownerId,browserAdapter,
   async function prepare({startUrl,allowedDomains,reason,navigation=null,heavy=false,conversationId,runId,projectId}={}){
       const verified=validateSpec(startUrl,allowedDomains);startUrl=verified.url;allowedDomains=verified.domains;navigation=validateNavigation(navigation);
       const taskId=taskIdFor({runId,startUrl,allowedDomains}),existing=await storage.getAutonomyTask(taskId,ownerId);
-      if(existing){const result=existing.metadata?.browserResult||null;return Object.freeze({task:existing,result,idempotent:true});}
+      if(existing){if(!await storage.getRun(taskId,ownerId))throw Object.assign(new Error("The durable browser task is missing its task-owned execution run."),{code:"browser_task_persistence_invalid"});const result=existing.metadata?.browserResult||null;return Object.freeze({task:existing,result,idempotent:true});}
       const canonical=Object.freeze({version:2,startUrl,allowedDomains:Object.freeze([...new Set(allowedDomains)].sort()),reason,navigation,limits:Object.freeze({ttlMs:heavy?BROWSER_RUN_LIMITS.maxTtlMs:BROWSER_RUN_LIMITS.defaultTtlMs,maxActions:heavy?BROWSER_RUN_LIMITS.heavyActions:BROWSER_RUN_LIMITS.normalActions,maxPages:BROWSER_RUN_LIMITS.maxPages,maxScreenshots:BROWSER_RUN_LIMITS.maxScreenshots,crashRetries:BROWSER_RUN_LIMITS.maxCrashRetries})});
-      let task=await storage.createAutonomyTask({id:taskId,ownerId,projectId:projectId||null,title:"Public browser research",objective:"Read one bounded public interactive source.",taskType:"public_web_browser",maxSteps:1,maxRetries:1,maxRuntimeMinutes:5,metadata:{requiredCapability:"remote_public_browser",browserJob:canonical,terminalReporting:{version:1,conversationId,runId}}});
-      await storage.recordAutonomyStep({taskId,stepId:"1:public_browser_read",stepType:"public_browser_read",capability:"remote_public_browser",operationFingerprint:digest(JSON.stringify(canonical)),status:"queued",input:{reason,allowedDomains:canonical.allowedDomains}});
-      await activity(task,"browser_task_queued","queued","Queued bounded public browser research.",{reason});
+      let prepared;try{prepared=await storage.prepareAutonomyTaskBundle({
+        task:{id:taskId,ownerId,projectId:projectId||null,title:"Public browser research",objective:"Read one bounded public interactive source.",taskType:"public_web_browser",maxSteps:1,maxRetries:1,maxRuntimeMinutes:5,metadata:{requiredCapability:"remote_public_browser",browserJob:canonical,terminalReporting:{version:1,conversationId,runId}}},
+        run:{id:taskId,ownerId,projectId:projectId||null,conversationId:conversationId||null,goal:"Read one bounded public interactive source.",status:"queued"},
+        step:{taskId,stepId:"1:public_browser_read",stepType:"public_browser_read",capability:"remote_public_browser",operationFingerprint:digest(JSON.stringify(canonical)),status:"queued",input:{reason,allowedDomains:canonical.allowedDomains}},
+        activity:{ownerId,projectId:projectId||null,runId:taskId,action:"browser_task_queued",tool:"public_browser_read",status:"queued",summary:"Queued bounded public browser research.",metadata:{taskId,reason}},
+      });}catch(error){if(!["23505","autonomy_task_preparation_conflict"].includes(error?.code))throw error;const raced=await storage.getAutonomyTask(taskId,ownerId),racedRun=await storage.getRun(taskId,ownerId);if(!raced||!racedRun)throw error;return Object.freeze({task:raced,result:raced.metadata?.browserResult||null,idempotent:true});}
+      const task=prepared.task;
       return Object.freeze({task,result:null,idempotent:false});
   }
   async function executeTask(taskId,{coordinatorId=workerId,expectedVersion,signal}={}){
       let task=await storage.getAutonomyTask(taskId,ownerId);if(!task||task.taskType!=="public_web_browser"||task.metadata?.requiredCapability!=="remote_public_browser")throw Object.assign(new Error("The durable browser task is unavailable."),{code:"browser_task_invalid"});
+      if(!await storage.getRun(taskId,ownerId))throw Object.assign(new Error("The durable browser task is missing its task-owned execution run."),{code:"browser_task_persistence_invalid"});
       if(TERMINAL.has(task.status))return Object.freeze({task,result:task.metadata?.browserResult||null,idempotent:true});
       if(expectedVersion!==undefined&&task.stateVersion!==expectedVersion)throw Object.assign(new Error("The durable browser task version changed."),{code:"browser_task_fenced"});
       const canonical=task.metadata?.browserJob;if(![1,2].includes(canonical?.version))throw Object.assign(new Error("The durable browser specification is invalid."),{code:"browser_task_invalid"});
       const {heavy=false}=canonical.limits?.maxActions===BROWSER_RUN_LIMITS.heavyActions?{heavy:true}:{};const runId=task.metadata?.terminalReporting?.runId||task.id;
-      let providerReservation,modelReservation;
+      let providerReservation,modelReservation,providerContacted=false;
       try{providerReservation=await providerBudget.reserve({taskId,runId,heavy});}
       catch(error){return blockBeforeExecution(task,error);}
       try{modelReservation=await modelCostController.reserve({model,stage:"browser_reasoning",serviceTier:"default",requestBody:{task:"Select only from server-validated read-only browser candidates."},maxOutputTokens:heavy?2048:1024,operationCapUsd:heavy?0.25:0.10,taskId,runId});}
@@ -60,7 +65,7 @@ export function createDurableBrowserTaskService({storage,ownerId,browserAdapter,
             result=await browserAdapter.run({...canonical,signal:executionController.signal,onProgress:async event=>{
               executionController.signal.throwIfAborted();if(!ACTIVE_PHASES.has(event.phase))throw new BrowserRunError("browser_progress_invalid","The browser adapter emitted an invalid active phase.",{phase:bounded(event.phase,80)});
               const live=await storage.getAutonomyTask(taskId,ownerId);if(live?.status==="cancelled")throw new DOMException("Browser task cancelled.","AbortError");
-              await executionTruth.heartbeat(attemptInput(attempt),{phase:event.phase,executorStarted:true,progress:true});task=await update(taskId,{status:"running",currentPhase:event.phase});await activity(task,`browser_${event.phase}`,"running",bounded(event.summary,300),event.metadata||{});
+              await executionTruth.heartbeat(attemptInput(attempt),{phase:event.phase,executorStarted:true,progress:true});task=await update(taskId,{status:"running",currentPhase:event.phase});await activity(task,`browser_${event.phase}`,"running",bounded(event.summary,300),event.metadata||{});if(event.phase==="starting_browser")providerContacted=true;
             }});if(heartbeatFailure)throw heartbeatFailure;break;
           }catch(error){lastError=error;if(error?.code!=="browser_session_failed"||crash>=canonical.limits.crashRetries)throw error;await activity(task,"browser_crash_retry","retrying","Retrying the isolated browser once after a provider session failure.",{retry:crash+1});}
         }
@@ -72,7 +77,7 @@ export function createDurableBrowserTaskService({storage,ownerId,browserAdapter,
         await executionTruth.finish(attemptInput(attempt),{status:"completed",reason:"browser_completed"});await activity(task,"browser_completed","completed","Completed bounded public browser research.",{domain:result.domain,contentHash:result.contentHash});
         return Object.freeze({task,result:safeResult,idempotent:false});
       }catch(error){
-        if(!providerAccounting)providerAccounting=await providerBudget.settle(providerReservation,{durationMs:Math.max(0,clock()-new Date(attempt.claimedAt))});await modelCostController.release(modelReservation).catch(()=>{});
+        if(!providerAccounting)providerAccounting=await providerBudget.settle(providerReservation,providerContacted?{durationMs:Math.max(0,clock()-new Date(attempt.claimedAt))}:{status:"released"});await modelCostController.release(modelReservation).catch(()=>{});
         const cancelled=error?.name==="AbortError",blocked=BLOCKED.has(error?.code),status=cancelled?"cancelled":blocked?"blocked":"failed",code=cancelled?"browser_cancelled":bounded(error?.code,100)||"browser_session_failed",summary=cancelled?"The browser task was cancelled.":bounded(error?.message,500)||"The browser task failed safely.";
         const safeFailure={status,code,reason:summary,diagnostics:{stage:bounded(error?.safeDiagnostics?.stage,80)||null,domain:bounded(error?.safeDiagnostics?.domain,253)||null,status:Number.isInteger(error?.safeDiagnostics?.status)?error.safeDiagnostics.status:null,providerCode:bounded(error?.safeDiagnostics?.providerCode,80)||null},providerCost:providerAccounting};
         await storage.updateAutonomyStep(taskId,handoff.stepId,{status,errorCode:code,completedAt:clock().toISOString(),result:safeFailure});
