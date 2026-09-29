@@ -45,7 +45,7 @@ function trustedBrowserSource(task,value){
 }
 
 function firstPrerequisite(value){
-  const text=bounded(value?.evidence?.[0]?.text||value?.text||"",2000),match=text.match(/\bprerequisites?\b\s*[:\-]?\s*([\s\S]+)/i);
+  const text=bounded(value?.text||value?.evidence?.[0]?.text||"",100000),match=text.match(/\bprerequisites?\b\s*[:\-]?\s*([\s\S]+)/i);
   if(!match)return"";
   let tail=match[1].replace(/[↗↘→]/g," ").replace(/\s+/g," ").trim(),colon=tail.indexOf(":"),sentence=tail.search(/[.!?](?:\s|$)/);
   if(colon>=0&&(sentence<0||colon<sentence)&&colon<180)tail=tail.slice(colon+1).trim();
