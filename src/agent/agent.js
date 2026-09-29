@@ -66,10 +66,11 @@ function safeToolError(error, name) {
     return{code,message:"Coding job creation failed safely.",...(Object.keys(diagnostics).length?{diagnostics}:{})};
   }
   if(name==="web_research"){
-    const code=typeof error?.code==="string"&&/^web_[a-z0-9_]+$/.test(error.code)?error.code:"web_research_failed";
+    const recognized=typeof error?.code==="string"&&/^web_[a-z0-9_]+$/.test(error.code),code=recognized?error.code:"web_research_failed";
     const safe=error?.safeDiagnostics||{},diagnostics={};
-    for(const key of ["status","providerCode","domain","contentType","searchCalls"])if(safe[key]===null||["string","number","boolean"].includes(typeof safe[key]))diagnostics[key]=safe[key];
-    return{code,message:String(error?.message||"Web research failed safely.").slice(0,300),...(Object.keys(diagnostics).length?{diagnostics}:{})};
+    for(const key of ["stage","errorType","status","providerCode","domain","contentType","searchCalls"])if(safe[key]===null||["string","number","boolean"].includes(typeof safe[key]))diagnostics[key]=typeof safe[key]==="string"?safe[key].slice(0,key==="domain"?253:100):safe[key];
+    if(!recognized&&!diagnostics.errorType&&["Error","TypeError","RangeError","SyntaxError"].includes(error?.name))diagnostics.errorType=error.name;
+    return{code,message:recognized&&code!=="web_gateway_internal"?String(error?.message||"Web research failed safely.").slice(0,300):"Web research failed safely.",...(Object.keys(diagnostics).length?{diagnostics}:{})};
   }
   const allowed = new Set([
     "invalid_input", "schema_mismatch", "repository_not_resolved",
@@ -117,6 +118,7 @@ function toolActivityMetadata(name,args,error){
     if(error&&typeof error==="object")metadata.error=error;
     return metadata;
   }
+  if(name==="web_research")return error&&typeof error==="object"?{error}:undefined;
   if(name!=="self_development_scope_recover")return undefined;
   const metadata={taskId:String(args?.taskId||"").slice(0,100),expectedVersion:Number.isInteger(args?.expectedVersion)?args.expectedVersion:null};
   if(error&&typeof error==="object")metadata.error=error;
@@ -171,7 +173,7 @@ function publicBrowserNavigation(message){
 }
 export function deriveWebAuthority(message){
   const explicitBrowser=EXPLICIT_PUBLIC_BROWSER.test(message),ownerUrls=publicBrowserUrls(message),mentionedDomains=(String(message).match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b/gi)||[]).map(value=>value.toLowerCase()),ownerDomains=[...new Set(explicitBrowser?ownerUrls.map(value=>new URL(value).hostname.toLowerCase()):mentionedDomains)].slice(0,10);
-  return Object.freeze({calls:0,explicitDeep:/\b(?:deep|in[- ]depth|comprehensive)\s+(?:web\s+)?research\b/i.test(message),explicitBrowser,ownerDomains:Object.freeze(ownerDomains),ownerUrls:Object.freeze(ownerUrls),navigation:publicBrowserNavigation(message)});
+  return Object.freeze({explicitDeep:/\b(?:deep|in[- ]depth|comprehensive)\s+(?:web\s+)?research\b/i.test(message),explicitBrowser,ownerDomains:Object.freeze(ownerDomains),ownerUrls:Object.freeze(ownerUrls),navigation:publicBrowserNavigation(message)});
 }
 
 export function createAgent({
@@ -241,6 +243,7 @@ export function createAgent({
       const providerUsage = [];
       const webSources=[];
       const webAuthority=deriveWebAuthority(message);
+      const webUsage={calls:0};
       const readOnlyToolNames=new Set(toolRegistry.list({executableOnly:true}).filter(tool=>tool.riskLevel==="READ_ONLY").map(tool=>tool.name));
       let webEvidenceActive=false;
       let webDurableTask=null;
@@ -423,7 +426,7 @@ export function createAgent({
             if(allowedTaskTools&&!allowedTaskTools.has(call.name))throw Object.assign(new Error("Existing-task control cannot invoke this tool."),{code:"task_control_tool_forbidden"});
             if(!allowedTaskTools&&ROUTED_CREATION_TOOLS.has(call.name))throw Object.assign(new Error("Durable creation requires the authoritative turn-routing path."),{code:"task_control_tool_forbidden"});
             if(webEvidenceActive&&!readOnlyToolNames.has(call.name))throw Object.assign(new Error("Untrusted web evidence cannot authorize a write-capable tool in the same run."),{code:"web_evidence_tool_forbidden"});
-            const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, conversationId, signal: executionSignal,delegationRequestFingerprint:durable?.requestFingerprint,webAuthority });
+            const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, conversationId, signal: executionSignal,delegationRequestFingerprint:durable?.requestFingerprint,webAuthority,webUsage });
             executionSignal.throwIfAborted();
             execution.status = "completed";
             execution.result = result;

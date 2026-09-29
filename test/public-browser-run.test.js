@@ -7,6 +7,8 @@ import {createTerminalTaskReporter} from "../src/autonomy/terminal-task-reporter
 import {createBrowserProviderBudget} from "../src/web/browser-provider-budget.js";
 import {BROWSER_RUN_LIMITS,BrowserRunError,createCloudflareBrowserRunAdapter,validateBrowserDestination,VISUAL_BROWSER_FALLBACK_CONTRACT} from "../src/web/cloudflare-browser-run.js";
 import {createDurableBrowserTaskService} from "../src/web/durable-browser-task.js";
+import {deriveWebAuthority} from "../src/agent/agent.js";
+import {createWebGateway} from "../src/web/web-gateway.js";
 
 const OWNER="owner-browser",CONVERSATION="conversation-browser",RUN="run-browser",publicDns=async()=>[{address:"8.8.8.8",family:4}];
 
@@ -64,6 +66,15 @@ async function fixture({browserAdapter,browserBudgetUsd=0.5,modelBudgetUsd=8.15}
 
 const completedResult=()=>({status:"completed",finalUrl:"https://example.com/app",domain:"example.com",title:"Rendered",text:"Verified rendered fact",contentHash:"d".repeat(64),retrievedAt:"2026-09-29T12:00:01.000Z",observations:[{sequence:1,type:"rendered_content",domain:"example.com",contentHash:"d".repeat(64)}],usage:{provider:"cloudflare",durationMs:1000,actions:2,pages:1,screenshots:0},limits:{ttlMs:180000,maxActions:20,maxPages:8,maxScreenshots:3},isolation:{freshSession:true,freshContext:true,recording:false,profileImported:false}});
 const executeInput={startUrl:"https://example.com/app",allowedDomains:["example.com"],reason:"rendered_content_missing",conversationId:CONVERSATION,runId:RUN,projectId:null};
+
+test("the exact live browser request creates and executes one durable task with immutable authority",async()=>{
+  const message="Use the public browser, not Search or Page Read.\n\nOpen:\nhttps://developers.cloudflare.com/browser-run/\n\nFollow the \u201cGet started\u201d link.\n\nThen tell me the destination title and its first prerequisite.\n\nUse only developers.cloudflare.com and include clickable evidence.",authority=deriveWebAuthority(message),webUsage={calls:0};let browserCalls=0,searches=0,reads=0;
+  const result={...completedResult(),finalUrl:"https://developers.cloudflare.com/browser-run/get-started/",domain:"developers.cloudflare.com",title:"Get started - Browser Run",text:"Prerequisites A Cloudflare account.",contentHash:"e".repeat(64)},f=await fixture({browserAdapter:{async run(){browserCalls+=1;return result;}}}),gateway=createWebGateway({storage:f.storage,ownerId:OWNER,browserTaskService:f.service,searchAdapter:{async search(){searches+=1;throw new Error("hosted search must not run");}},pageReader:{async read(){reads+=1;throw new Error("page read must not run");}}});
+  const prepared=await gateway.research({query:"Open the supplied public URL and follow the exact visible link",purpose:"general",allowedDomains:["invented.example"],freshnessDays:0,maxSources:1,depth:"quick",readMode:"none",urls:["https://invented.example/"]},{runId:RUN,conversationId:CONVERSATION,webAuthority:authority,webUsage}),tasks=await f.storage.listAutonomyTasks(OWNER);
+  assert.equal(Object.isFrozen(authority),true);assert.equal("calls" in authority,false);assert.equal(webUsage.calls,1);assert.equal(tasks.length,1);assert.equal(prepared.durableTask.id,tasks[0].id);assert.equal(tasks[0].metadata.browserJob.version,2);assert.equal(searches,0);assert.equal(reads,0);assert.equal(browserCalls,0);
+  const completed=await f.service.executeTask(tasks[0].id,{coordinatorId:"certification-worker",expectedVersion:tasks[0].stateVersion}),replayed=await f.service.executeTask(tasks[0].id,{coordinatorId:"certification-worker"}),attempt=await f.storage.getLatestExecutionAttempt(tasks[0].id,OWNER);
+  assert.equal(completed.task.status,"completed");assert.equal(completed.result.title,"Get started - Browser Run");assert.equal(browserCalls,1);assert.equal(attempt.generation,1);assert.equal(attempt.status,"completed");assert.equal(replayed.idempotent,true);assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,1);
+});
 
 test("durable browser task fences execution, reports observed phases, settles separate budget, and is idempotent",async()=>{
   let calls=0;const f=await fixture({browserAdapter:{async run({onProgress}){calls+=1;await onProgress({phase:"starting_browser",summary:"Starting isolated browser."});await onProgress({phase:"opening_public_page",summary:"Opening example.com.",metadata:{domain:"example.com"}});await onProgress({phase:"inspecting_rendered_content",summary:"Inspecting rendered content.",metadata:{domain:"example.com"}});return completedResult();}}});

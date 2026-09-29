@@ -61,7 +61,14 @@ function validateResearchInput(input, context = {}) {
   if (!Array.isArray(input.urls) || input.urls.length > MAX_PAGE_READS) throw new WebGatewayError("web_urls_invalid", "The page-read URL list is too large.");
   if (!Number.isInteger(input.freshnessDays) || input.freshnessDays < 0 || input.freshnessDays > 3650) throw new WebGatewayError("web_freshness_invalid", "Freshness must be a bounded number of days.");
   if (!Number.isInteger(input.maxSources) || input.maxSources < 1 || input.maxSources > MAX_SOURCES) throw new WebGatewayError("web_source_limit_invalid", "The web source limit is invalid.");
-  if (context.webAuthority?.calls >= 1) throw new WebGatewayError("web_run_limit_reached", "This synchronous run has already used its bounded web research call.");
+  if (!context.webUsage || !Number.isInteger(context.webUsage.calls) || context.webUsage.calls < 0) throw new WebGatewayError("web_usage_invalid", "The bounded per-run web usage state is unavailable.");
+  if (context.webUsage.calls >= 1) throw new WebGatewayError("web_run_limit_reached", "This synchronous run has already used its bounded web research call.");
+}
+
+function unexpectedGatewayFailure(error,stage){
+  if(error instanceof WebGatewayError)return error;
+  const errorType=["Error","TypeError","RangeError","SyntaxError"].includes(error?.name)?error.name:"Error";
+  return new WebGatewayError("web_gateway_internal","Web research failed safely.",{stage,errorType});
 }
 
 function ipv4Reserved(address) {
@@ -327,18 +334,19 @@ export function createWebGateway({ searchAdapter, pageReader, browserTaskService
   const activity = (context, action, status, summary, metadata) => context.runId ? storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: context.runId, action, tool: "web_research", status, summary, ...(metadata ? { metadata } : {}) }) : Promise.resolve();
   return Object.freeze({
     async research(input, context = {}) {
-      validateResearchInput(input, context);
-      if (context.webAuthority) context.webAuthority.calls += 1;
-      const startedAt = timestamp(clock);
+      let startedAt;
+      try{validateResearchInput(input, context);context.webUsage.calls+=1;startedAt=timestamp(clock);}
+      catch(error){throw unexpectedGatewayFailure(error,"pre_provider");}
       if(context.webAuthority?.explicitBrowser===true){
         const trustedUrls=Array.isArray(context.webAuthority.ownerUrls)?context.webAuthority.ownerUrls:[],trustedDomains=Array.isArray(context.webAuthority.ownerDomains)?context.webAuthority.ownerDomains:[],startUrl=trustedUrls.find(url=>trustedDomains.includes(hostnameOf(url)))||null;
         if(!startUrl)throw new WebGatewayError("web_browser_url_required","Explicit public-browser use requires one exact owner-supplied public HTTPS URL.");
         if(!browserTaskService)throw new WebGatewayError("web_browser_unavailable","The isolated public browser is not configured.");
-        const browserTask=await browserTaskService.prepare({startUrl,allowedDomains:trustedDomains,reason:"navigation_required",navigation:context.webAuthority.navigation||null,heavy:input.depth==="deep",conversationId:context.conversationId,runId:context.runId,projectId:context.projectId}),browserResult=browserTask.result,completed=browserResult?.status==="completed",sourceUrl=completed?browserResult.finalUrl:startUrl,title=completed?(browserResult.title||browserResult.domain):hostnameOf(sourceUrl),source=Object.freeze({sourceId:"source_1",title:title||hostnameOf(sourceUrl),url:sourceUrl,domain:hostnameOf(sourceUrl),retrievedAt:completed?browserResult.retrievedAt:startedAt,contentHash:completed?browserResult.contentHash:null});
+        let browserTask;try{browserTask=await browserTaskService.prepare({startUrl,allowedDomains:trustedDomains,reason:"navigation_required",navigation:context.webAuthority.navigation||null,heavy:input.depth==="deep",conversationId:context.conversationId,runId:context.runId,projectId:context.projectId});}catch(error){throw unexpectedGatewayFailure(error,"browser_task_prepare");}
+        const browserResult=browserTask.result,completed=browserResult?.status==="completed",sourceUrl=completed?browserResult.finalUrl:startUrl,title=completed?(browserResult.title||browserResult.domain):hostnameOf(sourceUrl),source=Object.freeze({sourceId:"source_1",title:title||hostnameOf(sourceUrl),url:sourceUrl,domain:hostnameOf(sourceUrl),retrievedAt:completed?browserResult.retrievedAt:startedAt,contentHash:completed?browserResult.contentHash:null});
         await activity(context,"public_browser_task_prepared","completed","Queued isolated public-browser navigation.",{taskId:browserTask.task.id,domain:hostnameOf(startUrl),navigationType:context.webAuthority.navigation?.type||null,hostedSearch:false,pageRead:false});
         return Object.freeze({version:1,researchId:`web_${sha256(`${context.runId||"run"}:${startedAt}:${startUrl}`).slice(0,32)}`,query:input.query,purpose:input.purpose,performedAt:startedAt,summary:completed?`Completed isolated browser inspection of ${source.domain}.`:`Queued isolated browser inspection of ${source.domain}.`,claims:Object.freeze(completed?[Object.freeze({text:browserResult.text||"",sourceIds:Object.freeze([source.sourceId])})]:[]),sources:Object.freeze([source]),pages:Object.freeze(completed?[Object.freeze({status:"completed",url:browserResult.finalUrl,domain:browserResult.domain,title:browserResult.title||null,text:browserResult.text||"",contentHash:browserResult.contentHash||null,retrievedAt:browserResult.retrievedAt,limitation:null,rendered:true})]:[]),actions:Object.freeze([Object.freeze({type:"browser",action:"navigate_public_page"})]),limitations:Object.freeze([]),browserEscalation:Object.freeze({adapter:PUBLIC_BROWSER_READ_CONTRACT.name,active:true,eligible:true,reason:"navigation_required",taskId:browserTask.task.id,status:browserTask.task.status}),durableTask:Object.freeze({id:browserTask.task.id,status:browserTask.task.status,projectId:browserTask.task.projectId,idempotent:browserTask.idempotent===true}),...(browserResult?{browserResult}:{}),usage:Object.freeze({searchCalls:0,fixedSearchCostUsd:0,estimatedCostUsd:0,costStatus:"not_charged"})});
       }
-      const search = await searchAdapter.search(input, context);
+      let search;try{search=await searchAdapter.search(input, context);}catch(error){throw unexpectedGatewayFailure(error,"hosted_search");}
       await activity(context, "web_search_completed", "completed", "Reviewing search results.", { searchCalls: search.searchCalls, sourceCount: search.sources.length });
       const candidateUrls = [...input.urls];
       const shouldRead = input.readMode === "required" || (input.readMode === "auto" && READ_PURPOSES.has(input.purpose));
@@ -370,7 +378,7 @@ export function createWebGateway({ searchAdapter, pageReader, browserTaskService
       const eligible=Boolean(browserReason)&&!blockedReason,trustedDomains=[...new Set([...(context.webAuthority?.ownerDomains||[]),...search.sources.map(source=>source.domain)].filter(Boolean))],browserCandidates=[...pages.filter(page=>page.limitation===browserReason).map(page=>page.url),...input.urls,...search.sources.map(source=>source.url)],browserUrl=browserCandidates.find(url=>trustedDomains.includes(hostnameOf(url)))||null;
       let browserTask=null,browserResult=null;
       if(eligible&&browserTaskService&&browserUrl){
-        browserTask=await browserTaskService.prepare({startUrl:browserUrl,allowedDomains:trustedDomains,reason:browserReason,heavy:input.depth==="deep",conversationId:context.conversationId,runId:context.runId,projectId:context.projectId});
+        try{browserTask=await browserTaskService.prepare({startUrl:browserUrl,allowedDomains:trustedDomains,reason:browserReason,heavy:input.depth==="deep",conversationId:context.conversationId,runId:context.runId,projectId:context.projectId});}catch(error){throw unexpectedGatewayFailure(error,"browser_task_prepare");}
         browserResult=browserTask.result;
         if(browserResult?.status==="completed"){
           const rendered={status:"completed",url:browserResult.finalUrl,domain:browserResult.domain,title:browserResult.title,text:browserResult.text,contentHash:browserResult.contentHash,retrievedAt:browserResult.retrievedAt,limitation:null,rendered:true};pages.push(rendered);
