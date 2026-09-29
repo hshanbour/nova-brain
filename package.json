@@ -20,6 +20,7 @@
     "db:migrate": "node scripts/migrate.js"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^1.1.0"
+    "@neondatabase/serverless": "^1.1.0",
+    "playwright-core": "1.63.0"
   }
 }

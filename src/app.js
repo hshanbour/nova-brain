@@ -48,6 +48,9 @@ import {resolveExplicitCodingRetryRequest} from "./autonomy/explicit-coding-retr
 import {createExecutionTruthService} from "./autonomy/execution-truth.js";
 import {createVercelPreviewClient} from "./deployment/vercel-preview-client.js";
 import {createOpenAIWebSearchAdapter,createPublicPageReader,createWebGateway,registerWebResearchTool} from "./web/web-gateway.js";
+import {createCloudflareBrowserRunAdapter} from "./web/cloudflare-browser-run.js";
+import {createBrowserProviderBudget} from "./web/browser-provider-budget.js";
+import {createDurableBrowserTaskService} from "./web/durable-browser-task.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -65,6 +68,7 @@ export function createApp({
   voiceFetchImpl,
   webFetchImpl,
   webResolveHost,
+  browserConnectOverCDP,
 } = {}) {
   const config = readConfig(environment);
   const storage = storageOverride || createStorage(config);
@@ -98,11 +102,13 @@ export function createApp({
     logger,
   });
   registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID });
+  let browserTaskService=null;
   if(config.modelProvider === "openai"){
     const webRoute=config.openAI.routes.web;
     const webSearch=createOpenAIWebSearchAdapter({apiKey:config.openAI.apiKey,model:webRoute.model,serviceTier:config.openAI.serviceTier,costController:modelCostController,fetchImpl:webFetchImpl||globalThis.fetch,maxOutputTokens:webRoute.maxOutputTokens||4096});
     const pageReader=createPublicPageReader({fetchImpl:webFetchImpl||globalThis.fetch,...(webResolveHost?{resolveHost:webResolveHost}:{})});
-    const webGateway=createWebGateway({searchAdapter:webSearch,pageReader,storage,ownerId:OWNER_ID});
+    browserTaskService=config.browserRun.configured?createDurableBrowserTaskService({storage,ownerId:OWNER_ID,model:webRoute.model,modelCostController,executionTruth,providerBudget:createBrowserProviderBudget({storage,ownerId:OWNER_ID,...config.browserRun}),browserAdapter:createCloudflareBrowserRunAdapter({accountId:config.browserRun.accountId,apiToken:config.browserRun.apiToken,fetchImpl:webFetchImpl||globalThis.fetch,...(webResolveHost?{resolveHost:webResolveHost}:{}),...(browserConnectOverCDP?{connectOverCDP:browserConnectOverCDP}:{})})}):null;
+    const webGateway=createWebGateway({searchAdapter:webSearch,pageReader,browserTaskService,storage,ownerId:OWNER_ID});
     registerWebResearchTool(toolRegistry,{gateway:webGateway});
   }
   const workerRuntime = createWorkerRuntime({
@@ -318,6 +324,7 @@ export function createApp({
     modelCostController,
     codingExecutor,
     executionTruth,
+    browserTaskService,
     logger,
   });
   return Object.freeze({ ...api, initialize, workerRuntime });

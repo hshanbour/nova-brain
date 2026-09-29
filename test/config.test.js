@@ -95,6 +95,11 @@ test("model spending authority is explicit, disabled by default, and bounded", (
   assert.throws(() => readConfig({ NOVA_OPENAI_TASK_BUDGET_USD: "1.0000001" }), /at most 6 decimal/);
 });
 
+test("browser provider authority is disabled without both secrets and keeps a separate conservative ledger",()=>{
+  const disabled=readConfig({});assert.equal(disabled.browserRun.configured,false);assert.equal(disabled.browserRun.globalBudgetUsd,0.5);
+  const configured=readConfig({NOVA_BRAIN_CLOUDFLARE_ACCOUNT_ID:"account",NOVA_BRAIN_CLOUDFLARE_BROWSER_TOKEN:"secret",NOVA_BROWSER_PROVIDER_BUDGET_USD:"0.50",NOVA_BROWSER_PROVIDER_NORMAL_RESERVATION_USD:"0.01",NOVA_BROWSER_PROVIDER_HEAVY_RESERVATION_USD:"0.02"});assert.deepEqual(configured.browserRun,{configured:true,accountId:"account",apiToken:"secret",budgetId:"nova-browser-provider-v1",globalBudgetUsd:0.5,normalReservationUsd:0.01,heavyReservationUsd:0.02});
+});
+
 test("agent execution limits are bounded configuration values", () => {
   assert.throws(() => readConfig({ NOVA_BRAIN_MAX_STEPS: "0" }), /between 1 and 10/);
   assert.throws(() => readConfig({ NOVA_BRAIN_MAX_STEPS: "11" }), /between 1 and 10/);

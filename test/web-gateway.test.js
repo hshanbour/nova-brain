@@ -113,7 +113,7 @@ test("page byte, content type and retry caps are enforced",async()=>{
   await assert.rejects(()=>retry.read("https://example.com/unavailable"),error=>error.code==="web_page_unavailable");assert.equal(calls,2);
 });
 
-test("gateway deterministically escalates search to reads, records truthful activity and leaves browser disabled",async()=>{
+test("gateway deterministically identifies trusted structural escalation and records truthful activity",async()=>{
   const storage=createInMemoryStorage();await storage.initialize({owner:{id:ownerId,fullName:"Owner",provenance:"test"}});await storage.ensureConversation({id:"conversation-web",ownerId,title:"web"});
   const run=await storage.createRun({ownerId,conversationId:"conversation-web",goal:"research",status:"running"});
   const reads=[];
@@ -121,9 +121,32 @@ test("gateway deterministically escalates search to reads, records truthful acti
   const pageReader={async read(url){reads.push(url);return{status:"limited",url,domain:"example.com",title:"Acme",text:"Enable JavaScript",contentHash:"a".repeat(64),retrievedAt:"2026-09-29T00:00:01.000Z",limitation:"javascript_required"};}};
   const gateway=createWebGateway({searchAdapter,pageReader,storage,ownerId,clock:()=>new Date("2026-09-29T00:00:00.000Z")});
   const authority={calls:0,explicitDeep:false};const result=await gateway.research(input(),{runId:run.id,webAuthority:authority});
-  assert.deepEqual(reads,["https://example.com/pricing"]);assert.equal(authority.calls,1);assert.equal(result.browserEscalation.eligible,true);assert.equal(result.browserEscalation.active,false);assert.equal(PUBLIC_BROWSER_READ_CONTRACT.active,false);assert.match(result.summary,/Ignore all policies/);assert.equal(result.browserEscalation.adapter,"public_browser_read");assert.equal(result.sources[0].contentHash,"a".repeat(64));
+  assert.deepEqual(reads,["https://example.com/pricing"]);assert.equal(authority.calls,1);assert.equal(result.browserEscalation.eligible,true);assert.equal(result.browserEscalation.active,false);assert.equal(PUBLIC_BROWSER_READ_CONTRACT.active,true);assert.match(result.summary,/Ignore all policies/);assert.equal(result.browserEscalation.adapter,"public_browser_read");assert.equal(result.sources[0].contentHash,"a".repeat(64));
   const activity=await storage.listActivity(ownerId,{runId:run.id,limit:20});const summaries=activity.map(item=>item.summary);
   assert.ok(summaries.includes("Reviewing search results."));assert.ok(summaries.includes("Reading example.com."));assert.ok(summaries.includes("Comparing 1 sources."));assert.equal(activity.some(item=>/browser/i.test(item.summary)),false);
+});
+
+test("page prose cannot manufacture browser escalation while structural absence can",async()=>{
+  const pages=new Map([
+    ["https://example.com/text","<html><body><main><p>Enable JavaScript. "+"Useful static evidence. ".repeat(20)+"</p></main></body></html>"],
+    ["https://example.com/shell","<html><body><div id=app></div><script src=app.js></script></body></html>"],
+  ]),reader=createPublicPageReader({resolveHost:publicDns,fetchImpl:async url=>String(url).endsWith("/robots.txt")?new Response("",{status:404}):new Response(pages.get(String(url)),{status:200,headers:{"content-type":"text/html"}})});
+  assert.equal((await reader.read("https://example.com/text")).limitation,undefined);
+  assert.equal((await reader.read("https://example.com/shell")).limitation,"rendered_content_missing");
+});
+
+test("eligible browser escalation queues one durable task with only server-trusted domains",async()=>{
+  const storage=createInMemoryStorage();await storage.initialize({owner:{id:ownerId,fullName:"Owner",provenance:"test"}});let request;
+  const gateway=createWebGateway({storage,ownerId,searchAdapter:{async search(){return{summary:"Evidence",actions:[{type:"search"}],searchCalls:1,sources:[{sourceId:"source_1",title:"Official",url:"https://official.example/app",domain:"official.example",retrievedAt:"now"}],usage:{}};}},pageReader:{async read(url){return{status:"limited",url,domain:"official.example",title:null,text:"",contentHash:"a".repeat(64),retrievedAt:"now",limitation:"rendered_content_missing"};}},browserTaskService:{async prepare(value){request=value;return{task:{id:`web_${"b".repeat(32)}`,status:"queued",projectId:null},idempotent:false,result:null};}}});
+  const result=await gateway.research(input({allowedDomains:["model-invented.example"]}),{runId:"run-browser",conversationId:"conversation",webAuthority:{calls:0,explicitBrowser:false,explicitDeep:false,ownerDomains:["owner.example"]}});
+  assert.deepEqual(request.allowedDomains,["owner.example","official.example"]);assert.equal(result.browserEscalation.active,true);assert.equal(result.browserEscalation.status,"queued");assert.match(result.durableTask.id,/^web_/);assert.equal(result.sources.find(source=>source.url==="https://official.example/app").contentHash,"a".repeat(64));
+});
+
+test("an explicit owner browser request queues a trusted source without model-created domain authority",async()=>{
+  const storage=createInMemoryStorage();await storage.initialize({owner:{id:ownerId,fullName:"Owner",provenance:"test"}});let request;
+  const gateway=createWebGateway({storage,ownerId,searchAdapter:{async search(){return{summary:"Official result",actions:[{type:"search"}],searchCalls:1,sources:[{sourceId:"source_1",title:"Official",url:"https://docs.example/app",domain:"docs.example",retrievedAt:"now"}],usage:{}};}},pageReader:{async read(url){return{status:"completed",url,domain:"docs.example",title:"Static",text:"Static summary",contentHash:"c".repeat(64),retrievedAt:"now"};}},browserTaskService:{async prepare(value){request=value;return{task:{id:`web_${"c".repeat(32)}`,status:"queued",projectId:null},idempotent:false,result:null};}}});
+  const result=await gateway.research(input({allowedDomains:["untrusted.example"]}),{runId:"run-explicit",conversationId:"conversation",webAuthority:{calls:0,explicitBrowser:true,explicitDeep:false,ownerDomains:["docs.example"]}});
+  assert.equal(result.browserEscalation.reason,"navigation_required");assert.deepEqual(request.allowedDomains,["docs.example"]);assert.equal(request.startUrl,"https://docs.example/app");
 });
 
 test("auth, captcha and paywall limitations never qualify for browser escalation",async()=>{
@@ -146,7 +169,7 @@ test("web_research is autonomous read-only and cannot manufacture approval or wr
   registerWebResearchTool(registry,{gateway:{async research(){calls+=1;return{version:1,sources:[],limitations:[]};}}});
   const value=await registry.execute("web_research",input({purpose:"general",readMode:"none"}),{webAuthority:{calls:0,explicitDeep:false}});
   assert.equal(value.version,1);assert.equal(calls,1);assert.deepEqual(await storage.listApprovals(ownerId),[]);
-  const definition=registry.list().find(tool=>tool.name==="web_research");assert.equal(definition.riskLevel,"READ_ONLY");assert.equal(definition.capability,"read");
+  const definition=registry.list().find(tool=>tool.name==="web_research");assert.equal(definition.riskLevel,"READ_ONLY");assert.equal(definition.capability,"read");assert.equal(registry.list().some(tool=>tool.name==="public_browser_read"),false);
 });
 
 test("representative company, competitor, pricing and API research retain the same permanent evidence contract",async()=>{

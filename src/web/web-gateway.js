@@ -26,7 +26,7 @@ const BLOCKED_REASONS = new Set(["authentication_required", "captcha_required", 
 export const PUBLIC_BROWSER_READ_CONTRACT = Object.freeze({
   name: "public_browser_read",
   version: 1,
-  active: false,
+  active: true,
   riskLevel: RISK_LEVELS.READ_ONLY,
   allowedEscalationReasons: Object.freeze([...BROWSER_REASONS]),
   blockedReasons: Object.freeze([...BLOCKED_REASONS]),
@@ -145,8 +145,8 @@ function pageLimitation(html, text, status) {
   if (status === 401 || /\bsign[ -]?in\b|\blog[ -]?in\b/.test(sample)) return "authentication_required";
   if (/captcha|verify you are human|cloudflare challenge/.test(sample)) return "captcha_required";
   if (/subscribe to continue|subscription required|paywall/.test(sample)) return "paywall_detected";
-  if (text.length < 160 && /enable javascript|javascript required|requires javascript/.test(sample)) return "javascript_required";
-  if (text.length < 40 && /<script\b/i.test(html)) return "rendered_content_missing";
+  const scriptCount=(html.match(/<script\b/gi)||[]).length,bodyMarkup=html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i)?.[1]||"",meaningfulElements=(bodyMarkup.match(/<(?:main|article|section|table|ul|ol|h[1-6]|p)\b/gi)||[]).length;
+  if (text.length < 40 && scriptCount > 0 && meaningfulElements === 0) return "rendered_content_missing";
   return null;
 }
 
@@ -322,7 +322,7 @@ function sourceFromPage(page, sourceId) {
   return Object.freeze({ sourceId, title: page.title || page.domain, url: page.url, domain: page.domain, retrievedAt: page.retrievedAt, contentHash: page.contentHash || null });
 }
 
-export function createWebGateway({ searchAdapter, pageReader, storage, ownerId, clock = () => new Date() } = {}) {
+export function createWebGateway({ searchAdapter, pageReader, browserTaskService = null, storage, ownerId, clock = () => new Date() } = {}) {
   if (!searchAdapter || !pageReader || !storage || !ownerId) throw new Error("Web Gateway dependencies are required.");
   const activity = (context, action, status, summary, metadata) => context.runId ? storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: context.runId, action, tool: "web_research", status, summary, ...(metadata ? { metadata } : {}) }) : Promise.resolve();
   return Object.freeze({
@@ -356,10 +356,23 @@ export function createWebGateway({ searchAdapter, pageReader, storage, ownerId, 
         else if(sourceByUrl.size<MAX_SOURCES)sourceByUrl.set(page.url,sourceFromPage(page,`source_${sourceByUrl.size+1}`));
       }
       const sources = [...sourceByUrl.values()].slice(0, input.maxSources).map((source, index) => Object.freeze({ ...source, sourceId: `source_${index + 1}` }));
-      const browserReason = limitations.map((item) => item.reason).find((reason) => BROWSER_REASONS.has(reason)) || null;
+      const explicitBrowser=context.webAuthority?.explicitBrowser===true;
+      const browserReason = limitations.map((item) => item.reason).find((reason) => BROWSER_REASONS.has(reason)) || (explicitBrowser?"navigation_required":null);
       const blockedReason = limitations.map((item) => item.reason).find((reason) => BLOCKED_REASONS.has(reason)) || null;
-      const browserEscalation = Object.freeze({ adapter: PUBLIC_BROWSER_READ_CONTRACT.name, active: false, eligible: Boolean(browserReason) && !blockedReason, reason: blockedReason || browserReason });
-      await activity(context, "web_research_compared", "completed", `Comparing ${sources.length} sources.`, { sourceCount: sources.length, pageReadCount: pages.length, limitationCount: limitations.length });
+      const eligible=Boolean(browserReason)&&!blockedReason,trustedDomains=[...new Set([...(context.webAuthority?.ownerDomains||[]),...search.sources.map(source=>source.domain)].filter(Boolean))],browserCandidates=[...pages.filter(page=>page.limitation===browserReason).map(page=>page.url),...input.urls,...search.sources.map(source=>source.url)],browserUrl=browserCandidates.find(url=>trustedDomains.includes(hostnameOf(url)))||null;
+      let browserTask=null,browserResult=null;
+      if(eligible&&browserTaskService&&browserUrl){
+        browserTask=await browserTaskService.prepare({startUrl:browserUrl,allowedDomains:trustedDomains,reason:browserReason,heavy:input.depth==="deep",conversationId:context.conversationId,runId:context.runId,projectId:context.projectId});
+        browserResult=browserTask.result;
+        if(browserResult?.status==="completed"){
+          const rendered={status:"completed",url:browserResult.finalUrl,domain:browserResult.domain,title:browserResult.title,text:browserResult.text,contentHash:browserResult.contentHash,retrievedAt:browserResult.retrievedAt,limitation:null,rendered:true};pages.push(rendered);
+          limitations.splice(0,limitations.length,...limitations.filter(item=>item.url!==browserUrl||item.reason!==browserReason));
+          const existing=sourceByUrl.get(rendered.url);sourceByUrl.set(rendered.url,Object.freeze({...existing,...sourceFromPage(rendered,existing?.sourceId||`source_${sourceByUrl.size+1}`)}));
+        }else if(browserResult?.code)limitations.push({url:browserUrl,reason:browserResult.code});
+      }
+      const finalSources=[...sourceByUrl.values()].slice(0,input.maxSources).map((source,index)=>Object.freeze({...source,sourceId:`source_${index+1}`}));
+      const browserEscalation = Object.freeze({ adapter: PUBLIC_BROWSER_READ_CONTRACT.name, active: Boolean(browserTask), eligible, reason: blockedReason || browserReason, ...(browserTask?{taskId:browserTask.task.id,status:browserTask.task.status}:{} ) });
+      await activity(context, "web_research_compared", "completed", `Comparing ${finalSources.length} sources.`, { sourceCount: finalSources.length, pageReadCount: pages.length, limitationCount: limitations.length });
       return Object.freeze({
         version: 1,
         researchId: `web_${sha256(`${context.runId || "run"}:${startedAt}:${input.query}`).slice(0, 32)}`,
@@ -367,12 +380,14 @@ export function createWebGateway({ searchAdapter, pageReader, storage, ownerId, 
         purpose: input.purpose,
         performedAt: startedAt,
         summary: search.summary,
-        claims: Object.freeze([{ text: search.summary, sourceIds: Object.freeze(sources.map((source) => source.sourceId)) }]),
-        sources: Object.freeze(sources),
-        pages: Object.freeze(pages.map((page) => Object.freeze({ status: page.status, url: page.url, domain: page.domain, title: page.title || null, text: page.text || "", contentHash: page.contentHash || null, retrievedAt: page.retrievedAt, limitation: page.limitation || null }))),
+        claims: Object.freeze([{ text: search.summary, sourceIds: Object.freeze(finalSources.map((source) => source.sourceId)) }]),
+        sources: Object.freeze(finalSources),
+        pages: Object.freeze(pages.map((page) => Object.freeze({ status: page.status, url: page.url, domain: page.domain, title: page.title || null, text: page.text || "", contentHash: page.contentHash || null, retrievedAt: page.retrievedAt, limitation: page.limitation || null, rendered:page.rendered===true }))),
         actions: search.actions,
         limitations: Object.freeze(limitations),
         browserEscalation,
+        ...(browserTask?{durableTask:Object.freeze({id:browserTask.task.id,status:browserTask.task.status,projectId:browserTask.task.projectId,idempotent:browserTask.idempotent===true})}:{}),
+        ...(browserResult?{browserResult}:{}),
         usage: search.usage,
       });
     },

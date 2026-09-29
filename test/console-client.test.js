@@ -29,6 +29,11 @@ test("durable task identity includes artifact delivery and rejects unknown prefi
   assert.equal(durableTaskIdFromAcknowledgement("Durable artifact delivery task future_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa is waiting_for_approval. Track it in Activity; Nova's Persistent Local Worker can continue it independently."),null);
 });
 
+test("durable task identity includes the internal public browser task for Live Activity restoration",()=>{
+  const id=`web_${"b".repeat(32)}`,acknowledgement=`Durable public web browser task ${id} is queued. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`;
+  assert.equal(isDurableTaskId(id),true);assert.equal(durableTaskIdFromAcknowledgement(acknowledgement),id);
+});
+
 test("conversation reload reconstructs each durable task identity exactly once", () => {
   const id = "selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", acknowledgement = `Durable self-development task ${id} is blocked. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`;
   const records = durableTaskRecordsFromMessages([

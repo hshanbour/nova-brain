@@ -176,6 +176,15 @@ export function readConfig(environment = process.env) {
         taskBudgetUsd: parseBudgetMoney(environment.NOVA_OPENAI_TASK_BUDGET_USD, "NOVA_OPENAI_TASK_BUDGET_USD"),
       }),
     }),
+    browserRun: Object.freeze({
+      configured: Boolean(environment.NOVA_BRAIN_CLOUDFLARE_ACCOUNT_ID&&environment.NOVA_BRAIN_CLOUDFLARE_BROWSER_TOKEN),
+      accountId: environment.NOVA_BRAIN_CLOUDFLARE_ACCOUNT_ID||null,
+      apiToken: environment.NOVA_BRAIN_CLOUDFLARE_BROWSER_TOKEN||null,
+      budgetId: environment.NOVA_BROWSER_PROVIDER_BUDGET_ID||"nova-browser-provider-v1",
+      globalBudgetUsd: parseBudgetMoney(environment.NOVA_BROWSER_PROVIDER_BUDGET_USD??"0.50","NOVA_BROWSER_PROVIDER_BUDGET_USD"),
+      normalReservationUsd: parseBudgetMoney(environment.NOVA_BROWSER_PROVIDER_NORMAL_RESERVATION_USD??"0.01","NOVA_BROWSER_PROVIDER_NORMAL_RESERVATION_USD"),
+      heavyReservationUsd: parseBudgetMoney(environment.NOVA_BROWSER_PROVIDER_HEAVY_RESERVATION_USD??"0.02","NOVA_BROWSER_PROVIDER_HEAVY_RESERVATION_USD"),
+    }),
     integrations: Object.freeze({
       githubConfigured: Boolean(
         environment.NOVA_BRAIN_GITHUB_TOKEN &&

@@ -4,10 +4,10 @@ export function createLocalWorkerClient({baseUrl,novaToken,vercelBypassToken,fet
   if(!novaToken||!vercelBypassToken)throw new Error("Both protected Preview credentials are required.");
   if(novaToken===vercelBypassToken)throw new Error("Vercel and Nova credentials must remain separate.");
   return Object.freeze({
-    async request(path,body){
+    async request(path,body,{timeoutMs=requestTimeoutMs}={}){
       const response=await fetchImpl(`${origin}${path}`,{
         method:"POST",
-        signal:AbortSignal.timeout(Math.max(1000,Math.min(30000,requestTimeoutMs))),
+        signal:AbortSignal.timeout(Math.max(1000,Math.min(330000,timeoutMs))),
         headers:{
           Authorization:`Bearer ${novaToken}`,
           "Content-Type":"application/json",

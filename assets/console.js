@@ -81,6 +81,11 @@ function safeProgressLabel(task,activity=[]){
   if(/coding_executor_implementing/.test(action+phase))return"Codex editing";
   if(/coding_executor_testing/.test(action+phase))return"Running tests";
   if(/coding_executor_reviewing/.test(action+phase))return"Creating local commit";
+  if(/starting_browser/.test(action+phase))return"Starting isolated browser";
+  if(/opening_public_page/.test(action+phase))return"Opening public page";
+  if(/inspecting_rendered_content/.test(action+phase))return"Inspecting rendered content";
+  if(/navigating_public_page/.test(action+phase))return"Navigating public page";
+  if(/comparing_pages/.test(action+phase))return"Comparing pages";
   if(/deploy/.test(action+phase))return"Deploying Preview";
   if(/push/.test(action+phase))return"Pushing to GitHub";
   if(/review/.test(action+phase))return"Reviewing changes";

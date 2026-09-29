@@ -29,6 +29,12 @@ function shippingResult(task,steps){
   return{summary:task.resultSummary||"The approved artifact was pushed and its exact Preview passed source and health verification.",finalLocalSha:task.metadata?.artifactDelivery?.commitSha,pushOccurred:Boolean(push),deploymentOccurred:Boolean(deployment),deploymentId:source.deploymentId,previewUrl:source.url,healthStatus:health.status===200?"HTTP 200":bounded(health.health||"",80),workerRebindRequired,approvalsRequiredNext:workerRebindRequired?["Use the existing protected installer to bind the Persistent Local Worker to this exact runtime after separate owner approval."]:[]};
 }
 
+function browserResult(task){
+  const value=task.metadata?.browserResult||{};
+  const evidence=bounded(value.evidence?.[0]?.text||value.text||"",800),provenance=value.status==="completed"&&value.finalUrl?` Source: ${bounded(value.finalUrl,1000)}. Retrieved: ${bounded(value.retrievedAt,80)}. Rendered content SHA-256: ${bounded(value.contentHash,64)}.`:"";
+  return{summary:value.status==="completed"?`Completed bounded public browser research for ${bounded(value.domain||"the approved public domain",253)}.${evidence?` Evidence: ${evidence}.`:""}${provenance}`:value.reason||task.resultSummary,limitations:value.status&&value.status!=="completed"?[value.reason||value.code].filter(Boolean):[],pushOccurred:false,deploymentOccurred:false};
+}
+
 function testLines(raw,steps){
   const reported=Array.isArray(raw?.tests)?raw.tests.map(test=>{
     if(typeof test==="string")return bounded(test,300);
@@ -41,7 +47,7 @@ function testLines(raw,steps){
 
 export function renderTerminalTaskReport(task,steps=[]){
   if(!task||!TERMINAL.has(task.status))return null;
-  const raw=task.taskType==="coding_delegation"?codingResult(task,steps):task.taskType==="artifact_delivery"?shippingResult(task,steps):null;
+  const raw=task.taskType==="coding_delegation"?codingResult(task,steps):task.taskType==="artifact_delivery"?shippingResult(task,steps):task.taskType==="public_web_browser"?browserResult(task):null;
   const summary=bounded(raw?.summary||task.resultSummary||task.blockedReason||({completed:"The durable task completed.",failed:"The durable task failed safely.",blocked:"The durable task is blocked.",cancelled:"The durable task was cancelled.",expired:"The durable task expired."}[task.status]),1200);
   const ordered=[...steps].sort((a,b)=>stepOrdinal(a)-stepOrdinal(b)),apply=[...ordered].reverse().find(step=>step.stepType==="apply_patch"&&step.status==="completed"),commitStep=[...ordered].reverse().find(step=>["commit","integrate_commit"].includes(step.stepType)&&step.status==="completed");
   const files=list(raw?.filesChanged||apply?.result?.changedFiles,40),tests=testLines(raw,steps),limitations=list(raw?.limitations,20);

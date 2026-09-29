@@ -147,6 +147,8 @@ Unknown tools, invalid arguments, and tool failures are contained and returned t
 
 Nova now registers bounded repository inspection tools, durable project listing, and an approval-gated memory-forget action. Local development can also run the allowlisted Node test suite. Repository writes require server-only GitHub configuration and are restricted to `NOVA_BRAIN_DEVELOPMENT_BRANCH`; arbitrary shell execution is never exposed. Vercel inspection tools remain visibly unavailable until their adapter is implemented and configured.
 
+Nova Web keeps `web_research` as its only model-visible web tool. Optional rendered-page escalation uses a server-owned, durable `web_<id>` task and a fresh Cloudflare Browser Rendering session connected through Playwright CDP; the Persistent Local Worker only coordinates the protected server route and receives neither browser credentials nor a local browser. Configure `NOVA_BRAIN_CLOUDFLARE_ACCOUNT_ID` and `NOVA_BRAIN_CLOUDFLARE_BROWSER_TOKEN` only when activating this adapter. The token needs Cloudflare's Browser Rendering Write permission for the selected account. The separate provider ledger defaults to a $0.50 global ceiling with $0.01 normal and $0.02 explicit-heavy reservations. No browser session is created unless both that reservation and the existing model-budget reservation succeed.
+
 ## Durable storage and migrations
 
 Storage selection defaults to `auto`: Nova uses PostgreSQL when one of `DATABASE_URL`, `POSTGRES_URL`, or `POSTGRES_URL_NON_POOLING` exists, otherwise it uses process-local memory. To require a specific adapter, set `NOVA_BRAIN_STORAGE_PROVIDER=postgres` or `memory`. Explicit `postgres` configuration fails closed if no connection string is present.

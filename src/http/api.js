@@ -192,6 +192,7 @@ export function createApi({
   modelCostController,
   codingExecutor,
   executionTruth,
+  browserTaskService,
   logger = console,
 }) {
   const recognitionEngines =
@@ -1680,6 +1681,12 @@ export function createApi({
           authorizeLocalWorker(request, config.localWorkerToken);
           sendJson(response, 200, await codingExecutor.progress(decodeURIComponent(codingProgress[1]), await readJsonBody(request, config.maxBodyBytes)));
           return;
+        }
+        const browserExecution=pathname.match(/^\/api\/admin\/web-browser\/tasks\/([^/]+)\/execute$/);
+        if(browserTaskService&&browserExecution&&request.method==="POST"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes),taskId=decodeURIComponent(browserExecution[1]);
+          if(!/^web_[a-f0-9]{32}$/.test(taskId)||typeof input.workerId!=="string"||!input.workerId.trim()||!Number.isInteger(input.expectedVersion)){sendJson(response,400,{error:"The browser execution binding is invalid.",code:"browser_task_invalid"});return;}
+          const result=await browserTaskService.executeTask(taskId,{coordinatorId:input.workerId,expectedVersion:input.expectedVersion});sendJson(response,200,{task:result.task,result:result.result,idempotent:result.idempotent===true});return;
         }
         if (
           autoDispatch &&
