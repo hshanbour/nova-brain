@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {appendSafeLinkedText} from "../assets/web-citations.js";
+import {renderTerminalTaskReport} from "../src/autonomy/terminal-task-reporter.js";
 
 function fixture(){
   const children=[];
@@ -16,4 +17,9 @@ test("Console renders bounded HTTPS citations as clickable safe links while leav
 test("Console does not turn non-HTTPS or malformed source syntax into active content",()=>{
   const {container,children}=fixture();appendSafeLinkedText(container,"[unsafe](http://127.0.0.1) <script>alert(1)</script>");
   assert.equal(children.some(item=>item.type==="a"),false);assert.match(children.map(item=>item.text||"").join(""),/<script>/);
+});
+
+test("Console renders a completed browser terminal answer's retained evidence as one clickable link",()=>{
+  const url="https://developers.cloudflare.com/browser-run/get-started/",hash="c".repeat(64),message=renderTerminalTaskReport({id:"web_"+"c".repeat(32),taskType:"public_web_browser",status:"completed",metadata:{browserJob:{version:2,allowedDomains:["developers.cloudflare.com"]},browserPresentation:{version:1,requestedFields:["destination_title"]},browserResult:{status:"completed",finalUrl:url,domain:"developers.cloudflare.com",title:"Get started · Cloudflare Browser Run docs",contentHash:hash,evidence:[{text:"Prerequisites Sign up for a Cloudflare account.",source:{url,domain:"developers.cloudflare.com",title:"Cloudflare Browser Run docs",contentHash:hash}}]}}},[]),{container,children}=fixture();
+  appendSafeLinkedText(container,message);const anchors=children.filter(item=>item.type==="a");assert.equal(anchors.length,1);assert.equal(anchors[0].href,url);assert.equal(anchors[0].textContent,"Cloudflare Browser Run docs");
 });

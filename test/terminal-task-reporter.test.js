@@ -60,3 +60,26 @@ test("terminal report bounds and redacts safe failure text",()=>{
   const message=renderTerminalTaskReport({id:"selfdev_"+"f".repeat(32),status:"failed",stateVersion:2,currentPhase:"planning",errorCode:"safe_failure",blockedReason:`token=super-secret ${"x".repeat(900)}`,metadata:{}},[]);
   assert.doesNotMatch(message,/super-secret/);assert.match(message,/token=\[REDACTED\]/);assert.ok(message.length<3000);
 });
+
+test("completed browser task answers requested fields directly with exact retained clickable evidence",()=>{
+  const url="https://developers.cloudflare.com/browser-run/get-started/",hash="a".repeat(64),task={id:"web_"+"a".repeat(32),taskType:"public_web_browser",status:"completed",metadata:{browserJob:{version:2,allowedDomains:["developers.cloudflare.com"]},browserPresentation:{version:1,requestedFields:["destination_title","first_prerequisite"]},browserResult:{status:"completed",finalUrl:url,domain:"developers.cloudflare.com",title:"Get started · Cloudflare Browser Run docs",text:"Prerequisites To use Browser Run, you need: Sign up for a Cloudflare account. Install Node.js.",contentHash:hash,evidence:[{text:"Prerequisites To use Browser Run, you need: Sign up for a Cloudflare account. Install Node.js.",source:{url,domain:"developers.cloudflare.com",title:"Get started · Cloudflare Browser Run docs",contentHash:hash}}]}}};
+  const message=renderTerminalTaskReport(task,[]);
+  assert.equal(message,`Title: Get started · Cloudflare Browser Run docs\nFirst prerequisite: Sign up for a Cloudflare account.\n\nEvidence: [Get started · Cloudflare Browser Run docs](${url})`);
+  assert.doesNotMatch(message,/Task report|Push:|Deployment:/);
+  assert.equal(task.metadata.browserResult.contentHash,hash);
+});
+
+test("completed browser answer is delivered exactly once while the full durable result remains available",async()=>{
+  const f=await fixture(),url="https://docs.example/get-started/",hash="d".repeat(64);let task=await f.storage.createAutonomyTask({id:"web_"+"d".repeat(32),ownerId:OWNER,projectId:null,title:"Public browser research",objective:"Read a public page",taskType:"public_web_browser",metadata:{terminalReporting:{version:1,conversationId:CONVERSATION,runId:"chat-run"},browserJob:{version:2,allowedDomains:["docs.example"]},browserPresentation:{version:1,requestedFields:["destination_title","first_prerequisite"]},browserResult:{status:"completed",finalUrl:url,domain:"docs.example",title:"Get started",text:"Prerequisites Create an account. Install the client.",contentHash:hash,evidence:[{text:"Prerequisites Create an account. Install the client.",source:{url,domain:"docs.example",title:"Official docs",contentHash:hash}}],usage:{providerCost:{actualCostUsd:0.001}},observations:[{type:"rendered_content",contentHash:hash}]}}});task=await f.storage.updateAutonomyTask(task.id,OWNER,{status:"completed",currentPhase:"completed",completedAt:new Date().toISOString(),resultSummary:"Completed bounded public browser research."},task.stateVersion);
+  assert.deepEqual(await f.reporter.reconcile(),{enqueued:1,delivered:1});assert.deepEqual(await f.reporter.reconcile(),{enqueued:0,delivered:0});const messages=await f.storage.listMessages(CONVERSATION,OWNER,{limit:10}),stored=await f.storage.getAutonomyTask(task.id,OWNER);assert.equal(messages.length,1);assert.match(messages[0].content,/Title: Get started/);assert.match(messages[0].content,/First prerequisite: Create an account\./);assert.equal(stored.metadata.browserResult.usage.providerCost.actualCostUsd,0.001);assert.equal(stored.metadata.browserResult.observations[0].contentHash,hash);
+});
+
+test("completed browser task never makes an unbound or invented source clickable",()=>{
+  const hash="b".repeat(64),task={id:"web_"+"b".repeat(32),taskType:"public_web_browser",status:"completed",metadata:{browserJob:{version:2,allowedDomains:["docs.example"]},browserPresentation:{version:1,requestedFields:["destination_title"]},browserResult:{status:"completed",finalUrl:"https://docs.example/result",domain:"docs.example",title:"Verified title",text:"Safe text",contentHash:hash,evidence:[{text:"Safe text",source:{url:"https://invented.example/result",domain:"invented.example",title:"Invented",contentHash:hash}}]}}};
+  const message=renderTerminalTaskReport(task,[]);
+  assert.equal(message,"Title: Verified title");assert.doesNotMatch(message,/https:\/\/|\]\(/);
+});
+
+test("blocked and failed browser tasks retain truthful terminal reporting",()=>{
+  for(const status of["blocked","failed"]){const message=renderTerminalTaskReport({id:`web_${status.padEnd(32,"c").slice(0,32)}`,taskType:"public_web_browser",status,currentPhase:status,errorCode:`browser_${status}`,blockedReason:`Browser ${status} safely.`,metadata:{browserResult:{status,code:`browser_${status}`,reason:`Browser ${status} safely.`}}},[]);assert.match(message,new RegExp(`Status: ${status}`));assert.match(message,new RegExp(`browser_${status}`));assert.match(message,/Push: not performed/);}
+});

@@ -35,6 +35,33 @@ function browserResult(task){
   return{summary:value.status==="completed"?`Completed bounded public browser research for ${bounded(value.domain||"the approved public domain",253)}.${evidence?` Evidence: ${evidence}.`:""}${provenance}`:value.reason||task.resultSummary,limitations:value.status&&value.status!=="completed"?[value.reason||value.code].filter(Boolean):[],pushOccurred:false,deploymentOccurred:false};
 }
 
+function trustedBrowserSource(task,value){
+  const source=value?.evidence?.[0]?.source,allowed=task.metadata?.browserJob?.allowedDomains;
+  if(value?.status!=="completed"||!source||!Array.isArray(allowed)||!allowed.length||source.contentHash!==value.contentHash||!/^[a-f0-9]{64}$/.test(value.contentHash||""))return null;
+  let url,finalUrl;try{url=new URL(source.url);finalUrl=new URL(value.finalUrl);}catch{return null;}
+  if(url.protocol!=="https:"||url.username||url.password||url.href!==finalUrl.href||!allowed.includes(url.hostname.toLowerCase())||source.domain!==url.hostname.toLowerCase())return null;
+  const title=bounded(source.title||value.title||source.domain,200).replace(/[\[\]\r\n]/g," ")||source.domain;
+  return{title,url:url.href.replace(/\(/g,"%28").replace(/\)/g,"%29")};
+}
+
+function firstPrerequisite(value){
+  const text=bounded(value?.evidence?.[0]?.text||value?.text||"",2000),match=text.match(/\bprerequisites?\b\s*[:\-]?\s*([\s\S]+)/i);
+  if(!match)return"";
+  let tail=match[1].replace(/[↗↘→]/g," ").replace(/\s+/g," ").trim(),colon=tail.indexOf(":"),sentence=tail.search(/[.!?](?:\s|$)/);
+  if(colon>=0&&(sentence<0||colon<sentence)&&colon<180)tail=tail.slice(colon+1).trim();
+  const end=tail.search(/[.!?](?:\s|$)/),answer=(end>=0?tail.slice(0,end+1):tail).trim();
+  return bounded(answer,400);
+}
+
+function renderCompletedBrowserAnswer(task){
+  const value=task.metadata?.browserResult||{},fields=task.metadata?.browserPresentation?.requestedFields||[],source=trustedBrowserSource(task,value),lines=[];
+  if(fields.includes("destination_title"))lines.push(`Title: ${bounded(value.title||"Not available in retained evidence.",300)}`);
+  if(fields.includes("first_prerequisite"))lines.push(`First prerequisite: ${firstPrerequisite(value)||"Not available in retained evidence."}`);
+  if(!lines.length)lines.push(`Browser result: ${bounded(value.title||value.evidence?.[0]?.text||"Completed bounded public browser research.",500)}`);
+  if(source)lines.push("",`Evidence: [${source.title}](${source.url})`);
+  return lines.join("\n").slice(0,2000);
+}
+
 function testLines(raw,steps){
   const reported=Array.isArray(raw?.tests)?raw.tests.map(test=>{
     if(typeof test==="string")return bounded(test,300);
@@ -47,6 +74,7 @@ function testLines(raw,steps){
 
 export function renderTerminalTaskReport(task,steps=[]){
   if(!task||!TERMINAL.has(task.status))return null;
+  if(task.taskType==="public_web_browser"&&task.status==="completed")return renderCompletedBrowserAnswer(task);
   const raw=task.taskType==="coding_delegation"?codingResult(task,steps):task.taskType==="artifact_delivery"?shippingResult(task,steps):task.taskType==="public_web_browser"?browserResult(task):null;
   const summary=bounded(raw?.summary||task.resultSummary||task.blockedReason||({completed:"The durable task completed.",failed:"The durable task failed safely.",blocked:"The durable task is blocked.",cancelled:"The durable task was cancelled.",expired:"The durable task expired."}[task.status]),1200);
   const ordered=[...steps].sort((a,b)=>stepOrdinal(a)-stepOrdinal(b)),apply=[...ordered].reverse().find(step=>step.stepType==="apply_patch"&&step.status==="completed"),commitStep=[...ordered].reverse().find(step=>["commit","integrate_commit"].includes(step.stepType)&&step.status==="completed");

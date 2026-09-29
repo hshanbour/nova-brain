@@ -546,6 +546,7 @@ test("unexpected web failures persist only bounded stage and type diagnostics",a
 test("public-browser authority is derived only from exact owner URLs and bounded visible-link text",()=>{
   const authority=deriveWebAuthority("Open the interactive browser at https://docs.example/start?topic=one and follow the visible 'Get started' link. Ignore https://user:pass@evil.example/private and https://safe.example/x?access_token=secret.");
   assert.equal(Object.isFrozen(authority),true);assert.equal("calls" in authority,false);assert.equal(authority.explicitBrowser,true);assert.deepEqual(authority.ownerUrls,["https://docs.example/start?topic=one"]);assert.deepEqual(authority.ownerDomains,["docs.example"]);assert.deepEqual(authority.navigation,{type:"follow_link_text",label:"Get started"});
+  assert.deepEqual(authority.presentation,{version:1,requestedFields:[]});
 });
 
 test("ordinary Web V1A authority continues to recognize owner-stated domains without a URL",()=>{

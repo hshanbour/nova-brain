@@ -171,9 +171,15 @@ function publicBrowserNavigation(message){
   const value=String(message||""),modifiers="(?:(?:visible|exact)\\s+)*",quoted=value.match(new RegExp(`\\bfollow\\s+(?:the\\s+)?${modifiers}[\\u201c\\u201d\\u2018\\u2019\"']([^\\u201c\\u201d\\u2018\\u2019\"'\\r\\n]{1,120})[\\u201c\\u201d\\u2018\\u2019\"']\\s+link\\b`,"i")),plain=value.match(/\bfollow\s+(?:the\s+)?([^\r\n.!?]{1,120}?)\s+link\b/i),label=(quoted?.[1]||plain?.[1]||"").replace(/^(?:(?:visible|exact)\s+)+/i,"").replace(/^[\u201c\u201d\u2018\u2019"']|[\u201c\u201d\u2018\u2019"']$/g,"").replace(/\s+/g," ").trim();
   return label?Object.freeze({type:"follow_link_text",label}):null;
 }
+function publicBrowserPresentation(message){
+  const value=String(message||""),requestedFields=[];
+  if(/\b(?:destination|page)\s+title\b|\btitle\s+of\s+(?:the\s+)?(?:destination|page)\b/i.test(value))requestedFields.push("destination_title");
+  if(/\bfirst\s+prerequisite\b/i.test(value))requestedFields.push("first_prerequisite");
+  return Object.freeze({version:1,requestedFields:Object.freeze(requestedFields)});
+}
 export function deriveWebAuthority(message){
   const explicitBrowser=EXPLICIT_PUBLIC_BROWSER.test(message),ownerUrls=publicBrowserUrls(message),mentionedDomains=(String(message).match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b/gi)||[]).map(value=>value.toLowerCase()),ownerDomains=[...new Set(explicitBrowser?ownerUrls.map(value=>new URL(value).hostname.toLowerCase()):mentionedDomains)].slice(0,10);
-  return Object.freeze({explicitDeep:/\b(?:deep|in[- ]depth|comprehensive)\s+(?:web\s+)?research\b/i.test(message),explicitBrowser,ownerDomains:Object.freeze(ownerDomains),ownerUrls:Object.freeze(ownerUrls),navigation:publicBrowserNavigation(message)});
+  return Object.freeze({explicitDeep:/\b(?:deep|in[- ]depth|comprehensive)\s+(?:web\s+)?research\b/i.test(message),explicitBrowser,ownerDomains:Object.freeze(ownerDomains),ownerUrls:Object.freeze(ownerUrls),navigation:publicBrowserNavigation(message),presentation:publicBrowserPresentation(message)});
 }
 
 export function createAgent({
