@@ -18,11 +18,11 @@ import {
 const ownerId="owner-web";
 const publicDns=async()=>[{address:"93.184.216.34",family:4}];
 const input=(overrides={})=>({query:"Compare Acme pricing",purpose:"pricing",allowedDomains:[],freshnessDays:30,maxSources:8,depth:"quick",readMode:"auto",urls:[],...overrides});
-const payload=({url="https://example.com/pricing",title="Acme pricing",text="Acme costs ten pounds.",searchCalls=1}={})=>({
+const payload=({url="https://example.com/pricing",title="Acme pricing",text="Acme costs ten pounds.",searchCalls=1,annotations=true,providerSources=[]}={})=>({
   id:"resp-web",service_tier:"default",usage:{input_tokens:100,output_tokens:20,total_tokens:120},
   output:[
-    ...Array.from({length:searchCalls},(_,index)=>({type:"web_search_call",id:`ws-${index}`,action:{type:"search",query:"Acme pricing"}})),
-    {type:"message",content:[{type:"output_text",text,annotations:[{type:"url_citation",start_index:0,end_index:4,url,title}]}]},
+    ...Array.from({length:searchCalls},(_,index)=>({type:"web_search_call",id:`ws-${index}`,action:{type:"search",query:"Acme pricing",...(index===0&&providerSources.length?{sources:providerSources}:{})}})),
+    {type:"message",content:[{type:"output_text",text,annotations:annotations?[{type:"url_citation",start_index:0,end_index:4,url,title}]:[]}]},
   ],
 });
 
@@ -38,6 +38,7 @@ test("hosted search uses only web_search and reconciles fixed action plus token 
   const adapter=createOpenAIWebSearchAdapter({apiKey:"test-key",costController:controller,fetchImpl:async(_url,init)=>{request=JSON.parse(init.body);return new Response(JSON.stringify(payload()),{status:200,headers:{"content-type":"application/json"}});}});
   const result=await adapter.search(input(),{runId:"run-web"});
   assert.deepEqual(request.tools,[{type:"web_search",search_context_size:"low",external_web_access:true}]);
+  assert.deepEqual(request.include,["web_search_call.action.sources"]);
   assert.equal(request.tool_choice,"required");
   assert.equal(request.tools.some(tool=>tool.type==="function"),false);
   assert.equal(result.searchCalls,1);
@@ -45,6 +46,30 @@ test("hosted search uses only web_search and reconciles fixed action plus token 
   assert.equal(result.usage.fixedSearchCostUsd,0.01);
   assert.ok(result.usage.estimatedCostUsd>=0.01);
   assert.equal((await controller.status()).spentUsd,result.usage.estimatedCostUsd);
+});
+
+test("hosted search prefers validated citation annotations over the provider source list",async()=>{
+  const {controller}=await costFixture();
+  const adapter=createOpenAIWebSearchAdapter({apiKey:"test-key",costController:controller,fetchImpl:async()=>new Response(JSON.stringify(payload({providerSources:[{title:"Fallback",url:"https://fallback.example/source"}]})),{status:200})});
+  const result=await adapter.search(input(),{runId:"annotations-first"});
+  assert.deepEqual(result.sources.map(source=>source.url),["https://example.com/pricing"]);
+});
+
+test("hosted search accepts validated provider sources only when citation annotations are absent",async()=>{
+  const {controller}=await costFixture();
+  const adapter=createOpenAIWebSearchAdapter({apiKey:"test-key",costController:controller,fetchImpl:async()=>new Response(JSON.stringify(payload({annotations:false,providerSources:[{type:"url",title:"Official pricing",url:"https://example.com/pricing"}]})),{status:200})});
+  const result=await adapter.search(input(),{runId:"provider-sources"});
+  assert.equal(result.sources.length,1);assert.equal(result.sources[0].url,"https://example.com/pricing");assert.equal(result.sources[0].title,"Official pricing");
+});
+
+test("hosted search rejects unsafe provider sources and fails closed without either source form",async()=>{
+  const unsafeFixture=await costFixture();
+  const unsafe=createOpenAIWebSearchAdapter({apiKey:"test-key",costController:unsafeFixture.controller,fetchImpl:async()=>new Response(JSON.stringify(payload({annotations:false,providerSources:[{url:"http://127.0.0.1/private"}]})),{status:200})});
+  await assert.rejects(()=>unsafe.search(input(),{runId:"unsafe-provider-source"}),error=>error.code==="web_citation_invalid");
+
+  const absentFixture=await costFixture();
+  const absent=createOpenAIWebSearchAdapter({apiKey:"test-key",costController:absentFixture.controller,fetchImpl:async()=>new Response(JSON.stringify(payload({annotations:false,providerSources:[]})),{status:200})});
+  await assert.rejects(()=>absent.search(input(),{runId:"no-provider-source"}),error=>error.code==="web_citation_invalid");
 });
 
 test("server-authorized public deep research accepts a bounded multi-source search without owner approval",async()=>{

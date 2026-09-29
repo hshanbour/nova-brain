@@ -259,8 +259,16 @@ function providerUsage(payload, model) {
   return Object.freeze({ model, stage: "web_research", serviceTier: payload.service_tier || "default", inputTokens: count(usage.input_tokens), cachedInputTokens: count(usage.input_tokens_details?.cached_tokens), cacheWriteTokens: count(usage.input_tokens_details?.cache_write_tokens ?? usage.input_tokens_details?.cache_creation_tokens), outputTokens: count(usage.output_tokens), reasoningTokens: count(usage.output_tokens_details?.reasoning_tokens), totalTokens: count(usage.total_tokens) });
 }
 
+function validatedSearchSource(value, clock, invalidMessage) {
+  let url;
+  try { url = new URL(value?.url); } catch { throw new WebGatewayError("web_citation_invalid", invalidMessage); }
+  if (url.protocol !== "https:" || url.username || url.password || isIP(url.hostname)) throw new WebGatewayError("web_citation_invalid", invalidMessage);
+  return Object.freeze({ title: bounded(value?.title || url.hostname, 300), url: url.href, domain: url.hostname.toLowerCase(), retrievedAt: timestamp(clock) });
+}
+
 function normalizeSearchPayload(payload, { maxSources, maxSearchActions, clock }) {
-  const actions = (payload?.output || []).filter((item) => item?.type === "web_search_call").map((item) => ({ type: bounded(item.action?.type, 40), query: bounded(item.action?.query || item.action?.queries?.[0], 300) || null }));
+  const searchActionItems = (payload?.output || []).filter((item) => item?.type === "web_search_call");
+  const actions = searchActionItems.map((item) => ({ type: bounded(item.action?.type, 40), query: bounded(item.action?.query || item.action?.queries?.[0], 300) || null }));
   const searchCalls = actions.filter((item) => item.type === "search").length;
   if (searchCalls < 1 || searchCalls > maxSearchActions) throw new WebGatewayError("web_search_action_limit", "The hosted search action count was outside the bounded contract.", { searchCalls });
   const messages = (payload?.output || []).filter((item) => item?.type === "message");
@@ -268,14 +276,23 @@ function normalizeSearchPayload(payload, { maxSources, maxSearchActions, clock }
   const summary = parts.map((item) => item.text).join("\n").trim();
   if (!summary) throw new WebGatewayError("web_search_result_invalid", "Hosted search returned no bounded summary.");
   const unique = new Map();
+  let citationCount = 0;
   for (const part of parts) {
     for (const annotation of Array.isArray(part.annotations) ? part.annotations : []) {
       if (annotation?.type !== "url_citation") continue;
-      let url;
-      try { url = new URL(annotation.url); } catch { throw new WebGatewayError("web_citation_invalid", "Hosted search returned a malformed citation."); }
-      if (url.protocol !== "https:" || url.username || url.password || isIP(url.hostname)) throw new WebGatewayError("web_citation_invalid", "Hosted search returned an unsafe citation.");
+      citationCount += 1;
+      const source = validatedSearchSource(annotation, clock, "Hosted search returned an unsafe or malformed citation.");
       if (!Number.isInteger(annotation.start_index) || !Number.isInteger(annotation.end_index) || annotation.start_index < 0 || annotation.end_index <= annotation.start_index || annotation.end_index > part.text.length) throw new WebGatewayError("web_citation_invalid", "Hosted search returned invalid citation bounds.");
-      if (!unique.has(url.href)) unique.set(url.href, { sourceId: `source_${unique.size + 1}`, title: bounded(annotation.title || url.hostname, 300), url: url.href, domain: url.hostname.toLowerCase(), retrievedAt: timestamp(clock) });
+      if (!unique.has(source.url)) unique.set(source.url, { sourceId: `source_${unique.size + 1}`, ...source });
+    }
+  }
+  if (citationCount === 0) {
+    for (const item of searchActionItems) {
+      for (const providerSource of Array.isArray(item.action?.sources) ? item.action.sources : []) {
+        if (!providerSource || typeof providerSource.url !== "string") continue;
+        const source = validatedSearchSource(providerSource, clock, "Hosted search returned an unsafe or malformed provider source.");
+        if (!unique.has(source.url)) unique.set(source.url, { sourceId: `source_${unique.size + 1}`, ...source });
+      }
     }
   }
   if (!unique.size) throw new WebGatewayError("web_citation_invalid", "Hosted search returned no verifiable citations.");
@@ -296,6 +313,7 @@ export function createOpenAIWebSearchAdapter({ apiKey, model = "gpt-6-luna", ser
         tools: [{ type: "web_search", search_context_size: input.depth === "deep" ? "medium" : "low", external_web_access: true, ...(input.allowedDomains.length ? { filters: { allowed_domains: input.allowedDomains } } : {}) }],
         tool_choice: "required",
         parallel_tool_calls: false,
+        include: ["web_search_call.action.sources"],
         store: true,
         service_tier: serviceTier,
         max_output_tokens: maxOutputTokens,
