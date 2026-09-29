@@ -157,6 +157,13 @@ function bindWebCitations(message,sources){
 
 const EXPLICIT_PUBLIC_BROWSER=/\b(?:use|with|via|through)\s+(?:the\s+)?(?:public|remote|isolated)?\s*browser\b|\bpublic\s+browser\b|\b(?:browse|open|inspect|navigate)\b[\s\S]{0,80}\b(?:interactive|rendered|dynamic|browser|javascript)\b|\b(?:interactive|rendered|dynamic|javascript)\b[\s\S]{0,80}\b(?:page|site|website)\b/i;
 const EXPLICIT_PUBLIC_WEB_RESEARCH=/\b(?:use|perform|conduct|do)\s+(?:public\s+)?web\s+research\b|\b(?:search|research)\s+(?:the\s+)?public\s+web\b/i;
+const NATURAL_PUBLIC_RESEARCH=/\b(?:research|compare|investigate|analyse|analyze|survey|find)\b/i;
+const PUBLIC_RESEARCH_EVIDENCE=/\b(?:current\s+public\s+sources?|public\s+(?:sources?|evidence|information)|clickable\s+(?:evidence|sources?|citations?)|web\s+research(?:\s+(?:depth|capabilit(?:y|ies)|level))?)\b/i;
+const CODING_OR_WORKFLOW_MUTATION=/\b(?:implement|modify|change|fix|debug|refactor|patch|commit|push|deploy|ship|merge|checkout|rebase)\b|\b(?:coding|repository|repo|branch|pull\s+request|workflow|task)\b/i;
+function isExplicitPublicWebResearch(message){
+  const value=String(message||"");
+  return EXPLICIT_PUBLIC_WEB_RESEARCH.test(value)||(NATURAL_PUBLIC_RESEARCH.test(value)&&PUBLIC_RESEARCH_EVIDENCE.test(value)&&!CODING_OR_WORKFLOW_MUTATION.test(value));
+}
 const SECRET_QUERY_KEY=/^(?:access_?token|api_?key|auth|authorization|credential|password|secret|signature|sig)$/i;
 function publicBrowserUrls(message){
   const urls=[];
@@ -179,7 +186,7 @@ function publicBrowserPresentation(message){
   return Object.freeze({version:1,requestedFields:Object.freeze(requestedFields)});
 }
 export function deriveWebAuthority(message){
-  const explicitBrowser=EXPLICIT_PUBLIC_BROWSER.test(message),explicitResearch=EXPLICIT_PUBLIC_WEB_RESEARCH.test(message),ownerUrls=publicBrowserUrls(message),mentionedDomains=(String(message).match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b/gi)||[]).map(value=>value.toLowerCase()),ownerDomains=[...new Set(explicitBrowser?ownerUrls.map(value=>new URL(value).hostname.toLowerCase()):mentionedDomains)].slice(0,10);
+  const explicitBrowser=EXPLICIT_PUBLIC_BROWSER.test(message),explicitResearch=isExplicitPublicWebResearch(message),ownerUrls=publicBrowserUrls(message),mentionedDomains=(String(message).match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b/gi)||[]).map(value=>value.toLowerCase()),ownerDomains=[...new Set(explicitBrowser?ownerUrls.map(value=>new URL(value).hostname.toLowerCase()):mentionedDomains)].slice(0,10);
   return Object.freeze({autonomousDeep:true,explicitDeep:/\b(?:deep|in[- ]depth|comprehensive)\s+(?:web\s+)?research\b/i.test(message),explicitBrowser,explicitResearch,ownerDomains:Object.freeze(ownerDomains),ownerUrls:Object.freeze(ownerUrls),navigation:publicBrowserNavigation(message),presentation:publicBrowserPresentation(message)});
 }
 

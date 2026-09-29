@@ -545,11 +545,36 @@ test("ordinary public business research receives autonomous deep authority witho
 });
 
 test("explicit public Web research bypasses an unrelated historical workflow candidate",async()=>{
-  const storage=testStorage(),registry=createToolRegistry();let durableRoutes=0,webCalls=0;
+  const message=`Research the UK market for barber booking systems.
+
+Find 5 strong alternatives to Fresha that are realistically used by barbers or salons in the UK.
+
+For each one, compare:
+- current pricing
+- booking or customer commission
+- online booking
+- payments
+- reminders
+- staff/team management
+- marketing features
+- important limitations
+
+Then tell me which patterns you see across the market and what important gaps exist.
+
+Use current public sources and give me clickable evidence.
+
+Choose whatever Web research depth you need yourself.
+Do not ask me for approval just because deeper public research is required.
+Do not guess anything you cannot verify.`,storage=testStorage(),registry=createToolRegistry();let durableRoutes=0,webCalls=0;
   registry.register({name:"web_research",riskLevel:"READ_ONLY",async execute(args,context){webCalls+=1;assert.equal(args.depth,"deep");assert.equal(context.webAuthority.explicitResearch,true);return{version:1,researchId:"deep-routing",summary:"Public comparison complete.",sources:[{sourceId:"source_1",title:"Official evidence",url:"https://example.com/report",retrievedAt:"now",contentHash:"e".repeat(64)}],pages:[],limitations:[],usage:{searchCalls:4,fixedSearchCostUsd:0.04,estimatedCostUsd:0.041,costStatus:"settled"}};}});
   const agent=createTestAgent({storage,toolRegistry:registry,routeDurableRequest:async()=>{durableRoutes+=1;throw new Error("unrelated historical workflow must not compete");},modelProvider:scriptedProvider([{type:"tool_calls",continuationToken:"deep",toolCalls:[{id:"deep-routing-1",name:"web_research",arguments:{query:"Compare UK booking systems and missed-call recovery competitors",purpose:"competitor_research",allowedDomains:[],freshnessDays:30,maxSources:8,depth:"deep",readMode:"auto",urls:[]}}]},{type:"final",message:"Business report complete."}])});
-  const result=await agent.run({message:"Use public Web research to compare UK booking systems, inspect pricing, and research missed-call recovery competitors.",conversationId:"explicit-web-routing"});
+  const result=await agent.run({message,conversationId:"explicit-web-routing"});
   assert.equal(durableRoutes,0);assert.equal(webCalls,1);assert.equal(result.runStatus,"completed");const activity=await storage.listActivity(OWNER_ID,{runId:result.runId,limit:20});assert.equal(activity.filter(item=>item.action==="public_web_turn_routed").length,1);
+});
+
+test("natural public-research recognition does not bypass genuine coding workflow routing",()=>{
+  const authority=deriveWebAuthority("Research current public sources, then implement a fix in the repository and commit it.");
+  assert.equal(authority.explicitResearch,false);
 });
 
 test("unexpected web failures persist only bounded stage and type diagnostics",async()=>{
