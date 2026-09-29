@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { buildSpeakerSafeSystemContext, buildSystemContext, retrieveAgentContext } from "../memory/context-retriever.js";
 import { ApprovalRequiredError } from "../policy/action-policy.js";
+import {shouldUseDurableWebResearch} from "../web/durable-web-research.js";
 
 export class AgentStepLimitError extends Error {}
 export class AgentToolCallLimitError extends Error {}
@@ -108,7 +109,7 @@ const EXISTING_TASK_CONTROL_TOOLS = new Set([
   "self_development_get",
   "self_development_scope_recover",
 ]);
-const CANONICAL_DURABLE_ACKNOWLEDGEMENT=/^Durable (?:self-development|coding orchestration|artifact delivery) task (?:selfdev|orchestration|coding|shipping)_[a-f0-9]{32} is [a-z_]+\. Track it in Activity; Nova's Persistent Local Worker can continue it independently\.$/;
+const CANONICAL_DURABLE_ACKNOWLEDGEMENT=/^Durable (?:self-development|coding orchestration|artifact delivery|public Web research) task (?:selfdev|orchestration|coding|shipping|web)_[a-f0-9]{32} is [a-z_]+\. Track it in Activity; Nova's Persistent Local Worker can continue it independently\.$/;
 const taskControlTools=route=>new Set(route?.action==="recovery"?[...EXISTING_TASK_CONTROL_TOOLS]:["self_development_get"]);
 const ROUTED_CREATION_TOOLS=new Set(["self_development_create","coding_job_prepare","coding_job_create","artifact_delivery_execute"]);
 
@@ -205,6 +206,7 @@ export function createAgent({
   validateAnonymousSpeaker = async () => false,
   routeExistingTaskRequest = async () => null,
   routeDurableRequest = async () => null,
+  durableResearchTaskService = null,
   logger = { info() {}, error() {} }
 }) {
   if (!storage || !ownerId || !modelProvider || !toolRegistry) {
@@ -272,7 +274,7 @@ export function createAgent({
           startingCommit: task.startingCommit,
           idempotent: idempotent === true,
         };
-        const durableLabel=task.taskType==="artifact_delivery"?"artifact delivery":task.taskType==="coding_orchestration"?"coding orchestration":"self-development";
+        const durableLabel=task.taskType==="artifact_delivery"?"artifact delivery":task.taskType==="coding_orchestration"?"coding orchestration":task.taskType==="public_web_research"?"public Web research":"self-development";
         const response = {
           id: randomUUID(),
           conversationId,
@@ -331,6 +333,11 @@ export function createAgent({
           }
         }
         let allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
+        if(!speakerRestricted&&!existingTaskRoute&&durableResearchTaskService&&shouldUseDurableWebResearch(message,webAuthority)){
+          const prepared=await durableResearchTaskService.prepare({request:message,conversationId,runId:run.id,projectId:context.projectId||null,webAuthority});
+          await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"public_web_research_handed_off",status:"completed",summary:"Long public Web research was durably owned before provider contact.",metadata:{taskId:prepared.task.id,idempotent:prepared.idempotent===true}});
+          return completeDurableSelfDevelopment({task:prepared.task,idempotent:prepared.idempotent});
+        }
         const durable = speakerRestricted||existingTaskRoute||webAuthority.explicitBrowser||webAuthority.explicitResearch ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, conversationId, signal: executionSignal});
         executionSignal.throwIfAborted();
         if(durable?.providerUsage)providerUsage.push(durable.providerUsage);

@@ -75,6 +75,7 @@ function testLines(raw,steps){
 export function renderTerminalTaskReport(task,steps=[]){
   if(!task||!TERMINAL.has(task.status))return null;
   if(task.taskType==="public_web_browser"&&task.status==="completed")return renderCompletedBrowserAnswer(task);
+  if(task.taskType==="public_web_research"&&task.status==="completed")return bounded(task.metadata?.researchFinalAnswer||task.resultSummary,20_000);
   const raw=task.taskType==="coding_delegation"?codingResult(task,steps):task.taskType==="artifact_delivery"?shippingResult(task,steps):task.taskType==="public_web_browser"?browserResult(task):null;
   const summary=bounded(raw?.summary||task.resultSummary||task.blockedReason||({completed:"The durable task completed.",failed:"The durable task failed safely.",blocked:"The durable task is blocked.",cancelled:"The durable task was cancelled.",expired:"The durable task expired."}[task.status]),1200);
   const ordered=[...steps].sort((a,b)=>stepOrdinal(a)-stepOrdinal(b)),apply=[...ordered].reverse().find(step=>step.stepType==="apply_patch"&&step.status==="completed"),commitStep=[...ordered].reverse().find(step=>["commit","integrate_commit"].includes(step.stepType)&&step.status==="completed");

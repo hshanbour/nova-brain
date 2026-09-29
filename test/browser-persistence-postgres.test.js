@@ -46,6 +46,17 @@ const bundle=()=>({
   activity:{id:"activity-browser-queued",ownerId:OWNER,projectId:null,runId:TASK,action:"browser_task_queued",tool:"public_browser_read",status:"queued",summary:"Queued bounded public browser research.",metadata:{taskId:TASK}},
 });
 
+const researchBundle=()=>({
+  task:{id:`web_${"d".repeat(32)}`,ownerId:OWNER,projectId:null,title:"Public Web research",objective:"Complete multi-source public research.",taskType:"public_web_research",maxSteps:2,maxRetries:0,maxRuntimeMinutes:30,metadata:{requiredCapability:"remote_public_research",researchJob:{version:1},researchState:{version:1,phase:"research_queued"},terminalReporting:{version:1,conversationId:CONVERSATION,runId:"originating-chat-run"}}},
+  run:{id:`web_${"d".repeat(32)}`,ownerId:OWNER,projectId:null,conversationId:CONVERSATION,goal:"Complete multi-source public research.",status:"queued"},
+  step:{taskId:`web_${"d".repeat(32)}`,stepId:"1:public_web_research",stepType:"public_web_research",capability:"remote_public_research",operationFingerprint:"e".repeat(64),status:"queued",input:{depth:"deep"}},
+  activity:{id:"activity-research-queued",ownerId:OWNER,projectId:null,runId:`web_${"d".repeat(32)}`,action:"web_research_task_queued",tool:"web_research",status:"queued",summary:"Queued durable public Web research before provider contact.",metadata:{}},
+});
+
+test("Postgres durable research preparation atomically owns task run step and FK-bound activity before dispatch",async()=>{const sqlClient=postgresContractClient(),storage=createPostgresStorage({sqlClient}),prepared=await storage.prepareAutonomyTaskBundle(researchBundle());assert.equal(prepared.task.taskType,"public_web_research");assert.equal(prepared.run.id,prepared.task.id);assert.equal(prepared.activity.runId,prepared.task.id);assert.equal(sqlClient.state.runs.size,1);assert.equal(sqlClient.state.tasks.size,1);assert.equal(sqlClient.state.steps.size,1);assert.equal(sqlClient.state.activity.length,1);});
+
+test("Postgres durable research preparation failure leaves no dispatchable partial task",async()=>{const sqlClient=postgresContractClient({failTable:"nova_activity_events"}),storage=createPostgresStorage({sqlClient});await assert.rejects(()=>storage.prepareAutonomyTaskBundle(researchBundle()),error=>error.code==="synthetic_transaction_failure");assert.equal(sqlClient.state.runs.size,0);assert.equal(sqlClient.state.tasks.size,0);assert.equal(sqlClient.state.steps.size,0);assert.equal(sqlClient.state.activity.length,0);});
+
 test("Postgres browser preparation commits the task-owned run before FK-bound activity",async()=>{
   const sqlClient=postgresContractClient(),storage=createPostgresStorage({sqlClient}),prepared=await storage.prepareAutonomyTaskBundle(bundle());
   assert.ok(SCHEMA_STATEMENTS.some(statement=>/CREATE TABLE IF NOT EXISTS nova_activity_events/.test(statement)&&/run_id text REFERENCES nova_execution_runs\(id\)/.test(statement)));assert.equal(prepared.task.id,TASK);assert.equal(prepared.run.id,TASK);assert.equal(prepared.run.conversationId,CONVERSATION);assert.equal(prepared.activity.runId,TASK);assert.equal(sqlClient.state.runs.has(TASK),true);assert.equal(sqlClient.state.tasks.has(TASK),true);assert.equal(sqlClient.state.steps.size,1);assert.equal(sqlClient.state.activity.length,1);assert.equal(prepared.task.metadata.terminalReporting.runId,"originating-chat-run");

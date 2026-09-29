@@ -51,6 +51,7 @@ import {createOpenAIWebSearchAdapter,createPublicPageReader,createWebGateway,reg
 import {createCloudflareBrowserRunAdapter} from "./web/cloudflare-browser-run.js";
 import {createBrowserProviderBudget} from "./web/browser-provider-budget.js";
 import {createDurableBrowserTaskService} from "./web/durable-browser-task.js";
+import {createDurableWebResearchService} from "./web/durable-web-research.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -102,7 +103,7 @@ export function createApp({
     logger,
   });
   registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID });
-  let browserTaskService=null;
+  let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){
     const webRoute=config.openAI.routes.web;
     const webSearch=createOpenAIWebSearchAdapter({apiKey:config.openAI.apiKey,model:webRoute.model,serviceTier:config.openAI.serviceTier,costController:modelCostController,fetchImpl:webFetchImpl||globalThis.fetch,maxOutputTokens:webRoute.maxOutputTokens||4096});
@@ -110,6 +111,7 @@ export function createApp({
     browserTaskService=config.browserRun.configured?createDurableBrowserTaskService({storage,ownerId:OWNER_ID,model:webRoute.model,modelCostController,executionTruth,providerBudget:createBrowserProviderBudget({storage,ownerId:OWNER_ID,...config.browserRun}),browserAdapter:createCloudflareBrowserRunAdapter({accountId:config.browserRun.accountId,apiToken:config.browserRun.apiToken,fetchImpl:webFetchImpl||globalThis.fetch,...(webResolveHost?{resolveHost:webResolveHost}:{}),...(browserConnectOverCDP?{connectOverCDP:browserConnectOverCDP}:{})})}):null;
     const webGateway=createWebGateway({searchAdapter:webSearch,pageReader,browserTaskService,storage,ownerId:OWNER_ID});
     registerWebResearchTool(toolRegistry,{gateway:webGateway});
+    durableResearchTaskService=createDurableWebResearchService({storage,ownerId:OWNER_ID,webGateway,modelProvider,executionTruth});
   }
   const workerRuntime = createWorkerRuntime({
     storage,
@@ -227,6 +229,7 @@ export function createApp({
       if(!request)return null;
       return validateExistingTaskControlRequest(request,await workerRuntime.get(request.taskId));
     },
+    durableResearchTaskService,
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
       if(context?.voice===true)return null;
       let explicitRetry;
@@ -325,6 +328,7 @@ export function createApp({
     codingExecutor,
     executionTruth,
     browserTaskService,
+    durableResearchTaskService,
     logger,
   });
   return Object.freeze({ ...api, initialize, workerRuntime });

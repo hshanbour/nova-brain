@@ -572,6 +572,17 @@ Do not guess anything you cannot verify.`,storage=testStorage(),registry=createT
   assert.equal(durableRoutes,0);assert.equal(webCalls,1);assert.equal(result.runStatus,"completed");const activity=await storage.listActivity(OWNER_ID,{runId:result.runId,limit:20});assert.equal(activity.filter(item=>item.action==="public_web_turn_routed").length,1);
 });
 
+test("the original multi-part business research request is durably owned before model or provider work",async()=>{
+  const message=`Research the UK market for barber booking systems.
+
+1. Compare five systems used by UK barbers and salons.
+2. Inspect current pricing, commission, online booking, payments, reminders, staff management, marketing, and limitations.
+3. Navigate one provider's real pricing page and research UK missed-call-recovery competitors and market gaps.
+4. Produce one final business report with clickable evidence from current public sources. Choose whatever Web research depth you need and do not ask for approval merely because the research is deep.`,storage=testStorage();let prepares=0,models=0,durableRoutes=0;
+  const agent=createTestAgent({storage,toolRegistry:createToolRegistry(),durableResearchTaskService:{async prepare(input){prepares+=1;assert.equal(input.request,message);assert.equal(input.conversationId,"durable-long-web");return{task:{id:`web_${"7".repeat(32)}`,taskType:"public_web_research",status:"queued",projectId:null,branch:null,startingCommit:null},idempotent:false};}},routeDurableRequest:async()=>{durableRoutes+=1;throw new Error("historical workflow resolver must not run");},modelProvider:{async generate(){models+=1;throw new Error("provider must not run before durable ownership");}}});
+  const response=await agent.run({message,conversationId:"durable-long-web"});assert.equal(prepares,1);assert.equal(models,0);assert.equal(durableRoutes,0);assert.equal(response.durableTask.id,`web_${"7".repeat(32)}`);assert.equal(response.runStatus,"durable_task_created");assert.match(response.message,/Durable public Web research task/);assert.deepEqual(durableTaskRecordsFromMessages(await storage.listMessages("durable-long-web",OWNER_ID),"durable-long-web").map(item=>item.taskId),[`web_${"7".repeat(32)}`]);const activity=await storage.listActivity(OWNER_ID,{runId:response.runId,limit:20});assert.equal(activity.filter(item=>item.action==="public_web_research_handed_off").length,1);
+});
+
 test("natural public-research recognition does not bypass genuine coding workflow routing",()=>{
   const authority=deriveWebAuthority("Research current public sources, then implement a fix in the repository and commit it.");
   assert.equal(authority.explicitResearch,false);

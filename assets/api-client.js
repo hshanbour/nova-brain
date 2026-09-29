@@ -2,7 +2,7 @@ export class NovaApiError extends Error {
   constructor(message, status = 0) { super(message); this.name = "NovaApiError"; this.status = status; }
 }
 
-const durableTaskAcknowledgement = /^Durable (?:self-development|coding orchestration|artifact delivery|public web browser) task ([a-z]+_[a-f0-9]{32}) is [a-z_]+\. Track it in Activity; Nova's Persistent Local Worker can continue it independently\.$/;
+const durableTaskAcknowledgement = /^Durable (?:self-development|coding orchestration|artifact delivery|public web browser|public Web research) task ([a-z]+_[a-f0-9]{32}) is [a-z_]+\. Track it in Activity; Nova's Persistent Local Worker can continue it independently\.$/;
 
 export function isDurableTaskId(value) {
   return typeof value === "string" && /^(?:selfdev|orchestration|coding|shipping|web)_[a-f0-9]{32}$/.test(value);
