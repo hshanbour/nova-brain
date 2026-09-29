@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {createInMemoryStorage} from "../src/storage/in-memory-storage.js";
 import {INITIAL_OWNER_PROFILE,OWNER_ID} from "../src/identity/initial-context.js";
 import {createExecutionTruthService} from "../src/autonomy/execution-truth.js";
-import {createDurableWebResearchService,shouldUseDurableWebResearch} from "../src/web/durable-web-research.js";
+import {createDurableWebResearchService,researchQuery,shouldUseDurableWebResearch} from "../src/web/durable-web-research.js";
 import {createTerminalTaskReporter} from "../src/autonomy/terminal-task-reporter.js";
 
 const LONG=`Research the UK market for barber booking systems.
@@ -12,6 +12,80 @@ const LONG=`Research the UK market for barber booking systems.
 2. Inspect current pricing, commission, booking, payments, reminders, staff management, marketing, and limitations.
 3. Navigate one provider's real pricing page and research UK missed-call-recovery competitors and market gaps.
 4. Produce one final business report with clickable evidence from current public sources. Choose whatever Web research depth you need and do not ask for approval merely because the research is deep.`;
+const ORIGINAL_LONG=`I want to test your real web-research and browsing ability on practical business tasks.
+
+Use whatever web capabilities you think are appropriate. Do not wait for me to tell you whether to use Search, Page Read, or Browser — choose the right method yourself.
+
+Complete all three parts:
+
+PART 1 — BARBER BOOKING SYSTEMS
+
+I currently know Fresha.
+
+Find 3 strong booking systems used by barbers or salons in the UK that could realistically compete with Fresha.
+
+For each one, find and compare:
+- Current pricing
+- Any booking/customer commission
+- Main features
+- Online booking
+- Payments
+- Customer reminders
+- Staff/team management
+- Marketing features
+- Any important limitations
+
+Use current information from their real websites where possible.
+
+PART 2 — REAL WEBSITE NAVIGATION
+
+Choose one of the booking systems you found.
+
+Actually navigate its official website and find its pricing/plans page.
+
+Tell me:
+- Cheapest paid plan
+- Current price
+- What is included
+- Any important limits
+- Whether there are extra fees
+
+Do not rely only on a search-result summary if the information is available inside the website itself.
+
+PART 3 — MISSED-CALL RECOVERY BUSINESS RESEARCH
+
+Research the UK market for a business service that helps small businesses recover missed phone calls automatically using AI, SMS, WhatsApp, callbacks, or similar automation.
+
+Find 5 real competitors or closely related services.
+
+For each one, tell me:
+- Company/product name
+- What they offer
+- Who they target
+- Pricing if publicly available
+- How their missed-call/recovery workflow works
+- Their main selling point
+
+Then compare them and tell me:
+- What patterns you see in the market
+- What customers appear to be paying for
+- What common gaps or underserved needs you found
+- 3 possible ways a new service could differentiate itself
+
+Do not invent missing prices or features. Clearly say when something is not publicly available.
+
+FINAL OUTPUT
+
+Give me one clear business report with:
+1. Barber booking-system comparison
+2. Website pricing-page findings
+3. Missed-call recovery competitor research
+4. Key opportunities you found
+5. Clickable evidence/sources for the important claims
+
+Keep it practical and easy to understand.
+
+I want the research itself, not an explanation of which tools you used.`;
 const authority={autonomousDeep:true,explicitDeep:false,explicitBrowser:false,explicitResearch:true,ownerDomains:[],ownerUrls:[],navigation:null,presentation:{version:1,requestedFields:[]}};
 const result={version:1,researchId:"web-evidence",query:"UK market",purpose:"competitor_research",performedAt:"2026-09-29T12:00:00Z",summary:"Five systems were compared.",sources:[{sourceId:"source_1",title:"Official pricing",url:"https://example.com/pricing",domain:"example.com",retrievedAt:"2026-09-29T12:00:00Z",contentHash:"a".repeat(64)}],pages:[{status:"completed",url:"https://example.com/pricing",domain:"example.com",title:"Pricing",text:"Verified pricing evidence.",contentHash:"a".repeat(64),retrievedAt:"2026-09-29T12:00:00Z",limitation:null}],actions:[{type:"search"}],limitations:[],usage:{searchCalls:4,costStatus:"settled",estimatedCostUsd:0.041}};
 
@@ -25,6 +99,22 @@ test("quick public lookup remains synchronous while structured multi-part resear
   assert.equal(shouldUseDurableWebResearch("Use web research to find today's official price.",{...authority,explicitResearch:true}),false);
   assert.equal(shouldUseDurableWebResearch(LONG,authority),true);
   assert.equal(shouldUseDurableWebResearch("Research sources then implement and commit a repository fix.",{...authority,explicitResearch:false}),false);
+});
+
+test("section-aware query reduction preserves every subject in the exact long live request",()=>{
+  const query=researchQuery(ORIGINAL_LONG);
+  assert.ok(query.length<=500);assert.match(query,/PART 1/i);assert.match(query,/barber booking systems/i);assert.match(query,/\bUK\b/i);assert.match(query,/Fresha/i);assert.match(query,/PART 2/i);assert.match(query,/official pricing page/i);assert.match(query,/PART 3/i);assert.match(query,/missed-call recovery/i);assert.match(query,/\bUK\b/i);assert.match(query,/FINAL OUTPUT/i);
+});
+
+test("query reduction keeps short prompts unchanged and bounds long unstructured research",()=>{
+  const short="Research current UK salon pricing from https://example.co.uk/plans.";assert.equal(researchQuery(short),short);
+  const long=`${"General introductory boilerplate without a decision. ".repeat(30)} Research the United Kingdom market for Fresha competitors at https://example.co.uk/plans and compare current pricing, commission, and limitations.`;
+  const query=researchQuery(long);assert.ok(query.length<=500);assert.match(query,/United Kingdom/);assert.match(query,/Fresha/);assert.match(query,/https:\/\/example\.co\.uk\/plans/);
+});
+
+test("structured reduction trims repeated boilerplate before substantive section content",()=>{
+  const request=`${"I want to test your real web-research ability.\n".repeat(20)}PART 1 — UK SYSTEMS\nResearch AcmeBooking and Fresha pricing for UK salons.\nPART 2 — OFFICIAL SITE\nInspect https://acme.example.com/pricing and compare current plans.\nPART 3 — RECOVERY\nResearch UK missed-call recovery competitors.\nFINAL OUTPUT\nCompare verified limitations with clickable evidence.`;
+  const query=researchQuery(request);assert.ok(query.length<=500);assert.doesNotMatch(query,/I want to test/);for(const heading of["PART 1","PART 2","PART 3","FINAL OUTPUT"])assert.match(query,new RegExp(heading));assert.match(query,/AcmeBooking/);assert.match(query,/Fresha/);assert.match(query,/https:\/\/acme\.example\.com\/pricing/);
 });
 
 test("durable research establishes one canonical owner before provider work and resumes checkpoints exactly once",async()=>{

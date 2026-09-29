@@ -1,7 +1,7 @@
 import {createHash} from "node:crypto";
 
 const TERMINAL=new Set(["completed","failed","blocked","cancelled","expired"]);
-const MAX_REQUEST=12_000,MAX_RESULT_TEXT=100_000,MAX_PAGE_TEXT=20_000;
+const MAX_REQUEST=12_000,MAX_RESEARCH_QUERY=500,MAX_RESULT_TEXT=100_000,MAX_PAGE_TEXT=20_000;
 const digest=value=>createHash("sha256").update(String(value)).digest("hex");
 const clean=(value,max=500)=>String(value||"").replace(/Bearer\s+\S+/gi,"Bearer [REDACTED]").replace(/\b(?:sk-[A-Za-z0-9_-]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g,"[REDACTED]").replace(/\b(?:token|secret|password|api[_-]?key)\s*[:=]\s*\S+/gi,"$1=[REDACTED]").replace(/[\u0000-\u001f\u007f]/g," ").replace(/\s+/g," ").trim().slice(0,max);
 const taskIdFor=({ownerId,conversationId,request})=>`web_${digest(JSON.stringify([ownerId,conversationId,digest(request)])).slice(0,32)}`;
@@ -15,10 +15,71 @@ export function shouldUseDurableWebResearch(message,authority={}){
   return authority.explicitDeep===true||structured>=3||(value.length>=450&&dimensions>=3);
 }
 
-function researchQuery(request){
-  const clauses=String(request||"").split(/\r?\n|(?<=[.!?])\s+/).map(value=>clean(value.replace(/^(?:part\s+\d+|\d+[.)]|[-*])\s*/i,""),240)).filter(value=>value.length>8&&!/^(?:use current|give me clickable|do not ask|do not guess|choose whatever)/i.test(value));
-  const selected=[];for(const value of [...clauses.slice(0,4),...clauses.slice(-4)])if(!selected.includes(value))selected.push(value);
-  return clean(selected.join("; "),500)||"Public market research with current sources";
+const sectionHeading=value=>/^(?:part\s+\d+\b|final output\b)/i.test(value);
+const boilerplate=value=>/^(?:i want to test your|use whatever web capabilities|do not wait for me to tell you|complete all (?:three|\d+) parts|keep it practical|i want the research itself)/i.test(value);
+const clipWords=(value,max)=>{if(value.length<=max)return value;const clipped=value.slice(0,max+1),boundary=clipped.lastIndexOf(" ");return (boundary>=Math.floor(max*.6)?clipped.slice(0,boundary):clipped.slice(0,max)).replace(/[\s;,:-]+$/g,"");};
+const signalWords=new Set(["UK","United Kingdom","Fresha"]),signalStopWords=new Set(["AI","Actually","Any","Barber","Cheapest","Choose","Clickable","Company","Current","Customer","FINAL","Find","For","Give","How","Important","Key","Main","Marketing","Missed-call","Online","PART","Payments","Pricing","Research","SMS","Staff","Tell","Then","Their","Use","Website","What","WhatsApp","Whether","Who"]);
+const sectionSignals=clauses=>{
+  const text=clauses.join(" "),signals=[];
+  for(const match of text.matchAll(/https?:\/\/[^\s)]+/gi))if(!signals.includes(match[0]))signals.push(match[0]);
+  for(const word of signalWords)if(new RegExp(`\\b${word.replace(" ","\\s+")}\\b`,"i").test(text)&&!signals.includes(word))signals.push(word);
+  const count=text.match(/\b\d+\s+(?:strong\s+)?(?:booking systems?|competitors?|alternatives?|services?)\b/i);if(count)signals.push(count[0]);
+  if(/\bpricing\b/i.test(text)&&/\bcommission\b/i.test(text))signals.push("pricing and commission");
+  else if(/\bofficial website\b/i.test(text)&&/\bpricing(?:\/plans)? page\b/i.test(text))signals.push("official pricing page");
+  if(/\bcheapest paid plan\b/i.test(text))signals.push("cheapest paid plan");
+  if(/\bextra fees\b/i.test(text))signals.push("extra fees");
+  if(/\b(?:AI|SMS|WhatsApp)\b/.test(text))signals.push("AI/SMS/WhatsApp");
+  if(/\bnot publicly available\b/i.test(text))signals.push("not publicly available");
+  if(/\bclickable evidence\b/i.test(text))signals.push("clickable evidence");
+  for(const match of text.matchAll(/\b[A-Z][A-Za-z0-9.-]{2,}\b/g))if(!signalStopWords.has(match[0])&&!signals.includes(match[0]))signals.push(match[0]);
+  return [...new Set(signals)].slice(0,4);
+};
+const clauseScore=value=>{
+  let score=0;
+  if(/https?:\/\/|\b[a-z0-9-]+\.(?:com|co\.uk|org|net|io|ai|dev)\b/i.test(value))score+=120;
+  if(/\b(?:UK|United Kingdom)\b/i.test(value))score+=60;
+  if(/\b(?:find|research|navigate|inspect|compare|pricing|plans?|competitors?|alternatives?|barbers?|salons?|missed[- ]calls?|recovery)\b/i.test(value))score+=45;
+  if(/\b(?:official|current|real websites?|do not invent|not publicly available|limitations?|commission|payments?|reminders?|staff|marketing)\b/i.test(value))score+=25;
+  if(/\b(?:Fresha|WhatsApp|SMS|AI)\b/.test(value))score+=20;
+  return score;
+};
+
+export function researchQuery(request){
+  const full=clean(request,MAX_REQUEST);
+  if(!full)return"Public market research with current sources";
+  if(full.length<=MAX_RESEARCH_QUERY)return full;
+  const rawLines=String(request||"").split(/\r?\n/).map(value=>value.trim()).filter(Boolean);
+  const sections=[];let current={heading:null,clauses:[]};
+  const push=()=>{if(current.heading||current.clauses.length)sections.push(current);current={heading:null,clauses:[]};};
+  for(const raw of rawLines){
+    const line=clean(raw,300);if(!line)continue;
+    if(sectionHeading(line)){push();current.heading=line;continue;}
+    for(const part of raw.split(/(?<=[.!?])\s+/)){
+      const clause=clean(part.replace(/^(?:\d+[.)]|[-*])\s*/i,""),240);
+      if(clause.length>3&&!boilerplate(clause)&&!current.clauses.includes(clause))current.clauses.push(clause);
+    }
+  }
+  push();
+  const headed=sections.filter(section=>section.heading);
+  if(headed.length){
+    const ranked=headed.map(section=>({...section,ranked:section.clauses.map((value,index)=>({value,index,score:clauseScore(value)})).sort((a,b)=>b.score-a.score||a.index-b.index)}));
+    const separator=" | ",available=MAX_RESEARCH_QUERY-separator.length*(ranked.length-1),share=Math.floor(available/ranked.length);
+    const segments=ranked.map(section=>{const signals=sectionSignals(section.clauses),context=signals.length?signals.join(", "):null,primary=section.ranked[0]?.value;return clipWords(`${section.heading}${context||primary?`: ${[context,primary].filter(Boolean).join("; ")}`:""}`,share);});
+    let query=segments.join(separator);
+    for(let round=1;;round+=1){
+      let added=false;
+      for(let index=0;index<ranked.length;index+=1){
+        const clause=ranked[index].ranked[round]?.value;if(!clause)continue;
+        const candidate=`${query}; ${clause}`;
+        if(candidate.length<=MAX_RESEARCH_QUERY){query=candidate;added=true;}
+      }
+      if(!added)break;
+    }
+    return query;
+  }
+  const clauses=sections.flatMap(section=>section.clauses).map((value,index)=>({value,index,score:clauseScore(value)})).sort((a,b)=>b.score-a.score||a.index-b.index);
+  const selected=[];for(const item of clauses){const candidate=[...selected,item.value].join("; ");if(candidate.length<=MAX_RESEARCH_QUERY)selected.push(item.value);}
+  return selected.join("; ")||clipWords(full,MAX_RESEARCH_QUERY);
 }
 function canonicalResult(value){
   const sources=(Array.isArray(value?.sources)?value.sources:[]).slice(0,8).map(source=>({sourceId:clean(source.sourceId,80),title:clean(source.title,200),url:clean(source.url,1200),domain:clean(source.domain,253),retrievedAt:clean(source.retrievedAt,80),contentHash:/^[a-f0-9]{64}$/.test(source.contentHash||"")?source.contentHash:null}));
