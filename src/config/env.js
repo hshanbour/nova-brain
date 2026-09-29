@@ -165,6 +165,10 @@ export function readConfig(environment = process.env) {
           defaultModel: "gpt-6-luna",
           defaultReasoningEffort: "none",
         }),
+        web: openAIRoute("web_research", "WEB", {
+          defaultModel: "gpt-6-luna",
+          defaultReasoningEffort: "none",
+        }),
       }),
       budget: Object.freeze({
         budgetId: modelBudgetId,

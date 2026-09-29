@@ -37,6 +37,7 @@ test("OpenAI provider configuration requires credentials and a model", () => {
     intake: { model: "gpt-6-luna", reasoningEffort: "none", maxOutputTokens: null, stage: "intake" },
     planner: { model: "test-model", reasoningEffort: null, maxOutputTokens: null, stage: "planner" },
     noChange: { model: "gpt-6-luna", reasoningEffort: "none", maxOutputTokens: null, stage: "no_change" },
+    web: { model: "gpt-6-luna", reasoningEffort: "none", maxOutputTokens: null, stage: "web_research" },
   });
 });
 
@@ -49,12 +50,16 @@ test("OpenAI stage routing is explicit, bounded, and excludes premium service ti
     NOVA_BRAIN_CHAT_REASONING_EFFORT: "low",
     NOVA_BRAIN_CHAT_MAX_OUTPUT_TOKENS: "2048",
     NOVA_BRAIN_NO_CHANGE_MODEL: "economical-model",
+    NOVA_BRAIN_WEB_MODEL: "web-model",
+    NOVA_BRAIN_WEB_REASONING_EFFORT: "low",
+    NOVA_BRAIN_WEB_MAX_OUTPUT_TOKENS: "1024",
     NOVA_BRAIN_OPENAI_SERVICE_TIER: "flex",
   });
   assert.deepEqual(config.openAI.routes.chat, { model: "economical-model", reasoningEffort: "low", maxOutputTokens: 2048, stage: "chat" });
   assert.equal(config.openAI.routes.planner.model, "strong-model");
   assert.equal(config.openAI.routes.noChange.model, "economical-model");
   assert.equal(config.openAI.routes.noChange.reasoningEffort, "none");
+  assert.deepEqual(config.openAI.routes.web, { model: "web-model", reasoningEffort: "low", maxOutputTokens: 1024, stage: "web_research" });
   assert.equal(config.openAI.serviceTier, "flex");
   assert.throws(() => readConfig({ NOVA_BRAIN_MODEL_PROVIDER:"openai", OPENAI_API_KEY:"key", OPENAI_MODEL:"model", NOVA_BRAIN_OPENAI_SERVICE_TIER:"priority" }), /default or flex/);
   assert.throws(() => readConfig({ NOVA_BRAIN_MODEL_PROVIDER:"openai", OPENAI_API_KEY:"key", OPENAI_MODEL:"model", NOVA_BRAIN_CHAT_REASONING_EFFORT:"extreme" }), /must be one of/);

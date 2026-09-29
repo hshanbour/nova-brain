@@ -10,6 +10,7 @@ import { createVoiceV2 } from "./voice-v2.js";
 import { initialiseVoiceBenchmark } from "./voice-benchmark.js";
 import { initialiseSpeakerEnrollment } from "./speaker-enrollment.js";
 import { initialiseSpeakerFamiliarity } from "./speaker-familiarity.js";
+import { appendSafeLinkedText } from "./web-citations.js";
 
 const client = createNovaClient();
 const composer = document.querySelector("#composer");
@@ -204,7 +205,7 @@ function addMessage({ id,role, text, metadata, autoSpeak = false }) {
   node.querySelector(".avatar").textContent = isNova ? "N" : "Y";
   node.querySelector("strong").textContent = isNova ? "Nova" : "You";
   node.querySelector("time").textContent = timeLabel();
-  node.querySelector(".message-body").textContent = text;
+  const body=node.querySelector(".message-body");body.textContent="";appendSafeLinkedText(body,text);
   if (isNova && voiceOutput.supported) {
     const speak = node.querySelector(".speak-response"); const voiceId = `message-${++voiceMessageSequence}`;
     speak.hidden = false; speak.dataset.voiceId = voiceId; speak.dataset.speechText = text;

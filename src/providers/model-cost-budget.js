@@ -70,14 +70,15 @@ export function estimateRequestTokens(requestBody) {
   return Buffer.byteLength(JSON.stringify(requestBody), "utf8");
 }
 
-export function estimateModelReservation({ requestBody, model, serviceTier, maxOutputTokens, priorContextTokens = 0 }) {
+export function estimateModelReservation({ requestBody, model, serviceTier, maxOutputTokens, priorContextTokens = 0, fixedCostUsd = 0 }) {
   const inputTokens = Math.max(estimateRequestTokens(requestBody), positiveInteger(priorContextTokens));
   const outputTokens = positiveInteger(maxOutputTokens) || DEFAULT_MAX_OUTPUT_TOKENS;
   // Reserve input at the cache-write rate and Standard pricing. That is the
   // most expensive supported input category and remains safe if Flex falls
   // back to Standard processing.
-  const reservedNanoUsd = costNanos({ inputTokens, cacheWriteTokens: inputTokens, outputTokens, model, serviceTier: "default" });
-  return reservedNanoUsd === null ? null : { inputTokens, outputTokens, reservedNanoUsd };
+  const tokenNanoUsd = costNanos({ inputTokens, cacheWriteTokens: inputTokens, outputTokens, model, serviceTier: "default" });
+  const fixedNanoUsd = usdToNanos(Math.max(0, Number(fixedCostUsd) || 0));
+  return tokenNanoUsd === null ? null : { inputTokens, outputTokens, fixedNanoUsd, reservedNanoUsd: tokenNanoUsd + fixedNanoUsd };
 }
 
 export function actualModelCost(usage, { model, serviceTier }) {
@@ -127,9 +128,17 @@ export function createModelCostController({ storage, ownerId, config }) {
 
   return Object.freeze({
     async status(taskId = null) { return status(taskId); },
-    async reserve({ model, stage, serviceTier, requestBody, maxOutputTokens, priorContextTokens = 0, taskId = null, runId = null }) {
-      const estimate = estimateModelReservation({ requestBody, model, serviceTier, maxOutputTokens, priorContextTokens });
+    async reserve({ model, stage, serviceTier, requestBody, maxOutputTokens, priorContextTokens = 0, fixedCostUsd = 0, operationCapUsd = null, taskId = null, runId = null }) {
+      const estimate = estimateModelReservation({ requestBody, model, serviceTier, maxOutputTokens, priorContextTokens, fixedCostUsd });
       if (!estimate) throw new ModelCostBudgetError("model_price_unconfigured", await status(taskId));
+      if (Number.isFinite(operationCapUsd) && estimate.reservedNanoUsd > usdToNanos(operationCapUsd)) {
+        throw new ModelCostBudgetError("cost_budget_exhausted", Object.freeze({
+          ...(await status(taskId)),
+          requiredReservationUsd: nanosToUsd(estimate.reservedNanoUsd),
+          additionalRequiredUsd: nanosToUsd(estimate.reservedNanoUsd - usdToNanos(operationCapUsd)),
+          operationCapUsd,
+        }));
+      }
       const id = randomUUID();
       const reservation = await storage.reserveModelCost({
         id,
@@ -142,7 +151,7 @@ export function createModelCostController({ storage, ownerId, config }) {
         reservedNanoUsd: estimate.reservedNanoUsd,
         globalCapNanoUsd,
         taskCapNanoUsd,
-        metadata: { serviceTier, inputTokenCeiling: estimate.inputTokens, outputTokenCeiling: estimate.outputTokens },
+        metadata: { serviceTier, inputTokenCeiling: estimate.inputTokens, outputTokenCeiling: estimate.outputTokens, fixedCostNanoUsd: estimate.fixedNanoUsd },
       });
       if (!reservation) {
         const current = await status(taskId);
@@ -156,8 +165,9 @@ export function createModelCostController({ storage, ownerId, config }) {
       }
       return Object.freeze({ ...reservation, estimatedInputTokens: estimate.inputTokens, maxOutputTokens: estimate.outputTokens });
     },
-    async reconcile(reservation, usage, { model, serviceTier }) {
-      const actualNanoUsd = actualModelCost(usage, { model, serviceTier });
+    async reconcile(reservation, usage, { model, serviceTier, fixedCostUsd = 0 }) {
+      const tokenNanoUsd = actualModelCost(usage, { model, serviceTier });
+      const actualNanoUsd = tokenNanoUsd === null ? null : tokenNanoUsd + usdToNanos(Math.max(0, Number(fixedCostUsd) || 0));
       if (actualNanoUsd === null) {
         await storage.settleModelCost(reservation.id, ownerId, { status: "uncertain", actualNanoUsd: reservation.reservedNanoUsd, usage: null });
         return { costStatus: "uncertain", estimatedCostUsd: nanosToUsd(reservation.reservedNanoUsd) };
