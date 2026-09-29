@@ -9,6 +9,7 @@ const digest=value=>createHash("sha256").update(String(value)).digest("hex");
 const taskIdFor=({runId,startUrl,allowedDomains})=>`web_${digest(JSON.stringify([runId,startUrl,[...allowedDomains].sort()])).slice(0,32)}`;
 const attemptInput=(attempt)=>({id:attempt.id,taskId:attempt.taskId,handoffId:attempt.handoffId,workerId:attempt.workerId,generation:attempt.generation,fenceToken:attempt.fenceToken});
 function validateSpec(startUrl,allowedDomains){let url;try{url=new URL(startUrl);}catch{throw Object.assign(new Error("The durable browser URL is invalid."),{code:"browser_url_invalid"});}if(url.protocol!=="https:"||url.username||url.password||(url.port&&url.port!=="443")||[...url.searchParams.keys()].some(key=>/^(?:access_?token|api_?key|auth|authorization|credential|password|secret|signature|sig)$/i.test(key)))throw Object.assign(new Error("The durable browser URL is outside the public read-only contract."),{code:"browser_url_forbidden"});const domains=[...new Set((allowedDomains||[]).map(value=>String(value).toLowerCase()))];if(!domains.includes(url.hostname.toLowerCase())||!domains.length||domains.length>50)throw Object.assign(new Error("The durable browser domain authority is invalid."),{code:"browser_domains_invalid"});return{url:url.href,domains};}
+function validateNavigation(value){if(value===null||value===undefined)return null;if(!value||Object.keys(value).some(key=>!["type","label"].includes(key))||value.type!=="follow_link_text"||typeof value.label!=="string")throw Object.assign(new Error("The durable browser navigation is invalid."),{code:"browser_navigation_invalid"});const label=value.label.replace(/\s+/g," ").trim();if(!label||label.length>120||/[\u0000-\u001f\u007f]/.test(label))throw Object.assign(new Error("The durable browser link label is invalid."),{code:"browser_navigation_invalid"});return Object.freeze({type:"follow_link_text",label});}
 
 export function createDurableBrowserTaskService({storage,ownerId,browserAdapter,providerBudget,modelCostController,executionTruth,model="gpt-6-luna",clock=()=>new Date(),workerId="nova-server-browser"}={}){
   if(!storage||!ownerId||!browserAdapter||!providerBudget||!modelCostController||!executionTruth)throw new Error("Durable browser task dependencies are required.");
@@ -21,11 +22,11 @@ export function createDurableBrowserTaskService({storage,ownerId,browserAdapter,
     await activity(blocked,"browser_blocked","blocked",summary,{errorCode:code});
     return Object.freeze({task:blocked,result:blocked.metadata.browserResult,idempotent:false,error});
   };
-  async function prepare({startUrl,allowedDomains,reason,heavy=false,conversationId,runId,projectId}={}){
-      const verified=validateSpec(startUrl,allowedDomains);startUrl=verified.url;allowedDomains=verified.domains;
+  async function prepare({startUrl,allowedDomains,reason,navigation=null,heavy=false,conversationId,runId,projectId}={}){
+      const verified=validateSpec(startUrl,allowedDomains);startUrl=verified.url;allowedDomains=verified.domains;navigation=validateNavigation(navigation);
       const taskId=taskIdFor({runId,startUrl,allowedDomains}),existing=await storage.getAutonomyTask(taskId,ownerId);
       if(existing){const result=existing.metadata?.browserResult||null;return Object.freeze({task:existing,result,idempotent:true});}
-      const canonical=Object.freeze({version:1,startUrl,allowedDomains:Object.freeze([...new Set(allowedDomains)].sort()),reason,limits:Object.freeze({ttlMs:heavy?BROWSER_RUN_LIMITS.maxTtlMs:BROWSER_RUN_LIMITS.defaultTtlMs,maxActions:heavy?BROWSER_RUN_LIMITS.heavyActions:BROWSER_RUN_LIMITS.normalActions,maxPages:BROWSER_RUN_LIMITS.maxPages,maxScreenshots:BROWSER_RUN_LIMITS.maxScreenshots,crashRetries:BROWSER_RUN_LIMITS.maxCrashRetries})});
+      const canonical=Object.freeze({version:2,startUrl,allowedDomains:Object.freeze([...new Set(allowedDomains)].sort()),reason,navigation,limits:Object.freeze({ttlMs:heavy?BROWSER_RUN_LIMITS.maxTtlMs:BROWSER_RUN_LIMITS.defaultTtlMs,maxActions:heavy?BROWSER_RUN_LIMITS.heavyActions:BROWSER_RUN_LIMITS.normalActions,maxPages:BROWSER_RUN_LIMITS.maxPages,maxScreenshots:BROWSER_RUN_LIMITS.maxScreenshots,crashRetries:BROWSER_RUN_LIMITS.maxCrashRetries})});
       let task=await storage.createAutonomyTask({id:taskId,ownerId,projectId:projectId||null,title:"Public browser research",objective:"Read one bounded public interactive source.",taskType:"public_web_browser",maxSteps:1,maxRetries:1,maxRuntimeMinutes:5,metadata:{requiredCapability:"remote_public_browser",browserJob:canonical,terminalReporting:{version:1,conversationId,runId}}});
       await storage.recordAutonomyStep({taskId,stepId:"1:public_browser_read",stepType:"public_browser_read",capability:"remote_public_browser",operationFingerprint:digest(JSON.stringify(canonical)),status:"queued",input:{reason,allowedDomains:canonical.allowedDomains}});
       await activity(task,"browser_task_queued","queued","Queued bounded public browser research.",{reason});
@@ -35,7 +36,7 @@ export function createDurableBrowserTaskService({storage,ownerId,browserAdapter,
       let task=await storage.getAutonomyTask(taskId,ownerId);if(!task||task.taskType!=="public_web_browser"||task.metadata?.requiredCapability!=="remote_public_browser")throw Object.assign(new Error("The durable browser task is unavailable."),{code:"browser_task_invalid"});
       if(TERMINAL.has(task.status))return Object.freeze({task,result:task.metadata?.browserResult||null,idempotent:true});
       if(expectedVersion!==undefined&&task.stateVersion!==expectedVersion)throw Object.assign(new Error("The durable browser task version changed."),{code:"browser_task_fenced"});
-      const canonical=task.metadata?.browserJob;if(canonical?.version!==1)throw Object.assign(new Error("The durable browser specification is invalid."),{code:"browser_task_invalid"});
+      const canonical=task.metadata?.browserJob;if(![1,2].includes(canonical?.version))throw Object.assign(new Error("The durable browser specification is invalid."),{code:"browser_task_invalid"});
       const {heavy=false}=canonical.limits?.maxActions===BROWSER_RUN_LIMITS.heavyActions?{heavy:true}:{};const runId=task.metadata?.terminalReporting?.runId||task.id;
       let providerReservation,modelReservation;
       try{providerReservation=await providerBudget.reserve({taskId,runId,heavy});}

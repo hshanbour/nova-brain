@@ -142,11 +142,11 @@ test("eligible browser escalation queues one durable task with only server-trust
   assert.deepEqual(request.allowedDomains,["owner.example","official.example"]);assert.equal(result.browserEscalation.active,true);assert.equal(result.browserEscalation.status,"queued");assert.match(result.durableTask.id,/^web_/);assert.equal(result.sources.find(source=>source.url==="https://official.example/app").contentHash,"a".repeat(64));
 });
 
-test("an explicit owner browser request queues a trusted source without model-created domain authority",async()=>{
-  const storage=createInMemoryStorage();await storage.initialize({owner:{id:ownerId,fullName:"Owner",provenance:"test"}});let request;
-  const gateway=createWebGateway({storage,ownerId,searchAdapter:{async search(){return{summary:"Official result",actions:[{type:"search"}],searchCalls:1,sources:[{sourceId:"source_1",title:"Official",url:"https://docs.example/app",domain:"docs.example",retrievedAt:"now"}],usage:{}};}},pageReader:{async read(url){return{status:"completed",url,domain:"docs.example",title:"Static",text:"Static summary",contentHash:"c".repeat(64),retrievedAt:"now"};}},browserTaskService:{async prepare(value){request=value;return{task:{id:`web_${"c".repeat(32)}`,status:"queued",projectId:null},idempotent:false,result:null};}}});
-  const result=await gateway.research(input({allowedDomains:["untrusted.example"]}),{runId:"run-explicit",conversationId:"conversation",webAuthority:{calls:0,explicitBrowser:true,explicitDeep:false,ownerDomains:["docs.example"]}});
-  assert.equal(result.browserEscalation.reason,"navigation_required");assert.deepEqual(request.allowedDomains,["docs.example"]);assert.equal(request.startUrl,"https://docs.example/app");
+test("an explicit owner browser request bypasses hosted search and page read and queues only server-derived navigation",async()=>{
+  const storage=createInMemoryStorage();await storage.initialize({owner:{id:ownerId,fullName:"Owner",provenance:"test"}});let request,searches=0,reads=0;
+  const gateway=createWebGateway({storage,ownerId,searchAdapter:{async search(){searches+=1;throw new Error("hosted search must not run");}},pageReader:{async read(){reads+=1;throw new Error("page read must not run");}},browserTaskService:{async prepare(value){request=value;return{task:{id:`web_${"c".repeat(32)}`,status:"queued",projectId:null},idempotent:false,result:null};}}});
+  const navigation={type:"follow_link_text",label:"Get started"},result=await gateway.research(input({allowedDomains:["untrusted.example"],urls:["https://invented.example/"]}),{runId:"run-explicit",conversationId:"conversation",webAuthority:{calls:0,explicitBrowser:true,explicitDeep:false,ownerDomains:["docs.example"],ownerUrls:["https://docs.example/app"],navigation}});
+  assert.equal(searches,0);assert.equal(reads,0);assert.equal(result.browserEscalation.reason,"navigation_required");assert.deepEqual(request.allowedDomains,["docs.example"]);assert.equal(request.startUrl,"https://docs.example/app");assert.deepEqual(request.navigation,navigation);assert.equal(result.usage.searchCalls,0);assert.equal(result.usage.fixedSearchCostUsd,0);assert.equal(result.sources[0].url,"https://docs.example/app");
 });
 
 test("auth, captcha and paywall limitations never qualify for browser escalation",async()=>{

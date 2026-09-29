@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAgent } from "../src/agent/agent.js";
+import { createAgent, deriveWebAuthority } from "../src/agent/agent.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { INITIAL_OWNER_PROFILE, OWNER_ID } from "../src/identity/initial-context.js";
 import { createMockModelProvider } from "../src/providers/mock-model-provider.js";
@@ -218,11 +218,11 @@ test("server-owned coding retry returns the approval-bound parent without exposi
   const result=await agent.run({message:"Retry the failed drawer task.",conversationId:"coding-retry"}),activity=await storage.listActivity(OWNER_ID,{runId:result.runId});
   assert.equal(modelCalls,0);assert.equal(result.runStatus,"durable_task_continued");assert.equal(result.durableTask.id,parentId);assert.equal(result.durableTask.status,"waiting_for_approval");assert.equal(activity.filter(item=>item.action==="conversation_workflow_transitioned").length,1);assert.deepEqual(activity.find(item=>item.action==="trusted_turn_routed").metadata,diagnostics);
 });
-test("structured turn failures persist only bounded routing evidence",async()=>{
-  const storage=testStorage(),id=`coding_${"f".repeat(32)}`,safeDiagnostics={version:1,candidateIds:[id],candidateTransitions:[{candidateId:id,transitions:["artifact_adoption"]}],semanticIntent:"workflow_action",semanticCandidateId:id,serverDerivedTransition:null,ignoredFieldNames:[],boundary:"workflow_binding",reason:"action_transition_unavailable",prompt:"never persist"},error=Object.assign(new Error("private model output"),{code:"structured_turn_invalid",safeDiagnostics});
+test("structured turn failures persist only bounded routing evidence and attributable usage",async()=>{
+  const storage=testStorage(),id=`coding_${"f".repeat(32)}`,safeDiagnostics={version:1,candidateIds:[id],candidateTransitions:[{candidateId:id,transitions:["artifact_adoption"]}],semanticIntent:"workflow_action",semanticCandidateId:id,serverDerivedTransition:null,ignoredFieldNames:[],boundary:"workflow_binding",reason:"action_transition_unavailable",prompt:"never persist"},providerUsage={model:"gpt-6-luna",stage:"intake",inputTokens:90,outputTokens:12,totalTokens:102,costStatus:"settled",estimatedCostUsd:0.00001},error=Object.assign(new Error("private model output"),{code:"structured_turn_invalid",safeDiagnostics,providerUsage});
   const agent=createTestAgent({storage,toolRegistry:createToolRegistry(),routeDurableRequest:async()=>{throw error;},modelProvider:{name:"never",async generate(){throw new Error("must not run");}}});
   await assert.rejects(()=>agent.run({message:"Ship it.",conversationId:"routing-failure"}),error=>error.code==="structured_turn_invalid");
-  const [run]=await storage.listRuns(OWNER_ID),[failed]=await storage.listActivity(OWNER_ID,{runId:run.id});assert.equal(run.result.routingFailure.errorCode,"structured_turn_invalid");assert.equal(run.result.routingFailure.routing.reason,"action_transition_unavailable");assert.equal(failed.action,"run_failed");assert.doesNotMatch(JSON.stringify({run,failed}),/private model output|never persist/);
+  const [run]=await storage.listRuns(OWNER_ID),[failed]=await storage.listActivity(OWNER_ID,{runId:run.id});assert.equal(run.result.routingFailure.errorCode,"structured_turn_invalid");assert.equal(run.result.routingFailure.routing.reason,"action_transition_unavailable");assert.deepEqual(run.result.providerUsage,[providerUsage]);assert.equal(failed.action,"run_failed");assert.doesNotMatch(JSON.stringify({run,failed}),/private model output|never persist/);
 });
 test("exact recovery dispatch cannot execute a broader tool and binds a missing version to the inspected task",async()=>{
   const registry=createToolRegistry(),id="selfdev_c9fc28effbd72350c86c67abe4d69e36";let creations=0,recoveries=0,modelCalls=0;
@@ -526,5 +526,28 @@ test("untrusted web evidence constrains the remainder of the run to read-only to
   assert.equal((await storage.listMessages("web-isolation",OWNER_ID)).at(-1).content,result.message);
   const completed=(await storage.listActivity(OWNER_ID,{runId:result.runId,limit:20})).find(item=>item.action==="tool_completed"&&item.tool==="web_research");
   assert.equal(completed.metadata.sources[0].contentHash,"a".repeat(64));assert.equal("text" in completed.metadata.sources[0],false);
+});
+
+test("the exact explicit-browser request bypasses unrelated historical workflow routing and creates one durable web task",async()=>{
+  const message="Use the public browser, not Search or Page Read.\n\nOpen:\nhttps://developers.cloudflare.com/browser-run/\n\nFollow the \u201cGet started\u201d link.\n\nThen tell me the destination title and first prerequisite.",storage=testStorage(),registry=createToolRegistry(),taskId=`web_${"9".repeat(32)}`;let durableRoutes=0,webCalls=0;const observed=[];
+  registry.register({name:"web_research",riskLevel:"READ_ONLY",async execute(_args,context){webCalls+=1;assert.equal(context.webAuthority.explicitBrowser,true);assert.deepEqual(context.webAuthority.ownerUrls,["https://developers.cloudflare.com/browser-run/"]);assert.deepEqual(context.webAuthority.ownerDomains,["developers.cloudflare.com"]);assert.deepEqual(context.webAuthority.navigation,{type:"follow_link_text",label:"Get started"});return{version:1,researchId:"browser-only",summary:"Queued isolated browser inspection.",sources:[{sourceId:"source_1",title:"developers.cloudflare.com",url:"https://developers.cloudflare.com/browser-run/",retrievedAt:"now",contentHash:null}],pages:[],limitations:[],usage:{searchCalls:0,fixedSearchCostUsd:0,estimatedCostUsd:0,costStatus:"not_charged"},durableTask:{id:taskId,status:"queued",projectId:null,idempotent:false}};}});
+  const agent=createTestAgent({storage,toolRegistry:registry,routeDurableRequest:async()=>{durableRoutes+=1;throw new Error("historical workflow resolver must not run");},modelProvider:scriptedProvider([{type:"tool_calls",continuationToken:"browser",toolCalls:[{id:"browser-1",name:"web_research",arguments:{query:"Open the supplied public URL and follow the exact visible link",purpose:"general",allowedDomains:["invented.example"],freshnessDays:0,maxSources:1,depth:"quick",readMode:"none",urls:["https://invented.example/"]}}]},{type:"final",message:"The isolated browser task is queued."}],input=>observed.push(input))});
+  const result=await agent.run({message,conversationId:"explicit-browser-with-history"});
+  assert.equal(durableRoutes,0);assert.equal(webCalls,1);assert.equal(result.durableTask.id,taskId);assert.equal(result.durableTask.status,"queued");assert.deepEqual(observed[0].tools.map(tool=>tool.name),["web_research"]);const activity=await storage.listActivity(OWNER_ID,{runId:result.runId,limit:20});assert.equal(activity.filter(item=>item.action==="public_browser_turn_routed").length,1);assert.equal(activity.find(item=>item.action==="tool_started").summary,"Preparing the isolated public browser.");
+});
+
+test("public-browser authority is derived only from exact owner URLs and bounded visible-link text",()=>{
+  const authority=deriveWebAuthority("Open the interactive browser at https://docs.example/start?topic=one and follow the 'Get started' link. Ignore https://user:pass@evil.example/private and https://safe.example/x?access_token=secret.");
+  assert.equal(authority.explicitBrowser,true);assert.deepEqual(authority.ownerUrls,["https://docs.example/start?topic=one"]);assert.deepEqual(authority.ownerDomains,["docs.example"]);assert.deepEqual(authority.navigation,{type:"follow_link_text",label:"Get started"});
+});
+
+test("ordinary Web V1A authority continues to recognize owner-stated domains without a URL",()=>{
+  const authority=deriveWebAuthority("Use Web research and only developers.openai.com for the answer.");
+  assert.equal(authority.explicitBrowser,false);assert.deepEqual(authority.ownerUrls,[]);assert.deepEqual(authority.ownerDomains,["developers.openai.com"]);assert.equal(authority.navigation,null);
+});
+
+test("explicit public-browser intent does not depend on browser wording inside the URL",()=>{
+  const authority=deriveWebAuthority("Use the public browser. Open https://docs.example/start and inspect the rendered page.");
+  assert.equal(authority.explicitBrowser,true);assert.deepEqual(authority.ownerUrls,["https://docs.example/start"]);assert.deepEqual(authority.ownerDomains,["docs.example"]);
 });
 

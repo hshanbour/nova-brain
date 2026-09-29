@@ -1542,7 +1542,7 @@ export function createSelfDevelopmentService({
     if(!structuredIntake?.resolveTurn)throw new SelfDevelopmentError("structured_intake_unavailable","Unified turn routing is unavailable.",503);
     let decision;
     try{decision=await structuredIntake.resolveTurn(userGoal,{workflowCandidates,signal,costContext});}
-    catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;throw new SelfDevelopmentError(error?.code||"structured_turn_invalid","Nova could not safely resolve this turn.",409,error?.safeDiagnostics);}
+    catch(error){if(["cost_budget_exhausted","model_price_unconfigured"].includes(error?.code))throw error;const wrapped=new SelfDevelopmentError(error?.code||"structured_turn_invalid","Nova could not safely resolve this turn.",409,error?.safeDiagnostics);wrapped.providerUsage=error?.providerUsage||null;throw wrapped;}
     if(decision.route==="new_implementation"){
       const created=await createTrustedSpecification(userGoal,decision.specification,{signal,originConversationId,originRunId});
       return{...created,providerUsage:decision.providerUsage||null,turnRoute:decision.route,routingDiagnostics:decision.routingDiagnostics||null};

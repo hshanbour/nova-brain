@@ -103,6 +103,11 @@ test("invalid semantic output retains only bounded candidate diagnostics",async(
   });
 });
 
+test("strict turn failures retain attributable provider usage and a bounded field-contract reason",async()=>{
+  const id=`coding_${"9".repeat(32)}`,intake=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"ordinary_chat",workflowId:id,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:""}])});
+  await assert.rejects(()=>intake.resolveTurn("Open the public browser",{workflowCandidates:[{id,taskType:"coding_delegation",status:"completed",stateVersion:6,allowedTransitions:["artifact_adoption"]}]}),error=>{assert.equal(error.code,"structured_turn_invalid");assert.equal(error.safeDiagnostics.reason,"non_workflow_fields_present");assert.equal(error.safeDiagnostics.semanticIntent,"ordinary_chat");assert.equal(error.safeDiagnostics.semanticCandidateId,id);assert.equal(error.providerUsage.model,"gpt-6-luna");assert.equal(error.providerUsage.totalTokens,140);return true;});
+});
+
 test("ambiguous historical artifact selection asks a normal clarification and grants no workflow authority",async()=>{
   const ids=[`coding_${"6".repeat(32)}`,`coding_${"7".repeat(32)}`],intake=createSelfDevelopmentIntake({modelProvider:provider([{turnIntent:"clarification_required",workflowId:null,objective:"",acceptanceCriteria:[],constraints:[],explicitPaths:[],focusedTests:[],searchTerms:[],clarificationQuestion:"Which completed website artifact should I use?"}])}),result=await intake.resolveTurn("Ship the completed website work",{workflowCandidates:ids.map((id,index)=>({id,taskType:"coding_delegation",status:"completed",stateVersion:4,title:`Website artifact ${index+1}`,allowedTransitions:["artifact_adoption"]}))});
   assert.equal(result.route,"clarification_required");assert.match(result.clarificationQuestion,/Which completed website artifact/);assert.equal("workflow" in result,false);
