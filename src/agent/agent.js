@@ -168,7 +168,7 @@ function publicBrowserUrls(message){
   return urls;
 }
 function publicBrowserNavigation(message){
-  const value=String(message||""),quoted=value.match(/\bfollow\s+(?:the\s+)?[\u201c\u201d\u2018\u2019"']([^\u201c\u201d\u2018\u2019"'\r\n]{1,120})[\u201c\u201d\u2018\u2019"']\s+link\b/i),plain=value.match(/\bfollow\s+(?:the\s+)?([^\r\n.!?]{1,120}?)\s+link\b/i),label=(quoted?.[1]||plain?.[1]||"").replace(/\s+/g," ").trim();
+  const value=String(message||""),modifiers="(?:(?:visible|exact)\\s+)*",quoted=value.match(new RegExp(`\\bfollow\\s+(?:the\\s+)?${modifiers}[\\u201c\\u201d\\u2018\\u2019\"']([^\\u201c\\u201d\\u2018\\u2019\"'\\r\\n]{1,120})[\\u201c\\u201d\\u2018\\u2019\"']\\s+link\\b`,"i")),plain=value.match(/\bfollow\s+(?:the\s+)?([^\r\n.!?]{1,120}?)\s+link\b/i),label=(quoted?.[1]||plain?.[1]||"").replace(/^(?:(?:visible|exact)\s+)+/i,"").replace(/^[\u201c\u201d\u2018\u2019"']|[\u201c\u201d\u2018\u2019"']$/g,"").replace(/\s+/g," ").trim();
   return label?Object.freeze({type:"follow_link_text",label}):null;
 }
 export function deriveWebAuthority(message){

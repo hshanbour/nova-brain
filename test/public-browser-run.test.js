@@ -20,6 +20,14 @@ function fakePlaywright(){
   return{state,connect:async()=>browser};
 }
 
+function inspectionAdapter({inspection,finalUrl}={}){
+  const state={url:"https://example.com/start",closed:0,browserClosed:0};
+  const page={on(){},async goto(url){state.url=finalUrl||url;},url(){return state.url;},async evaluate(){return inspection;}};
+  const connectOverCDP=async()=>({async newContext(){return{async route(){},async newPage(){return page;},async close(){state.closed+=1;}};},async close(){state.browserClosed+=1;}});
+  const fetchImpl=async(_url,init={})=>init.method==="DELETE"?new Response("{}",{status:200}):new Response(JSON.stringify({sessionId:"session",webSocketDebuggerUrl:"wss://api.cloudflare.test/session"}),{status:200});
+  return{state,adapter:createCloudflareBrowserRunAdapter({accountId:"account",apiToken:"secret",resolveHost:publicDns,connectOverCDP,fetchImpl})};
+}
+
 test("Cloudflare REST/CDP adapter creates one guarded fresh session and deletes it",async()=>{
   const fake=fakePlaywright(),requests=[];
   const adapter=createCloudflareBrowserRunAdapter({accountId:"account",apiToken:"secret-token",resolveHost:publicDns,connectOverCDP:fake.connect,fetchImpl:async(url,init={})=>{requests.push({url,init});if(init.method==="DELETE")return new Response("{}",{status:200});return new Response(JSON.stringify({sessionId:"session",webSocketDebuggerUrl:"wss://api.cloudflare.test/session"}),{status:200,headers:{"content-type":"application/json"}});}});
@@ -37,6 +45,28 @@ test("Cloudflare adapter follows one exact visible same-domain link and returns 
   const fake=fakePlaywright(),requests=[],adapter=createCloudflareBrowserRunAdapter({accountId:"account",apiToken:"secret-token",resolveHost:publicDns,connectOverCDP:fake.connect,fetchImpl:async(url,init={})=>{requests.push({url,init});return init.method==="DELETE"?new Response("{}",{status:200}):new Response(JSON.stringify({sessionId:"session",webSocketDebuggerUrl:"wss://api.cloudflare.test/session"}),{status:200});}});
   const result=await adapter.run({startUrl:"https://example.com/start",allowedDomains:["example.com"],navigation:{type:"follow_link_text",label:"Get started"}});
   assert.equal(result.finalUrl,"https://example.com/browser-rendering/get-started/");assert.equal(result.title,"Get started - Browser Run");assert.match(result.text,/Prerequisites Cloudflare account/);assert.equal(result.observations.length,2);assert.equal(result.usage.actions,4);assert.equal(requests.at(-1).init.method,"DELETE");assert.equal(fake.state.closed,1);assert.equal(fake.state.browserClosed,1);
+});
+
+test("public pages with harmless header or footer login UI are not authentication walls",async()=>{
+  const {adapter,state}=inspectionAdapter({inspection:{title:"Browser Run",text:"Browser Run documentation. Sign in Manage account Log in",links:[{text:"Log in",href:"https://example.com/login"}],forms:0,security:{passwordInputs:0,authenticationForms:0,authenticationHeading:false,dominantAuthenticationContent:false,authenticationUrl:false,authenticationControls:0}}});
+  const result=await adapter.run({startUrl:"https://example.com/start",allowedDomains:["example.com"]});
+  assert.equal(result.status,"completed");assert.equal(state.closed,1);assert.equal(state.browserClosed,1);
+});
+
+test("structural authentication walls block with bounded classification signals",async()=>{
+  const {adapter,state}=inspectionAdapter({finalUrl:"https://example.com/login",inspection:{title:"Sign in",text:"Sign in to continue",links:[],forms:1,security:{passwordInputs:1,authenticationForms:1,authenticationHeading:true,dominantAuthenticationContent:true,authenticationUrl:true,authenticationControls:1}}});
+  await assert.rejects(()=>adapter.run({startUrl:"https://example.com/start",allowedDomains:["example.com"]}),error=>{assert.equal(error.code,"authentication_required");assert.deepEqual(error.safeDiagnostics,{stage:"rendered_inspection",domain:"example.com",classification:"structural_auth_wall",signals:["password_input","authentication_form","authentication_heading","dominant_auth_content","authentication_url","authentication_control"],regions:["main","form","url"]});return true;});
+  assert.equal(state.closed,1);assert.equal(state.browserClosed,1);
+});
+
+test("an authentication-shaped URL alone is insufficient without dominant auth content",async()=>{
+  const {adapter}=inspectionAdapter({finalUrl:"https://example.com/login",inspection:{title:"Public login API documentation",text:"Reference documentation for the login API.",links:[],forms:0,security:{passwordInputs:0,authenticationForms:0,authenticationHeading:false,dominantAuthenticationContent:false,authenticationUrl:true,authenticationControls:0}}});
+  assert.equal((await adapter.run({startUrl:"https://example.com/start",allowedDomains:["example.com"]})).status,"completed");
+});
+
+test("CAPTCHA detection remains independent of structural authentication detection",async()=>{
+  const {adapter}=inspectionAdapter({inspection:{title:"Checking your browser",text:"Verify you are human",links:[],forms:0,security:{passwordInputs:0,authenticationForms:0,authenticationHeading:false,dominantAuthenticationContent:false,authenticationUrl:false,authenticationControls:0}}});
+  await assert.rejects(()=>adapter.run({startUrl:"https://example.com/start",allowedDomains:["example.com"]}),error=>error.code==="captcha_required");
 });
 
 test("duplicate visible labels are accepted only when every match resolves to the same destination",async()=>{
@@ -68,11 +98,11 @@ const completedResult=()=>({status:"completed",finalUrl:"https://example.com/app
 const executeInput={startUrl:"https://example.com/app",allowedDomains:["example.com"],reason:"rendered_content_missing",conversationId:CONVERSATION,runId:RUN,projectId:null};
 
 test("the exact live browser request creates and executes one durable task with immutable authority",async()=>{
-  const message="Use the public browser, not Search or Page Read.\n\nOpen:\nhttps://developers.cloudflare.com/browser-run/\n\nFollow the \u201cGet started\u201d link.\n\nThen tell me the destination title and its first prerequisite.\n\nUse only developers.cloudflare.com and include clickable evidence.",authority=deriveWebAuthority(message),webUsage={calls:0};let browserCalls=0,searches=0,reads=0;
+  const message="Use the public browser, not Search or Page Read.\n\nOpen:\nhttps://developers.cloudflare.com/browser-run/\n\nFollow the visible \u201cGet started\u201d link.\n\nThen tell me the destination title and its first prerequisite.\n\nUse only developers.cloudflare.com and include clickable evidence.",authority=deriveWebAuthority(message),webUsage={calls:0};let browserCalls=0,searches=0,reads=0;
   const result={...completedResult(),finalUrl:"https://developers.cloudflare.com/browser-run/get-started/",domain:"developers.cloudflare.com",title:"Get started - Browser Run",text:"Prerequisites A Cloudflare account.",contentHash:"e".repeat(64)},f=await fixture({browserAdapter:{async run(){browserCalls+=1;return result;}}}),gateway=createWebGateway({storage:f.storage,ownerId:OWNER,browserTaskService:f.service,searchAdapter:{async search(){searches+=1;throw new Error("hosted search must not run");}},pageReader:{async read(){reads+=1;throw new Error("page read must not run");}}});
   const prepared=await gateway.research({query:"Open the supplied public URL and follow the exact visible link",purpose:"general",allowedDomains:["invented.example"],freshnessDays:0,maxSources:1,depth:"quick",readMode:"none",urls:["https://invented.example/"]},{runId:RUN,conversationId:CONVERSATION,webAuthority:authority,webUsage}),tasks=await f.storage.listAutonomyTasks(OWNER);
   const taskRun=await f.storage.getRun(tasks[0].id,OWNER),queuedActivity=await f.storage.listActivity(OWNER,{runId:tasks[0].id});
-  assert.equal(Object.isFrozen(authority),true);assert.equal("calls" in authority,false);assert.equal(webUsage.calls,1);assert.equal(tasks.length,1);assert.equal(prepared.durableTask.id,tasks[0].id);assert.equal(tasks[0].metadata.browserJob.version,2);assert.equal(taskRun.id,tasks[0].id);assert.equal(taskRun.conversationId,CONVERSATION);assert.equal(tasks[0].metadata.terminalReporting.runId,RUN);assert.equal(queuedActivity[0].action,"browser_task_queued");assert.equal(searches,0);assert.equal(reads,0);assert.equal(browserCalls,0);
+  assert.equal(Object.isFrozen(authority),true);assert.equal("calls" in authority,false);assert.deepEqual(authority.navigation,{type:"follow_link_text",label:"Get started"});assert.equal(webUsage.calls,1);assert.equal(tasks.length,1);assert.equal(prepared.durableTask.id,tasks[0].id);assert.equal(tasks[0].metadata.browserJob.version,2);assert.equal(taskRun.id,tasks[0].id);assert.equal(taskRun.conversationId,CONVERSATION);assert.equal(tasks[0].metadata.terminalReporting.runId,RUN);assert.equal(queuedActivity[0].action,"browser_task_queued");assert.equal(searches,0);assert.equal(reads,0);assert.equal(browserCalls,0);
   const completed=await f.service.executeTask(tasks[0].id,{coordinatorId:"certification-worker",expectedVersion:tasks[0].stateVersion}),replayed=await f.service.executeTask(tasks[0].id,{coordinatorId:"certification-worker"}),attempt=await f.storage.getLatestExecutionAttempt(tasks[0].id,OWNER);
   assert.equal(completed.task.status,"completed");assert.equal(completed.result.title,"Get started - Browser Run");assert.equal(browserCalls,1);assert.equal(attempt.generation,1);assert.equal(attempt.status,"completed");assert.equal(replayed.idempotent,true);assert.equal((await f.storage.listAutonomyTasks(OWNER)).length,1);assert.equal((await f.storage.listRuns(OWNER)).filter(run=>run.id===tasks[0].id).length,1);
 });
@@ -112,6 +142,11 @@ test("browser provider/model reservations fail closed and terminal before sessio
 test("one provider crash retry is bounded and authentication blocks terminally without duplicate result",async()=>{
   let calls=0;const retry=await fixture({browserAdapter:{async run(){calls+=1;if(calls===1)throw new BrowserRunError("browser_session_failed","crash");return completedResult();}}}),done=await retry.service.execute({...executeInput,runId:"run-retry"});assert.equal(done.task.status,"completed");assert.equal(calls,2);
   const blocked=await fixture({browserAdapter:{async run(){throw new BrowserRunError("authentication_required","Authentication required.",{stage:"rendered_inspection",domain:"example.com"});}}}),result=await blocked.service.execute({...executeInput,runId:"run-blocked"});assert.equal(result.task.status,"blocked");assert.equal(result.result.code,"authentication_required");assert.equal((await blocked.storage.getLatestExecutionAttempt(result.task.id,OWNER)).status,"blocked");
+});
+
+test("durable auth failures retain only allowlisted structural evidence",async()=>{
+  const safeDiagnostics={stage:"rendered_inspection",domain:"example.com",classification:"structural_auth_wall",signals:["password_input","authentication_heading","secret_input","password_input"],regions:["main","form","raw_dom"],rawDom:"token=never-store"},f=await fixture({browserAdapter:{async run(){throw new BrowserRunError("authentication_required","Authentication required.",safeDiagnostics);}}}),result=await f.service.execute({...executeInput,runId:"run-bounded-auth-diagnostics"});
+  assert.deepEqual(result.result.diagnostics,{stage:"rendered_inspection",domain:"example.com",status:null,providerCode:null,classification:"structural_auth_wall",signals:["password_input","authentication_heading"],regions:["main","form"]});assert.doesNotMatch(JSON.stringify(result.result),/never-store|raw_dom|secret_input/);
 });
 
 test("authentication, CAPTCHA, paywall and robots boundaries remain terminal and never retry",async()=>{
