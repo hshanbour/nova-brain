@@ -9,6 +9,8 @@ import { ApprovalRequiredError } from "../src/policy/action-policy.js";
 import { buildSystemContext, retrieveAgentContext } from "../src/memory/context-retriever.js";
 import { durableTaskRecordsFromMessages } from "../assets/api-client.js";
 import { createTerminalTaskReporter } from "../src/autonomy/terminal-task-reporter.js";
+import { createExecutionTruthService } from "../src/autonomy/execution-truth.js";
+import { createDurableWebResearchService } from "../src/web/durable-web-research.js";
 
 function scriptedProvider(outputs, onGenerate = () => {}) {
   let index = 0;
@@ -583,9 +585,93 @@ test("the original multi-part business research request outranks an unrelated hi
   const response=await agent.run({message,conversationId:"durable-long-web"});assert.equal(prepares,1);assert.equal(models,0);assert.equal(durableRoutes,0);assert.equal(existingRoutes,0);assert.equal(response.durableTask.id,`web_${"7".repeat(32)}`);assert.equal(response.runStatus,"durable_task_created");assert.match(response.message,/Durable public Web research task/);assert.deepEqual(durableTaskRecordsFromMessages(await storage.listMessages("durable-long-web",OWNER_ID),"durable-long-web").map(item=>item.taskId),[`web_${"7".repeat(32)}`]);const activity=await storage.listActivity(OWNER_ID,{runId:response.runId,limit:20});assert.equal(activity.filter(item=>item.action==="public_web_research_handed_off").length,1);
 });
 
+test("the exact long practical-business-tasks request creates durable research before providers despite unrelated workflow history",async()=>{
+  const message=`I want to test your real web-research and browsing ability on practical business tasks.
+
+Use whatever web capabilities you think are appropriate. Do not wait for me to tell you whether to use Search, Page Read, or Browser — choose the right method yourself.
+
+Complete all three parts:
+
+PART 1 — BARBER BOOKING SYSTEMS
+
+I currently know Fresha.
+
+Find 3 strong booking systems used by barbers or salons in the UK that could realistically compete with Fresha.
+
+For each one, find and compare:
+- Current pricing
+- Any booking/customer commission
+- Main features
+- Online booking
+- Payments
+- Customer reminders
+- Staff/team management
+- Marketing features
+- Any important limitations
+
+Use current information from their real websites where possible.
+
+PART 2 — REAL WEBSITE NAVIGATION
+
+Choose one of the booking systems you found.
+
+Actually navigate its official website and find its pricing/plans page.
+
+Tell me:
+- Cheapest paid plan
+- Current price
+- What is included
+- Any important limits
+- Whether there are extra fees
+
+Do not rely only on a search-result summary if the information is available inside the website itself.
+
+PART 3 — MISSED-CALL RECOVERY BUSINESS RESEARCH
+
+Research the UK market for a business service that helps small businesses recover missed phone calls automatically using AI, SMS, WhatsApp, callbacks, or similar automation.
+
+Find 5 real competitors or closely related services.
+
+For each one, tell me:
+- Company/product name
+- What they offer
+- Who they target
+- Pricing if publicly available
+- How their missed-call/recovery workflow works
+- Their main selling point
+
+Then compare them and tell me:
+- What patterns you see in the market
+- What customers appear to be paying for
+- What common gaps or underserved needs you found
+- 3 possible ways a new service could differentiate itself
+
+Do not invent missing prices or features. Clearly say when something is not publicly available.
+
+FINAL OUTPUT
+
+Give me one clear business report with:
+1. Barber booking-system comparison
+2. Website pricing-page findings
+3. Missed-call recovery competitor research
+4. Key opportunities you found
+5. Clickable evidence/sources for the important claims
+
+Keep it practical and easy to understand.
+
+I want the research itself, not an explanation of which tools you used.`,storage=testStorage(),conversationId="exact-long-practical-business-tasks";let gatewayCalls=0,modelCalls=0,existingRoutes=0,durableRoutes=0;
+  const executionTruth=createExecutionTruthService({storage,ownerId:OWNER_ID}),durableResearchTaskService=createDurableWebResearchService({storage,ownerId:OWNER_ID,executionTruth,webGateway:{async research(){gatewayCalls+=1;throw new Error("provider must not run before durable ownership");}},modelProvider:{async generate(){modelCalls+=1;throw new Error("provider must not run before durable ownership");}}});
+  const agent=createTestAgent({storage,toolRegistry:createToolRegistry(),durableResearchTaskService,routeExistingTaskRequest:async()=>{existingRoutes+=1;return{route:"historical_candidate",action:"continue",task:{id:`selfdev_${"8".repeat(32)}`,status:"queued",stateVersion:9}};},routeDurableRequest:async()=>{durableRoutes+=1;throw new Error("historical workflow resolver must not run");},modelProvider:{async generate(){modelCalls+=1;throw new Error("synchronous provider must not run before durable ownership");}}});
+  const response=await agent.run({message,conversationId}),task=await storage.getAutonomyTask(response.durableTask.id,OWNER_ID),taskRun=await storage.getRun(response.durableTask.id,OWNER_ID),steps=await storage.listAutonomySteps(response.durableTask.id),tasks=await storage.listAutonomyTasks(OWNER_ID),approvals=await storage.listApprovals(OWNER_ID);
+  assert.equal(response.runStatus,"durable_task_created");assert.equal(task.taskType,"public_web_research");assert.equal(task.status,"queued");assert.equal(taskRun.conversationId,conversationId);assert.equal(steps.length,1);assert.equal(steps[0].status,"queued");assert.deepEqual({gatewayCalls,modelCalls,existingRoutes,durableRoutes},{gatewayCalls:0,modelCalls:0,existingRoutes:0,durableRoutes:0});assert.deepEqual(tasks.map(item=>item.taskType),["public_web_research"]);assert.equal(approvals.length,0);const activity=await storage.listActivity(OWNER_ID,{runId:response.runId,limit:20});assert.equal(activity.filter(item=>item.action==="public_web_research_handed_off").length,1);
+});
+
 test("natural public-research recognition does not bypass genuine coding workflow routing",()=>{
   const authority=deriveWebAuthority("Research current public sources, then implement a fix in the repository and commit it.");
   assert.equal(authority.explicitResearch,false);
+  assert.equal(deriveWebAuthority("Research public sources for practical business tasks with clickable evidence.").explicitResearch,true);
+  assert.equal(deriveWebAuthority("Use web-research to compare current public sources.").explicitResearch,true);
+  assert.equal(deriveWebAuthority(`Retry exactly this failed coding task: coding_${"a".repeat(32)}.`).explicitResearch,false);
 });
 
 test("unexpected web failures persist only bounded stage and type diagnostics",async()=>{

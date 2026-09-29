@@ -157,10 +157,10 @@ function bindWebCitations(message,sources){
 }
 
 const EXPLICIT_PUBLIC_BROWSER=/\b(?:use|with|via|through)\s+(?:the\s+)?(?:public|remote|isolated)?\s*browser\b|\bpublic\s+browser\b|\b(?:browse|open|inspect|navigate)\b[\s\S]{0,80}\b(?:interactive|rendered|dynamic|browser|javascript)\b|\b(?:interactive|rendered|dynamic|javascript)\b[\s\S]{0,80}\b(?:page|site|website)\b/i;
-const EXPLICIT_PUBLIC_WEB_RESEARCH=/\b(?:use|perform|conduct|do)\s+(?:public\s+)?web\s+research\b|\b(?:search|research)\s+(?:the\s+)?public\s+web\b/i;
+const EXPLICIT_PUBLIC_WEB_RESEARCH=/\b(?:use|perform|conduct|do)\s+(?:public\s+)?web[-\s]+research\b|\b(?:search|research)\s+(?:the\s+)?public\s+web\b/i;
 const NATURAL_PUBLIC_RESEARCH=/\b(?:research|compare|investigate|analyse|analyze|survey|find)\b/i;
-const PUBLIC_RESEARCH_EVIDENCE=/\b(?:current\s+public\s+sources?|public\s+(?:sources?|evidence|information)|clickable\s+(?:evidence|sources?|citations?)|web\s+research(?:\s+(?:depth|capabilit(?:y|ies)|level))?)\b/i;
-const CODING_OR_WORKFLOW_MUTATION=/\b(?:implement|modify|change|fix|debug|refactor|patch|commit|push|deploy|ship|merge|checkout|rebase)\b|\b(?:coding|repository|repo|branch|pull\s+request|workflow|task)\b/i;
+const PUBLIC_RESEARCH_EVIDENCE=/\b(?:current\s+public\s+sources?|public\s+(?:sources?|evidence|information)|clickable\s+(?:evidence|sources?|citations?)|web[-\s]+research(?:\s+(?:depth|capabilit(?:y|ies)|level))?)\b/i;
+const CODING_OR_WORKFLOW_MUTATION=/\b(?:implement|modify|change|fix|debug|refactor|patch|commit|push|deploy|ship|merge|checkout|rebase)\b|\b(?:coding|repository|repo|branch|pull\s+request)\b|\b(?:coding|selfdev|orchestration|shipping)_[a-f0-9]{32}\b|\b(?:retry|resume|cancel|approve|requeue)\b[\s\S]{0,80}\b(?:coding|workflow|task|shipping|deployment)\b/i;
 function isExplicitPublicWebResearch(message){
   const value=String(message||"");
   return EXPLICIT_PUBLIC_WEB_RESEARCH.test(value)||(NATURAL_PUBLIC_RESEARCH.test(value)&&PUBLIC_RESEARCH_EVIDENCE.test(value)&&!CODING_OR_WORKFLOW_MUTATION.test(value));
