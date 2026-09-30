@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createNovaClient, durableTaskIdFromAcknowledgement, durableTaskRecordsFromMessages, isDurableTaskId, NovaApiError } from "../assets/api-client.js";
+import { createNovaClient, durableTaskIdFromAcknowledgement, durableTaskRecordsFromMessages, isDurableTaskId, NovaApiError, terminalTaskReportFromMessages, terminalTaskReportMessageId } from "../assets/api-client.js";
+import { createHash } from "node:crypto";
 import { ownerMemoryClient } from "../assets/memory-client.js";
 
 const jsonResponse = (body, { ok = true, status = 200 } = {}) => ({ ok, status, async json() { return body; } });
@@ -44,6 +45,15 @@ test("conversation reload reconstructs each durable task identity exactly once",
   ], "conversation-1");
   assert.deepEqual(records, [{ taskId: id, conversationId: "conversation-1", startedAt: "2026-09-24T12:00:00.000Z", completedAt: null }]);
   assert.doesNotMatch(JSON.stringify(records), /leaseToken|fingerprint|step input/i);
+});
+
+test("terminal report lookup binds the exact task state instead of relying on report prose", async () => {
+  const task={id:`web_${"c".repeat(32)}`,taskType:"public_web_research",status:"completed",stateVersion:16},expected=`task-report_${createHash("sha256").update(`${task.id}:${task.stateVersion}:${task.status}`).digest("hex").slice(0,48)}`;
+  assert.equal(await terminalTaskReportMessageId(task),expected);
+  const directResearch={id:expected,role:"assistant",content:"# Direct research report\n\nClickable evidence."},wrongTask={id:`task-report_${"d".repeat(48)}`,role:"assistant",content:directResearch.content},acknowledgement={id:"ack",role:"assistant",content:`Durable public Web research task ${task.id} is completed.`};
+  assert.equal(await terminalTaskReportFromMessages([acknowledgement,wrongTask,directResearch],task),directResearch);
+  assert.equal(await terminalTaskReportFromMessages([wrongTask,acknowledgement],task),null);
+  assert.equal(await terminalTaskReportMessageId({...task,status:"running"}),null);
 });
 
 test("console client continues and resets a Nova conversation", async () => {

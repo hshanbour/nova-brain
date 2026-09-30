@@ -1,4 +1,4 @@
-import { createNovaClient, durableTaskRecordsFromMessages, isDurableTaskId } from "./api-client.js";
+import { createNovaClient, durableTaskRecordsFromMessages, isDurableTaskId, terminalTaskReportFromMessages } from "./api-client.js";
 import { ownerMemoryClient } from "./memory-client.js";
 import { selectWorkspace } from "./workspace-navigation.js";
 import { conversationTitle, createConversationHistory } from "./conversation-history.js";
@@ -127,13 +127,13 @@ async function refreshLiveActivity(record){
     const [activityResult,approvalResult]=await Promise.all([ownerMemoryClient.taskActivity(record.taskId).catch(()=>({activity:[]})),task.status==="waiting_for_approval"?ownerMemoryClient.approvals().catch(()=>({approvals:[]})):Promise.resolve({approvals:[]})]);
     renderLiveActivity(record,task,activityResult.activity||[],approvalResult.approvals||[]);
     if(!terminalTaskStates.has(task.status))record.timer=setTimeout(()=>refreshLiveActivity(record),4000);
-    else void syncTerminalTaskReport(record);
+    else void syncTerminalTaskReport(record,task);
   }catch(cause){showLiveActivityError(record,cause.message);record.timer=setTimeout(()=>refreshLiveActivity(record),6000);}
 }
-async function syncTerminalTaskReport(record){
+async function syncTerminalTaskReport(record,task){
   if(record.reportDelivered||record.conversationId!==client.conversationId)return;
   try{
-    const result=await ownerMemoryClient.messages(record.conversationId,{limit:100}),report=(result.messages||[]).find(item=>item.role==="assistant"&&item.content.startsWith(`Task report — ${record.taskId}\n`));
+    const result=await ownerMemoryClient.messages(record.conversationId,{limit:100}),report=await terminalTaskReportFromMessages(result.messages||[],task);
     if(record.conversationId!==client.conversationId)return;
     if(report){if(!messages.querySelector(`[data-message-id="${report.id}"]`))addMessage({id:report.id,role:report.role,text:report.content});record.reportDelivered=true;return;}
   }catch{}

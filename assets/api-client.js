@@ -3,6 +3,7 @@ export class NovaApiError extends Error {
 }
 
 const durableTaskAcknowledgement = /^Durable (?:self-development|coding orchestration|artifact delivery|public web browser|public Web research) task ([a-z]+_[a-f0-9]{32}) is [a-z_]+\. Track it in Activity; Nova's Persistent Local Worker can continue it independently\.$/;
+const terminalTaskStates = new Set(["completed", "failed", "blocked", "cancelled", "expired"]);
 
 export function isDurableTaskId(value) {
   return typeof value === "string" && /^(?:selfdev|orchestration|coding|shipping|web)_[a-f0-9]{32}$/.test(value);
@@ -21,6 +22,20 @@ export function durableTaskRecordsFromMessages(messages, conversationId) {
     if (taskId && !records.has(taskId)) records.set(taskId, { taskId, conversationId: typeof conversationId === "string" ? conversationId : "", startedAt: message.createdAt || null, completedAt: null });
   }
   return [...records.values()];
+}
+
+export async function terminalTaskReportMessageId(task, cryptoImpl = globalThis.crypto) {
+  if (!isDurableTaskId(task?.id) || !terminalTaskStates.has(task?.status) || !Number.isInteger(task?.stateVersion) || task.stateVersion < 0 || !cryptoImpl?.subtle) return null;
+  const input = new TextEncoder().encode(`${task.id}:${task.stateVersion}:${task.status}`);
+  const digest = await cryptoImpl.subtle.digest("SHA-256", input);
+  const hex = [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `task-report_${hex.slice(0, 48)}`;
+}
+
+export async function terminalTaskReportFromMessages(messages, task, cryptoImpl = globalThis.crypto) {
+  const messageId = await terminalTaskReportMessageId(task, cryptoImpl);
+  if (!messageId || !Array.isArray(messages)) return null;
+  return messages.find((message) => message?.id === messageId && message?.role === "assistant" && typeof message?.content === "string") || null;
 }
 
 export function createNovaClient({ fetchImpl = globalThis.fetch, endpoint = "/api/agent" } = {}) {
