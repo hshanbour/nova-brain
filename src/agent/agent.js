@@ -3,6 +3,7 @@ import { buildSpeakerSafeSystemContext, buildSystemContext, retrieveAgentContext
 import { ApprovalRequiredError } from "../policy/action-policy.js";
 import {shouldUseDurableWebResearch} from "../web/durable-web-research.js";
 import {ANSWER_PRESENTATION_GUIDANCE,isConversationLocalTransform,retainConversationLinks} from "./answer-presentation.js";
+import {minimalTransformContext,retrieveConversationTransformSource} from "./conversation-transform-source.js";
 
 export class AgentStepLimitError extends Error {}
 export class AgentToolCallLimitError extends Error {}
@@ -242,10 +243,12 @@ export function createAgent({
       const speakerRestricted = context?.voice === true && verifiedSpeaker?.speaker_label !== "owner";
       const trustedContext=context?.voice===true?{...context,speaker:verifiedSpeaker?.match_status==="confirmed"?{speaker_profile_id:verifiedSpeaker.speaker_profile_id,speaker_label:verifiedSpeaker.speaker_label,match_status:"confirmed",authenticated_identity:verifiedSpeaker.speaker_label==="owner"?"owner":"known_member",speaker_familiarity:"none",anonymous_speaker_id:null}:{speaker_profile_id:null,speaker_label:"unknown",match_status:verifiedSpeaker?.match_status||"unknown",authenticated_identity:"none",speaker_familiarity:verifiedSpeaker?.speaker_familiarity||"none",anonymous_speaker_id:verifiedSpeaker?.anonymous_speaker_id||null}}:context;
       if(context?.voice===true)logger.info("Nova speaker context verified",{requestId,assertionVerified:Boolean(verifiedSpeaker),matchStatus:trustedContext.speaker.match_status,speakerCategory:trustedContext.speaker.speaker_label,recognizedProfileId:trustedContext.speaker.speaker_profile_id,ownerPrivateContext:!speakerRestricted});
-      const [run,conversationHistory,retrieved] = await Promise.all([
+      const transformIntent=!speakerRestricted&&isConversationLocalTransform(message);
+      const [run,conversationHistory,retrieved,transformRetrieval] = await Promise.all([
         storage.createRun({ ownerId, projectId: context.projectId || null, conversationId, goal: message, status: "planning" }),
         speakerRestricted ? Promise.resolve([]) : storage.listMessages(conversationId, ownerId, { limit: historyLimit }),
-        speakerRestricted ? Promise.resolve(null) : retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit })
+        speakerRestricted||transformIntent ? Promise.resolve(null) : retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit }),
+        transformIntent?retrieveConversationTransformSource({storage,ownerId,conversationId,request:message,signal:executionSignal}):Promise.resolve(null),
       ]);
       const contextRetrievalCompletedAt=Date.now();
       executionSignal.throwIfAborted();
@@ -301,16 +304,23 @@ export function createAgent({
       };
 
       try {
-        const conversationTransform=!speakerRestricted&&isConversationLocalTransform(message)&&conversationHistory.some(item=>item.role==="assistant"&&String(item.content||"").trim());
-        if(conversationTransform){
-          const generationStartedAt=Date.now(),generated=await modelProvider.generate({message,context:trustedContext,conversationHistory,tools:[],toolResults:[],systemContext:`${systemContext}\n\nCONVERSATION-LOCAL TRANSFORMATION: Transform only the existing persisted conversation content requested by the owner. The most recent relevant assistant report is the source of truth. Do not research, call tools, create or control a durable task, add facts, or infer missing information. Preserve useful source links exactly as they appear in the source. Follow the requested language, structure, level of detail, and formatting.`,signal:executionSignal,stage:"chat",costContext:{runId:run.id}});
+        if(transformIntent&&!transformRetrieval?.source){
+          const response={id:randomUUID(),conversationId,message:"I couldn't find a previous assistant report or response in this conversation to transform. No Web search or workflow was started.",provider:"conversation_storage",toolCalls:[],steps:0,runId:run.id,runStatus:"completed",timing:{contextRetrievalMs:contextRetrievalCompletedAt-contextRetrievalStartedAt,preModelMs:Date.now()-requestStartedAt,agentFirstResponseMs:0,agentCompleteMs:0,totalMs:Date.now()-requestStartedAt}};
+          await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
+          await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:{message:response.message,providerUsage,conversationTransform:true,sourceMissing:true},completedAt:new Date().toISOString()});
+          await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"conversation_transform_source_missing",status:"completed",summary:"No eligible assistant source existed in the submitted conversation; no tools or workflow routes were used.",metadata:{reason:transformRetrieval?.reason||"not_found",pages:transformRetrieval?.pages||0,messages:transformRetrieval?.messages||0}});
+          return response;
+        }
+        if(transformIntent){
+          const transformSource=transformRetrieval.source,transformHistory=minimalTransformContext(conversationHistory,transformSource);
+          const generationStartedAt=Date.now(),generated=await modelProvider.generate({message,context:trustedContext,conversationHistory:transformHistory,transformSource,tools:[],toolResults:[],systemContext:`${systemContext}\n\nCONVERSATION-LOCAL TRANSFORMATION: Transform only the separately supplied exact persisted assistant source from this authenticated conversation. That source is the source of truth. Recent conversation context is secondary and must not replace it. Do not research, call tools, create or control a durable task, add facts, or infer missing information. Preserve useful source links exactly as they appear in the source. Follow the requested language, structure, level of detail, and formatting.`,signal:executionSignal,stage:"chat",costContext:{runId:run.id}});
           executionSignal.throwIfAborted();validateModelOutput(generated);
           if(generated.type!=="final")throw Object.assign(new Error("Conversation transformation returned an invalid result."),{code:"conversation_transform_invalid"});
           if(generated.providerUsage)providerUsage.push(generated.providerUsage);
-          const modelMessage=retainConversationLinks(enforceSpeakerIdentityContract(generated.message,trustedContext.speaker),conversationHistory),response={id:randomUUID(),conversationId,message:modelMessage,provider:modelProvider.name,toolCalls:[],steps:1,runId:run.id,runStatus:"completed",timing:{contextRetrievalMs:contextRetrievalCompletedAt-contextRetrievalStartedAt,preModelMs:generationStartedAt-requestStartedAt,agentFirstResponseMs:Date.now()-generationStartedAt,agentCompleteMs:Date.now()-generationStartedAt,totalMs:Date.now()-requestStartedAt}};
+          const modelMessage=retainConversationLinks(enforceSpeakerIdentityContract(generated.message,trustedContext.speaker),[transformSource]),response={id:randomUUID(),conversationId,message:modelMessage,provider:modelProvider.name,toolCalls:[],steps:1,runId:run.id,runStatus:"completed",timing:{contextRetrievalMs:contextRetrievalCompletedAt-contextRetrievalStartedAt,preModelMs:generationStartedAt-requestStartedAt,agentFirstResponseMs:Date.now()-generationStartedAt,agentCompleteMs:Date.now()-generationStartedAt,totalMs:Date.now()-requestStartedAt}};
           await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
           await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:1,result:{message:response.message,providerUsage,conversationTransform:true},completedAt:new Date().toISOString()});
-          await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"conversation_transform_completed",status:"completed",summary:"Transformed existing conversation content without tools or durable workflow routing.",metadata:{historyMessages:conversationHistory.length}});
+          await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"conversation_transform_completed",status:"completed",summary:"Transformed an exact persisted same-conversation assistant source without tools or durable workflow routing.",metadata:{historyMessages:transformHistory.length,sourceMessageId:transformSource.id||null,sourceKind:transformRetrieval.reason,pagesScanned:transformRetrieval.pages,messagesScanned:transformRetrieval.messages}});
           return response;
         }
         const durableWebResearch=!speakerRestricted&&durableResearchTaskService&&shouldUseDurableWebResearch(message,webAuthority);
