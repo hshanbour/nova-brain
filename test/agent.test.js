@@ -11,6 +11,7 @@ import { durableTaskRecordsFromMessages } from "../assets/api-client.js";
 import { createTerminalTaskReporter } from "../src/autonomy/terminal-task-reporter.js";
 import { createExecutionTruthService } from "../src/autonomy/execution-truth.js";
 import { createDurableWebResearchService } from "../src/web/durable-web-research.js";
+import {isConversationLocalTransform,retainConversationLinks} from "../src/agent/answer-presentation.js";
 
 function scriptedProvider(outputs, onGenerate = () => {}) {
   let index = 0;
@@ -58,6 +59,31 @@ test("agent returns a stable response and records a conversation turn", async ()
       content: "Nova is ready. I received: Plan a Sharp Cuts campaign"
     }
   ]);
+});
+
+test("Arabic rewrite of a persisted report bypasses Web and durable workflow routing",async()=>{
+  const storage=testStorage(),conversationId="arabic-report-rewrite",registry=createToolRegistry();let webCalls=0,existingRoutes=0,durableRoutes=0;const observed=[];
+  registry.register({name:"web_research",riskLevel:"READ_ONLY",async execute(){webCalls+=1;throw new Error("Web must not run during a conversation-local rewrite");}});
+  await storage.ensureConversation({id:conversationId,ownerId:OWNER_ID,title:"Research report"});
+  await storage.appendMessage({conversationId,ownerId:OWNER_ID,role:"user",content:"Research the UK market."});
+  await storage.appendMessage({conversationId,ownerId:OWNER_ID,role:"assistant",content:"## UK market report\n\nBooksy costs **£40**.\n\n- Limitation: contract terms vary.\n\n[Booksy pricing](https://booksy.com/pricing)"});
+  const request="أعد كتابة التقرير السابق بالكامل باللغة العربية. استخدم فقط التقرير والمعلومات الموجودة بالفعل في هذه المحادثة. لا تعمل بحث جديد";
+  const agent=createTestAgent({storage,toolRegistry:registry,routeExistingTaskRequest:async()=>{existingRoutes+=1;throw new Error("workflow routing must not run");},routeDurableRequest:async()=>{durableRoutes+=1;throw new Error("durable routing must not run");},durableResearchTaskService:{async prepare(){throw new Error("durable Web research must not be created");}},modelProvider:scriptedProvider([{type:"final",message:"## ملخص السوق\n\n- **السعر:** £40\n- **محدودية مهمة:** تختلف شروط العقد.\n\n[أسعار Booksy](https://booksy.com/pricing)\n\n[مصدر مخترع](https://evil.example/)"}],input=>observed.push(input))});
+  const result=await agent.run({message:request,conversationId});
+  assert.equal(result.runStatus,"completed");assert.match(result.message,/ملخص السوق/);assert.match(result.message,/\n- \*\*السعر/);assert.match(result.message,/https:\/\/booksy\.com\/pricing/);assert.doesNotMatch(result.message,/https:\/\/evil\.example/);assert.deepEqual({webCalls,existingRoutes,durableRoutes},{webCalls:0,existingRoutes:0,durableRoutes:0});assert.deepEqual(observed[0].tools,[]);assert.match(observed[0].systemContext,/CONVERSATION-LOCAL TRANSFORMATION/);assert.match(observed[0].systemContext,/short descriptive headings/);assert.match(JSON.stringify(observed[0].conversationHistory),/UK market report/);
+  const tasks=await storage.listAutonomyTasks(OWNER_ID);assert.deepEqual(tasks,[]);const activity=await storage.listActivity(OWNER_ID,{runId:result.runId,limit:20});assert.equal(activity.filter(item=>item.action==="conversation_transform_completed").length,1);
+});
+
+test("English follow-up transforms use conversation history while genuine workflow changes remain outside transform routing",async()=>{
+  assert.equal(isConversationLocalTransform("Summarize the previous answer as five bullets."),true);
+  assert.equal(isConversationLocalTransform("Translate that report into English."),true);
+  assert.equal(isConversationLocalTransform("Implement and deploy the previous report."),false);
+  assert.equal(isConversationLocalTransform("Rewrite the previous report and deploy it."),false);
+  assert.equal(isConversationLocalTransform("Research current prices and summarize them."),false);
+  assert.equal(retainConversationLinks("[Kept](https://example.com/report) [Dropped](https://evil.example/)",[{role:"assistant",content:"[Evidence](https://example.com/report)"}]),"[Kept](https://example.com/report) Dropped");
+  const storage=testStorage(),conversationId="english-report-transform";await storage.ensureConversation({id:conversationId,ownerId:OWNER_ID,title:"Report"});await storage.appendMessage({conversationId,ownerId:OWNER_ID,role:"assistant",content:"# Report\n\nA long existing report."});let durableRoutes=0;
+  const agent=createTestAgent({storage,toolRegistry:createToolRegistry(),routeDurableRequest:async()=>{durableRoutes+=1;return null;},modelProvider:scriptedProvider([{type:"final",message:"## Summary\n\n- First point\n- Second point"}])}),result=await agent.run({message:"Summarize the previous report as short bullets.",conversationId});
+  assert.equal(durableRoutes,0);assert.match(result.message,/## Summary/);assert.match(result.message,/- First point/);
 });
 
 test("explicit engineering intake creates a durable task before any model generation", async () => {

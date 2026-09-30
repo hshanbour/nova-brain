@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { buildSpeakerSafeSystemContext, buildSystemContext, retrieveAgentContext } from "../memory/context-retriever.js";
 import { ApprovalRequiredError } from "../policy/action-policy.js";
 import {shouldUseDurableWebResearch} from "../web/durable-web-research.js";
+import {ANSWER_PRESENTATION_GUIDANCE,isConversationLocalTransform,retainConversationLinks} from "./answer-presentation.js";
 
 export class AgentStepLimitError extends Error {}
 export class AgentToolCallLimitError extends Error {}
@@ -254,7 +255,7 @@ export function createAgent({
         storage.updateRun(run.id,ownerId,{status:"running",currentStep:1})
       ]);
       const baseSystemContext = speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker) : buildSystemContext(retrieved);
-      let systemContext = context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext;
+      let systemContext = `${context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext}\n\n${ANSWER_PRESENTATION_GUIDANCE}`;
       const toolExecutions = [];
       const providerUsage = [];
       const webSources=[];
@@ -300,6 +301,18 @@ export function createAgent({
       };
 
       try {
+        const conversationTransform=!speakerRestricted&&isConversationLocalTransform(message)&&conversationHistory.some(item=>item.role==="assistant"&&String(item.content||"").trim());
+        if(conversationTransform){
+          const generationStartedAt=Date.now(),generated=await modelProvider.generate({message,context:trustedContext,conversationHistory,tools:[],toolResults:[],systemContext:`${systemContext}\n\nCONVERSATION-LOCAL TRANSFORMATION: Transform only the existing persisted conversation content requested by the owner. The most recent relevant assistant report is the source of truth. Do not research, call tools, create or control a durable task, add facts, or infer missing information. Preserve useful source links exactly as they appear in the source. Follow the requested language, structure, level of detail, and formatting.`,signal:executionSignal,stage:"chat",costContext:{runId:run.id}});
+          executionSignal.throwIfAborted();validateModelOutput(generated);
+          if(generated.type!=="final")throw Object.assign(new Error("Conversation transformation returned an invalid result."),{code:"conversation_transform_invalid"});
+          if(generated.providerUsage)providerUsage.push(generated.providerUsage);
+          const modelMessage=retainConversationLinks(enforceSpeakerIdentityContract(generated.message,trustedContext.speaker),conversationHistory),response={id:randomUUID(),conversationId,message:modelMessage,provider:modelProvider.name,toolCalls:[],steps:1,runId:run.id,runStatus:"completed",timing:{contextRetrievalMs:contextRetrievalCompletedAt-contextRetrievalStartedAt,preModelMs:generationStartedAt-requestStartedAt,agentFirstResponseMs:Date.now()-generationStartedAt,agentCompleteMs:Date.now()-generationStartedAt,totalMs:Date.now()-requestStartedAt}};
+          await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
+          await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:1,result:{message:response.message,providerUsage,conversationTransform:true},completedAt:new Date().toISOString()});
+          await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"conversation_transform_completed",status:"completed",summary:"Transformed existing conversation content without tools or durable workflow routing.",metadata:{historyMessages:conversationHistory.length}});
+          return response;
+        }
         const durableWebResearch=!speakerRestricted&&durableResearchTaskService&&shouldUseDurableWebResearch(message,webAuthority);
         const existingTaskRoute=speakerRestricted||durableWebResearch?null:await routeExistingTaskRequest({message,conversationId,context:trustedContext,requestId,signal:executionSignal});
         if(existingTaskRoute){
