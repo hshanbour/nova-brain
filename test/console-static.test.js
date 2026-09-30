@@ -45,9 +45,13 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(consoleJs, /const liveActivity=result\.durableTask\?\.id\?ensureLiveActivity\(result\.durableTask\):null/);
   assert.match(consoleJs, /if\(!liveActivity\)addMessage/);
   assert.match(consoleJs, /renderSafeMarkdown\(body,text\)/);
-  assert.match(consoleJs, /conversationBindingPending = true/);
-  assert.match(consoleJs, /input\.disabled = value \|\| conversationBindingPending/);
-  assert.match(consoleJs, /if \(conversationBindingPending\) return/);
+  assert.match(consoleJs, /createConversationBindingState/);
+  assert.match(consoleJs, /conversationBinding\.queue\(id\)/);
+  assert.match(consoleJs, /conversationBinding\.finish\(client\.conversationId\)/);
+  assert.match(consoleJs, /conversationBinding\.display\(restored\.id\)/);
+  assert.match(consoleJs, /conversationBinding\.canSend\(client\.conversationId\)/);
+  assert.match(consoleJs, /input\.disabled = value \|\| conversationBinding\.pending/);
+  assert.match(consoleJs, /if \(conversationBinding\.pending\) return/);
   assert.match(consoleJs, /artifact_delivery_execute:"Ship approved artifact"/);
   assert.match(consoleJs, /restoreLiveActivities\(storedMessages\)/);
   assert.match(consoleJs, /restoreLiveActivities\(restored\.messages\)/);

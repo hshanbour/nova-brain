@@ -1,7 +1,7 @@
 import { createNovaClient, durableTaskRecordsFromMessages, isDurableTaskId, terminalTaskReportFromMessages } from "./api-client.js";
 import { ownerMemoryClient } from "./memory-client.js";
 import { selectWorkspace } from "./workspace-navigation.js";
-import { conversationTitle, createConversationHistory } from "./conversation-history.js";
+import { conversationTitle, createConversationBindingState, createConversationHistory } from "./conversation-history.js";
 import { MICROPHONE_LANGUAGES, createComposerVoiceControl } from "./voice-input.js";
 import { createVoiceOutput, hasLanguageVoice } from "./voice-output.js";
 import { createVoiceV2Client } from "./voice-v2-client.js";
@@ -28,12 +28,12 @@ const speakerFamiliarity=initialiseSpeakerFamiliarity({document});
 fetch("/api/auth/probe", { method: "POST", credentials: "same-origin" }).catch(() => {});
 fetch("/api/speakers/enroll", { method: "HEAD", credentials: "same-origin" }).catch(() => {});
 let pending = false;
-let conversationBindingPending = true;
 let activeSendController = null;
 let currentProfile;
 let memoryRecords = [];
 const conversationKey = "nova.activeConversationId";
 const conversationHistory = createConversationHistory({ client, api: ownerMemoryClient, key: conversationKey });
+const conversationBinding = createConversationBindingState();
 const recentsDrawer = document.querySelector("#recentsDrawer");
 let voiceMessageSequence = 0;
 let voiceV2;
@@ -154,8 +154,9 @@ function restoreLiveActivities(storedMessages=[]){
   persistLiveActivityRecords();
 }
 
-function clearConversation() {
+function clearConversation(conversationId = null) {
   stopLiveActivityPolling();
+  conversationBinding.display(conversationId);
   messages.querySelectorAll(".message").forEach((message) => message.remove()); welcome.hidden = false;
   requestError.hidden = true; input.value = ""; resizeInput();
 }
@@ -188,13 +189,14 @@ async function refreshRecents() {
 }
 
 async function selectConversation(id) {
-  if (pending || conversationBindingPending) return;
-  conversationBindingPending = true; setPending(false);
+  if (pending) return;
+  if (conversationBinding.pending) { conversationBinding.queue(id); return; }
+  conversationBinding.begin(); setPending(false);
   stopVoiceActivity();
   renderRecentsState("Loading conversation…"); requestError.hidden = true;
   try {
     const storedMessages = await conversationHistory.select(id);
-    clearConversation();
+    clearConversation(id);
     for (const stored of storedMessages) addMessage({ id:stored.id,role: stored.role, text: stored.content });
     restoreLiveActivities(storedMessages);
     if (!storedMessages.length) welcome.hidden = false;
@@ -203,7 +205,8 @@ async function selectConversation(id) {
     requestError.textContent = cause.message || "Conversation history could not be loaded."; requestError.hidden = false;
     await refreshRecents();
   } finally {
-    conversationBindingPending = false; setPending(false);
+    const queued = conversationBinding.finish(client.conversationId); setPending(false);
+    if (queued) void selectConversation(queued);
   }
 }
 
@@ -240,11 +243,12 @@ function addThinking() {
 }
 
 function setPending(value) {
-  pending = value; input.disabled = value || conversationBindingPending; sendButton.disabled = conversationBindingPending;
+  pending = value; input.disabled = value || conversationBinding.pending; sendButton.disabled = conversationBinding.pending;
   sendButton.querySelector("span:first-child").textContent = value ? "Stop" : "Send";
 }
 
 async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,signal,prepareAssistant,context}={}) {
+  if(!conversationBinding.canSend(client.conversationId)){const error=new Error("Wait for the selected conversation to finish loading before sending.");requestError.textContent=error.message;requestError.hidden=false;if(throwOnError)throw error;return;}
   requestError.hidden = true; addMessage({ role: "user", text: message }); addThinking(); setPending(true);
   try {
     const result = await client.send(message,{signal,context});
@@ -268,7 +272,7 @@ async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,si
 
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (conversationBindingPending) return;
+  if (conversationBinding.pending) return;
   if (pending) { activeSendController?.abort(); return; }
   const message = input.value.trim(); if (!message) return;
   voiceControl.commit(); stopVoiceActivity(); input.value = ""; resizeInput();
@@ -302,6 +306,7 @@ document.querySelectorAll("[data-section]").forEach((link) => link.addEventListe
 async function restoreConversation() {
   try {
     const restored = await conversationHistory.restore(); if (!restored) return;
+    conversationBinding.display(restored.id);
     for (const stored of restored.messages) addMessage({ role: stored.role, text: stored.content });
     restoreLiveActivities(restored.messages);
   } catch { requestError.textContent = "The previous conversation could not be restored. You can start a new chat."; requestError.hidden = false; }
@@ -428,7 +433,8 @@ voiceButton.addEventListener("click",(event)=>{if(!voiceV2.isActive())return;eve
 
 setPending(false);
 await restoreConversation();
-conversationBindingPending = false; setPending(false);
+const queuedConversationId=conversationBinding.finish(client.conversationId);setPending(false);
+if(queuedConversationId)await selectConversation(queuedConversationId);
 await refreshRecents();
 showSection(["#projects","#activity","#memory","#tools","#approvals","#voice-benchmark"].includes(location.hash)?location.hash.slice(1):"chat");
 

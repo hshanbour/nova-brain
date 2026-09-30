@@ -13,6 +13,23 @@ export function newestConversations(conversations = []) {
   });
 }
 
+export function createConversationBindingState() {
+  let pending = true, queuedId = null, displayedId = null;
+  return Object.freeze({
+    get pending() { return pending; },
+    get displayedId() { return displayedId; },
+    begin() { pending = true; },
+    display(id) { displayedId = typeof id === "string" && id ? id : null; },
+    queue(id) { if (typeof id === "string" && id) queuedId = id; },
+    finish(activeId) {
+      pending = false;
+      const next = queuedId; queuedId = null;
+      return next && next !== activeId ? next : null;
+    },
+    canSend(activeId) { return !pending && (activeId || null) === displayedId; },
+  });
+}
+
 export function createConversationHistory({ client, api, storage = localStorage, key = defaultKey } = {}) {
   let conversations = [];
   async function refresh() {

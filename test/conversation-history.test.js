@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createNovaClient } from "../assets/api-client.js";
-import { conversationTitle, createConversationHistory, newestConversations } from "../assets/conversation-history.js";
+import { conversationTitle, createConversationBindingState, createConversationHistory, newestConversations } from "../assets/conversation-history.js";
 
 function localState(initial = {}) {
   const values = new Map(Object.entries(initial));
@@ -22,6 +22,16 @@ test("selecting a conversation loads chronological messages and resumes its exac
   const history = createConversationHistory({ client, storage, api: { conversations: async () => ({ conversations: [] }), messages: async () => ({ messages: [{ sequence: 2, content: "reply" }, { sequence: 1, content: "question" }] }) } });
   assert.deepEqual((await history.select("conversation-a")).map(({ content }) => content), ["question", "reply"]);
   assert.equal(client.conversationId, "conversation-a"); assert.equal(storage.getItem("nova.activeConversationId"), "conversation-a");
+});
+
+test("a report selection made during orphan restoration is queued and fences sends until the report is displayed", () => {
+  const binding=createConversationBindingState();
+  binding.display("orphan-transform");binding.queue("persisted-report");
+  assert.equal(binding.canSend("orphan-transform"),false);
+  assert.equal(binding.finish("orphan-transform"),"persisted-report");
+  binding.begin();assert.equal(binding.canSend("persisted-report"),false);
+  binding.display("persisted-report");assert.equal(binding.finish("persisted-report"),null);
+  assert.equal(binding.canSend("persisted-report"),true);assert.equal(binding.canSend("orphan-transform"),false);
 });
 
 test("conversation identity binds before paged history resolves so a visible selection cannot send as a new chat", async () => {
