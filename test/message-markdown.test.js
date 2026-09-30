@@ -39,3 +39,9 @@ test("long persisted-report shape remains structured instead of one raw text blo
   const {container}=fixture(),report="# UK business software research report\n\n## Barber booking systems\n\nThe comparison is based on **current public evidence**.\n\n| System | Pricing | Reminders |\n| --- | --- | --- |\n| Booksy | Public plan | Included |\n\n## Missed-call recovery\n\n- Competitor one\n- Competitor two\n\n[Official source](https://example.com/source)";renderSafeMarkdown(container,report);
   assert.equal(descendants(container,"h1").length,1);assert.equal(descendants(container,"h2").length,2);assert.equal(descendants(container,"table").length,1);assert.equal(descendants(container,"li").length,2);assert.equal(descendants(container,"a").length,1);assert.doesNotMatch(text(descendants(container,"h2")[0]),/^##/);
 });
+
+test("legacy flattened Markdown report cannot turn the entire message into one giant heading",()=>{
+  const {container}=fixture(),legacy=`# UK business software research report ${"pricing and evidence ".repeat(80)} ## Missed-call recovery | Product | Price |`;
+  renderSafeMarkdown(container,legacy);
+  assert.equal(descendants(container,"h1").length,0);assert.equal(descendants(container,"p").length,1);assert.equal(text(container),legacy);
+});

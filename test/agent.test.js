@@ -74,6 +74,39 @@ test("Arabic rewrite of a persisted report bypasses Web and durable workflow rou
   const tasks=await storage.listAutonomyTasks(OWNER_ID);assert.deepEqual(tasks,[]);const activity=await storage.listActivity(OWNER_ID,{runId:result.runId,limit:20});assert.equal(activity.filter(item=>item.action==="conversation_transform_completed").length,1);
 });
 
+test("exact live Arabic follow-up transforms a terminal-reporter message in its bound conversation despite historical workflow candidates",async()=>{
+  const storage=testStorage(),conversationId="persisted-live-research-conversation",taskId=`web_${"8".repeat(32)}`;
+  await storage.ensureConversation({id:conversationId,ownerId:OWNER_ID,title:"Long market research"});
+  let task=await storage.createAutonomyTask({id:taskId,ownerId:OWNER_ID,projectId:null,title:"Public Web research",objective:"Research the UK market",taskType:"public_web_research",metadata:{terminalReporting:{version:1,conversationId,runId:"originating-chat-run"},researchFinalAnswer:"# UK business software research report **Booksy:** current public pricing evidence. [Official pricing](https://booksy.com/pricing) ## Missed-call recovery - Existing market evidence."}});
+  task=await storage.updateAutonomyTask(task.id,OWNER_ID,{status:"completed",currentPhase:"completed",completedAt:new Date().toISOString(),resultSummary:"Completed durable public Web research."},task.stateVersion);
+  const reporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID});assert.deepEqual(await reporter.reconcile(),{enqueued:1,delivered:1});
+  const before=await storage.listMessages(conversationId,OWNER_ID,{limit:20});assert.equal(before.length,1);assert.match(before[0].id,/^task-report_/);assert.equal(before[0].role,"assistant");
+  const request=`أعد كتابة التقرير السابق بالكامل باللغة العربية.
+
+لا تعمل أي بحث جديد.
+استخدم فقط المعلومات والتقرير الموجودين في هذه المحادثة.
+
+بدي الجواب يكون مرتب وواضح ومريح للقراءة، بنفس أسلوب المساعد الجيد:
+
+- عناوين قصيرة وواضحة
+- نقاط تحت كل عنوان
+- فقرات قصيرة
+- أبرز الأسعار والعمولات والقيود المهمة
+- استخدم جدول فقط إذا فعلاً بيسهّل المقارنة
+- لا تحط كتلة نص طويلة
+- لا تكرر نفس المعلومة أكثر من مرة
+- خليك عملي ومباشر
+- خلّي أسماء الشركات والبراندات بالإنجليزي عادي
+- الروابط والمصادر الموجودة تظل قابلة للضغط
+- لا تشرحلي الأدوات اللي استخدمتها
+
+رتبلي التقرير كأني بدي أقرأه بسرعة وأفهم أهم شيء فوراً.`;
+  let existingRoutes=0,durableRoutes=0,webCalls=0;const registry=createToolRegistry();registry.register({name:"web_research",riskLevel:"READ_ONLY",async execute(){webCalls+=1;throw new Error("Web must not run");}});
+  const agent=createTestAgent({storage,toolRegistry:registry,routeExistingTaskRequest:async()=>{existingRoutes+=1;throw new Error("historical workflow must not compete");},routeDurableRequest:async()=>{durableRoutes+=1;throw new Error("durable workflow must not run");},durableResearchTaskService:{async prepare(){throw new Error("durable research must not run");}},modelProvider:scriptedProvider([{type:"final",message:"## ملخص السوق\n\n- **Booksy:** دليل تسعير عام.\n\n[الأسعار الرسمية](https://booksy.com/pricing)"}])});
+  const result=await agent.run({message:request,conversationId});
+  assert.equal(result.runStatus,"completed");assert.deepEqual({existingRoutes,durableRoutes,webCalls},{existingRoutes:0,durableRoutes:0,webCalls:0});assert.match(result.message,/ملخص السوق/);assert.match(result.message,/https:\/\/booksy\.com\/pricing/);assert.deepEqual(await storage.listAutonomyTasks(OWNER_ID),[task]);
+});
+
 test("English follow-up transforms use conversation history while genuine workflow changes remain outside transform routing",async()=>{
   assert.equal(isConversationLocalTransform("Summarize the previous answer as five bullets."),true);
   assert.equal(isConversationLocalTransform("Translate that report into English."),true);

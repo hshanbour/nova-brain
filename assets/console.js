@@ -28,6 +28,7 @@ const speakerFamiliarity=initialiseSpeakerFamiliarity({document});
 fetch("/api/auth/probe", { method: "POST", credentials: "same-origin" }).catch(() => {});
 fetch("/api/speakers/enroll", { method: "HEAD", credentials: "same-origin" }).catch(() => {});
 let pending = false;
+let conversationBindingPending = true;
 let activeSendController = null;
 let currentProfile;
 let memoryRecords = [];
@@ -187,6 +188,8 @@ async function refreshRecents() {
 }
 
 async function selectConversation(id) {
+  if (pending || conversationBindingPending) return;
+  conversationBindingPending = true; setPending(false);
   stopVoiceActivity();
   renderRecentsState("Loading conversation…"); requestError.hidden = true;
   try {
@@ -199,6 +202,8 @@ async function selectConversation(id) {
   } catch (cause) {
     requestError.textContent = cause.message || "Conversation history could not be loaded."; requestError.hidden = false;
     await refreshRecents();
+  } finally {
+    conversationBindingPending = false; setPending(false);
   }
 }
 
@@ -235,7 +240,7 @@ function addThinking() {
 }
 
 function setPending(value) {
-  pending = value; input.disabled = value; sendButton.disabled = false;
+  pending = value; input.disabled = value || conversationBindingPending; sendButton.disabled = conversationBindingPending;
   sendButton.querySelector("span:first-child").textContent = value ? "Stop" : "Send";
 }
 
@@ -263,6 +268,7 @@ async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,si
 
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (conversationBindingPending) return;
   if (pending) { activeSendController?.abort(); return; }
   const message = input.value.trim(); if (!message) return;
   voiceControl.commit(); stopVoiceActivity(); input.value = ""; resizeInput();
@@ -420,7 +426,9 @@ voiceModeButton.addEventListener("click",async()=>{requestError.hidden=true;if(!
 endVoiceButton.addEventListener("click",()=>voiceV2.end());
 voiceButton.addEventListener("click",(event)=>{if(!voiceV2.isActive())return;event.stopImmediatePropagation();requestError.hidden=true;voiceV2.interrupt();},true);
 
+setPending(false);
 await restoreConversation();
+conversationBindingPending = false; setPending(false);
 await refreshRecents();
 showSection(["#projects","#activity","#memory","#tools","#approvals","#voice-benchmark"].includes(location.hash)?location.hash.slice(1):"chat");
 

@@ -3,6 +3,8 @@ const unorderedPattern=/^\s{0,3}[-+*]\s+(.+)$/;
 const orderedPattern=/^\s{0,3}\d+[.)]\s+(.+)$/;
 const tableDividerPattern=/^\s*:?-{3,}:?\s*$/;
 const inlinePattern=/\[([^\]\r\n]{1,300})\]\((https:\/\/[^)\s]+)\)|\*\*([^*\r\n]+)\*\*|`([^`\r\n]+)`|\*([^*\r\n]+)\*/g;
+const maximumHeadingCharacters=240;
+const headingSpec=(line)=>String(line||"").length<=maximumHeadingCharacters?String(line||"").match(headingPattern):null;
 
 function safeHttpsUrl(value){
   try{const url=new URL(value);return url.protocol==="https:"&&!url.username&&!url.password?url:null;}catch{return null;}
@@ -48,7 +50,7 @@ function tableSpec(lines,index){
 
 function startsBlock(lines,index){
   const line=lines[index]||"";
-  return !line.trim()||headingPattern.test(line)||/^\s*```/.test(line)||/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)||unorderedPattern.test(line)||orderedPattern.test(line)||/^\s{0,3}>\s?/.test(line)||Boolean(tableSpec(lines,index));
+  return !line.trim()||Boolean(headingSpec(line))||/^\s*```/.test(line)||/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)||unorderedPattern.test(line)||orderedPattern.test(line)||/^\s{0,3}>\s?/.test(line)||Boolean(tableSpec(lines,index));
 }
 
 export function renderSafeMarkdown(container,text){
@@ -58,7 +60,7 @@ export function renderSafeMarkdown(container,text){
     const line=lines[index];if(!line.trim()){index+=1;continue;}
     const fence=line.match(/^\s*```([^\s`]*)\s*$/);
     if(fence){const content=[];index+=1;while(index<lines.length&&!/^\s*```\s*$/.test(lines[index]))content.push(lines[index++]);if(index<lines.length)index+=1;const pre=document.createElement("pre"),code=document.createElement("code");if(fence[1])code.className=`language-${fence[1].toLowerCase().replace(/[^a-z0-9_-]/g,"")}`;code.textContent=content.join("\n");pre.append(code);container.append(pre);continue;}
-    const heading=line.match(headingPattern);
+    const heading=headingSpec(line);
     if(heading){const node=directional(document.createElement(`h${heading[1].length}`));appendInline(node,heading[2]);container.append(node);index+=1;continue;}
     if(/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)){container.append(document.createElement("hr"));index+=1;continue;}
     const table=tableSpec(lines,index);
