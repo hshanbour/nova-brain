@@ -44,6 +44,7 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(consoleJs, /isDurableTaskId\(item\?\.taskId\)/);
   assert.match(consoleJs, /const liveActivity=result\.durableTask\?\.id\?ensureLiveActivity\(result\.durableTask\):null/);
   assert.match(consoleJs, /if\(!liveActivity\)addMessage/);
+  assert.match(consoleJs, /renderSafeMarkdown\(body,text\)/);
   assert.match(consoleJs, /artifact_delivery_execute:"Ship approved artifact"/);
   assert.match(consoleJs, /restoreLiveActivities\(storedMessages\)/);
   assert.match(consoleJs, /restoreLiveActivities\(restored\.messages\)/);
@@ -75,6 +76,9 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(css, /\.live-activity-card/);
   assert.match(css, /\.live-activity-pulse/);
   assert.match(css, /prefers-reduced-motion:reduce[^}]*\.live-activity-pulse/);
+  assert.match(css, /\.message-markdown h1/);
+  assert.match(css, /\.markdown-table-wrap\{[^}]*overflow-x:auto/);
+  assert.match(css, /\.message-markdown \[dir="auto"\]/);
 });
 
 async function liveActivitySource() {

@@ -61,6 +61,12 @@ test("terminal report bounds and redacts safe failure text",()=>{
   assert.doesNotMatch(message,/super-secret/);assert.match(message,/token=\[REDACTED\]/);assert.ok(message.length<3000);
 });
 
+test("completed durable research preserves bounded Markdown structure while redacting secrets",()=>{
+  const content="# Market report\r\n\r\n## Pricing\r\n\r\n| Product | Price |\r\n| --- | --- |\r\n| Nova | **£10** |\r\n\r\n- [Evidence](https://example.com/pricing)\r\n- token=private-value";
+  const message=renderTerminalTaskReport({id:`web_${"9".repeat(32)}`,taskType:"public_web_research",status:"completed",metadata:{researchFinalAnswer:content}},[]);
+  assert.match(message,/# Market report\n\n## Pricing\n\n\| Product \| Price \|/);assert.match(message,/\*\*£10\*\*/);assert.match(message,/\[Evidence\]\(https:\/\/example\.com\/pricing\)/);assert.match(message,/token=\[REDACTED\]/);assert.doesNotMatch(message,/private-value|\r/);
+});
+
 test("completed browser task answers requested fields directly with exact retained clickable evidence",()=>{
   const url="https://developers.cloudflare.com/browser-run/get-started/",hash="a".repeat(64),task={id:"web_"+"a".repeat(32),taskType:"public_web_browser",status:"completed",metadata:{browserJob:{version:2,allowedDomains:["developers.cloudflare.com"]},browserPresentation:{version:1,requestedFields:["destination_title","first_prerequisite"]},browserResult:{status:"completed",finalUrl:url,domain:"developers.cloudflare.com",title:"Get started · Cloudflare Browser Run docs",text:"Prerequisites To use Browser Run, you need: Sign up for a Cloudflare account. Install Node.js.",contentHash:hash,evidence:[{text:"Prerequisites To use Browser Run, you need: Sign up for a Cloudflare account. Install Node.js.",source:{url,domain:"developers.cloudflare.com",title:"Get started · Cloudflare Browser Run docs",contentHash:hash}}]}}};
   const message=renderTerminalTaskReport(task,[]);

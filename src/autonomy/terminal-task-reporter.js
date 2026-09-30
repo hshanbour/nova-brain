@@ -8,6 +8,14 @@ const bounded=(value,max=500)=>typeof value==="string"?value
   .replace(/\b(?:sk-[A-Za-z0-9_-]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g,"[REDACTED]")
   .replace(/\b(api[_-]?key|token|secret|password)\s*[:=]\s*\S+/gi,"$1=[REDACTED]")
   .replace(/[\u0000-\u001f\u007f]/g," ").replace(/\s+/g," ").trim().slice(0,max):"";
+const boundedMarkdown=(value,max=20_000)=>typeof value==="string"?value
+  .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi,"Bearer [REDACTED]")
+  .replace(/\b(?:sk-[A-Za-z0-9_-]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g,"[REDACTED]")
+  .replace(/\b(api[_-]?key|token|secret|password)\s*[:=]\s*\S+/gi,"$1=[REDACTED]")
+  .replace(/\r\n?/g,"\n")
+  .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g," ")
+  .replace(/[ \t]+\n/g,"\n").replace(/\n{3,}/g,"\n\n")
+  .trim().slice(0,max):"";
 const list=(value,max=20)=>Array.isArray(value)?value.map(item=>bounded(item,300)).filter(Boolean).slice(0,max):[];
 const digest=(value)=>createHash("sha256").update(value).digest("hex");
 const bullet=(items)=>items.map(item=>`- ${item}`).join("\n");
@@ -75,7 +83,7 @@ function testLines(raw,steps){
 export function renderTerminalTaskReport(task,steps=[]){
   if(!task||!TERMINAL.has(task.status))return null;
   if(task.taskType==="public_web_browser"&&task.status==="completed")return renderCompletedBrowserAnswer(task);
-  if(task.taskType==="public_web_research"&&task.status==="completed")return bounded(task.metadata?.researchFinalAnswer||task.resultSummary,20_000);
+  if(task.taskType==="public_web_research"&&task.status==="completed")return boundedMarkdown(task.metadata?.researchFinalAnswer||task.resultSummary,20_000);
   const raw=task.taskType==="coding_delegation"?codingResult(task,steps):task.taskType==="artifact_delivery"?shippingResult(task,steps):task.taskType==="public_web_browser"?browserResult(task):null;
   const summary=bounded(raw?.summary||task.resultSummary||task.blockedReason||({completed:"The durable task completed.",failed:"The durable task failed safely.",blocked:"The durable task is blocked.",cancelled:"The durable task was cancelled.",expired:"The durable task expired."}[task.status]),1200);
   const ordered=[...steps].sort((a,b)=>stepOrdinal(a)-stepOrdinal(b)),apply=[...ordered].reverse().find(step=>step.stepType==="apply_patch"&&step.status==="completed"),commitStep=[...ordered].reverse().find(step=>["commit","integrate_commit"].includes(step.stepType)&&step.status==="completed");
