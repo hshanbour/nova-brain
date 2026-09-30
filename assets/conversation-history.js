@@ -37,20 +37,24 @@ export function createConversationHistory({ client, api, storage = localStorage,
     conversations = newestConversations(Array.isArray(result?.conversations) ? result.conversations : []);
     return conversations;
   }
+  async function load(id) {
+    if (typeof id !== "string" || !id) throw new Error("Conversation is unavailable.");
+    const pages = []; let offset = 0;
+    do {
+      const result = await api.messages(id, { offset, limit: 100 });
+      if (!Array.isArray(result?.messages)) throw new Error("Nova returned unreadable conversation history.");
+      pages.unshift(result.messages); offset = Number.isInteger(result.nextOffset) && result.nextOffset > offset && result.nextOffset <= 100_000 ? result.nextOffset : 0;
+    } while (offset);
+    return pages.flat().sort((left, right) => Number(left.sequence) - Number(right.sequence));
+  }
   async function select(id) {
     if (typeof id !== "string" || !id) throw new Error("Conversation is unavailable.");
     const previousId = client.conversationId;
     client.resume(id);
     try {
-      const pages = []; let offset = 0;
-      do {
-        const result = await api.messages(id, { offset, limit: 100 });
-        if (!Array.isArray(result?.messages)) throw new Error("Nova returned unreadable conversation history.");
-        pages.unshift(result.messages); offset = Number.isInteger(result.nextOffset) && result.nextOffset > offset && result.nextOffset <= 100_000 ? result.nextOffset : 0;
-      } while (offset);
-      const savedMessages = pages.flat();
+      const savedMessages = await load(id);
       storage.setItem(key, id);
-      return savedMessages.sort((left, right) => Number(left.sequence) - Number(right.sequence));
+      return savedMessages;
     } catch (error) {
       client.resume(previousId);
       throw error;
@@ -62,5 +66,5 @@ export function createConversationHistory({ client, api, storage = localStorage,
     try { return { id, messages: await select(id) }; }
     catch (error) { startNew(); throw error; }
   }
-  return Object.freeze({ refresh, select, startNew, restore, get conversations() { return conversations; } });
+  return Object.freeze({ refresh, load, select, startNew, restore, get conversations() { return conversations; } });
 }

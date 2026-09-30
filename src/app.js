@@ -45,6 +45,7 @@ import {createTerminalTaskReporter,isConversationTaskResultQuestion} from "./aut
 import {createArtifactDeliveryService,registerArtifactDeliveryTool} from "./autonomy/artifact-delivery.js";
 import {createTrustedArtifactContinuity,isExplicitTrustedArtifactRequest,isTrustedArtifactContinuationCandidate} from "./autonomy/trusted-artifact-continuity.js";
 import {resolveExplicitCodingRetryRequest} from "./autonomy/explicit-coding-retry.js";
+import {isConversationWorkflowTurn,isSelfDevelopmentWorkflowCandidate} from "./autonomy/conversation-workflow-intent.js";
 import {createExecutionTruthService} from "./autonomy/execution-truth.js";
 import {createVercelPreviewClient} from "./deployment/vercel-preview-client.js";
 import {createOpenAIWebSearchAdapter,createPublicPageReader,createWebGateway,registerWebResearchTool} from "./web/web-gateway.js";
@@ -232,11 +233,13 @@ export function createApp({
     durableResearchTaskService,
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
       if(context?.voice===true)return null;
+      const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message),workflowTurn=isConversationWorkflowTurn(message,{implementationSignal,codingSignal});
       let explicitRetry;
       try{explicitRetry=await resolveExplicitCodingRetryRequest({message,conversationId,runId,loadTask:id=>workerRuntime.get(id),codingExecutor});}
       catch(error){if(error instanceof SelfDevelopmentError)throw error;throw new SelfDevelopmentError(error?.code||"explicit_coding_retry_invalid","Nova could not safely resolve the explicit coding retry target.",error?.statusCode||409,error?.safeDiagnostics);}
       if(explicitRetry)return explicitRetry;
-      const bound=await storage.listConversationBoundTasks(OWNER_ID,conversationId,{limit:20}),historical=artifactContinuity?await artifactContinuity.candidates({limit:8}):[],boundIds=new Set(bound.map(task=>task.id)),boundCandidates=await Promise.all(bound
+      if(!workflowTurn)return null;
+      const bound=(await storage.listConversationBoundTasks(OWNER_ID,conversationId,{limit:20})).filter(isSelfDevelopmentWorkflowCandidate),historical=artifactContinuity?(await artifactContinuity.candidates({limit:8})).filter(isSelfDevelopmentWorkflowCandidate):[],boundIds=new Set(bound.map(task=>task.id)),boundCandidates=await Promise.all(bound
         .filter(task=>!(task.taskType==="coding_orchestration"&&task.metadata?.delegatedTaskId))
         .slice(0,8)
         .map(async task=>({
@@ -261,7 +264,6 @@ export function createApp({
             ...(task.taskType==="coding_delegation"&&task.status==="completed"?["shipping_request"]:[]),
           ],
         }))),historicalCandidates=historical.filter(task=>!boundIds.has(task.id)),explicitTaskId=String(message||"").match(/\bcoding_[a-f0-9]{32}\b/)?.[0]||null,preferred=explicitTaskId?[...boundCandidates,...historicalCandidates].filter(task=>task.id===explicitTaskId):[],workflowCandidates=[...new Map([...preferred,...boundCandidates.slice(0,6),...historicalCandidates].map(task=>[task.id,task])).values()].slice(0,8);
-      const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message);
       if(!workflowCandidates.length&&!implementationSignal&&!codingSignal)return null;
       const executeTransition=async(operation,diagnostics)=>{try{return await operation();}catch(error){error.safeDiagnostics={...error?.safeDiagnostics,...diagnostics,boundary:"transition_execution",reason:typeof error?.code==="string"?error.code.slice(0,120):"transition_failed"};throw error;}},explicitArtifact=explicitTaskId&&historicalCandidates.find(task=>task.id===explicitTaskId);
       if(explicitArtifact&&isExplicitTrustedArtifactRequest(message,explicitTaskId)){const routingDiagnostics={version:1,candidateIds:workflowCandidates.map(item=>item.id),candidateTransitions:workflowCandidates.map(item=>({candidateId:item.id,transitions:[...item.allowedTransitions]})),semanticIntent:"exact_task_action",semanticCandidateId:explicitTaskId,serverDerivedTransition:"artifact_adoption",ignoredFieldNames:[]};return{...(await executeTransition(()=>artifactContinuity.adopt(explicitTaskId,{conversationId,runId,signal}),routingDiagnostics)),providerUsage:null,turnRoute:"artifact_adoption",routingDiagnostics};}

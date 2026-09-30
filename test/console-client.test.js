@@ -67,8 +67,8 @@ test("console client continues and resets a Nova conversation", async () => {
 });
 
 test("console client surfaces safe API errors", async () => {
-  const client = createNovaClient({ fetchImpl: async () => jsonResponse({ error: "Request failed safely." }, { ok: false, status: 502 }) });
-  await assert.rejects(() => client.send("Hello"), (error) => error instanceof NovaApiError && error.status === 502 && error.message === "Request failed safely.");
+  const details={error:"Request failed safely.",requestId:"request-1",runId:"run-1",userMessageId:"user-1",conversationId:"conversation-1"},client = createNovaClient({ fetchImpl: async () => jsonResponse(details, { ok: false, status: 502 }) });
+  await assert.rejects(() => client.send("Hello"), (error) => error instanceof NovaApiError && error.status === 502 && error.message === details.error && error.requestId===details.requestId&&error.runId===details.runId&&error.userMessageId===details.userMessageId&&error.conversationId===details.conversationId);
 });
 
 test("console client handles network and invalid response failures", async () => {

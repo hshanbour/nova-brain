@@ -24,6 +24,19 @@ test("selecting a conversation loads chronological messages and resumes its exac
   assert.equal(client.conversationId, "conversation-a"); assert.equal(storage.getItem("nova.activeConversationId"), "conversation-a");
 });
 
+test("refresh and drawer restoration preserve authoritative persisted message identity",async()=>{
+  const messages=[{id:"assistant-2",sequence:2,role:"assistant",content:"Report"},{id:"user-1",sequence:1,role:"user",content:"Request"}],storage=localState({"nova.activeConversationId":"conversation-a"}),client=createNovaClient({fetchImpl:async()=>{throw new Error("not used");}}),history=createConversationHistory({client,storage,api:{messages:async()=>({messages}),conversations:async()=>({conversations:[]})}});
+  assert.deepEqual((await history.restore()).messages.map(item=>item.id),["user-1","assistant-2"]);
+  assert.deepEqual((await history.select("conversation-a")).map(item=>item.id),["user-1","assistant-2"]);
+});
+
+test("failure reconciliation reloads server truth without changing the submitted conversation binding",async()=>{
+  const calls=[],storage=localState(),client=createNovaClient({fetchImpl:async()=>{throw new Error("not used");}});client.resume("submitted-conversation");
+  const history=createConversationHistory({client,storage,api:{async messages(id){calls.push(id);return{messages:[{id:"old-report",sequence:4,role:"assistant",content:"Existing terminal report"},{id:"failed-user",sequence:5,role:"user",content:"Failed turn"}]};}}});
+  const restored=await history.load("submitted-conversation");
+  assert.equal(client.conversationId,"submitted-conversation");assert.deepEqual(calls,["submitted-conversation"]);assert.deepEqual(restored.map(item=>item.id),["old-report","failed-user"]);
+});
+
 test("a report selection made during orphan restoration is queued and fences sends until the report is displayed", () => {
   const binding=createConversationBindingState();
   binding.display("orphan-transform");binding.queue("persisted-report");

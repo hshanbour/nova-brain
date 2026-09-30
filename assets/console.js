@@ -57,7 +57,7 @@ function stopVoiceActivity() { if(voiceV2?.isActive())voiceV2.end();else voiceOu
 
 function resizeInput() { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 176)}px`; }
 function scrollToLatest() { messages.scrollTo({ top: messages.scrollHeight, behavior: "smooth" }); }
-function timeLabel() { return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date()); }
+function timeLabel(value = new Date()) { const date=new Date(value);return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(Number.isNaN(date.valueOf())?new Date():date); }
 function updatedLabel(value) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? "Saved conversation" : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date); }
 
 const liveActivityStorageKey="nova.liveActivity.v1";
@@ -137,7 +137,7 @@ async function syncTerminalTaskReport(record,task){
   try{
     const result=await ownerMemoryClient.messages(record.conversationId,{limit:100}),report=await terminalTaskReportFromMessages(result.messages||[],task);
     if(record.conversationId!==client.conversationId)return;
-    if(report){if(!messages.querySelector(`[data-message-id="${report.id}"]`))addMessage({id:report.id,role:report.role,text:report.content});record.reportDelivered=true;return;}
+    if(report){addMessage({id:report.id,role:report.role,text:report.content,sequence:report.sequence,createdAt:report.createdAt});record.reportDelivered=true;return;}
   }catch{}
   record.reportAttempts=(record.reportAttempts||0)+1;if(record.reportAttempts<10)record.reportTimer=setTimeout(()=>syncTerminalTaskReport(record),2000);
 }
@@ -154,11 +154,25 @@ function restoreLiveActivities(storedMessages=[]){
   persistLiveActivityRecords();
 }
 
-function clearConversation(conversationId = null) {
+function clearConversation(conversationId = null,{preserveError=false,resetComposer=true}={}) {
   stopLiveActivityPolling();
   conversationBinding.display(conversationId);
   messages.querySelectorAll(".message").forEach((message) => message.remove()); welcome.hidden = false;
-  requestError.hidden = true; input.value = ""; resizeInput();
+  if(!preserveError)requestError.hidden = true;if(resetComposer)input.value = ""; resizeInput();
+}
+
+function renderConversationMessages(conversationId,storedMessages,{preserveError=false,resetComposer=true}={}){
+  clearConversation(conversationId,{preserveError,resetComposer});
+  for(const stored of storedMessages)addMessage({id:stored.id,role:stored.role,text:stored.content,sequence:stored.sequence,createdAt:stored.createdAt});
+  restoreLiveActivities(storedMessages);
+  if(!storedMessages.length)welcome.hidden=false;
+}
+
+async function reconcileConversation(conversationId){
+  if(!conversationId||client.conversationId!==conversationId||conversationBinding.displayedId!==conversationId)return false;
+  const storedMessages=await conversationHistory.load(conversationId);
+  if(client.conversationId!==conversationId||conversationBinding.displayedId!==conversationId)return false;
+  renderConversationMessages(conversationId,storedMessages,{preserveError:true,resetComposer:false});return true;
 }
 
 function recentItems(conversations) {
@@ -196,10 +210,7 @@ async function selectConversation(id) {
   renderRecentsState("Loading conversation…"); requestError.hidden = true;
   try {
     const storedMessages = await conversationHistory.select(id);
-    clearConversation(id);
-    for (const stored of storedMessages) addMessage({ id:stored.id,role: stored.role, text: stored.content });
-    restoreLiveActivities(storedMessages);
-    if (!storedMessages.length) welcome.hidden = false;
+    renderConversationMessages(id,storedMessages);
     recentsDrawer.hidden = true; await refreshRecents(); input.focus();
   } catch (cause) {
     requestError.textContent = cause.message || "Conversation history could not be loaded."; requestError.hidden = false;
@@ -210,15 +221,17 @@ async function selectConversation(id) {
   }
 }
 
-function addMessage({ id,role, text, metadata, autoSpeak = false }) {
+function addMessage({ id,role, text, sequence, createdAt, metadata, autoSpeak = false }) {
+  if(id){const existing=[...messages.querySelectorAll("[data-message-id]")].find(node=>node.dataset.messageId===id);if(existing)return existing;}
   welcome.hidden = true;
   const node = template.content.firstElementChild.cloneNode(true);
   const isNova = role === "assistant";
   if(id)node.dataset.messageId=id;
+  if(Number.isInteger(sequence))node.dataset.sequence=String(sequence);
   node.classList.add(isNova ? "nova-message" : "owner-message");
   node.querySelector(".avatar").textContent = isNova ? "N" : "Y";
   node.querySelector("strong").textContent = isNova ? "Nova" : "You";
-  node.querySelector("time").textContent = timeLabel();
+  node.querySelector("time").textContent = timeLabel(createdAt);
   const body=node.querySelector(".message-body");body.textContent="";if(isNova)renderSafeMarkdown(body,text);else appendSafeLinkedText(body,text);
   if (isNova && voiceOutput.supported) {
     const speak = node.querySelector(".speak-response"); const voiceId = `message-${++voiceMessageSequence}`;
@@ -232,7 +245,8 @@ function addMessage({ id,role, text, metadata, autoSpeak = false }) {
     meta.textContent = `${metadata.provider || "Nova"} · ${stepCount} ${stepCount === 1 ? "step" : "steps"} · ${toolCount} ${toolCount === 1 ? "tool" : "tools"}`;
     meta.hidden = false;
   }
-  messages.append(node); scrollToLatest();
+  const next=Number.isInteger(sequence)?[...messages.querySelectorAll(".message[data-sequence]")].find(item=>Number(item.dataset.sequence)>sequence):null;
+  if(next)messages.insertBefore(node,next);else messages.append(node);scrollToLatest();return node;
 }
 
 function addThinking() {
@@ -249,9 +263,10 @@ function setPending(value) {
 
 async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,signal,prepareAssistant,context}={}) {
   if(!conversationBinding.canSend(client.conversationId)){const error=new Error("Wait for the selected conversation to finish loading before sending.");requestError.textContent=error.message;requestError.hidden=false;if(throwOnError)throw error;return;}
-  requestError.hidden = true; addMessage({ role: "user", text: message }); addThinking(); setPending(true);
+  const submittedConversationId=client.conversationId;requestError.hidden = true;const optimisticUser=addMessage({ role: "user", text: message }); addThinking(); setPending(true);
   try {
     const result = await client.send(message,{signal,context});
+    if(result.userMessageId)optimisticUser.dataset.messageId=result.userMessageId;
     localStorage.setItem(conversationKey, result.conversationId);
     let preparedAssistant; let preparationError;
     if (prepareAssistant) {
@@ -260,12 +275,18 @@ async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,si
     }
     document.querySelector("#thinkingMessage")?.remove();
     const liveActivity=result.durableTask?.id?ensureLiveActivity(result.durableTask):null;
-    if(!liveActivity)addMessage({ role: "assistant", text: result.message, metadata: result, autoSpeak: autoSpeakResponse });
+    if(!liveActivity)addMessage({ id:result.id,role: "assistant", text: result.message, metadata: result, autoSpeak: autoSpeakResponse });
     providerStatus.textContent = `${result.provider || "Agent"} provider · Ready`;
     void refreshRecents(); return { ...result, preparedAssistant, preparationError };
   } catch (error) {
     document.querySelector("#thinkingMessage")?.remove();
-    if(error?.name!=="AbortError"){requestError.textContent = error.message; requestError.hidden = false;}
+    if(error?.name!=="AbortError"){
+      if(error.userMessageId)optimisticUser.dataset.messageId=error.userMessageId;
+      const failedConversationId=error.conversationId||submittedConversationId;
+      if(failedConversationId&&!client.conversationId){client.resume(failedConversationId);localStorage.setItem(conversationKey,failedConversationId);conversationBinding.display(failedConversationId);}
+      requestError.textContent = error.message; requestError.hidden = false;
+      if(failedConversationId)await reconcileConversation(failedConversationId).catch(()=>{});
+    }
     if(throwOnError)throw error;
   } finally { setPending(false); input.focus(); }
 }
@@ -306,9 +327,7 @@ document.querySelectorAll("[data-section]").forEach((link) => link.addEventListe
 async function restoreConversation() {
   try {
     const restored = await conversationHistory.restore(); if (!restored) return;
-    conversationBinding.display(restored.id);
-    for (const stored of restored.messages) addMessage({ role: stored.role, text: stored.content });
-    restoreLiveActivities(restored.messages);
+    renderConversationMessages(restored.id,restored.messages);
   } catch { requestError.textContent = "The previous conversation could not be restored. You can start a new chat."; requestError.hidden = false; }
 }
 

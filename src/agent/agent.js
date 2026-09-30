@@ -217,6 +217,7 @@ export function createAgent({
 
   return Object.freeze({
     async run({ message, conversationId = randomUUID(), context = {}, requestId, signal }) {
+      const userMessageId = randomUUID();
       const executionController = new AbortController();
       const abortFromRequest = () => executionController.abort(requestAbortError(signal?.reason));
       if (signal?.aborted) abortFromRequest();
@@ -253,10 +254,17 @@ export function createAgent({
       const contextRetrievalCompletedAt=Date.now();
       executionSignal.throwIfAborted();
       await Promise.all([
-        storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_created", status: "completed", summary: "Execution run created." }),
-        storage.appendMessage({ conversationId, ownerId, role: "user", content: message }),
+        storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_created", status: "completed", summary: "Execution run created.", metadata: { requestId: requestId || null, userMessageId } }),
+        storage.appendMessage({ id: userMessageId, conversationId, ownerId, role: "user", content: message }),
         storage.updateRun(run.id,ownerId,{status:"running",currentStep:1})
       ]);
+      const persistAssistantMessage=async(response)=>{
+        response.requestId=requestId||null;
+        response.userMessageId=userMessageId;
+        await storage.appendMessage({id:response.id,conversationId,ownerId,role:"assistant",content:response.message});
+        return response;
+      };
+      const correlatedRunResult=(response,extra={})=>({message:response.message,requestId:requestId||null,userMessageId,assistantMessageId:response.id,...extra});
       const baseSystemContext = speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker) : buildSystemContext(retrieved);
       let systemContext = `${context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext}\n\n${ANSWER_PRESENTATION_GUIDANCE}`;
       const toolExecutions = [];
@@ -297,8 +305,8 @@ export function createAgent({
             totalMs: Date.now()-requestStartedAt,
           },
         };
-        await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: response.message });
-        await storage.updateRun(run.id, ownerId, { status: "completed", currentStep: steps, result: { message: response.message, durableTask, providerUsage }, completedAt: new Date().toISOString() });
+        await persistAssistantMessage(response);
+        await storage.updateRun(run.id, ownerId, { status: "completed", currentStep: steps, result: correlatedRunResult(response,{durableTask,providerUsage}), completedAt: new Date().toISOString() });
         await storage.appendActivity({ ownerId, projectId: durableTask.projectId, runId: run.id, action: workflowContinued?"conversation_workflow_transitioned":"durable_task_routed", status: "completed", summary: workflowContinued?`Continued durable task ${durableTask.id}.`:`Created durable task ${durableTask.id}.`, metadata: durableTask });
         return response;
       };
@@ -306,8 +314,8 @@ export function createAgent({
       try {
         if(transformIntent&&!transformRetrieval?.source){
           const response={id:randomUUID(),conversationId,message:"I couldn't find a previous assistant report or response in this conversation to transform. No Web search or workflow was started.",provider:"conversation_storage",toolCalls:[],steps:0,runId:run.id,runStatus:"completed",timing:{contextRetrievalMs:contextRetrievalCompletedAt-contextRetrievalStartedAt,preModelMs:Date.now()-requestStartedAt,agentFirstResponseMs:0,agentCompleteMs:0,totalMs:Date.now()-requestStartedAt}};
-          await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
-          await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:{message:response.message,providerUsage,conversationTransform:true,sourceMissing:true},completedAt:new Date().toISOString()});
+          await persistAssistantMessage(response);
+          await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:correlatedRunResult(response,{providerUsage,conversationTransform:true,sourceMissing:true}),completedAt:new Date().toISOString()});
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"conversation_transform_source_missing",status:"completed",summary:"No eligible assistant source existed in the submitted conversation; no tools or workflow routes were used.",metadata:{reason:transformRetrieval?.reason||"not_found",pages:transformRetrieval?.pages||0,messages:transformRetrieval?.messages||0}});
           return response;
         }
@@ -318,8 +326,8 @@ export function createAgent({
           if(generated.type!=="final")throw Object.assign(new Error("Conversation transformation returned an invalid result."),{code:"conversation_transform_invalid"});
           if(generated.providerUsage)providerUsage.push(generated.providerUsage);
           const modelMessage=retainConversationLinks(enforceSpeakerIdentityContract(generated.message,trustedContext.speaker),[transformSource]),response={id:randomUUID(),conversationId,message:modelMessage,provider:modelProvider.name,toolCalls:[],steps:1,runId:run.id,runStatus:"completed",timing:{contextRetrievalMs:contextRetrievalCompletedAt-contextRetrievalStartedAt,preModelMs:generationStartedAt-requestStartedAt,agentFirstResponseMs:Date.now()-generationStartedAt,agentCompleteMs:Date.now()-generationStartedAt,totalMs:Date.now()-requestStartedAt}};
-          await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
-          await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:1,result:{message:response.message,providerUsage,conversationTransform:true},completedAt:new Date().toISOString()});
+          await persistAssistantMessage(response);
+          await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:1,result:correlatedRunResult(response,{providerUsage,conversationTransform:true}),completedAt:new Date().toISOString()});
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"conversation_transform_completed",status:"completed",summary:"Transformed an exact persisted same-conversation assistant source without tools or durable workflow routing.",metadata:{historyMessages:transformHistory.length,sourceMessageId:transformSource.id||null,sourceKind:transformRetrieval.reason,pagesScanned:transformRetrieval.pages,messagesScanned:transformRetrieval.messages}});
           return response;
         }
@@ -330,8 +338,8 @@ export function createAgent({
           if(existingTaskRoute.action==="report"){
             const response={id:randomUUID(),conversationId,message:existingTaskRoute.message,provider:"durable_runtime",toolCalls:[],steps:0,runId:run.id,runStatus:"task_reported",taskControl:{taskId:task.id,status:task.status,stateVersion:task.stateVersion}};
             await storage.appendActivity({ownerId,projectId:task.projectId||null,runId:run.id,action:"conversation_task_reported",status:"completed",summary:"Returned the conversation-bound durable task report.",metadata:{taskId:task.id,status:task.status,stateVersion:task.stateVersion}});
-            await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
-            await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:{message:response.message,taskControl:response.taskControl,providerUsage},completedAt:new Date().toISOString()});
+            await persistAssistantMessage(response);
+            await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:correlatedRunResult(response,{taskControl:response.taskControl,providerUsage}),completedAt:new Date().toISOString()});
             return response;
           }
           systemContext=`${systemContext}\n\nEXISTING DURABLE TASK CONTROL: This turn targets exactly task ${task.id} at stateVersion ${task.stateVersion}, status ${task.status}, phase ${task.currentPhase||"unknown"}. Do not create a task or broaden authority. Use only the exposed task-bound tools, preserve exact task/version CAS, and fail closed if the requested transition is ineligible.`;
@@ -346,8 +354,8 @@ export function createAgent({
               executionSignal.throwIfAborted();
               const recovered=result?.task||task,taskControl={taskId:task.id,status:recovered.status||null,stateVersion:Number.isInteger(recovered.stateVersion)?recovered.stateVersion:null},response={id:randomUUID(),conversationId,message:`Durable task ${task.id} recovery was accepted. Its current state is ${recovered.status||"queued"}.`,provider:"durable_runtime",toolCalls:[{id:`recovery:${task.id}:${expectedVersion}`,name:"self_development_scope_recover",arguments:arguments_,status:"completed",result:taskControl}],steps:0,runId:run.id,runStatus:"task_recovered",taskControl};
               await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"tool_completed",tool:"self_development_scope_recover",status:"completed",summary:"Bounded task recovery completed.",metadata:{taskId:task.id,expectedVersion}});
-              await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
-              await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:{message:response.message,taskControl:response.taskControl,providerUsage},completedAt:new Date().toISOString()});
+              await persistAssistantMessage(response);
+              await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:correlatedRunResult(response,{taskControl:response.taskControl,providerUsage}),completedAt:new Date().toISOString()});
               return response;
             }catch(error){
               const safeError=safeToolError(error,"self_development_scope_recover");
@@ -369,8 +377,8 @@ export function createAgent({
         if(routingDiagnostics)await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"trusted_turn_routed",status:"completed",summary:"Trusted turn semantics were resolved and the legal transition was derived server-side.",metadata:routingDiagnostics});
         if(durable?.clarificationRequired===true){
           const response={id:randomUUID(),conversationId,message:durable.message,provider:"durable_intake",toolCalls:[],steps:0,runId:run.id,runStatus:"clarification_required"};
-          await storage.appendMessage({conversationId,ownerId,role:"assistant",content:response.message});
-          await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:{message:response.message,providerUsage},completedAt:new Date().toISOString()});
+          await persistAssistantMessage(response);
+          await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:correlatedRunResult(response,{providerUsage}),completedAt:new Date().toISOString()});
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"durable_intake_clarification_required",status:"blocked",summary:"Durable intake requires one user decision."});
           return response;
         }
@@ -438,8 +446,8 @@ export function createAgent({
             ...(webDurableTask?{durableTask:webDurableTask}:{}),
           };
 
-          await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: response.message });
-          await storage.updateRun(run.id, ownerId, { status: "completed", currentStep: step, result: { message: response.message, providerUsage,...(webDurableTask?{durableTask:webDurableTask}:{}) }, completedAt: new Date().toISOString() });
+          await persistAssistantMessage(response);
+          await storage.updateRun(run.id, ownerId, { status: "completed", currentStep: step, result: correlatedRunResult(response,{providerUsage,...(webDurableTask?{durableTask:webDurableTask}:{})}), completedAt: new Date().toISOString() });
           await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_completed", status: "completed", summary: "Nova completed the execution run." });
 
           response.timing.totalMs=Date.now()-requestStartedAt;
@@ -501,9 +509,10 @@ export function createAgent({
                 const parent=await storage.getAutonomyTask(call.arguments.parentTaskId,ownerId);
                 if(parent){const updated=await storage.updateAutonomyTask(parent.id,ownerId,{status:"waiting_for_approval",currentPhase:"approval",approvalState:{approvalId:error.approval.id,approved:false,tool:"coding_job_create",stepId:"delegation:create",arguments:error.approval.arguments}},parent.stateVersion);durableTask={id:updated.id,status:updated.status,projectId:updated.projectId,branch:updated.branch,startingCommit:updated.startingCommit,idempotent:false};approvalMessage=`Durable coding orchestration task ${updated.id} is waiting_for_approval. Track it in Activity; Nova's Persistent Local Worker can continue it independently.`;}
               }
-              await storage.updateRun(run.id, ownerId, { status: "waiting_for_approval", currentStep: step, result: { providerUsage } });
-              await storage.appendMessage({ conversationId, ownerId, role: "assistant", content: approvalMessage });
-              return { id: randomUUID(), conversationId, message: approvalMessage, provider: modelProvider.name, toolCalls: toolExecutions, steps: step, runId: run.id, runStatus: "waiting_for_approval", approval: error.approval,...(durableTask?{durableTask}:{}) };
+              const response={ id: randomUUID(), conversationId, message: approvalMessage, provider: modelProvider.name, toolCalls: toolExecutions, steps: step, runId: run.id, runStatus: "waiting_for_approval", approval: error.approval,...(durableTask?{durableTask}:{}) };
+              await persistAssistantMessage(response);
+              await storage.updateRun(run.id, ownerId, { status: "waiting_for_approval", currentStep: step, result: correlatedRunResult(response,{providerUsage}), });
+              return response;
             }
             execution.status = "failed";
             execution.error = safeToolError(error, call.name);
@@ -526,9 +535,12 @@ export function createAgent({
         const summary = cancelled ? "Synchronous request stopped by the client." : bounded ? error.message : "Execution failed safely.";
         if(error?.providerUsage)providerUsage.push(error.providerUsage);
         const routingFailure=safeRoutingDiagnostics(error?.safeDiagnostics),failureMetadata=routingFailure?{errorCode:typeof error?.code==="string"?error.code.slice(0,120):"structured_turn_invalid",routing:routingFailure}:undefined;
-        await storage.updateRun(run.id, ownerId, { status: cancelled ? "cancelled" : "failed", error: summary,...(failureMetadata||providerUsage.length?{result:{...(failureMetadata?{routingFailure:failureMetadata}:{}),providerUsage}}:{}), completedAt: new Date().toISOString() });
-        await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: cancelled ? "run_cancelled" : "run_failed", status: cancelled ? "cancelled" : "failed", summary,...(failureMetadata?{metadata:failureMetadata}:{}) });
+        await storage.updateRun(run.id, ownerId, { status: cancelled ? "cancelled" : "failed", error: summary,result:{requestId:requestId||null,userMessageId,...(failureMetadata?{routingFailure:failureMetadata}:{}),providerUsage}, completedAt: new Date().toISOString() });
+        await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: cancelled ? "run_cancelled" : "run_failed", status: cancelled ? "cancelled" : "failed", summary,metadata:{requestId:requestId||null,userMessageId,...(failureMetadata||{})} });
         error.runId ||= run.id;
+        error.requestId ||= requestId;
+        error.userMessageId ||= userMessageId;
+        error.conversationId ||= conversationId;
         throw error;
       }
       } finally {

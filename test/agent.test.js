@@ -45,20 +45,32 @@ test("agent returns a stable response and records a conversation turn", async ()
 
   const result = await agent.run({
     message: "Plan a Sharp Cuts campaign",
-    conversationId: "conversation-1"
+    conversationId: "conversation-1",
+    requestId: "request-identity"
   });
 
   assert.equal(result.conversationId, "conversation-1");
   assert.equal(result.provider, "mock");
   assert.equal(result.steps, 1);
   assert.equal(result.message, "Nova is ready. I received: Plan a Sharp Cuts campaign");
-  assert.deepEqual((await storage.listMessages("conversation-1", OWNER_ID)).map(({ role, content }) => ({ role, content })), [
+  const persistedMessages=await storage.listMessages("conversation-1", OWNER_ID);
+  assert.equal(result.requestId,"request-identity");
+  assert.equal(result.userMessageId,persistedMessages[0].id);assert.equal(result.id,persistedMessages[1].id);
+  const persistedRun=await storage.getRun(result.runId,OWNER_ID);assert.deepEqual({userMessageId:persistedRun.result.userMessageId,assistantMessageId:persistedRun.result.assistantMessageId},{userMessageId:result.userMessageId,assistantMessageId:result.id});
+  assert.deepEqual(persistedMessages.map(({ role, content }) => ({ role, content })), [
     { role: "user", content: "Plan a Sharp Cuts campaign" },
     {
       role: "assistant",
       content: "Nova is ready. I received: Plan a Sharp Cuts campaign"
     }
   ]);
+});
+
+test("a failed turn persists and exposes exact request run user-message correlation without inventing an assistant message",async()=>{
+  const storage=testStorage(),agent=createTestAgent({storage,toolRegistry:createToolRegistry(),modelProvider:{name:"broken",async generate(){throw new Error("safe test failure");}}});
+  let failure;try{await agent.run({message:"Ordinary failed turn",conversationId:"failed-correlation",requestId:"request-failed"});}catch(error){failure=error;}
+  assert.equal(failure.requestId,"request-failed");assert.equal(failure.conversationId,"failed-correlation");assert.match(failure.userMessageId,/^[0-9a-f-]{36}$/);assert.match(failure.runId,/^[0-9a-f-]{36}$/);
+  const messages=await storage.listMessages("failed-correlation",OWNER_ID),run=await storage.getRun(failure.runId,OWNER_ID);assert.deepEqual(messages.map(item=>({id:item.id,role:item.role})),[{id:failure.userMessageId,role:"user"}]);assert.deepEqual({requestId:run.result.requestId,userMessageId:run.result.userMessageId},{requestId:failure.requestId,userMessageId:failure.userMessageId});
 });
 
 test("Arabic rewrite of a persisted report bypasses Web and durable workflow routing",async()=>{

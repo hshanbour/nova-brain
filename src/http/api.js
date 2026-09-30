@@ -2126,8 +2126,12 @@ export function createApi({
           sendJson(response, error.statusCode, {
             error: error.message,
             code: error.code,
+            requestId,
+            ...(error.runId ? { runId: error.runId } : {}),
+            ...(error.userMessageId ? { userMessageId: error.userMessageId } : {}),
+            ...(error.conversationId ? { conversationId: error.conversationId } : {}),
             ...(error.safeDiagnostics
-              ? { diagnostics: error.safeDiagnostics, requestId }
+              ? { diagnostics: error.safeDiagnostics }
               : {}),
           });
           return;
@@ -2158,16 +2162,16 @@ export function createApi({
           error instanceof AgentStepLimitError ||
           error instanceof AgentToolCallLimitError
         ) {
-          sendJson(response, 502, { error: error.message });
+          sendJson(response, 502, { error: error.message,requestId,...(error.runId?{runId:error.runId}:{}),...(error.userMessageId?{userMessageId:error.userMessageId}:{}),...(error.conversationId?{conversationId:error.conversationId}:{}) });
           return;
         }
 
         if (error instanceof AgentDeadlineError) {
-          sendJson(response, 504, { error: error.message });
+          sendJson(response, 504, { error: error.message,requestId,...(error.runId?{runId:error.runId}:{}),...(error.userMessageId?{userMessageId:error.userMessageId}:{}),...(error.conversationId?{conversationId:error.conversationId}:{}) });
           return;
         }
         if (error instanceof ModelCostBudgetError) {
-          sendJson(response, 402, { error: error.message, code: error.code, budget: error.status });
+          sendJson(response, 402, { error: error.message, code: error.code, budget: error.status,requestId,...(error.runId?{runId:error.runId}:{}),...(error.userMessageId?{userMessageId:error.userMessageId}:{}),...(error.conversationId?{conversationId:error.conversationId}:{}) });
           return;
         }
         if (error instanceof OpenAIProviderError) {
@@ -2178,7 +2182,7 @@ export function createApi({
               ? "Nova's model provider is temporarily rate limited. Please try again shortly."
               : "Nova's model provider is temporarily unavailable. Please try again.";
           logger.error("Nova model provider unavailable",{requestId,runId:error.runId,upstreamStatus:error.upstreamStatus,diagnostics:error.safeDiagnostics});
-          sendJson(response, 503, { error: message, code: "MODEL_PROVIDER_UNAVAILABLE", requestId });
+          sendJson(response, 503, { error: message, code: "MODEL_PROVIDER_UNAVAILABLE", requestId,...(error.runId?{runId:error.runId}:{}),...(error.userMessageId?{userMessageId:error.userMessageId}:{}),...(error.conversationId?{conversationId:error.conversationId}:{}) });
           return;
         }
         if (error?.name === "AbortError") {
@@ -2196,7 +2200,7 @@ export function createApi({
           detail: error?.safeDetail,
           diagnostics: error?.safeDiagnostics,
         });
-        sendJson(response, 500, { error: "Internal server error" });
+        sendJson(response, 500, { error: "Internal server error", requestId,...(error?.runId?{runId:error.runId}:{}),...(error?.userMessageId?{userMessageId:error.userMessageId}:{}),...(error?.conversationId?{conversationId:error.conversationId}:{}) });
       }
     },
   });

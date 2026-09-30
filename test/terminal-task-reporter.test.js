@@ -54,7 +54,7 @@ test("conversation workflow lookup cannot leak a task into another conversation"
 
 test("read-only result questions route generally while mutation requests do not",()=>{
   for(const message of ["What changed?","Show me the tests.","What commit did it make?","What happened with that task?","Show me the completed result."])assert.equal(isConversationTaskResultQuestion(message),true,message);
-  for(const message of ["Implement the requested change","Retry that task","Cancel that task","How are you?"])assert.equal(isConversationTaskResultQuestion(message),false,message);
+  for(const message of ["Implement the requested change","Retry that task","Cancel that task","How are you?","What happened to Sharp Cuts today?"])assert.equal(isConversationTaskResultQuestion(message),false,message);
 });
 test("terminal report bounds and redacts safe failure text",()=>{
   const message=renderTerminalTaskReport({id:"selfdev_"+"f".repeat(32),status:"failed",stateVersion:2,currentPhase:"planning",errorCode:"safe_failure",blockedReason:`token=super-secret ${"x".repeat(900)}`,metadata:{}},[]);

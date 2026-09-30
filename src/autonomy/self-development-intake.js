@@ -80,6 +80,10 @@ export function createSelfDevelopmentIntake({modelProvider}={}){
       if(workflowId!==null||!implementationFieldsEmpty||!value.clarificationQuestion.trim())reject("clarification_fields_invalid",{semanticIntent:turnIntent,semanticCandidateId:typeof workflowId==="string"?workflowId:null});
       return{route:turnIntent,clarificationQuestion:value.clarificationQuestion.trim(),routingDiagnostics:{...baseDiagnostics,semanticIntent:turnIntent,semanticCandidateId:null,serverDerivedTransition:null,ignoredFieldNames:[]},providerUsage:generated.providerUsage||null};
     }
+    if(turnIntent==="ordinary_chat"){
+      if(workflowId!==null)reject("non_workflow_candidate_present",{semanticIntent:turnIntent,semanticCandidateId:typeof workflowId==="string"?workflowId:null,ignoredFieldNames:ignoredFields});
+      return{route:turnIntent,routingDiagnostics:{...baseDiagnostics,semanticIntent:turnIntent,semanticCandidateId:null,serverDerivedTransition:null,ignoredFieldNames:ignoredFields},providerUsage:generated.providerUsage||null};
+    }
     if(workflowId!==null||!implementationFieldsEmpty||value.clarificationQuestion.trim())reject("non_workflow_fields_present",{semanticIntent:turnIntent,semanticCandidateId:typeof workflowId==="string"?workflowId:null,ignoredFieldNames:ignoredFields});
     return{route:turnIntent,routingDiagnostics:{...baseDiagnostics,semanticIntent:turnIntent,semanticCandidateId:null,serverDerivedTransition:null,ignoredFieldNames:[]},providerUsage:generated.providerUsage||null};
   }

@@ -1,7 +1,7 @@
 import {createHash} from "node:crypto";
 
 const TERMINAL=new Set(["completed","failed","blocked","cancelled","expired"]);
-const RESULT_QUESTION=/\b(?:what\s+(?:changed|happened)|show\s+me|what\s+(?:tests?|commit|files?)|completed\s+(?:result|task)|task\s+(?:result|outcome|status)|result\s+(?:of|from))\b/i;
+const RESULT_QUESTION=/^(?:what\s+changed|show\s+me\s+(?:the\s+)?(?:tests?|commit|files?|completed\s+result)|what\s+(?:tests?|commit|files?)\s+(?:did\s+it\s+make|changed)|what\s+happened\s+(?:with|to)\s+(?:that|this|the)\s+task|(?:completed\s+)?task\s+(?:result|outcome|status)|result\s+(?:of|from)\s+(?:that|this|the)\s+(?:task|workflow)|(?:ما|شو)\s+(?:حالة|نتيجة)\s+(?:المهمة|هالمهمة))[.!؟?\s]*$/iu;
 const MUTATION_REQUEST=/\b(?:implement|build|fix|change|update|edit|modify|deploy|push|retry|resume|recover|cancel|approve|reject)\b/i;
 const bounded=(value,max=500)=>typeof value==="string"?value
   .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi,"Bearer [REDACTED]")

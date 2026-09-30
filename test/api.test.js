@@ -7,6 +7,7 @@ import { OpenAIProviderError } from "../src/providers/openai-model-provider.js";
 import { ModelCostBudgetError } from "../src/providers/model-cost-budget.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import {createSelfDevelopmentIntake} from "../src/autonomy/self-development-intake.js";
+import {OWNER_ID} from "../src/identity/initial-context.js";
 
 test("approved Chat-native coding delegation executes the exact tool and links its child without treating the Chat run as an autonomy task",async()=>{
   const storage=createInMemoryStorage();await storage.initialize({owner:{id:"owner"},projects:[{id:"nova-brain",name:"Nova"}]});
@@ -250,6 +251,17 @@ test("historical drawer shipping language reaches the server-derived adoption tr
   const agent={tools:{list(){return[];}},async run({message}){const routed=await intake.resolveTurn(message,{workflowCandidates:[{id:taskId,taskType:"coding_delegation",status:"completed",stateVersion:6,title:"Recent Conversations drawer accessibility",allowedTransitions:["artifact_adoption"]}]});return{message:"The trusted historical artifact is ready for adoption.",turnRoute:routed.route,workflowId:routed.workflow.id};}},app=createApi({agent,config:{allowedOrigins:[],maxBodyBytes:64*1024},storage:{provider:"memory",durable:false},initialize:async()=>{},ownerId:"owner",logger:{info(){},error(){}}}),res=response();
   await app.handle(request({method:"POST",url:"/api/agent",headers:{"content-type":"application/json"},body:JSON.stringify({message:"Ship the completed Recent Conversations drawer work."})}),res);
   assert.equal(res.statusCode,200);assert.deepEqual(JSON.parse(res.body),{message:"The trusted historical artifact is ready for adoption.",turnRoute:"artifact_adoption",workflowId:taskId});
+});
+
+test("ordinary business and Arabic follow-ups ignore completed bound Web and unrelated coding artifacts",async()=>{
+  const storage=createInMemoryStorage(),conversationId="business-follow-up-after-research",app=createApp({environment:{},storage});await app.initialize();
+  await storage.ensureConversation({id:conversationId,ownerId:OWNER_ID,title:"Business research"});
+  let web=await storage.createAutonomyTask({id:`web_${"1".repeat(32)}`,ownerId:OWNER_ID,projectId:null,title:"Business report",objective:"Research business options",taskType:"public_web_research",metadata:{terminalReporting:{version:1,conversationId,runId:"origin-web"}}});
+  web=await storage.updateAutonomyTask(web.id,OWNER_ID,{status:"completed",currentPhase:"completed",completedAt:new Date().toISOString(),resultSummary:"Research completed."},web.stateVersion);
+  let coding=await storage.createAutonomyTask({id:`coding_${"2".repeat(32)}`,ownerId:OWNER_ID,projectId:"nova-brain",title:"Unrelated coding artifact",objective:"Historical unrelated Console work",taskType:"coding_delegation",branch:"feat/nova-brain-mvp-foundation",startingCommit:"a".repeat(40),metadata:{terminalReporting:{version:1,conversationId,runId:"origin-coding"}}});
+  coding=await storage.updateAutonomyTask(coding.id,OWNER_ID,{status:"completed",currentPhase:"completed",completedAt:new Date().toISOString(),resultSummary:"Coding completed."},coding.stateVersion);
+  for(const message of ["What should I prioritize next for the business?","شو اللي صاير معك"]){const res=response();await app.handle(request({method:"POST",url:"/api/agent",headers:{"content-type":"application/json"},body:JSON.stringify({message,conversationId})}),res);assert.equal(res.statusCode,200,res.body);assert.equal(JSON.parse(res.body).conversationId,conversationId);}
+  assert.equal((await storage.getAutonomyTask(web.id,OWNER_ID)).status,"completed");assert.equal((await storage.getAutonomyTask(coding.id,OWNER_ID)).status,"completed");
 });
 
 test("agent endpoint propagates a disconnected request into synchronous cancellation", async () => {
@@ -1288,7 +1300,7 @@ test("API identifies exhausted model credit without exposing upstream bodies",as
 test("model budget exhaustion returns a safe actionable pre-call error",async()=>{
   const status={budgetId:"authorization-1",authorizedUsd:20,spentUsd:19.9,reservedUsd:0.1,remainingUsd:0},app=createApi({agent:{tools:{list(){return[];}},async run(){throw new ModelCostBudgetError("cost_budget_exhausted",status);}},config:{allowedOrigins:[],maxBodyBytes:64*1024},storage:{provider:"memory",durable:false},initialize:async()=>{},ownerId:"owner",logger:{error(){}}}),res=response();
   await app.handle(request({method:"POST",url:"/api/agent",headers:{"content-type":"application/json"},body:JSON.stringify({message:"hello"})}),res);
-  assert.equal(res.statusCode,402);assert.deepEqual(JSON.parse(res.body),{error:"Nova's authorized model budget is insufficient for the next bounded call. $19.900000 spent, $0.100000 reserved, $20.00 authorized.",code:"cost_budget_exhausted",budget:status});
+  assert.equal(res.statusCode,402);const payload=JSON.parse(res.body);assert.deepEqual({error:payload.error,code:payload.code,budget:payload.budget},{error:"Nova's authorized model budget is insufficient for the next bounded call. $19.900000 spent, $0.100000 reserved, $20.00 authorized.",code:"cost_budget_exhausted",budget:status});assert.match(payload.requestId,/^[0-9a-f-]{36}$/);
 });
 test("model budget status exposes only bounded accounting fields",async()=>{
   const budget={budgetId:"authorization-1",authorizedUsd:20,spentUsd:1,reservedUsd:.5,remainingUsd:18.5},app=createApi({agent:{tools:{list(){return[];}}},config:{allowedOrigins:[],maxBodyBytes:64*1024},storage:{provider:"memory",durable:false},initialize:async()=>{},ownerId:"owner",modelCostController:{async status(taskId){assert.equal(taskId,null);return budget;}},logger:{error(){}}}),res=response();
