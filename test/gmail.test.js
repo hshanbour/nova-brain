@@ -11,6 +11,8 @@ import { SCHEMA_STATEMENTS, SCHEMA_VERSION } from "../src/storage/schema.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { createActionPolicy, ApprovalRequiredError } from "../src/policy/action-policy.js";
 import { INITIAL_OWNER_PROFILE, OWNER_ID } from "../src/identity/initial-context.js";
+import { createAgent } from "../src/agent/agent.js";
+import { isConversationWorkflowTurn, isSelfDevelopmentWorkflowCandidate } from "../src/autonomy/conversation-workflow-intent.js";
 
 const TEST_KEY = Buffer.alloc(32, 7).toString("base64");
 const ENV = Object.freeze({
@@ -147,6 +149,74 @@ test("Gmail read tools search and read bounded thread content", async () => {
   assert.equal(search.messages[0].subject, "Test");
   const thread = await service.readThread({ threadId: "t1" });
   assert.equal(thread.messages[0].body, "Arabic English mixed message مرحبا Nova");
+});
+
+test("email test and approval wording bypasses a completed historical coding artifact and prepares only an internal draft", async () => {
+  const request=`Prepare a test email to hamodehshanbour@yahoo.com with the subject “Nova Email V1 Test” and the body “This is the first real email sent through Nova Email V1.”
+
+Do not send it yet. Show me the exact email and wait for my explicit approval before sending.`;
+  const baseStorage=createInMemoryStorage();
+  await baseStorage.initialize({owner:INITIAL_OWNER_PROFILE});
+  const p=provider();
+  let sendIntentClaims=0;
+  const storage={...baseStorage,async claimGmailSendIntent(...args){sendIntentClaims+=1;return baseStorage.claimGmailSendIntent(...args);}};
+  const service=createGmailService({config:readConfig(ENV),storage,ownerId:OWNER_ID,fetchImpl:p.fetchImpl,logger:{warn(){},error(){}}});
+  const historicalId=`coding_${"9".repeat(32)}`;
+  let historical=await storage.createAutonomyTask({id:historicalId,ownerId:OWNER_ID,projectId:"nova-brain",title:"Completed Console implementation",objective:"Implement a prior Console change",taskType:"coding_delegation",metadata:{}});
+  historical=await storage.updateAutonomyTask(historical.id,OWNER_ID,{status:"completed",currentPhase:"completed",completedAt:new Date().toISOString()},historical.stateVersion);
+
+  const registry=createToolRegistry({policy:createActionPolicy({storage,ownerId:OWNER_ID,approvedBranch:"feature"})});
+  registerGmailTools(registry,{service});
+  let workflowRouteCalls=0;
+  const generated=[];
+  const modelProvider={
+    name:"scripted",
+    async generate(input){
+      generated.push(input);
+      if(generated.length===1)return{type:"tool_calls",continuationToken:"gmail-draft",toolCalls:[{id:"prepare-email",name:"gmail_draft_prepare",arguments:{to:["hamodehshanbour@yahoo.com"],cc:[],bcc:[],subject:"Nova Email V1 Test",body:"This is the first real email sent through Nova Email V1."}}]};
+      return{type:"final",message:"To: hamodehshanbour@yahoo.com\nSubject: Nova Email V1 Test\n\nThis is the first real email sent through Nova Email V1.\n\nThis draft has not been sent."};
+    },
+  };
+  const agent=createAgent({
+    storage,
+    ownerId:OWNER_ID,
+    modelProvider,
+    toolRegistry:registry,
+    routeDurableRequest:async({message})=>{
+      const candidates=(await storage.listAutonomyTasks(OWNER_ID)).filter(isSelfDevelopmentWorkflowCandidate);
+      assert.deepEqual(candidates.map(item=>item.id),[historicalId]);
+      if(!isConversationWorkflowTurn(message))return null;
+      workflowRouteCalls+=1;
+      throw new Error("ordinary email drafting must not enter workflow intake");
+    },
+  });
+
+  const result=await agent.run({message:request,conversationId:"gmail-routing-regression"});
+
+  assert.equal(workflowRouteCalls,0);
+  assert.equal(generated.length,2);
+  assert.equal(generated[0].tools.some(tool=>tool.name==="gmail_draft_prepare"),true);
+  assert.equal(generated[0].tools.some(tool=>tool.name==="gmail_send"),true);
+  assert.deepEqual(result.toolCalls.map(call=>call.name),["gmail_draft_prepare"]);
+  const draftId=result.toolCalls[0].result.id;
+  assert.deepEqual(await storage.getGmailDraft(draftId,OWNER_ID),{
+    id:draftId,
+    ownerId:OWNER_ID,
+    to:["hamodehshanbour@yahoo.com"],
+    cc:[],
+    bcc:[],
+    subject:"Nova Email V1 Test",
+    body:"This is the first real email sent through Nova Email V1.",
+    threadId:null,
+    inReplyTo:null,
+    references:null,
+    intentHash:result.toolCalls[0].result.intentHash,
+    createdAt:(await storage.getGmailDraft(draftId,OWNER_ID)).createdAt,
+  });
+  assert.equal(result.toolCalls.some(call=>call.name==="gmail_send"),false);
+  assert.deepEqual(await storage.listApprovals(OWNER_ID),[]);
+  assert.equal(sendIntentClaims,0);
+  assert.equal(p.calls.filter(call=>call.url.endsWith("/messages/send")).length,0);
 });
 
 function sendArguments(draft) {

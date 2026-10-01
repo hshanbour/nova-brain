@@ -10,6 +10,19 @@ test("stored candidates cannot activate workflow routing for an ordinary current
   assert.equal(isSelfDevelopmentWorkflowCandidate({id:`coding_${"b".repeat(32)}`}),true);
 });
 
+test("generic email test and approval wording stays outside workflow routing",()=>{
+  const request=`Prepare a test email to hamodehshanbour@yahoo.com with the subject “Nova Email V1 Test” and the body “This is the first real email sent through Nova Email V1.”
+
+Do not send it yet. Show me the exact email and wait for my explicit approval before sending.`;
+  assert.equal(isConversationWorkflowTurn(request),false);
+  assert.equal(isConversationWorkflowTurn("test"),false);
+  assert.equal(isConversationWorkflowTurn("approval"),false);
+  assert.equal(isConversationWorkflowTurn("approve"),false);
+  assert.equal(isConversationWorkflowTurn("test approval approve"),false);
+  assert.equal(isConversationWorkflowTurn("Prepare a test email and wait for approval."),false);
+  assert.equal(isConversationWorkflowTurn("Show this approval before sending."),false);
+});
+
 test("only a current workflow reference or implementation signal opens trusted workflow resolution",()=>{
   assert.equal(isConversationWorkflowTurn("Continue it."),true);
   assert.equal(isConversationWorkflowTurn("Why is the shipping task blocked?"),true);
