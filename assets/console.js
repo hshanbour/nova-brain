@@ -263,9 +263,10 @@ function setPending(value) {
 
 async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,signal,prepareAssistant,context}={}) {
   if(!conversationBinding.canSend(client.conversationId)){const error=new Error("Wait for the selected conversation to finish loading before sending.");requestError.textContent=error.message;requestError.hidden=false;if(throwOnError)throw error;return;}
-  const submittedConversationId=client.conversationId;requestError.hidden = true;const optimisticUser=addMessage({ role: "user", text: message }); addThinking(); setPending(true);
+  const submittedConversationId=client.conversationId,submittedBinding=conversationBinding.capture();requestError.hidden = true;const optimisticUser=addMessage({ role: "user", text: message }); addThinking(); setPending(true);
   try {
     const result = await client.send(message,{signal,context});
+    if(!conversationBinding.adopt(submittedBinding,submittedConversationId,result.conversationId)){client.resume(conversationBinding.displayedId||undefined);throw new DOMException("The displayed conversation changed before this response completed.","AbortError");}
     if(result.userMessageId)optimisticUser.dataset.messageId=result.userMessageId;
     localStorage.setItem(conversationKey, result.conversationId);
     let preparedAssistant; let preparationError;

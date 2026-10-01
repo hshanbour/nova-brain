@@ -73,6 +73,37 @@ test("sending after reopening appends to the same conversation id", async () => 
   assert.deepEqual(requests, [{ message: "Continue this chat", conversationId: "conversation-a" }]);
 });
 
+test("a new chat adopts the first persisted id before an immediate second turn", async () => {
+  const requests = [];
+  const client = createNovaClient({ fetchImpl: async (_url, options) => {
+    const payload = JSON.parse(options.body); requests.push(payload);
+    return { ok: true, status: 200, async json() { return { message: "ok", conversationId: "new-conversation" }; } };
+  } });
+  const binding = createConversationBindingState(); binding.finish(undefined);
+
+  const firstSnapshot = binding.capture();
+  const first = await client.send("Prepare an internal email draft");
+  assert.equal(binding.adopt(firstSnapshot, undefined, first.conversationId), true);
+  assert.equal(binding.displayedId, "new-conversation");
+  assert.equal(binding.canSend(client.conversationId), true);
+
+  const secondSnapshot = binding.capture();
+  const second = await client.send("Send this email");
+  assert.equal(binding.adopt(secondSnapshot, "new-conversation", second.conversationId), true);
+  assert.deepEqual(requests, [
+    { message: "Prepare an internal email draft" },
+    { message: "Send this email", conversationId: "new-conversation" },
+  ]);
+});
+
+test("a stale first-turn response cannot rebind a newly selected conversation", () => {
+  const binding = createConversationBindingState(); binding.finish(undefined);
+  const submitted = binding.capture();
+  binding.display("selected-conversation");
+  assert.equal(binding.adopt(submitted, undefined, "late-new-conversation"), false);
+  assert.equal(binding.displayedId, "selected-conversation");
+});
+
 test("New Conversation preserves recents and creates no conversation until send", async () => {
   const storage = localState({ "nova.activeConversationId": "conversation-a" }); const client = createNovaClient({ fetchImpl: async () => { throw new Error("not used"); } }); client.resume("conversation-a");
   const history = createConversationHistory({ client, storage, api: { conversations: async () => ({ conversations: [{ id: "conversation-a" }] }) } });

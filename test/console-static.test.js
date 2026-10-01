@@ -50,6 +50,8 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(consoleJs, /conversationBinding\.finish\(client\.conversationId\)/);
   assert.match(consoleJs, /renderConversationMessages\(restored\.id,restored\.messages\)/);
   assert.match(consoleJs, /conversationBinding\.canSend\(client\.conversationId\)/);
+  assert.match(consoleJs, /submittedBinding=conversationBinding\.capture\(\)/);
+  assert.match(consoleJs, /conversationBinding\.adopt\(submittedBinding,submittedConversationId,result\.conversationId\)/);
   assert.match(consoleJs, /input\.disabled = value \|\| conversationBinding\.pending/);
   assert.match(consoleJs, /if \(conversationBinding\.pending\) return/);
   assert.match(consoleJs, /artifact_delivery_execute:"Ship approved artifact"/);

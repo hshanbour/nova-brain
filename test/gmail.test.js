@@ -7,6 +7,7 @@ import { createGmailService, GMAIL_SCOPES } from "../src/email/gmail-service.js"
 import { createTokenCipher, decodeGmailEncryptionKey } from "../src/email/token-crypto.js";
 import { registerGmailTools } from "../src/email/gmail-tools.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
+import { createPostgresStorage } from "../src/storage/postgres-storage.js";
 import { SCHEMA_STATEMENTS, SCHEMA_VERSION } from "../src/storage/schema.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { createActionPolicy, ApprovalRequiredError } from "../src/policy/action-policy.js";
@@ -241,6 +242,151 @@ test("gmail_send requires approval containing the exact immutable message and pr
   assert.equal(repeated.idempotent, true);
   assert.equal(p.calls.filter((call) => call.url.endsWith("/messages/send")).length, 1);
   await assert.rejects(() => registry.execute("gmail_send", { ...args, body: "Changed after approval" }, { approvalId: pending.id }), (error) => error.code === "gmail_send_intent_mismatch");
+});
+
+test("a prepared draft resolves across a refreshed agent turn and stops at immutable send approval", async () => {
+  const { service, storage, provider: p } = await fixture();
+  await connect(service);
+  const conversationId = "gmail-multi-turn";
+  const policy = createActionPolicy({ storage, ownerId: OWNER_ID, approvedBranch: "feature" });
+  const firstRegistry = createToolRegistry({ policy }); registerGmailTools(firstRegistry, { service });
+  let firstCalls = 0;
+  const firstAgent = createAgent({ storage, ownerId: OWNER_ID, toolRegistry: firstRegistry, modelProvider: {
+    name: "prepare-script",
+    async generate() {
+      firstCalls += 1;
+      if (firstCalls === 1) return { type: "tool_calls", continuationToken: "prepared", toolCalls: [{ id: "prepare", name: "gmail_draft_prepare", arguments: { to: ["hamodehshanbour@yahoo.com"], cc: [], bcc: [], subject: "Nova Email V1 Test", body: "This is the first real email sent through Nova Email V1." } }] };
+      return { type: "final", message: "The internal draft is ready and has not been sent." };
+    },
+  } });
+  const prepared = await firstAgent.run({ message: "Prepare this email but do not send it.", conversationId });
+  const originalDraft = prepared.toolCalls[0].result;
+
+  const refreshedRegistry = createToolRegistry({ policy }); registerGmailTools(refreshedRegistry, { service });
+  let secondCalls = 0;
+  const secondAgent = createAgent({ storage, ownerId: OWNER_ID, toolRegistry: refreshedRegistry, modelProvider: {
+    name: "continuation-script",
+    async generate(input) {
+      secondCalls += 1;
+      if (secondCalls === 1) {
+        assert.match(input.systemContext, /first call gmail_draft_current/i);
+        return { type: "tool_calls", continuationToken: "resolved", toolCalls: [{ id: "current", name: "gmail_draft_current", arguments: {} }] };
+      }
+      const exact = input.toolResults[0].output.result;
+      assert.deepEqual(exact, { draftId: originalDraft.id, intentHash: originalDraft.intentHash, to: originalDraft.to, cc: [], bcc: [], subject: originalDraft.subject, body: originalDraft.body });
+      return { type: "tool_calls", continuationToken: "approval", toolCalls: [{ id: "send", name: "gmail_send", arguments: exact }] };
+    },
+  } });
+  const pending = await secondAgent.run({ message: "Send it now.", conversationId });
+
+  assert.deepEqual(pending.toolCalls.map(({ name }) => name), ["gmail_draft_current", "gmail_send"]);
+  assert.equal(pending.toolCalls.some(({ name }) => name === "gmail_search" || name === "gmail_draft_prepare"), false);
+  assert.equal(pending.runStatus, "waiting_for_approval");
+  assert.deepEqual(pending.approval.arguments, sendArguments(originalDraft));
+  assert.equal(p.calls.filter((call) => call.url.endsWith("/messages/send")).length, 0);
+
+  await storage.decideApproval(pending.approval.id, OWNER_ID, "approved");
+  const afterRefreshRegistry = createToolRegistry({ policy }); registerGmailTools(afterRefreshRegistry, { service });
+  const sent = await afterRefreshRegistry.execute("gmail_send", pending.approval.arguments, { approvalId: pending.approval.id, runId: pending.runId, conversationId });
+  const repeated = await afterRefreshRegistry.execute("gmail_send", pending.approval.arguments, { approvalId: pending.approval.id, runId: pending.runId, conversationId });
+  assert.equal(sent.sent, true); assert.equal(repeated.idempotent, true);
+  assert.equal(p.calls.filter((call) => call.url.endsWith("/messages/send")).length, 1);
+});
+
+test("current draft resolution is owner and conversation isolated and fails closed on ambiguity", async () => {
+  const { service, storage } = await fixture();
+  const prepareIn = async (conversationId, subject) => {
+    const run = await storage.createRun({ ownerId: OWNER_ID, conversationId, goal: subject, status: "running" });
+    return service.prepareDraft({ to: ["customer@example.com"], subject, body: `Body for ${subject}` }, { runId: run.id });
+  };
+  const only = await prepareIn("one-draft", "Only draft");
+  assert.equal((await service.currentDraft({}, { conversationId: "one-draft" })).draftId, only.id);
+  await assert.rejects(() => service.currentDraft({}, { conversationId: "different-conversation" }), (error) => error.code === "gmail_draft_not_found");
+
+  const foreignRun = await storage.createRun({ ownerId: "another-owner", conversationId: "foreign-only", goal: "Foreign", status: "running" });
+  const foreign = await storage.createGmailDraft({ id: "foreign-draft", ownerId: "another-owner", to: ["other@example.com"], cc: [], bcc: [], subject: "Foreign", body: "Private", threadId: null, inReplyTo: null, references: null, intentHash: "foreign-hash" });
+  await storage.appendActivity({ ownerId: "another-owner", runId: foreignRun.id, action: "gmail_draft_prepared", tool: "gmail_draft_prepare", status: "completed", summary: "Foreign", metadata: { draftId: foreign.id } });
+  await assert.rejects(() => service.currentDraft({}, { conversationId: "foreign-only" }), (error) => error.code === "gmail_draft_not_found");
+
+  await prepareIn("ambiguous", "First"); await prepareIn("ambiguous", "Second");
+  await assert.rejects(() => service.currentDraft({}, { conversationId: "ambiguous" }), (error) => error.code === "gmail_draft_ambiguous");
+});
+
+test("PostgreSQL current-draft lookup is bounded to exact owner and conversation through the preparing run", async () => {
+  const queries = [], row = { id: "draft-postgres", owner_id: OWNER_ID, to_recipients: ["customer@example.com"], cc_recipients: [], bcc_recipients: [], subject: "Stored", body: "Exact", thread_id: null, in_reply_to: null, references_header: null, intent_hash: "a".repeat(64), created_at: "2026-10-01T10:00:00.000Z" };
+  const storage = createPostgresStorage({ sqlClient: { async query(text, params) { queries.push({ text, params }); return [row]; } } });
+  const drafts = await storage.listConversationGmailDrafts(OWNER_ID, "exact-conversation", { limit: 2 });
+  assert.equal(drafts[0].id, row.id);
+  assert.deepEqual(queries[0].params, [OWNER_ID, "exact-conversation", 2]);
+  assert.match(queries[0].text, /event\.owner_id=\$1 AND execution\.conversation_id=\$2/);
+  assert.match(queries[0].text, /execution\.owner_id=event\.owner_id/);
+  assert.match(queries[0].text, /draft\.owner_id=event\.owner_id/);
+  assert.match(queries[0].text, /GROUP BY draft\.id ORDER BY MAX\(event\.sequence\) DESC/);
+});
+
+test("Gmail tool failures persist only bounded safe diagnostics", async () => {
+  const { service, storage } = await fixture();
+  const registry = createToolRegistry({ policy: createActionPolicy({ storage, ownerId: OWNER_ID, approvedBranch: "feature" }) }); registerGmailTools(registry, { service });
+  let calls = 0;
+  const agent = createAgent({ storage, ownerId: OWNER_ID, toolRegistry: registry, modelProvider: {
+    name: "invalid-gmail-script",
+    async generate() {
+      calls += 1;
+      if (calls === 1) return { type: "tool_calls", continuationToken: "invalid", toolCalls: [{ id: "bad-draft", name: "gmail_draft_prepare", arguments: { to: [], subject: "private-subject", body: "private-body-must-not-leak" } }] };
+      return { type: "final", message: "The draft could not be prepared safely." };
+    },
+  } });
+  await agent.run({ message: "Prepare the email.", conversationId: "safe-diagnostics" });
+  const failed = (await storage.listActivity(OWNER_ID)).find((event) => event.action === "tool_failed" && event.tool === "gmail_draft_prepare");
+  assert.equal(failed.metadata.error.code, "gmail_input_invalid");
+  assert.equal(failed.metadata.error.diagnostics.fieldPath, "gmail_draft_prepare.to");
+  assert.equal(failed.metadata.error.diagnostics.validationCode, "input_invalid");
+  assert.doesNotMatch(JSON.stringify(failed), /private-subject|private-body-must-not-leak/);
+});
+
+test("Gmail diagnostics distinguish schema provider and storage failures without content leakage", async () => {
+  const cases = [
+    {
+      name: "gmail_draft_prepare", arguments: { to: "recipient-private@example.com", subject: "schema-private", body: "schema-body-private" },
+      service: {}, expectedCode: "schema_mismatch", expectedCategory: undefined,
+    },
+    {
+      name: "gmail_search", arguments: { query: "provider-private-query" },
+      service: { async search() { throw Object.assign(new Error("private provider response"), { code: "gmail_provider_error", category: "provider" }); } }, expectedCode: "gmail_provider_error", expectedCategory: "provider",
+    },
+    {
+      name: "gmail_draft_prepare", arguments: { to: ["storage-private@example.com"], subject: "storage-private", body: "storage-body-private" },
+      service: { async prepareDraft() { throw new Error("private postgres failure detail"); } }, expectedCode: "gmail_storage_failure", expectedCategory: undefined,
+    },
+  ];
+  for (const item of cases) {
+    const storage = createInMemoryStorage(); await storage.initialize({ owner: INITIAL_OWNER_PROFILE });
+    const registry = createToolRegistry({ policy: createActionPolicy({ storage, ownerId: OWNER_ID, approvedBranch: "feature" }) });
+    registerGmailTools(registry, { service: item.service });
+    let calls = 0;
+    const agent = createAgent({ storage, ownerId: OWNER_ID, toolRegistry: registry, modelProvider: { name: "diagnostic-script", async generate() {
+      calls += 1;
+      return calls === 1
+        ? { type: "tool_calls", continuationToken: "failed", toolCalls: [{ id: `failure-${item.expectedCode}`, name: item.name, arguments: item.arguments }] }
+        : { type: "final", message: "The Gmail operation failed safely." };
+    } } });
+    await agent.run({ message: "Run the bounded Gmail diagnostic.", conversationId: `diagnostic-${item.expectedCode}` });
+    const failed = (await storage.listActivity(OWNER_ID)).find((event) => event.action === "tool_failed");
+    assert.equal(failed.metadata.error.code, item.expectedCode);
+    assert.equal(failed.metadata.error.diagnostics?.category, item.expectedCategory);
+    assert.doesNotMatch(JSON.stringify(failed), /recipient-private|schema-private|schema-body-private|provider-private|private provider|storage-private|storage-body-private|private postgres/);
+  }
+});
+
+test("rejecting a Gmail send approval never invokes the provider", async () => {
+  const { service, storage, provider: p } = await fixture(); await connect(service);
+  const registry = createToolRegistry({ policy: createActionPolicy({ storage, ownerId: OWNER_ID, approvedBranch: "feature" }) }); registerGmailTools(registry, { service });
+  const draft = await registry.execute("gmail_draft_prepare", { to: ["customer@example.com"], subject: "Reject", body: "Do not send" }, {});
+  let approval;
+  await assert.rejects(() => registry.execute("gmail_send", sendArguments(draft), {}), (error) => { approval = error.approval; return error instanceof ApprovalRequiredError; });
+  await storage.decideApproval(approval.id, OWNER_ID, "rejected");
+  await assert.rejects(() => registry.execute("gmail_send", sendArguments(draft), { approvalId: approval.id }), /does not authorize/i);
+  assert.equal(p.calls.filter((call) => call.url.endsWith("/messages/send")).length, 0);
 });
 
 test("ambiguous Gmail send outcome is durable and never automatically retried", async () => {

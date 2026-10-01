@@ -46,6 +46,15 @@ function validateModelOutput(output) {
 
 function safeToolError(error, name) {
   if (error?.message === `Unknown tool: ${name}`) return error.message;
+  if(name.startsWith("gmail_")){
+    const recognized=typeof error?.code==="string"&&/^(?:gmail_[a-z0-9_]+|schema_mismatch)$/.test(error.code),code=recognized?error.code:"gmail_storage_failure",diagnostics={};
+    if(typeof error?.category==="string"&&/^[a-z_]{1,40}$/.test(error.category))diagnostics.category=error.category;
+    if(typeof error?.safeDiagnostics?.fieldPath==="string")diagnostics.fieldPath=error.safeDiagnostics.fieldPath.slice(0,120);
+    if(typeof error?.safeDiagnostics?.validationCode==="string")diagnostics.validationCode=error.safeDiagnostics.validationCode.slice(0,80);
+    if(Array.isArray(error?.safeDiagnostics?.argumentKeys))diagnostics.argumentKeys=error.safeDiagnostics.argumentKeys.filter(value=>typeof value==="string").slice(0,12).map(value=>value.slice(0,40));
+    if(code==="gmail_input_invalid"&&!diagnostics.fieldPath){const field=String(error?.message||"").match(/\b(to|cc|bcc|subject|body|threadId|inReplyTo|references)\b/)?.[1];if(field)diagnostics.fieldPath=`${name}.${field}`;diagnostics.validationCode="input_invalid";}
+    return{code,message:"Gmail tool request failed safely.",...(Object.keys(diagnostics).length?{diagnostics}:{})};
+  }
   if(name==="self_development_scope_recover"){
     const codes={
       version_conflict:"stale_version",
@@ -122,6 +131,7 @@ function toolActivityMetadata(name,args,error){
     return metadata;
   }
   if(name==="web_research")return error&&typeof error==="object"?{error}:undefined;
+  if(name.startsWith("gmail_"))return error&&typeof error==="object"?{error}:undefined;
   if(name!=="self_development_scope_recover")return undefined;
   const metadata={taskId:String(args?.taskId||"").slice(0,100),expectedVersion:Number.isInteger(args?.expectedVersion)?args.expectedVersion:null};
   if(error&&typeof error==="object")metadata.error=error;
@@ -402,6 +412,7 @@ export function createAgent({
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"public_web_turn_routed",status:"completed",summary:"Explicit public Web research bypassed unrelated durable workflow candidates.",metadata:{domainCount:webAuthority.ownerDomains.length,autonomousDeep:webAuthority.autonomousDeep===true}});
         }
         if(!allowedTaskTools&&readOnlyToolNames.has("web_research"))systemContext=`${systemContext}\n\nAUTONOMOUS PUBLIC WEB RESEARCH: Public read-only Search, Page Read, Browser, and deep research are already authorized within their existing server-enforced cost ceilings. Choose the cheapest sufficient depth, but use one deep web_research call for a broad multi-source comparison instead of retrying weaker calls. Never ask for approval merely because research is deep. Call web_research at most once, use no more than 8 sources, and let the server fail closed if the existing $0.50 deep-research operation cap or any global/task budget cannot cover the reservation. This authority never permits login, private data access, forms, messaging, purchases, or any external write.`;
+        if(!allowedTaskTools&&readOnlyToolNames.has("gmail_draft_current"))systemContext=`${systemContext}\n\nGMAIL DRAFT CONTINUATION: When the owner refers to an already-prepared email with language such as send it, send this, send this email, or send the draft, first call gmail_draft_current with no arguments. Use only its exact immutable result for gmail_send. Do not use gmail_search, do not call gmail_draft_prepare again, and do not reconstruct the email from conversation text. The chat request may request the sensitive action but never counts as the formal approval decision; gmail_send must stop at the existing owner Approval boundary.`;
         if (durable?.task) {
           return completeDurableSelfDevelopment({ task: durable.task, idempotent: durable.idempotent, workflowContinued: durable.workflowContinued===true });
         }

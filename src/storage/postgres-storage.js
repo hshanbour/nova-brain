@@ -1230,6 +1230,17 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
     async getGmailDraft(id, ownerId) {
       return gmailDraftRow((await run("SELECT * FROM nova_gmail_drafts WHERE id=$1 AND owner_id=$2", [id, ownerId]))[0]);
     },
+    async listConversationGmailDrafts(ownerId, conversationId, { limit = 2 } = {}) {
+      return (await run(
+        `SELECT draft.* FROM nova_activity_events event
+         JOIN nova_execution_runs execution ON execution.id=event.run_id AND execution.owner_id=event.owner_id
+         JOIN nova_gmail_drafts draft ON draft.id=event.metadata->>'draftId' AND draft.owner_id=event.owner_id
+         WHERE event.owner_id=$1 AND execution.conversation_id=$2
+           AND event.action='gmail_draft_prepared' AND event.tool='gmail_draft_prepare' AND event.status='completed'
+         GROUP BY draft.id ORDER BY MAX(event.sequence) DESC,draft.id ASC LIMIT $3`,
+        [ownerId, conversationId, limit],
+      )).map(gmailDraftRow);
+    },
     async claimGmailSendIntent(input) {
       const rows = await run(
         `WITH inserted AS (

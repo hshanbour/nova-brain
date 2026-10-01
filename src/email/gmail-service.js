@@ -304,6 +304,24 @@ export function createGmailService({
       await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: context.runId || null, action: "gmail_draft_prepared", tool: "gmail_draft_prepare", status: "completed", summary: "Prepared an internal Nova email draft.", metadata: { draftId: saved.id, recipientCount: saved.to.length + saved.cc.length + saved.bcc.length } });
       return saved;
     },
+    async currentDraft(_input, context = {}) {
+      if (typeof context.conversationId !== "string" || !context.conversationId)
+        throw new GmailError("A conversation-bound Gmail draft is required.", { code: "gmail_draft_not_found", statusCode: 404, category: "state" });
+      const candidates = await storage.listConversationGmailDrafts(ownerId, context.conversationId, { limit: 2 });
+      if (candidates.length === 0)
+        throw new GmailError("No prepared Gmail draft exists in this conversation.", { code: "gmail_draft_not_found", statusCode: 404, category: "state" });
+      if (candidates.length !== 1)
+        throw new GmailError("More than one prepared Gmail draft exists in this conversation.", { code: "gmail_draft_ambiguous", statusCode: 409, category: "state" });
+      const [draft] = candidates;
+      return {
+        draftId: draft.id, intentHash: draft.intentHash,
+        to: draft.to, cc: draft.cc, bcc: draft.bcc,
+        subject: draft.subject, body: draft.body,
+        ...(draft.threadId ? { threadId: draft.threadId } : {}),
+        ...(draft.inReplyTo ? { inReplyTo: draft.inReplyTo } : {}),
+        ...(draft.references ? { references: draft.references } : {}),
+      };
+    },
     async validateSend(input) {
       const draft = normalizeDraft(input);
       const stored = await storage.getGmailDraft(input.draftId, ownerId);

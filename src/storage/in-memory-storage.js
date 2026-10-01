@@ -917,6 +917,19 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const draft = gmailDrafts.get(id);
       return copy(draft?.ownerId === ownerId ? draft : null);
     },
+    async listConversationGmailDrafts(ownerId, conversationId, { limit = 2 } = {}) {
+      const seen = new Set();
+      return activity
+        .filter((event) => event.ownerId === ownerId && event.action === "gmail_draft_prepared" && event.tool === "gmail_draft_prepare" && event.status === "completed")
+        .sort((left, right) => right.sequence - left.sequence)
+        .flatMap((event) => {
+          const run = runs.get(event.runId), draftId = event.metadata?.draftId, draft = gmailDrafts.get(draftId);
+          if (run?.ownerId !== ownerId || run.conversationId !== conversationId || draft?.ownerId !== ownerId || seen.has(draftId)) return [];
+          seen.add(draftId); return [draft];
+        })
+        .slice(0, limit)
+        .map(copy);
+    },
     async claimGmailSendIntent(input) {
       const existing = gmailSendIntents.get(input.id) || [...gmailSendIntents.values()].find((item) => item.ownerId === input.ownerId && item.draftId === input.draftId);
       if (existing) return { inserted: false, intent: copy(existing) };

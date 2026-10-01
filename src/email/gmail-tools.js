@@ -25,6 +25,11 @@ export function registerGmailTools(registry, { service }) {
     execute: (input, context) => service.prepareDraft(input, context),
   });
   registry.register({
+    ...common, name: "gmail_draft_current", description: "Resolve the one exact internal Nova email draft previously prepared in this authenticated conversation. Use this before gmail_send when the owner says send it, send this email, or send the draft. Never search Gmail or reconstruct the email instead.", riskLevel: RISK_LEVELS.READ_ONLY,
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    execute: (input, context) => service.currentDraft(input, context),
+  });
+  registry.register({
     ...common, name: "gmail_send", description: "Send one exact immutable internal Nova draft through Gmail. Always requires explicit owner approval.", riskLevel: RISK_LEVELS.SENSITIVE,
     approvalReason: "Send this exact email through Nova's connected Gmail mailbox.",
     inputSchema: { type: "object", properties: { draftId: { type: "string" }, intentHash: { type: "string" }, ...draftProperties }, required: ["draftId", "intentHash", "to", "cc", "bcc", "subject", "body"], additionalProperties: false },

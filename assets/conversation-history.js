@@ -14,12 +14,20 @@ export function newestConversations(conversations = []) {
 }
 
 export function createConversationBindingState() {
-  let pending = true, queuedId = null, displayedId = null;
+  let pending = true, queuedId = null, displayedId = null, revision = 0;
   return Object.freeze({
     get pending() { return pending; },
     get displayedId() { return displayedId; },
+    get revision() { return revision; },
     begin() { pending = true; },
-    display(id) { displayedId = typeof id === "string" && id ? id : null; },
+    display(id) { displayedId = typeof id === "string" && id ? id : null; revision += 1; },
+    capture() { return Object.freeze({ displayedId, revision }); },
+    adopt(snapshot, activeId, returnedId) {
+      const normalizedActiveId = typeof activeId === "string" && activeId ? activeId : null;
+      if (!snapshot || snapshot.revision !== revision || snapshot.displayedId !== displayedId || displayedId !== normalizedActiveId || typeof returnedId !== "string" || !returnedId) return false;
+      if (normalizedActiveId && normalizedActiveId !== returnedId) return false;
+      displayedId = returnedId; revision += 1; return true;
+    },
     queue(id) { if (typeof id === "string" && id) queuedId = id; },
     finish(activeId) {
       pending = false;
