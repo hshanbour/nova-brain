@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 
 const EMAIL = /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/;
 const HEADER_VALUE = /^[^\r\n]*$/;
+const HEADER_CONTROL = /[\r\n\x00-\x1f\x7f]/;
+const MESSAGE_ID = /^<[^<>\s]+>$/;
 
 function text(value, name, max, { allowEmpty = false } = {}) {
   if (typeof value !== "string") throw invalid(`${name} must be a string.`);
@@ -36,6 +38,53 @@ function subject(value) {
 
 function invalid(message) {
   return Object.assign(new Error(message), { code: "gmail_input_invalid", statusCode: 400 });
+}
+
+export function normalizeSingleMailbox(value, name = "mailbox") {
+  if (typeof value !== "string" || !value.trim() || value.length > 998 || HEADER_CONTROL.test(value))
+    throw invalid(`${name} contains an invalid mailbox.`);
+  const normalized = value.trim();
+  if (EMAIL.test(normalized)) return normalized.toLowerCase();
+  const match = normalized.match(/^([^<>]*)<([^<>]+)>$/);
+  if (!match || !match[1].trim() || !EMAIL.test(match[2].trim()))
+    throw invalid(`${name} contains an invalid or ambiguous mailbox.`);
+  return match[2].trim().toLowerCase();
+}
+
+export function normalizeRfcMessageId(value, name = "messageId") {
+  if (typeof value !== "string" || value.length > 998 || HEADER_CONTROL.test(value) || !MESSAGE_ID.test(value.trim()))
+    throw invalid(`${name} contains an invalid RFC Message-ID.`);
+  return value.trim();
+}
+
+export function deriveReplySubject(value) {
+  const normalized = subject(value ?? "");
+  const withoutPrefixes = normalized.replace(/^(?:\s*re\s*:\s*)+/i, "");
+  return withoutPrefixes ? `Re: ${withoutPrefixes}` : "Re:";
+}
+
+export function deriveReplyReferences(value, sourceMessageId, { maxCount = 20, maxLength = 900 } = {}) {
+  const source = normalizeRfcMessageId(sourceMessageId, "messageId");
+  let tokens = [];
+  if (value !== undefined && value !== null && value !== "") {
+    if (typeof value !== "string" || value.length > 10_000 || HEADER_CONTROL.test(value))
+      throw invalid("references contains invalid header characters.");
+    const normalized = value.trim();
+    if (!normalized || !/^<[^<>\s]+>(?:\s+<[^<>\s]+>)*$/.test(normalized))
+      throw invalid("references contains invalid message identifiers.");
+    tokens = normalized.split(/\s+/);
+  }
+  const seen = new Set();
+  tokens = [...tokens, source].filter((token) => {
+    const key = token.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  tokens = tokens.slice(-maxCount);
+  while (tokens.length > 1 && tokens.join(" ").length > maxLength) tokens.shift();
+  if (tokens.join(" ").length > maxLength) throw invalid("references is too long.");
+  return tokens.join(" ");
 }
 
 export function normalizeDraft(input) {
@@ -110,6 +159,7 @@ export function extractMessage(payload) {
     .replace(/&gt;/gi, ">");
   return {
     from: headers.from || null,
+    replyTo: headers["reply-to"] || null,
     to: headers.to || null,
     cc: headers.cc || null,
     subject: headers.subject || null,

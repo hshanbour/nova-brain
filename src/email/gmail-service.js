@@ -1,5 +1,14 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { buildRawEmail, draftIntentHash, extractMessage, normalizeDraft } from "./mime.js";
+import {
+  buildRawEmail,
+  deriveReplyReferences,
+  deriveReplySubject,
+  draftIntentHash,
+  extractMessage,
+  normalizeDraft,
+  normalizeRfcMessageId,
+  normalizeSingleMailbox,
+} from "./mime.js";
 import { createTokenCipher, decodeGmailEncryptionKey } from "./token-crypto.js";
 
 export const GMAIL_SCOPES = Object.freeze([
@@ -123,6 +132,23 @@ export function createGmailService({
         Authorization: `Bearer ${token}`,
       },
     }, operation);
+  }
+
+  function gmailId(value, name) {
+    if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value))
+      throw Object.assign(new Error(`A valid Gmail ${name} is required.`), { code: "gmail_input_invalid", statusCode: 400 });
+    return value;
+  }
+
+  async function loadThread(threadId) {
+    return gmailJson(`/threads/${encodeURIComponent(gmailId(threadId, "thread ID"))}?format=full`, {}, "thread read");
+  }
+
+  async function persistDraft(draft, context, tool) {
+    const intentHash = draftIntentHash(draft);
+    const saved = await storage.createGmailDraft({ id: `email_${randomUUIDImpl().replaceAll("-", "")}`, ownerId, ...draft, intentHash });
+    await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: context.runId || null, action: "gmail_draft_prepared", tool, status: "completed", summary: "Prepared an internal Nova email draft.", metadata: { draftId: saved.id, recipientCount: saved.to.length + saved.cc.length + saved.bcc.length } });
+    return saved;
   }
 
   async function revokeCredential(token) {
@@ -285,9 +311,8 @@ export function createGmailService({
       return { query: query.trim(), messages, resultCount: messages.length };
     },
     async readThread({ threadId }, context = {}) {
-      if (typeof threadId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(threadId))
-        throw Object.assign(new Error("A valid Gmail thread ID is required."), { code: "gmail_input_invalid", statusCode: 400 });
-      const thread = await gmailJson(`/threads/${encodeURIComponent(threadId)}?format=full`, {}, "thread read");
+      gmailId(threadId, "thread ID");
+      const thread = await loadThread(threadId);
       const messages = (thread.messages || []).slice(-50).map((item) => ({
         id: item.id,
         threadId: item.threadId,
@@ -299,19 +324,40 @@ export function createGmailService({
     },
     async prepareDraft(input, context = {}) {
       const draft = normalizeDraft(input);
-      const intentHash = draftIntentHash(draft);
-      const saved = await storage.createGmailDraft({ id: `email_${randomUUIDImpl().replaceAll("-", "")}`, ownerId, ...draft, intentHash });
-      await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: context.runId || null, action: "gmail_draft_prepared", tool: "gmail_draft_prepare", status: "completed", summary: "Prepared an internal Nova email draft.", metadata: { draftId: saved.id, recipientCount: saved.to.length + saved.cc.length + saved.bcc.length } });
-      return saved;
+      return persistDraft(draft, context, "gmail_draft_prepare");
+    },
+    async prepareReplyDraft({ threadId, sourceMessageId, body }, context = {}) {
+      const exactThreadId = gmailId(threadId, "thread ID");
+      const exactSourceMessageId = gmailId(sourceMessageId, "source message ID");
+      const thread = await loadThread(exactThreadId);
+      if (thread?.id !== exactThreadId)
+        throw new GmailError("The Gmail reply thread could not be verified.", { code: "gmail_reply_thread_mismatch", statusCode: 409, category: "state" });
+      const sourceItem = (thread.messages || []).find((item) => item?.id === exactSourceMessageId);
+      if (!sourceItem || sourceItem.threadId !== exactThreadId)
+        throw new GmailError("The selected Gmail source message does not belong to this thread.", { code: "gmail_reply_source_not_found", statusCode: 404, category: "state" });
+      const source = { id: sourceItem.id, threadId: sourceItem.threadId, ...extractMessage(sourceItem.payload) };
+      const destination = normalizeSingleMailbox(source.replyTo || source.from, source.replyTo ? "replyTo" : "from");
+      if (destination === gmail.accountEmail.toLowerCase())
+        throw new GmailError("Nova will not prepare a reply addressed only to its own Gmail mailbox.", { code: "gmail_reply_self_recipient", statusCode: 400, category: "validation" });
+      const inReplyTo = normalizeRfcMessageId(source.messageId, "messageId");
+      const draft = normalizeDraft({
+        to: [destination],
+        cc: [],
+        bcc: [],
+        subject: deriveReplySubject(source.subject),
+        body,
+        threadId: exactThreadId,
+        inReplyTo,
+        references: deriveReplyReferences(source.references, inReplyTo),
+      });
+      return persistDraft(draft, context, "gmail_reply_draft_prepare");
     },
     async currentDraft(_input, context = {}) {
       if (typeof context.conversationId !== "string" || !context.conversationId)
         throw new GmailError("A conversation-bound Gmail draft is required.", { code: "gmail_draft_not_found", statusCode: 404, category: "state" });
-      const candidates = await storage.listConversationGmailDrafts(ownerId, context.conversationId, { limit: 2 });
+      const candidates = await storage.listConversationGmailDrafts(ownerId, context.conversationId, { limit: 1 });
       if (candidates.length === 0)
         throw new GmailError("No prepared Gmail draft exists in this conversation.", { code: "gmail_draft_not_found", statusCode: 404, category: "state" });
-      if (candidates.length !== 1)
-        throw new GmailError("More than one prepared Gmail draft exists in this conversation.", { code: "gmail_draft_ambiguous", statusCode: 409, category: "state" });
       const [draft] = candidates;
       return {
         draftId: draft.id, intentHash: draft.intentHash,

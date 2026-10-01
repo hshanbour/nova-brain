@@ -25,7 +25,12 @@ export function registerGmailTools(registry, { service }) {
     execute: (input, context) => service.prepareDraft(input, context),
   });
   registry.register({
-    ...common, name: "gmail_draft_current", description: "Resolve the one exact internal Nova email draft previously prepared in this authenticated conversation. Use this before gmail_send when the owner says send it, send this email, or send the draft. Never search Gmail or reconstruct the email instead.", riskLevel: RISK_LEVELS.READ_ONLY,
+    ...common, name: "gmail_reply_draft_prepare", description: "Prepare an internal reply draft for one exact Gmail API message in its existing thread. Pass the threadId and sourceMessageId returned by gmail_thread_read plus only the reply body. The server derives To, Subject, In-Reply-To, and References; never parse or reconstruct those headers in the model.", riskLevel: RISK_LEVELS.LOW_RISK_WRITE, autonomous: true,
+    inputSchema: { type: "object", properties: { threadId: { type: "string" }, sourceMessageId: { type: "string" }, body: { type: "string" } }, required: ["threadId", "sourceMessageId", "body"], additionalProperties: false },
+    execute: (input, context) => service.prepareReplyDraft(input, context),
+  });
+  registry.register({
+    ...common, name: "gmail_draft_current", description: "Resolve the most recently prepared exact internal Nova email draft in this authenticated conversation. Use this before gmail_send when the owner says send it, send this email, or send the draft. Never search Gmail or reconstruct the email instead.", riskLevel: RISK_LEVELS.READ_ONLY,
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     execute: (input, context) => service.currentDraft(input, context),
   });

@@ -1238,7 +1238,7 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
          JOIN nova_execution_runs execution ON execution.id=event.run_id AND execution.owner_id=event.owner_id
          JOIN nova_gmail_drafts draft ON draft.id=event.metadata->>'draftId' AND draft.owner_id=event.owner_id
          WHERE event.owner_id=$1 AND execution.conversation_id=$2
-           AND event.action='gmail_draft_prepared' AND event.tool='gmail_draft_prepare' AND event.status='completed'
+           AND event.action='gmail_draft_prepared' AND event.tool IN ('gmail_draft_prepare','gmail_reply_draft_prepare') AND event.status='completed'
          GROUP BY draft.id ORDER BY MAX(event.sequence) DESC,draft.id ASC LIMIT $3`,
         [ownerId, conversationId, limit],
       )).map(gmailDraftRow);

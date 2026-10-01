@@ -282,7 +282,9 @@ export function createAgent({
       const webSources=[];
       const webAuthority=deriveWebAuthority(message);
       const webUsage={calls:0};
-      const readOnlyToolNames=new Set(toolRegistry.list({executableOnly:true}).filter(tool=>tool.riskLevel==="READ_ONLY").map(tool=>tool.name));
+      const executableTools=toolRegistry.list({executableOnly:true});
+      const readOnlyToolNames=new Set(executableTools.filter(tool=>tool.riskLevel==="READ_ONLY").map(tool=>tool.name));
+      const executableToolNames=new Set(executableTools.map(tool=>tool.name));
       let webEvidenceActive=false;
       let webDurableTask=null;
       let continuationToken;
@@ -413,6 +415,7 @@ export function createAgent({
         }
         if(!allowedTaskTools&&readOnlyToolNames.has("web_research"))systemContext=`${systemContext}\n\nAUTONOMOUS PUBLIC WEB RESEARCH: Public read-only Search, Page Read, Browser, and deep research are already authorized within their existing server-enforced cost ceilings. Choose the cheapest sufficient depth, but use one deep web_research call for a broad multi-source comparison instead of retrying weaker calls. Never ask for approval merely because research is deep. Call web_research at most once, use no more than 8 sources, and let the server fail closed if the existing $0.50 deep-research operation cap or any global/task budget cannot cover the reservation. This authority never permits login, private data access, forms, messaging, purchases, or any external write.`;
         if(!allowedTaskTools&&readOnlyToolNames.has("gmail_draft_current"))systemContext=`${systemContext}\n\nGMAIL DRAFT CONTINUATION: When the owner refers to an already-prepared email with language such as send it, send this, send this email, or send the draft, first call gmail_draft_current with no arguments. Use only its exact immutable result for gmail_send. Do not use gmail_search, do not call gmail_draft_prepare again, and do not reconstruct the email from conversation text. The chat request may request the sensitive action but never counts as the formal approval decision; gmail_send must stop at the existing owner Approval boundary.`;
+        if(!allowedTaskTools&&executableToolNames.has("gmail_reply_draft_prepare"))systemContext=`${systemContext}\n\nGMAIL SAME-THREAD REPLIES: When the owner asks to prepare a reply in an existing Gmail thread, first use gmail_search and gmail_thread_read as needed, then call gmail_reply_draft_prepare with the exact Gmail API threadId and messages[].id sourceMessageId returned by gmail_thread_read plus only the natural reply body. Never parse From or Reply-To and never construct To, Subject, In-Reply-To, or References yourself. Reply preparation creates only an internal draft and never counts as permission to send.`;
         if (durable?.task) {
           return completeDurableSelfDevelopment({ task: durable.task, idempotent: durable.idempotent, workflowContinued: durable.workflowContinued===true });
         }

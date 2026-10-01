@@ -27,9 +27,39 @@ const ENV = Object.freeze({
 
 const jsonResponse = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, async json() { return body; } });
 
-function provider({ email = "novadigitalservicesuk@gmail.com", failSend = false } = {}) {
+function gmailMessage({
+  id = "m1",
+  threadId = "t1",
+  from = "sender@example.com",
+  replyTo,
+  subject = "Test",
+  messageId = "<m1@example.com>",
+  references,
+  body = "Arabic English mixed message مرحبا Nova",
+} = {}) {
+  const headers = [
+    { name: "From", value: from },
+    ...(replyTo ? [{ name: "Reply-To", value: replyTo }] : []),
+    { name: "Subject", value: subject },
+    { name: "Message-ID", value: messageId },
+    ...(references ? [{ name: "References", value: references }] : []),
+  ];
+  return {
+    id,
+    threadId,
+    snippet: body.slice(0, 80),
+    payload: {
+      headers,
+      mimeType: "text/plain",
+      body: { data: Buffer.from(body).toString("base64url") },
+    },
+  };
+}
+
+function provider({ email = "novadigitalservicesuk@gmail.com", failSend = false, threadId = "t1", threadMessages } = {}) {
   const calls = [];
   let exchange = 0;
+  const messages = threadMessages || [gmailMessage({ threadId })];
   const fetchImpl = async (url, options = {}) => {
     calls.push({ url: String(url), method: options.method || "GET", body: String(options.body || ""), authorization: options.headers?.Authorization || null });
     if (String(url).includes("oauth2.googleapis.com/token")) {
@@ -37,21 +67,10 @@ function provider({ email = "novadigitalservicesuk@gmail.com", failSend = false 
       return jsonResponse({ access_token: `access-${exchange}`, refresh_token: `refresh-${exchange}`, expires_in: 3600, scope: GMAIL_SCOPES.join(" ") });
     }
     if (String(url).endsWith("/profile")) return jsonResponse({ emailAddress: email });
-    if (String(url).includes("/messages?") && !String(url).includes("/messages/send")) return jsonResponse({ messages: [{ id: "m1", threadId: "t1" }] });
-    if (String(url).includes("/messages/m1?")) return jsonResponse({ id: "m1", threadId: "t1", snippet: "Hello", payload: { headers: [{ name: "From", value: "sender@example.com" }, { name: "Subject", value: "Test" }] } });
-    if (String(url).includes("/threads/t1?")) return jsonResponse({
-      id: "t1",
-      messages: [{
-        id: "m1",
-        threadId: "t1",
-        snippet: "Hello",
-        payload: {
-          headers: [{ name: "From", value: "sender@example.com" }],
-          mimeType: "text/plain",
-          body: { data: Buffer.from("Arabic English mixed message مرحبا Nova").toString("base64url") },
-        },
-      }],
-    });
+    if (String(url).includes("/messages?") && !String(url).includes("/messages/send")) return jsonResponse({ messages: messages.map(({ id, threadId: itemThreadId }) => ({ id, threadId: itemThreadId })) });
+    const messageMatch = String(url).match(/\/messages\/([^?]+)\?/);
+    if (messageMatch) return jsonResponse(messages.find(({ id }) => id === decodeURIComponent(messageMatch[1])) || {}, messages.some(({ id }) => id === decodeURIComponent(messageMatch[1])) ? 200 : 404);
+    if (String(url).includes(`/threads/${threadId}?`)) return jsonResponse({ id: threadId, messages });
     if (String(url).endsWith("/messages/send")) {
       if (failSend) throw new Error("ambiguous network timeout token=do-not-log");
       return jsonResponse({ id: "gmail-message-1", threadId: "gmail-thread-1" });
@@ -150,6 +169,163 @@ test("Gmail read tools search and read bounded thread content", async () => {
   assert.equal(search.messages[0].subject, "Test");
   const thread = await service.readThread({ threadId: "t1" });
   assert.equal(thread.messages[0].body, "Arabic English mixed message مرحبا Nova");
+});
+
+test("same-thread reply preparation normalizes supported single-mailbox From and Reply-To forms", async () => {
+  const cases = [
+    { from: "customer@example.com", expected: "customer@example.com" },
+    { from: "Customer Name <Customer@Example.com>", expected: "customer@example.com" },
+    { from: "\"Doe, Jane\" <Jane.Doe@Example.com>", expected: "jane.doe@example.com" },
+    { from: "=?UTF-8?B?2KfZhNi52YXYtNin?= <Arabic.Name@Example.com>", expected: "arabic.name@example.com" },
+    { from: "ignored@example.com", replyTo: "Replies Team <reply@example.com>", expected: "reply@example.com" },
+  ];
+  for (const [index, item] of cases.entries()) {
+    const threadId = `thread_${index}`;
+    const sourceMessageId = `message_${index}`;
+    const { service } = await fixture({
+      threadId,
+      threadMessages: [gmailMessage({ id: sourceMessageId, threadId, from: item.from, replyTo: item.replyTo })],
+    });
+    await connect(service);
+    const draft = await service.prepareReplyDraft({ threadId, sourceMessageId, body: "Thanks — this is my reply." });
+    assert.deepEqual(draft.to, [item.expected]);
+  }
+});
+
+test("same-thread reply preparation fails closed for unsafe destination or unverified source identity", async () => {
+  const cases = [
+    { name: "malformed mailbox", message: gmailMessage({ from: "not-a-mailbox" }), code: "gmail_input_invalid" },
+    { name: "multiple destinations", message: gmailMessage({ from: "One <one@example.com>, Two <two@example.com>" }), code: "gmail_input_invalid" },
+    { name: "header injection", message: gmailMessage({ from: "safe@example.com\r\nBcc: attacker@example.com" }), code: "gmail_input_invalid" },
+    { name: "own mailbox", message: gmailMessage({ from: "Nova <novadigitalservicesuk@gmail.com>" }), code: "gmail_reply_self_recipient" },
+  ];
+  for (const item of cases) {
+    const { service, storage, provider: p } = await fixture({ threadMessages: [item.message] });
+    await connect(service);
+    await assert.rejects(
+      () => service.prepareReplyDraft({ threadId: "t1", sourceMessageId: "m1", body: "No send." }),
+      (error) => error.code === item.code,
+      item.name,
+    );
+    assert.equal((await storage.listActivity(OWNER_ID)).some(({ action }) => action === "gmail_draft_prepared"), false);
+    assert.equal(p.calls.some(({ url }) => url.endsWith("/messages/send") || url.includes("/drafts")), false);
+  }
+
+  const wrongMessage = await fixture(); await connect(wrongMessage.service);
+  await assert.rejects(
+    () => wrongMessage.service.prepareReplyDraft({ threadId: "t1", sourceMessageId: "not_in_thread", body: "No send." }),
+    (error) => error.code === "gmail_reply_source_not_found",
+  );
+
+  const mismatchedMembership = await fixture({ threadMessages: [gmailMessage({ id: "m1", threadId: "different_thread" })] });
+  await connect(mismatchedMembership.service);
+  await assert.rejects(
+    () => mismatchedMembership.service.prepareReplyDraft({ threadId: "t1", sourceMessageId: "m1", body: "No send." }),
+    (error) => error.code === "gmail_reply_source_not_found",
+  );
+});
+
+test("same-thread reply draft derives authoritative metadata and preserves formal exactly-once send approval", async () => {
+  const referenceIds = Array.from({ length: 24 }, (_, index) => `<prior-${index}@example.com>`);
+  const sourceMessageId = "source_message";
+  const sourceRfcMessageId = "<source-rfc@example.com>";
+  const threadMessages = [gmailMessage({
+    id: sourceMessageId,
+    threadId: "thread_reply",
+    from: "Sender Name <sender@example.com>",
+    replyTo: "Reply Desk <reply@example.com>",
+    subject: "Re: Re: Project details",
+    messageId: sourceRfcMessageId,
+    references: `${referenceIds.join(" ")} ${sourceRfcMessageId}`,
+  })];
+  const baseStorage = createInMemoryStorage();
+  await baseStorage.initialize({ owner: INITIAL_OWNER_PROFILE });
+  let sendIntentClaims = 0;
+  const storage = { ...baseStorage, async claimGmailSendIntent(...args) { sendIntentClaims += 1; return baseStorage.claimGmailSendIntent(...args); } };
+  const p = provider({ threadId: "thread_reply", threadMessages });
+  const service = createGmailService({ config: readConfig(ENV), storage, ownerId: OWNER_ID, fetchImpl: p.fetchImpl, logger: { warn() {}, error() {} } });
+  await connect(service);
+  const conversationId = "same-thread-reply";
+  const run = await storage.createRun({ ownerId: OWNER_ID, conversationId, goal: "prepare same-thread reply", status: "running" });
+
+  const oldDraft = await service.prepareDraft({ to: ["old@example.com"], subject: "Older standalone draft", body: "Older body" }, { runId: run.id });
+  const reply = await service.prepareReplyDraft({ threadId: "thread_reply", sourceMessageId, body: "Here is the requested information." }, { runId: run.id });
+
+  assert.deepEqual(reply.to, ["reply@example.com"]);
+  assert.equal(reply.subject, "Re: Project details");
+  assert.equal(reply.threadId, "thread_reply");
+  assert.equal(reply.inReplyTo, sourceRfcMessageId);
+  const references = reply.references.split(" ");
+  assert.equal(references.length, 20);
+  assert.equal(references.at(-1), sourceRfcMessageId);
+  assert.equal(references.filter((value) => value === sourceRfcMessageId).length, 1);
+  assert.ok(reply.references.length <= 900);
+  const preparedActivity = (await storage.listActivity(OWNER_ID)).filter(({ action }) => action === "gmail_draft_prepared");
+  assert.equal(preparedActivity.filter(({ tool }) => tool === "gmail_reply_draft_prepare").length, 1);
+  assert.equal(await storage.getGmailDraft(reply.id, OWNER_ID) !== null, true);
+  assert.equal((await service.currentDraft({}, { conversationId })).draftId, reply.id);
+  assert.notEqual(reply.id, oldDraft.id);
+  assert.deepEqual(await storage.listApprovals(OWNER_ID), []);
+  assert.equal(sendIntentClaims, 0);
+  assert.equal(p.calls.some(({ url }) => url.endsWith("/messages/send") || url.includes("/drafts")), false);
+
+  const registry = createToolRegistry({ policy: createActionPolicy({ storage, ownerId: OWNER_ID, approvedBranch: "feature" }) });
+  registerGmailTools(registry, { service });
+  const exact = await registry.execute("gmail_draft_current", {}, { conversationId });
+  let approval;
+  await assert.rejects(
+    () => registry.execute("gmail_send", exact, { conversationId, runId: run.id }),
+    (error) => { approval = error.approval; return error instanceof ApprovalRequiredError; },
+  );
+  assert.deepEqual(approval.arguments, exact);
+  assert.equal(approval.riskLevel, "SENSITIVE");
+  assert.equal(sendIntentClaims, 0);
+  assert.equal(p.calls.filter(({ url }) => url.endsWith("/messages/send")).length, 0);
+
+  await storage.decideApproval(approval.id, OWNER_ID, "approved");
+  const sent = await registry.execute("gmail_send", exact, { approvalId: approval.id, conversationId, runId: run.id });
+  const repeated = await registry.execute("gmail_send", exact, { approvalId: approval.id, conversationId, runId: run.id });
+  assert.equal(sent.sent, true);
+  assert.equal(repeated.idempotent, true);
+  assert.equal(sendIntentClaims, 2);
+  const sendCalls = p.calls.filter(({ url }) => url.endsWith("/messages/send"));
+  assert.equal(sendCalls.length, 1);
+  const providerBody = JSON.parse(sendCalls[0].body);
+  assert.equal(providerBody.threadId, "thread_reply");
+  const raw = Buffer.from(providerBody.raw, "base64url").toString("utf8");
+  assert.match(raw, /To: reply@example\.com\r\n/);
+  assert.match(raw, /Subject: Re: Project details\r\n/);
+  assert.match(raw, /In-Reply-To: <source-rfc@example\.com>\r\n/);
+  assert.match(raw, /References: .*<source-rfc@example\.com>\r\n/);
+});
+
+test("agent guidance selects the structured same-thread reply tool without model-authored reply headers", async () => {
+  const { service, storage } = await fixture();
+  await connect(service);
+  const registry = createToolRegistry({ policy: createActionPolicy({ storage, ownerId: OWNER_ID, approvedBranch: "feature" }) });
+  registerGmailTools(registry, { service });
+  let call = 0;
+  const agent = createAgent({ storage, ownerId: OWNER_ID, toolRegistry: registry, modelProvider: {
+    name: "same-thread-script",
+    async generate(input) {
+      call += 1;
+      if (call === 1) {
+        assert.match(input.systemContext, /GMAIL SAME-THREAD REPLIES/);
+        assert.equal(input.tools.some(({ name }) => name === "gmail_reply_draft_prepare"), true);
+        return { type: "tool_calls", continuationToken: "search", toolCalls: [{ id: "search", name: "gmail_search", arguments: { query: "from:sender@example.com", maxResults: 5 } }] };
+      }
+      if (call === 2) return { type: "tool_calls", continuationToken: "read", toolCalls: [{ id: "read", name: "gmail_thread_read", arguments: { threadId: "t1" } }] };
+      if (call === 3) {
+        const source = input.toolResults[0].output.result.messages[0];
+        return { type: "tool_calls", continuationToken: "draft", toolCalls: [{ id: "reply", name: "gmail_reply_draft_prepare", arguments: { threadId: source.threadId, sourceMessageId: source.id, body: "Structured reply body." } }] };
+      }
+      return { type: "final", message: "The reply draft is ready and has not been sent." };
+    },
+  } });
+  const result = await agent.run({ message: "Read the latest reply and prepare an appropriate reply in the same Gmail thread. Do not send it.", conversationId: "agent-same-thread" });
+  assert.deepEqual(result.toolCalls.map(({ name }) => name), ["gmail_search", "gmail_thread_read", "gmail_reply_draft_prepare"]);
+  assert.equal(result.toolCalls.some(({ name }) => name === "gmail_send"), false);
+  assert.deepEqual(await storage.listApprovals(OWNER_ID), []);
 });
 
 test("email test and approval wording bypasses a completed historical coding artifact and prepares only an internal draft", async () => {
@@ -320,7 +496,7 @@ test("chat text claiming approval remains non-authoritative and reuses the one p
   assert.equal(p.calls.filter((call) => call.url.endsWith("/messages/send")).length, 0);
 });
 
-test("current draft resolution is owner and conversation isolated and fails closed on ambiguity", async () => {
+test("current draft resolution is owner and conversation isolated and deterministically selects the latest prepared draft", async () => {
   const { service, storage } = await fixture();
   const prepareIn = async (conversationId, subject) => {
     const run = await storage.createRun({ ownerId: OWNER_ID, conversationId, goal: subject, status: "running" });
@@ -335,8 +511,8 @@ test("current draft resolution is owner and conversation isolated and fails clos
   await storage.appendActivity({ ownerId: "another-owner", runId: foreignRun.id, action: "gmail_draft_prepared", tool: "gmail_draft_prepare", status: "completed", summary: "Foreign", metadata: { draftId: foreign.id } });
   await assert.rejects(() => service.currentDraft({}, { conversationId: "foreign-only" }), (error) => error.code === "gmail_draft_not_found");
 
-  await prepareIn("ambiguous", "First"); await prepareIn("ambiguous", "Second");
-  await assert.rejects(() => service.currentDraft({}, { conversationId: "ambiguous" }), (error) => error.code === "gmail_draft_ambiguous");
+  await prepareIn("multiple", "First"); const latest = await prepareIn("multiple", "Second");
+  assert.equal((await service.currentDraft({}, { conversationId: "multiple" })).draftId, latest.id);
 });
 
 test("PostgreSQL current-draft lookup is bounded to exact owner and conversation through the preparing run", async () => {
@@ -348,6 +524,7 @@ test("PostgreSQL current-draft lookup is bounded to exact owner and conversation
   assert.match(queries[0].text, /event\.owner_id=\$1 AND execution\.conversation_id=\$2/);
   assert.match(queries[0].text, /execution\.owner_id=event\.owner_id/);
   assert.match(queries[0].text, /draft\.owner_id=event\.owner_id/);
+  assert.match(queries[0].text, /event\.tool IN \('gmail_draft_prepare','gmail_reply_draft_prepare'\)/);
   assert.match(queries[0].text, /GROUP BY draft\.id ORDER BY MAX\(event\.sequence\) DESC/);
 });
 

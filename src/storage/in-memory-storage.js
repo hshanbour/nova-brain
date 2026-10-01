@@ -926,7 +926,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async listConversationGmailDrafts(ownerId, conversationId, { limit = 2 } = {}) {
       const seen = new Set();
       return activity
-        .filter((event) => event.ownerId === ownerId && event.action === "gmail_draft_prepared" && event.tool === "gmail_draft_prepare" && event.status === "completed")
+        .filter((event) => event.ownerId === ownerId && event.action === "gmail_draft_prepared" && ["gmail_draft_prepare", "gmail_reply_draft_prepare"].includes(event.tool) && event.status === "completed")
         .sort((left, right) => right.sequence - left.sequence)
         .flatMap((event) => {
           const run = runs.get(event.runId), draftId = event.metadata?.draftId, draft = gmailDrafts.get(draftId);
