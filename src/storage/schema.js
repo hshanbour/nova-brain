@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -168,6 +168,54 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE(owner_id,task_id,execution_id,attempt,continuation_generation_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS nova_gmail_oauth_states (
+    state_hash text PRIMARY KEY,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    session_hash text NOT NULL,
+    encrypted_code_verifier jsonb NOT NULL,
+    expires_at timestamptz NOT NULL,
+    consumed_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_gmail_oauth_states_owner_expiry_idx ON nova_gmail_oauth_states (owner_id, expires_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS nova_gmail_connections (
+    owner_id text PRIMARY KEY REFERENCES nova_owners(id) ON DELETE CASCADE,
+    email text NOT NULL,
+    scopes jsonb NOT NULL,
+    encrypted_access_token jsonb,
+    access_token_expires_at timestamptz,
+    encrypted_refresh_token jsonb NOT NULL,
+    connected_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS nova_gmail_drafts (
+    id text PRIMARY KEY,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    to_recipients jsonb NOT NULL,
+    cc_recipients jsonb NOT NULL DEFAULT '[]'::jsonb,
+    bcc_recipients jsonb NOT NULL DEFAULT '[]'::jsonb,
+    subject text NOT NULL,
+    body text NOT NULL,
+    thread_id text,
+    in_reply_to text,
+    references_header text,
+    intent_hash text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS nova_gmail_send_intents (
+    id text PRIMARY KEY,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    draft_id text NOT NULL REFERENCES nova_gmail_drafts(id) ON DELETE RESTRICT,
+    intent_hash text NOT NULL,
+    message_id text NOT NULL,
+    status text NOT NULL CHECK (status IN ('sending','sent','uncertain','failed')),
+    provider_message_id text,
+    provider_thread_id text,
+    error_code text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(owner_id, draft_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS nova_approvals (
     id text PRIMARY KEY, owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
     project_id text REFERENCES nova_projects(id) ON DELETE SET NULL, run_id text REFERENCES nova_execution_runs(id) ON DELETE SET NULL,
@@ -237,5 +285,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     FOREIGN KEY(owner_id,budget_id) REFERENCES nova_model_cost_budgets(owner_id,budget_id) ON DELETE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS nova_model_cost_task_idx ON nova_model_cost_reservations (owner_id,budget_id,task_id,created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13) ON CONFLICT (version) DO NOTHING`
 ]);

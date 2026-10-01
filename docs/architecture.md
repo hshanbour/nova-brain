@@ -47,7 +47,9 @@ OpenAI response objects, function-call output objects, and response IDs never en
 
 ### Tools/actions layer
 
-`src/tools/tool-registry.js` defines tools with explicit names, descriptions, optional JSON input schemas, optional validation functions, and async `execute(input, context)` functions. Only registered names can execute. Invalid, unknown, and failed calls become safe failed tool results rather than arbitrary execution or process crashes. The milestone deliberately registers no external tools.
+`src/tools/tool-registry.js` defines tools with explicit names, descriptions, optional JSON input schemas, optional validation functions, and async `execute(input, context)` functions. Only registered names can execute. Invalid, unknown, and failed calls become safe failed tool results rather than arbitrary execution or process crashes. External tools remain individually allowlisted and policy-gated.
+
+Nova Email V1 is the first bounded private integration. `src/email/` owns Google OAuth/PKCE, encrypted token handling, Gmail API translation, MIME construction, immutable internal drafts, and fail-closed send idempotency. Its four tools still execute through the common registry. Reads are `READ_ONLY`, internal draft preparation is an autonomous low-risk write, and `gmail_send` is `SENSITIVE`; the existing policy stores the exact canonical message in the approval and revalidates its hash before sending. Gmail-specific storage records live behind both existing storage adapters, while approval decisions and audit events remain in Nova's shared approval and Activity tables.
 
 ### Owner identity, conversation, and memory
 

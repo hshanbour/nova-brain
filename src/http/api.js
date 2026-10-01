@@ -55,6 +55,7 @@ import { DeveloperSessionSmokeError } from "../autonomy/developer-session-smoke.
 import { DeveloperWorkspaceHandoffError } from "../autonomy/developer-workspace-handoff.js";
 import { OpenAIProviderError } from "../providers/openai-model-provider.js";
 import { ModelCostBudgetError } from "../providers/model-cost-budget.js";
+import { GmailError, GMAIL_OAUTH_COOKIE } from "../email/gmail-service.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -165,6 +166,19 @@ function setCorsHeaders(request, response, allowedOrigins) {
   }
 }
 
+function cookieValue(request, name) {
+  const cookies = String(request.headers?.cookie || "").split(";");
+  for (const cookie of cookies) {
+    const [key, ...parts] = cookie.trim().split("=");
+    if (key === name) return decodeURIComponent(parts.join("="));
+  }
+  return null;
+}
+
+function gmailOAuthCookie(value, { secure, clear = false } = {}) {
+  return `${GMAIL_OAUTH_COOKIE}=${clear ? "" : encodeURIComponent(value)}; Path=/api/integrations/gmail/oauth/callback; HttpOnly; SameSite=Lax; ${secure ? "Secure; " : ""}Max-Age=${clear ? 0 : 600}`;
+}
+
 export function createApi({
   agent,
   config,
@@ -194,6 +208,7 @@ export function createApi({
   executionTruth,
   browserTaskService,
   durableResearchTaskService,
+  gmailService,
   logger = console,
 }) {
   const recognitionEngines =
@@ -239,6 +254,43 @@ export function createApi({
       };
 
       try {
+        if (request.method === "GET" && pathname === "/api/integrations/gmail/status") {
+          await ready();
+          sendJson(response, 200, await gmailService.status());
+          return;
+        }
+        if (request.method === "POST" && pathname === "/api/integrations/gmail/oauth/start") {
+          await ready();
+          const started = await gmailService.startOAuth();
+          const secure = new URL(config.gmail.redirectUri).protocol === "https:";
+          response.setHeader("Set-Cookie", gmailOAuthCookie(started.session, { secure }));
+          sendJson(response, 200, { authorizationUrl: started.authorizationUrl, expiresAt: started.expiresAt });
+          return;
+        }
+        if (request.method === "GET" && pathname === "/api/integrations/gmail/oauth/callback") {
+          await ready();
+          if (url.searchParams.get("error"))
+            throw new GmailError("Google authorization was not completed.", { code: "gmail_oauth_denied", statusCode: 400, category: "authorization" });
+          await gmailService.completeOAuth({
+            code: url.searchParams.get("code"),
+            state: url.searchParams.get("state"),
+            session: cookieValue(request, GMAIL_OAUTH_COOKIE),
+          });
+          const secure = new URL(config.gmail.redirectUri).protocol === "https:";
+          response.statusCode = 302;
+          response.setHeader("Location", "/?gmail=connected");
+          response.setHeader("Set-Cookie", gmailOAuthCookie("", { secure, clear: true }));
+          response.setHeader("Cache-Control", "no-store");
+          response.setHeader("Referrer-Policy", "no-referrer");
+          response.setHeader("X-Content-Type-Options", "nosniff");
+          response.end();
+          return;
+        }
+        if (request.method === "POST" && pathname === "/api/integrations/gmail/disconnect") {
+          await ready();
+          sendJson(response, 200, await gmailService.disconnect());
+          return;
+        }
         if (request.method === "GET" && pathname === "/api/health") {
           let storageHealth;
           try {
@@ -1998,6 +2050,11 @@ export function createApi({
 
         sendJson(response, 404, { error: "Not found" });
       } catch (error) {
+        if (error instanceof GmailError || error?.code?.startsWith?.("gmail_")) {
+          logger.error("Nova Gmail request failed", { requestId, code: error.code, category: error.category || "validation" });
+          sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "gmail_error" });
+          return;
+        }
         if (error instanceof ValidationError) {
           sendJson(response, 400, { error: error.message });
           return;

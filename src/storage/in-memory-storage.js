@@ -26,6 +26,10 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const rejectedReviewEvidence = new Map();
   const autonomyLocks = new Map();
   const approvals = new Map();
+  const gmailOAuthStates = new Map();
+  const gmailConnections = new Map();
+  const gmailDrafts = new Map();
+  const gmailSendIntents = new Map();
   const developerSessions = new Map();
   const activity = [];
   const benchmarkSessions = new Map();
@@ -873,6 +877,60 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
           count++;
         }
       return count;
+    },
+    async saveGmailOAuthState(input) {
+      for (const [key, state] of gmailOAuthStates)
+        if (state.consumedAt || new Date(state.expiresAt) <= clock()) gmailOAuthStates.delete(key);
+      const record = { ...copy(input), consumedAt: null, createdAt: now(clock) };
+      gmailOAuthStates.set(record.stateHash, record);
+      return copy(record);
+    },
+    async consumeGmailOAuthState({ stateHash, ownerId, sessionHash, consumedAt }) {
+      const current = gmailOAuthStates.get(stateHash);
+      if (!current || current.ownerId !== ownerId || current.sessionHash !== sessionHash || current.consumedAt || new Date(current.expiresAt) <= new Date(consumedAt)) return null;
+      const updated = { ...current, consumedAt };
+      gmailOAuthStates.set(stateHash, updated);
+      return copy(updated);
+    },
+    async saveGmailConnection(input) {
+      const current = gmailConnections.get(input.ownerId);
+      const timestamp = now(clock);
+      const saved = { ...copy(input), connectedAt: current?.connectedAt || timestamp, updatedAt: timestamp };
+      gmailConnections.set(input.ownerId, saved);
+      return copy(saved);
+    },
+    async getGmailConnection(ownerId) {
+      return copy(gmailConnections.get(ownerId) || null);
+    },
+    async deleteGmailConnection(ownerId) {
+      const current = gmailConnections.get(ownerId);
+      if (!current) return null;
+      gmailConnections.delete(ownerId);
+      return copy(current);
+    },
+    async createGmailDraft(input) {
+      const saved = { ...copy(input), createdAt: now(clock) };
+      gmailDrafts.set(saved.id, saved);
+      return copy(saved);
+    },
+    async getGmailDraft(id, ownerId) {
+      const draft = gmailDrafts.get(id);
+      return copy(draft?.ownerId === ownerId ? draft : null);
+    },
+    async claimGmailSendIntent(input) {
+      const existing = gmailSendIntents.get(input.id) || [...gmailSendIntents.values()].find((item) => item.ownerId === input.ownerId && item.draftId === input.draftId);
+      if (existing) return { inserted: false, intent: copy(existing) };
+      const timestamp = now(clock);
+      const intent = { ...copy(input), status: "sending", providerMessageId: null, providerThreadId: null, errorCode: null, createdAt: timestamp, updatedAt: timestamp };
+      gmailSendIntents.set(intent.id, intent);
+      return { inserted: true, intent: copy(intent) };
+    },
+    async updateGmailSendIntent(id, ownerId, patch) {
+      const current = gmailSendIntents.get(id);
+      if (!current || current.ownerId !== ownerId) return null;
+      const updated = { ...current, ...copy(patch), updatedAt: now(clock) };
+      gmailSendIntents.set(id, updated);
+      return copy(updated);
     },
     async createApproval(input) {
       const approval = {

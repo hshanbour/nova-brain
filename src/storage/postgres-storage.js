@@ -262,6 +262,10 @@ const modelCostReservationRow = (row) => row && ({
   createdAt: date(row.created_at),
   settledAt: date(row.settled_at),
 });
+const gmailOAuthStateRow = (row) => row && ({ stateHash: row.state_hash, ownerId: row.owner_id, sessionHash: row.session_hash, encryptedCodeVerifier: row.encrypted_code_verifier, expiresAt: date(row.expires_at), consumedAt: date(row.consumed_at), createdAt: date(row.created_at) });
+const gmailConnectionRow = (row) => row && ({ ownerId: row.owner_id, email: row.email, scopes: row.scopes, encryptedAccessToken: row.encrypted_access_token, accessTokenExpiresAt: date(row.access_token_expires_at), encryptedRefreshToken: row.encrypted_refresh_token, connectedAt: date(row.connected_at), updatedAt: date(row.updated_at) });
+const gmailDraftRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, to: row.to_recipients, cc: row.cc_recipients, bcc: row.bcc_recipients, subject: row.subject, body: row.body, threadId: row.thread_id, inReplyTo: row.in_reply_to, references: row.references_header, intentHash: row.intent_hash, createdAt: date(row.created_at) });
+const gmailSendIntentRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, draftId: row.draft_id, intentHash: row.intent_hash, messageId: row.message_id, status: row.status, providerMessageId: row.provider_message_id, providerThreadId: row.provider_thread_id, errorCode: row.error_code, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
 
 export function createPostgresStorage({ connectionString, sqlClient } = {}) {
   if (!connectionString && !sqlClient)
@@ -1186,6 +1190,64 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
           [taskId, leaseToken || null],
         )
       ).length;
+    },
+    async saveGmailOAuthState(input) {
+      return gmailOAuthStateRow((await run(
+        `WITH pruned AS (DELETE FROM nova_gmail_oauth_states WHERE consumed_at IS NOT NULL OR expires_at<=now())
+         INSERT INTO nova_gmail_oauth_states (state_hash,owner_id,session_hash,encrypted_code_verifier,expires_at) VALUES ($1,$2,$3,$4::jsonb,$5) RETURNING *`,
+        [input.stateHash, input.ownerId, input.sessionHash, json(input.encryptedCodeVerifier), input.expiresAt],
+      ))[0]);
+    },
+    async consumeGmailOAuthState({ stateHash, ownerId, sessionHash, consumedAt }) {
+      return gmailOAuthStateRow((await run(
+        "UPDATE nova_gmail_oauth_states SET consumed_at=$4 WHERE state_hash=$1 AND owner_id=$2 AND session_hash=$3 AND consumed_at IS NULL AND expires_at>$4 RETURNING *",
+        [stateHash, ownerId, sessionHash, consumedAt],
+      ))[0]);
+    },
+    async saveGmailConnection(input) {
+      return gmailConnectionRow((await run(
+        `INSERT INTO nova_gmail_connections (owner_id,email,scopes,encrypted_access_token,access_token_expires_at,encrypted_refresh_token)
+         VALUES ($1,$2,$3::jsonb,$4::jsonb,$5,$6::jsonb)
+         ON CONFLICT (owner_id) DO UPDATE SET email=EXCLUDED.email,scopes=EXCLUDED.scopes,encrypted_access_token=EXCLUDED.encrypted_access_token,access_token_expires_at=EXCLUDED.access_token_expires_at,encrypted_refresh_token=EXCLUDED.encrypted_refresh_token,updated_at=now()
+         RETURNING *`,
+        [input.ownerId, input.email, json(input.scopes), input.encryptedAccessToken ? json(input.encryptedAccessToken) : null, input.accessTokenExpiresAt || null, json(input.encryptedRefreshToken)],
+      ))[0]);
+    },
+    async getGmailConnection(ownerId) {
+      return gmailConnectionRow((await run("SELECT * FROM nova_gmail_connections WHERE owner_id=$1", [ownerId]))[0]);
+    },
+    async deleteGmailConnection(ownerId) {
+      return gmailConnectionRow((await run("DELETE FROM nova_gmail_connections WHERE owner_id=$1 RETURNING *", [ownerId]))[0]);
+    },
+    async createGmailDraft(input) {
+      return gmailDraftRow((await run(
+        `INSERT INTO nova_gmail_drafts (id,owner_id,to_recipients,cc_recipients,bcc_recipients,subject,body,thread_id,in_reply_to,references_header,intent_hash)
+         VALUES ($1,$2,$3::jsonb,$4::jsonb,$5::jsonb,$6,$7,$8,$9,$10,$11)
+         RETURNING *`,
+        [input.id, input.ownerId, json(input.to), json(input.cc), json(input.bcc), input.subject, input.body, input.threadId || null, input.inReplyTo || null, input.references || null, input.intentHash],
+      ))[0]);
+    },
+    async getGmailDraft(id, ownerId) {
+      return gmailDraftRow((await run("SELECT * FROM nova_gmail_drafts WHERE id=$1 AND owner_id=$2", [id, ownerId]))[0]);
+    },
+    async claimGmailSendIntent(input) {
+      const rows = await run(
+        `WITH inserted AS (
+           INSERT INTO nova_gmail_send_intents (id,owner_id,draft_id,intent_hash,message_id,status)
+           VALUES ($1,$2,$3,$4,$5,'sending') ON CONFLICT DO NOTHING RETURNING *,true AS inserted
+         )
+         SELECT * FROM inserted UNION ALL
+         SELECT existing.*,false AS inserted FROM nova_gmail_send_intents existing
+         WHERE existing.owner_id=$2 AND (existing.id=$1 OR existing.draft_id=$3) AND NOT EXISTS (SELECT 1 FROM inserted) LIMIT 1`,
+        [input.id, input.ownerId, input.draftId, input.intentHash, input.messageId],
+      );
+      return rows[0] ? { inserted: rows[0].inserted === true, intent: gmailSendIntentRow(rows[0]) } : null;
+    },
+    async updateGmailSendIntent(id, ownerId, patch) {
+      return gmailSendIntentRow((await run(
+        `UPDATE nova_gmail_send_intents SET status=$3,provider_message_id=$4,provider_thread_id=$5,error_code=$6,updated_at=now() WHERE id=$1 AND owner_id=$2 RETURNING *`,
+        [id, ownerId, patch.status, patch.providerMessageId || null, patch.providerThreadId || null, patch.errorCode || null],
+      ))[0]);
     },
     async createApproval(input) {
       return approvalRow(

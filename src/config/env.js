@@ -7,6 +7,36 @@ const SUPPORTED_MODEL_PROVIDERS = new Set(["mock", "openai"]);
 const SUPPORTED_STORAGE_PROVIDERS = new Set(["auto", "memory", "postgres"]);
 const SUPPORTED_OPENAI_SERVICE_TIERS = new Set(["default", "flex"]);
 const SUPPORTED_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
+const EXPECTED_GMAIL_ACCOUNT = "novadigitalservicesuk@gmail.com";
+
+function parseGmailConfig(environment) {
+  const values = {
+    clientId: environment.GOOGLE_OAUTH_CLIENT_ID || null,
+    clientSecret: environment.GOOGLE_OAUTH_CLIENT_SECRET || null,
+    redirectUri: environment.NOVA_GMAIL_OAUTH_REDIRECT_URI || null,
+    tokenEncryptionKey: environment.NOVA_GMAIL_TOKEN_ENCRYPTION_KEY || null,
+    accountEmail: environment.NOVA_GMAIL_ACCOUNT_EMAIL?.trim().toLowerCase() || null,
+  };
+  const supplied = Object.values(values).filter(Boolean).length;
+  if (supplied > 0 && supplied !== Object.keys(values).length)
+    throw new Error("All five Gmail OAuth environment variables must be configured together.");
+  if (supplied === 0) return Object.freeze({ configured: false, ...values });
+  if (values.accountEmail !== EXPECTED_GMAIL_ACCOUNT)
+    throw new Error(`NOVA_GMAIL_ACCOUNT_EMAIL must be ${EXPECTED_GMAIL_ACCOUNT}.`);
+  let redirect;
+  try { redirect = new URL(values.redirectUri); }
+  catch { throw new Error("NOVA_GMAIL_OAUTH_REDIRECT_URI must be an absolute URL."); }
+  if (redirect.pathname !== "/api/integrations/gmail/oauth/callback")
+    throw new Error("NOVA_GMAIL_OAUTH_REDIRECT_URI must use Nova's Gmail callback route.");
+  if (redirect.protocol !== "https:" && !(redirect.protocol === "http:" && redirect.hostname === "localhost"))
+    throw new Error("NOVA_GMAIL_OAUTH_REDIRECT_URI must use HTTPS (or HTTP on localhost).");
+  const key = /^[a-f0-9]{64}$/i.test(values.tokenEncryptionKey)
+    ? Buffer.from(values.tokenEncryptionKey, "hex")
+    : Buffer.from(values.tokenEncryptionKey, "base64");
+  if (key.length !== 32)
+    throw new Error("NOVA_GMAIL_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");
+  return Object.freeze({ configured: true, ...values });
+}
 
 function parseOptionalReasoningEffort(value, name) {
   if (value === undefined || value === "") return null;
@@ -36,6 +66,7 @@ function parseOrigins(value) {
 
 export function readConfig(environment = process.env) {
   const modelProvider = environment.NOVA_BRAIN_MODEL_PROVIDER || "mock";
+  const gmail = parseGmailConfig(environment);
 
   if (!SUPPORTED_MODEL_PROVIDERS.has(modelProvider)) {
     throw new Error(`Unsupported NOVA_BRAIN_MODEL_PROVIDER: ${modelProvider}`);
@@ -196,6 +227,7 @@ export function readConfig(environment = process.env) {
           (environment.NOVA_BRAIN_VERCEL_TEAM_ID || environment.VERCEL_TEAM_ID),
       ),
     }),
+    gmail,
     allowedOrigins: parseOrigins(environment.CORS_ALLOWED_ORIGINS),
     maxBodyBytes: 64 * 1024,
     developerWorkspaceHandoffMaxBodyBytes: 3 * 1024 * 1024,

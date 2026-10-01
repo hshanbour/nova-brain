@@ -53,6 +53,8 @@ import {createCloudflareBrowserRunAdapter} from "./web/cloudflare-browser-run.js
 import {createBrowserProviderBudget} from "./web/browser-provider-budget.js";
 import {createDurableBrowserTaskService} from "./web/durable-browser-task.js";
 import {createDurableWebResearchService} from "./web/durable-web-research.js";
+import { createGmailService } from "./email/gmail-service.js";
+import { registerGmailTools } from "./email/gmail-tools.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -71,6 +73,7 @@ export function createApp({
   webFetchImpl,
   webResolveHost,
   browserConnectOverCDP,
+  gmailFetchImpl,
 } = {}) {
   const config = readConfig(environment);
   const storage = storageOverride || createStorage(config);
@@ -104,6 +107,14 @@ export function createApp({
     logger,
   });
   registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID });
+  const gmailService = createGmailService({
+    config,
+    storage,
+    ownerId: OWNER_ID,
+    fetchImpl: gmailFetchImpl || globalThis.fetch,
+    logger,
+  });
+  registerGmailTools(toolRegistry, { service: gmailService });
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){
     const webRoute=config.openAI.routes.web;
@@ -331,6 +342,7 @@ export function createApp({
     executionTruth,
     browserTaskService,
     durableResearchTaskService,
+    gmailService,
     logger,
   });
   return Object.freeze({ ...api, initialize, workerRuntime });

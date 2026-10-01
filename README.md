@@ -14,8 +14,9 @@ The repository provides a small, serverless-compatible agent runtime:
 - The agent, model providers, tools, durable storage, configuration, and HTTP adapter are separate modules.
 - The Memory workspace exposes controlled owner-profile editing and explicit long-term-memory create, edit, filter, and forget operations.
 - Conversation messages and long-term memory are separate data types; only a bounded relevant memory subset enters each model request.
+- Nova Email V1 can connect the single approved Gmail mailbox through server-side OAuth, search/read mail, prepare internal drafts, and send only an immutable owner-approved draft.
 
-The mock provider remains the credential-free default. An OpenAI Responses API provider is available when explicitly configured. PostgreSQL (including Neon) is supported for durable private state, with in-memory storage retained for tests and local fallback. No telephony, SMS, business integration, application-level authentication, or external tool is connected yet.
+The mock provider remains the credential-free default. An OpenAI Responses API provider is available when explicitly configured. PostgreSQL (including Neon) is supported for durable private state, with in-memory storage retained for tests and local fallback. Gmail is the only owner-mail integration; no telephony, SMS, Gmail mutation/settings capability, or application-level authentication is connected.
 
 ## Run locally
 
@@ -111,6 +112,29 @@ Content-Type: application/json
 
 This endpoint does not send messages, create leads, or contact external services.
 
+### Nova Email V1
+
+```http
+POST /api/integrations/gmail/oauth/start
+GET  /api/integrations/gmail/oauth/callback
+GET  /api/integrations/gmail/status
+POST /api/integrations/gmail/disconnect
+```
+
+Gmail OAuth is optional and fails closed unless all five server-only variables below are present. The expected account is exactly `novadigitalservicesuk@gmail.com`. The registered Preview callback is `https://nova-test-project-git-codex-combine-ede5f3-hamodehshanbour-6196.vercel.app/api/integrations/gmail/oauth/callback`.
+
+```env
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+NOVA_GMAIL_OAUTH_REDIRECT_URI=
+NOVA_GMAIL_TOKEN_ENCRYPTION_KEY=
+NOVA_GMAIL_ACCOUNT_EMAIL=
+```
+
+`NOVA_GMAIL_TOKEN_ENCRYPTION_KEY` must be a cryptographically random 32-byte value encoded as Base64 (or 64 hexadecimal characters). Never expose these variables to browser code. OAuth state is single-use, expires after ten minutes, is bound to an HttpOnly same-site callback cookie, and stores only hashes plus an encrypted PKCE verifier. Access and refresh tokens are encrypted at rest with AES-256-GCM and are never returned by the API.
+
+The model-visible tools are `gmail_search`, `gmail_thread_read`, `gmail_draft_prepare`, and `gmail_send`. Search and thread reads are `READ_ONLY`; draft preparation only writes Nova's internal PostgreSQL draft. `gmail_send` is `SENSITIVE` and uses Nova's existing approval and Activity systems. The approval arguments contain the exact To, CC, BCC, Subject, and Body and are cryptographically bound to the stored draft. A durable send-intent ledger prevents automatic retries after an in-progress or ambiguous provider outcome. Nova does not use the Gmail Draft, delete, modify/label, or settings APIs.
+
 ## Architecture
 
 See [docs/architecture.md](docs/architecture.md) for the canonical MVP boundaries and extension points.
@@ -153,7 +177,7 @@ Nova Web keeps `web_research` as its only model-visible web tool. Optional rende
 
 Storage selection defaults to `auto`: Nova uses PostgreSQL when one of `DATABASE_URL`, `POSTGRES_URL`, or `POSTGRES_URL_NON_POOLING` exists, otherwise it uses process-local memory. To require a specific adapter, set `NOVA_BRAIN_STORAGE_PROVIDER=postgres` or `memory`. Explicit `postgres` configuration fails closed if no connection string is present.
 
-Schema initialization and approved seed data are idempotent and run before storage-backed requests. For an explicit migration check, run this with a server-side database URL in your shell:
+Schema initialization and approved seed data are idempotent and run before storage-backed requests. Nova Email V1 adds the reproducible `migrations/004_gmail_v1.sql` schema for OAuth state, encrypted connections, internal drafts, and send intents. For an explicit migration check, run this with a server-side database URL in your shell:
 
 ```bash
 npm run db:migrate
