@@ -8,6 +8,12 @@ function copy(value) {
 function now(clock) {
   return clock().toISOString();
 }
+function stableJson(value) {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableJson(value[key])]));
+  return value;
+}
+const sameJson = (left, right) => JSON.stringify(stableJson(left)) === JSON.stringify(stableJson(right));
 
 export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const owners = new Map();
@@ -961,6 +967,14 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const item = approvals.get(id);
       return copy(item?.ownerId === ownerId ? item : null);
     },
+    async getApprovalIntentState(ownerId, { conversationId, tool, arguments: approvalArguments }) {
+      const matching = [...approvals.values()].filter((approval) => {
+        const run = runs.get(approval.runId);
+        return approval.ownerId === ownerId && run?.ownerId === ownerId && run.conversationId === conversationId &&
+          approval.tool === tool && sameJson(approval.arguments, approvalArguments || {});
+      }).sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+      return { pending: copy(matching.find((approval) => approval.status === "pending") || null), equivalentCount: matching.length };
+    },
     async decideApproval(id, ownerId, decision) {
       const current = approvals.get(id);
       if (
@@ -978,17 +992,33 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       approvals.set(id, updated);
       return copy(updated);
     },
-    async listApprovals(ownerId, { status, limit = 50 } = {}) {
+    async listApprovals(ownerId, { status, conversationId, limit = 50 } = {}) {
       return [...approvals.values()]
         .filter(
-          (item) =>
-            item.ownerId === ownerId && (!status || item.status === status),
+          (item) => {
+            const run = runs.get(item.runId);
+            return item.ownerId === ownerId && (!status || item.status === status) &&
+              (!conversationId || (run?.ownerId === ownerId && run.conversationId === conversationId));
+          },
         )
         .sort(
           (a, b) =>
             b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id),
         )
         .slice(0, limit)
+        .map((approval) => {
+          const run = runs.get(approval.runId);
+          return copy({
+            ...approval,
+            ...(run?.conversationId ? { conversationId: run.conversationId } : {}),
+            ...(run?.result?.assistantMessageId ? { assistantMessageId: run.result.assistantMessageId } : {}),
+          });
+        });
+    },
+    async listRunsForApproval(ownerId, approvalId) {
+      return [...runs.values()]
+        .filter((run) => run.ownerId === ownerId && run.result?.approvalId === approvalId)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
         .map(copy);
     },
     async appendActivity(input) {

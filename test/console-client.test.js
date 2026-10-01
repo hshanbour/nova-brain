@@ -93,6 +93,8 @@ test("console clients use the existing task activity approval and cancellation c
     await ownerMemoryClient.taskActivity("selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     await ownerMemoryClient.cancelTask("selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     await ownerMemoryClient.approvals();
+    await ownerMemoryClient.approvals({status:"pending",conversationId:"conversation one",limit:100});
+    await ownerMemoryClient.gmailStatus();
     await ownerMemoryClient.decideApproval("approval-1","approved");
   }finally{globalThis.fetch=originalFetch;}
   assert.deepEqual(requests,[
@@ -100,6 +102,8 @@ test("console clients use the existing task activity approval and cancellation c
     {url:"/api/activity?runId=selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&limit=100",method:"GET",body:undefined},
     {url:"/api/autonomy/tasks/selfdev_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/cancel",method:"POST",body:undefined},
     {url:"/api/approvals",method:"GET",body:undefined},
+    {url:"/api/approvals?status=pending&conversationId=conversation+one&limit=100",method:"GET",body:undefined},
+    {url:"/api/integrations/gmail/status",method:"GET",body:undefined},
     {url:"/api/approvals/approval-1/decision",method:"POST",body:JSON.stringify({decision:"approved"})},
   ]);
 });

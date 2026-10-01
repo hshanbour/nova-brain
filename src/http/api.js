@@ -1894,6 +1894,7 @@ export function createApi({
           sendJson(response, 200, {
             approvals: await storage.listApprovals(ownerId, {
               status: url.searchParams.get("status") || undefined,
+              conversationId: url.searchParams.get("conversationId") || undefined,
               limit: validateListLimit(url.searchParams.get("limit"), 50, 100),
             }),
           });
@@ -1916,6 +1917,23 @@ export function createApi({
             sendJson(response, 404, { error: "Pending approval not found" });
             return;
           }
+          const linkedApprovalRuns = typeof storage.listRunsForApproval === "function"
+            ? await storage.listRunsForApproval(ownerId, approval.id)
+            : [];
+          if (approval.runId && !linkedApprovalRuns.some((run) => run.id === approval.runId)) {
+            const primaryRun = await storage.getRun(approval.runId, ownerId);
+            if (primaryRun) linkedApprovalRuns.push(primaryRun);
+          }
+          const reconcileApprovalRuns = async (patch, primaryResult) => {
+            for (const run of linkedApprovalRuns) {
+              await storage.updateRun(run.id, ownerId, {
+                ...patch,
+                ...(run.id === approval.runId && primaryResult !== undefined
+                  ? { result: primaryResult }
+                  : { result: { ...(run.result || {}), approvalId: approval.id, approvalDecision: decision } }),
+              });
+            }
+          };
           await storage.appendActivity({
             ownerId,
             projectId: approval.projectId,
@@ -1960,12 +1978,7 @@ export function createApi({
                 status: "completed",
                 summary: `Approved ${approval.tool} action completed.`,
               });
-              if (approval.runId)
-                await storage.updateRun(approval.runId, ownerId, {
-                  status: "completed",
-                  result: execution,
-                  completedAt: new Date().toISOString(),
-                });
+              await reconcileApprovalRuns({ status: "completed", completedAt: new Date().toISOString() }, execution);
               if(codingParent&&execution?.task?.id){const delegated=await storage.updateAutonomyTask(codingParent.id,ownerId,{status:"completed",currentPhase:"delegated_coding",completedAt:new Date().toISOString(),blockedReason:null,errorCode:null,approvalState:codingParent.approvalState?{...codingParent.approvalState,approved:true}:null,metadata:{...codingParent.metadata,delegatedTaskId:execution.task.id}},codingParent.stateVersion);if(!delegated)throw Object.assign(new Error("Coding parent changed before delegated child binding completed."),{code:"coding_parent_transition_conflict"});}
             } catch (error) {
               if (codingParent) {
@@ -1988,21 +2001,12 @@ export function createApi({
                 status: "failed",
                 summary: `Approved ${approval.tool} action failed safely.`,
               });
-              if (approval.runId)
-                await storage.updateRun(approval.runId, ownerId, {
-                  status: "failed",
-                  error: "Approved action failed.",
-                  completedAt: new Date().toISOString(),
-                });
+              await reconcileApprovalRuns({ status: "failed", error: "Approved action failed.", completedAt: new Date().toISOString() });
               throw error;
             }
           } else {
             if(codingParent&&!codingParent.leaseOwner&&!codingParent.leaseToken)await workerRuntime.control(codingParent.id,"cancel");
-            if (approval.runId)await storage.updateRun(approval.runId, ownerId, {
-              status: "cancelled",
-              error: "Owner rejected the requested action.",
-              completedAt: new Date().toISOString(),
-            });
+            await reconcileApprovalRuns({ status: "cancelled", error: "Owner rejected the requested action.", completedAt: new Date().toISOString() });
           }
           sendJson(response, 200, {
             approval,

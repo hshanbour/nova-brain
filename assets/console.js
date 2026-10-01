@@ -12,6 +12,7 @@ import { initialiseSpeakerEnrollment } from "./speaker-enrollment.js";
 import { initialiseSpeakerFamiliarity } from "./speaker-familiarity.js";
 import { appendSafeLinkedText } from "./web-citations.js";
 import { renderSafeMarkdown } from "./message-markdown.js";
+import { createApprovalPresenter } from "./approval-presenter.js";
 
 const client = createNovaClient();
 const composer = document.querySelector("#composer");
@@ -67,6 +68,13 @@ const taskStatusLabels=Object.freeze({queued:"Queued",planning:"Planning",runnin
 const executionStateLabels=Object.freeze({queued:"Queued",waiting_for_worker:"Waiting for worker",waiting_for_approval:"Waiting for approval",waiting:"Waiting",retrying:"Retrying",preparing:"Preparing",executing:"Working on it…",recovering:"Recovering interrupted work",stalled:"Execution stalled",terminal:"Completed"});
 const taskErrorLabels=Object.freeze({implementation_scope_required:"Implementation scope needs attention.",structured_scope_unresolved:"A safe implementation scope could not be resolved.",structured_scope_recovery_exhausted:"Scope recovery was exhausted safely.",implementation_prerequisite_unresolved:"An implementation prerequisite is unresolved.",max_runtime_reached:"The bounded runtime expired.",test_failed:"Tests failed.",repair_limit_reached:"The bounded repair limit was reached.",review_rejected:"Review found an issue that must be resolved."});
 const approvalToolLabels=Object.freeze({git_push:"Push to GitHub",preview_deploy:"Deploy Preview",self_development_protected_change:"Protected change",coding_job_create:"Start approved Codex coding job",artifact_delivery_execute:"Ship approved artifact"});
+let gmailAccountPromise;
+const approvalPresenter=createApprovalPresenter({
+  render:renderSynchronousApprovalCard,
+  decide:(id,decision)=>ownerMemoryClient.decideApproval(id,decision),
+  async reconcile(id,{conversationId}={}){if(!conversationId)return null;const {approvals}=await ownerMemoryClient.approvals({conversationId,limit:100});return approvals.find(item=>item.id===id)||null;},
+  async getGmailAccount(){gmailAccountPromise||=ownerMemoryClient.gmailStatus().then(status=>status.connected?status.email:null).catch(()=>null);return gmailAccountPromise;},
+});
 function readLiveActivityRecords(){try{const value=JSON.parse(localStorage.getItem(liveActivityStorageKey)||"[]");return Array.isArray(value)?value.filter(item=>isDurableTaskId(item?.taskId)&&typeof item.conversationId==="string").slice(-20):[];}catch{return[];}}
 function persistLiveActivityRecords(){try{const retained=readLiveActivityRecords().filter(item=>!liveActivityRecords.has(item.taskId)),current=[...liveActivityRecords.values()].map(({taskId,conversationId,startedAt,completedAt})=>({taskId,conversationId,startedAt,completedAt:completedAt||null}));localStorage.setItem(liveActivityStorageKey,JSON.stringify([...retained,...current].slice(-20)));}catch{}}
 function elapsedLabel(startedAt,endedAt,live=true){const start=new Date(startedAt).valueOf(),end=endedAt?new Date(endedAt).valueOf():live?Date.now():Number.NaN;if(!Number.isFinite(start)||!Number.isFinite(end))return"";const seconds=Math.max(0,Math.floor((end-start)/1000)),minutes=Math.floor(seconds/60),hours=Math.floor(minutes/60);return hours?`${hours}h ${minutes%60}m`:minutes?`${minutes}m ${seconds%60}s`:`${seconds}s`;}
@@ -156,6 +164,7 @@ function restoreLiveActivities(storedMessages=[]){
 
 function clearConversation(conversationId = null,{preserveError=false,resetComposer=true}={}) {
   stopLiveActivityPolling();
+  approvalPresenter.clear();
   conversationBinding.display(conversationId);
   messages.querySelectorAll(".message").forEach((message) => message.remove()); welcome.hidden = false;
   if(!preserveError)requestError.hidden = true;if(resetComposer)input.value = ""; resizeInput();
@@ -165,6 +174,7 @@ function renderConversationMessages(conversationId,storedMessages,{preserveError
   clearConversation(conversationId,{preserveError,resetComposer});
   for(const stored of storedMessages)addMessage({id:stored.id,role:stored.role,text:stored.content,sequence:stored.sequence,createdAt:stored.createdAt});
   restoreLiveActivities(storedMessages);
+  void restoreSynchronousApprovals(conversationId);
   if(!storedMessages.length)welcome.hidden=false;
 }
 
@@ -249,6 +259,50 @@ function addMessage({ id,role, text, sequence, createdAt, metadata, autoSpeak = 
   if(next)messages.insertBefore(node,next);else messages.append(node);scrollToLatest();return node;
 }
 
+function synchronousApprovalNode(id) {
+  return [...messages.querySelectorAll("[data-approval-id]")].find((node) => node.dataset.approvalId === id) || null;
+}
+
+function messageNode(id) {
+  return id ? [...messages.querySelectorAll("[data-message-id]")].find((node) => node.dataset.messageId === id) || null : null;
+}
+
+function renderSynchronousApprovalCard(model,{assistantMessageId,conversationId}={}) {
+  if(conversationId&&(client.conversationId!==conversationId||conversationBinding.displayedId!==conversationId))return null;
+  let card=synchronousApprovalNode(model.id);
+  if(!card){
+    let host=messageNode(assistantMessageId);
+    if(!host)host=addMessage({role:"assistant",text:""});
+    card=document.createElement("section");card.className="synchronous-approval-card";card.dataset.approvalId=model.id;card.setAttribute("aria-label",model.title);host.querySelector(".message-content").append(card);
+  }
+  card.dataset.status=model.status;card.replaceChildren();
+  const heading=document.createElement("div");heading.className="synchronous-approval-heading";
+  const title=document.createElement("strong");title.textContent=model.title;
+  const status=document.createElement("span");status.className="synchronous-approval-status";status.textContent=model.status.replaceAll("_"," ");
+  heading.append(title,status);
+  const reason=document.createElement("p");reason.className="synchronous-approval-reason";reason.textContent=model.reason;
+  const details=document.createElement("dl");details.className="synchronous-approval-details";
+  for(const [label,value] of model.fields){const row=document.createElement("div");const term=document.createElement("dt");const description=document.createElement("dd");term.textContent=label;description.textContent=value;row.append(term,description);details.append(row);}
+  card.append(heading,reason,details);
+  if(model.pending){
+    const actions=document.createElement("div");actions.className="approval-actions";
+    for(const decision of["approved","rejected"]){const button=document.createElement("button");button.type="button";button.className=decision==="approved"?"send-button":"secondary-button";button.textContent=decision==="approved"?"Approve":"Reject";button.disabled=model.deciding===true;button.addEventListener("click",async()=>{button.disabled=true;try{await approvalPresenter.decide(model.id,decision);}catch(cause){requestError.textContent=cause.message;requestError.hidden=false;}});actions.append(button);}
+    card.append(actions);
+  }
+  scrollToLatest();return card;
+}
+
+function belongsToDurableApproval(approval){return [approval?.runId,approval?.arguments?.taskId,approval?.arguments?.parentTaskId].some(value=>isDurableTaskId(value));}
+
+async function restoreSynchronousApprovals(conversationId){
+  if(!conversationId)return;
+  try{
+    const {approvals}=await ownerMemoryClient.approvals({status:"pending",conversationId,limit:100});
+    if(client.conversationId!==conversationId||conversationBinding.displayedId!==conversationId)return;
+    for(const approval of approvals.filter(item=>!belongsToDurableApproval(item)))await approvalPresenter.upsert(approval,{conversationId,assistantMessageId:approval.assistantMessageId});
+  }catch{}
+}
+
 function addThinking() {
   const node = document.createElement("article");
   node.className = "message nova-message thinking-message"; node.id = "thinkingMessage";
@@ -276,7 +330,7 @@ async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,si
     }
     document.querySelector("#thinkingMessage")?.remove();
     const liveActivity=result.durableTask?.id?ensureLiveActivity(result.durableTask):null;
-    if(!liveActivity)addMessage({ id:result.id,role: "assistant", text: result.message, metadata: result, autoSpeak: autoSpeakResponse });
+    if(!liveActivity){const assistant=addMessage({ id:result.id,role: "assistant", text: result.message, metadata: result, autoSpeak: autoSpeakResponse });if(result.approval)await approvalPresenter.upsert(result.approval,{conversationId:result.conversationId,assistantMessageId:assistant.dataset.messageId||result.id});}
     providerStatus.textContent = `${result.provider || "Agent"} provider · Ready`;
     void refreshRecents(); return { ...result, preparedAssistant, preparationError };
   } catch (error) {

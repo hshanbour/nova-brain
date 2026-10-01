@@ -274,7 +274,7 @@ export function createAgent({
         await storage.appendMessage({id:response.id,conversationId,ownerId,role:"assistant",content:response.message});
         return response;
       };
-      const correlatedRunResult=(response,extra={})=>({message:response.message,requestId:requestId||null,userMessageId,assistantMessageId:response.id,...extra});
+      const correlatedRunResult=(response,extra={})=>({message:response.message,requestId:requestId||null,userMessageId,assistantMessageId:response.id,...(response.approval?.id?{approvalId:response.approval.id}:{}),...extra});
       const baseSystemContext = speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker) : buildSystemContext(retrieved);
       let systemContext = `${context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext}\n\n${ANSWER_PRESENTATION_GUIDANCE}`;
       const toolExecutions = [];

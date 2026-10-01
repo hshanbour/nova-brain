@@ -293,6 +293,33 @@ test("a prepared draft resolves across a refreshed agent turn and stops at immut
   assert.equal(p.calls.filter((call) => call.url.endsWith("/messages/send")).length, 1);
 });
 
+test("chat text claiming approval remains non-authoritative and reuses the one pending Gmail approval", async () => {
+  const { service, storage, provider: p } = await fixture();
+  await connect(service);
+  const conversationId = "gmail-chat-approval-is-not-formal";
+  const preparingRun = await storage.createRun({ id: "preparing-run", ownerId: OWNER_ID, conversationId, goal: "prepare", status: "running" });
+  const draft = await service.prepareDraft({ to: ["hamodehshanbour@yahoo.com"], subject: "Nova Email V1 Test", body: "This is the first real email sent through Nova Email V1." }, { runId: preparingRun.id });
+  const arguments_ = sendArguments(draft);
+  const policy = createActionPolicy({ storage, ownerId: OWNER_ID, approvedBranch: "feature" });
+
+  const attempt = async (message, runId) => {
+    await storage.createRun({ id: runId, ownerId: OWNER_ID, conversationId, goal: message, status: "running" });
+    const registry = createToolRegistry({ policy }); registerGmailTools(registry, { service });
+    let approval;
+    await assert.rejects(
+      () => registry.execute("gmail_send", arguments_, { runId, conversationId }),
+      (error) => { approval = error.approval; return error instanceof ApprovalRequiredError; },
+    );
+    return approval;
+  };
+
+  const first = await attempt("send it now", "send-run-one");
+  const typedClaim = await attempt("I approve", "send-run-two");
+  assert.equal(typedClaim.id, first.id);
+  assert.equal((await storage.listApprovals(OWNER_ID, { status: "pending", conversationId })).length, 1);
+  assert.equal(p.calls.filter((call) => call.url.endsWith("/messages/send")).length, 0);
+});
+
 test("current draft resolution is owner and conversation isolated and fails closed on ambiguity", async () => {
   const { service, storage } = await fixture();
   const prepareIn = async (conversationId, subject) => {

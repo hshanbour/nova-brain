@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 test('console uses the canonical composer voice contract', async () => {
-  const [consoleJs, voice, html, css] = await Promise.all([
+  const [consoleJs, voice, html, css, approvalPresenter] = await Promise.all([
     'assets/console.js',
     'assets/voice-input.js',
     'index.html',
-    'assets/console.css'
+    'assets/console.css',
+    'assets/approval-presenter.js'
   ].map((path) => readFile(path, 'utf8')));
 
   assert.match(consoleJs, /createComposerVoiceControl/);
@@ -43,7 +44,7 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(consoleJs, /isDurableTaskId\(durableTask\?\.id\)/);
   assert.match(consoleJs, /isDurableTaskId\(item\?\.taskId\)/);
   assert.match(consoleJs, /const liveActivity=result\.durableTask\?\.id\?ensureLiveActivity\(result\.durableTask\):null/);
-  assert.match(consoleJs, /if\(!liveActivity\)addMessage/);
+  assert.match(consoleJs, /if\(!liveActivity\)\{const assistant=addMessage/);
   assert.match(consoleJs, /renderSafeMarkdown\(body,text\)/);
   assert.match(consoleJs, /createConversationBindingState/);
   assert.match(consoleJs, /conversationBinding\.queue\(id\)/);
@@ -57,6 +58,15 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(consoleJs, /artifact_delivery_execute:"Ship approved artifact"/);
   assert.match(consoleJs, /renderConversationMessages\(id,storedMessages\)/);
   assert.match(consoleJs, /restoreLiveActivities\(storedMessages\)/);
+  assert.match(consoleJs, /restoreSynchronousApprovals\(conversationId\)/);
+  assert.match(consoleJs, /ownerMemoryClient\.approvals\(\{status:"pending",conversationId,limit:100\}\)/);
+  assert.match(consoleJs, /data-approval-id|dataset\.approvalId/);
+  assert.match(consoleJs, /if\(result\.approval\)await approvalPresenter\.upsert/);
+  assert.match(consoleJs, /client\.conversationId!==conversationId\|\|conversationBinding\.displayedId!==conversationId/);
+  assert.match(consoleJs, /button\.textContent=decision==="approved"\?"Approve":"Reject"/);
+  assert.doesNotMatch(approvalPresenter, /innerHTML|insertAdjacentHTML|outerHTML/);
+  assert.match(approvalPresenter, /\["From".*\["To".*\["CC".*\["BCC".*\["Subject".*\["Body"/s);
+  assert.match(approvalPresenter, /SECRET_KEY/);
   assert.match(consoleJs, /id:stored\.id,role:stored\.role,text:stored\.content,sequence:stored\.sequence,createdAt:stored\.createdAt/);
   assert.match(consoleJs, /if\(id\)\{const existing=.*data-message-id/s);
   assert.match(consoleJs, /addMessage\(\{id:report\.id,role:report\.role,text:report\.content,sequence:report\.sequence,createdAt:report\.createdAt\}\)/);
@@ -89,6 +99,7 @@ test('console uses the canonical composer voice contract', async () => {
   assert.doesNotMatch(consoleJs, /live-activity[\s\S]{0,500}JSON\.stringify\(task/);
   assert.doesNotMatch(consoleJs, /textContent\s*=\s*task\.(?:metadata|leaseToken|fingerprint)/);
   assert.match(css, /\.live-activity-card/);
+  assert.match(css, /\.synchronous-approval-card/);
   assert.match(css, /\.live-activity-pulse/);
   assert.match(css, /prefers-reduced-motion:reduce[^}]*\.live-activity-pulse/);
   assert.match(css, /\.message-markdown h1/);

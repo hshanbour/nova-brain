@@ -26,6 +26,14 @@ export const ownerMemoryClient = Object.freeze({
   taskActivity: (id) => request(`/api/activity?runId=${encodeURIComponent(id)}&limit=100`),
   cancelTask: (id) => request(`/api/autonomy/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   tools: () => request("/api/tools"),
-  approvals: () => request("/api/approvals"),
+  approvals: ({ status, conversationId, limit } = {}) => {
+    const query = new URLSearchParams();
+    if (status) query.set("status", status);
+    if (conversationId) query.set("conversationId", conversationId);
+    if (limit) query.set("limit", String(limit));
+    const suffix = query.size ? `?${query}` : "";
+    return request(`/api/approvals${suffix}`);
+  },
+  gmailStatus: () => request("/api/integrations/gmail/status"),
   decideApproval: (id, decision) => request(`/api/approvals/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) })
 });

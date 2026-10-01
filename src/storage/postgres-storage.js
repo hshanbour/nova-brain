@@ -195,6 +195,8 @@ const approvalRow = (row) =>
     decision: row.decision,
     createdAt: date(row.created_at),
     decidedAt: date(row.decided_at),
+    ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
+    ...(row.assistant_message_id ? { assistantMessageId: row.assistant_message_id } : {}),
   };
 const activityRow = (row) =>
   row && {
@@ -1289,6 +1291,26 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         )[0],
       );
     },
+    async getApprovalIntentState(ownerId, { conversationId, tool, arguments: approvalArguments }) {
+      const [state] = await run(
+        `WITH matching AS (
+           SELECT approval.*
+           FROM nova_approvals approval
+           JOIN nova_execution_runs execution_run
+             ON execution_run.id=approval.run_id AND execution_run.owner_id=approval.owner_id
+           WHERE approval.owner_id=$1 AND execution_run.conversation_id=$2
+             AND approval.tool=$3 AND approval.arguments=$4::jsonb
+         )
+         SELECT
+           (SELECT row_to_json(pending) FROM matching pending WHERE pending.status='pending' ORDER BY pending.created_at ASC,pending.id ASC LIMIT 1) AS pending,
+           (SELECT count(*)::int FROM matching) AS equivalent_count`,
+        [ownerId, conversationId, tool, JSON.stringify(approvalArguments || {})],
+      );
+      return {
+        pending: approvalRow(state?.pending),
+        equivalentCount: Number(state?.equivalent_count || 0),
+      };
+    },
     async decideApproval(id, ownerId, decision) {
       return approvalRow(
         (
@@ -1299,13 +1321,26 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         )[0],
       );
     },
-    async listApprovals(ownerId, { status, limit = 50 } = {}) {
+    async listApprovals(ownerId, { status, conversationId, limit = 50 } = {}) {
       return (
         await run(
-          "SELECT * FROM nova_approvals WHERE owner_id=$1 AND ($2::text IS NULL OR status=$2) ORDER BY created_at DESC,id ASC LIMIT $3",
-          [ownerId, status || null, limit],
+          `SELECT approval.*,execution_run.conversation_id,
+                  execution_run.result->>'assistantMessageId' AS assistant_message_id
+           FROM nova_approvals approval
+           LEFT JOIN nova_execution_runs execution_run
+             ON execution_run.id=approval.run_id AND execution_run.owner_id=approval.owner_id
+           WHERE approval.owner_id=$1 AND ($2::text IS NULL OR approval.status=$2)
+             AND ($3::text IS NULL OR execution_run.conversation_id=$3)
+           ORDER BY approval.created_at DESC,approval.id ASC LIMIT $4`,
+          [ownerId, status || null, conversationId || null, limit],
         )
       ).map(approvalRow);
+    },
+    async listRunsForApproval(ownerId, approvalId) {
+      return (await run(
+        "SELECT * FROM nova_execution_runs WHERE owner_id=$1 AND result->>'approvalId'=$2 ORDER BY created_at ASC,id ASC",
+        [ownerId, approvalId],
+      )).map(runRow);
     },
     async appendActivity(input) {
       return activityRow(
