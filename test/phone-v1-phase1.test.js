@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import { readConfig } from "../src/config/env.js";
 import { immutableCallEnvelope } from "../src/phone/call-envelope.js";
@@ -16,6 +17,7 @@ import { createAgent } from "../src/agent/agent.js";
 import { approvalViewModel } from "../assets/approval-presenter.js";
 import { createRuntimePhoneSession } from "../phone-bridge/runtime-session.js";
 import { bridgeConfig } from "../phone-bridge/server.js";
+import { createOpenAiWebSocketTranscriber } from "../phone-bridge/openai-transcriber.js";
 import { TWILIO_MEDIA_FORMAT } from "../src/phone/twilio-media-protocol.js";
 
 const NOW = new Date("2026-10-02T12:00:00.000Z");
@@ -25,6 +27,27 @@ const CONVERSATION = "phone-owner-conversation";
 const START = { event: "start", streamSid: STREAM_SID, start: { callSid: CALL_SID, mediaFormat: TWILIO_MEDIA_FORMAT } };
 const SILENCE = Buffer.alloc(160, 0xff).toString("base64");
 const SPEECH = Buffer.alloc(160, 0x00).toString("base64");
+
+class FakeOpenAiSocket extends EventEmitter {
+  static OPEN = 1;
+  static last;
+  readyState = 1;
+  constructor() { super(); FakeOpenAiSocket.last = this; }
+  send() {}
+  close() {}
+}
+
+test("OpenAI bridge surfaces only safe provider error categories", async () => {
+  let surfaced;
+  const client = createOpenAiWebSocketTranscriber({ WebSocketImpl: FakeOpenAiSocket, apiKey: "fixture", onError: (error) => { surfaced = error; } });
+  client.start();
+  const ready = client.ready();
+  // Exercise the real socket listener without exposing the provider body.
+  FakeOpenAiSocket.last.emit("message", JSON.stringify({ type: "error", error: { type: "invalid_request_error", code: "invalid_value", param: "session.audio.input.transcription.model", message: "sensitive provider detail" } }));
+  await assert.rejects(ready, /invalid_request_error:invalid_value/);
+  assert.equal(surfaced?.message, "OpenAI streaming transcription provider error (invalid_request_error:invalid_value:session.audio.input.transcription.model).");
+  assert.doesNotMatch(surfaced.message, /sensitive provider detail/);
+});
 
 function environment() {
   return { NOVA_BRAIN_MODEL_PROVIDER: "mock", TWILIO_ACCOUNT_SID: `AC${"a".repeat(32)}`, TWILIO_AUTH_TOKEN: "fixture-auth", NOVA_PHONE_NUMBER: "+447700900123", NOVA_PHONE_BRIDGE_URL: "https://bridge.example", NOVA_PHONE_BRIDGE_WEBSOCKET_URL: "wss://bridge.example/media", NOVA_PHONE_PUBLIC_BASE_URL: "https://nova.example", NOVA_PHONE_SESSION_SIGNING_KEY: Buffer.alloc(32, 7).toString("base64") };
