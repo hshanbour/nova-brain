@@ -9,13 +9,13 @@ import { createNovaPhoneBridgeClient } from "./nova-client.js";
 import { createRuntimePhoneSession } from "./runtime-session.js";
 
 export function bridgeConfig(environment = process.env) {
-  const required = ["NOVA_PHONE_BRIDGE_PUBLIC_URL", "NOVA_PHONE_BASE_URL", "OPENAI_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID"];
+  const required = ["NOVA_PHONE_BRIDGE_PUBLIC_URL", "NOVA_PHONE_BASE_URL", "OPENAI_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID", "VERCEL_AUTOMATION_BYPASS_SECRET"];
   for (const name of required) if (!environment[name]) throw new Error(`${name} is required.`);
   return Object.freeze({ port: Number(environment.PORT || 8080), publicUrl: environment.NOVA_PHONE_BRIDGE_PUBLIC_URL.replace(/\/$/, ""), novaBaseUrl: environment.NOVA_PHONE_BASE_URL.replace(/\/$/, ""), twilioAuthToken: environment.TWILIO_AUTH_TOKEN || null, openAIApiKey: environment.OPENAI_API_KEY, voiceConfig: { voiceV2: { elevenLabsApiKey: environment.ELEVENLABS_API_KEY, elevenLabsVoiceId: environment.ELEVENLABS_VOICE_ID, ttsModel: environment.ELEVENLABS_TTS_MODEL || "eleven_v3_conversational", ttsStability: 0.75, maxSpeechCharacters: 4000 } } });
 }
 
 export function createPhoneBridgeServer({ environment = process.env, fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket } = {}) {
-  const config = bridgeConfig(environment); const novaClient = createNovaPhoneBridgeClient({ baseUrl: config.novaBaseUrl, fetchImpl });
+  const config = bridgeConfig(environment); const novaClient = createNovaPhoneBridgeClient({ baseUrl: config.novaBaseUrl, protectionBypassSecret: environment.VERCEL_AUTOMATION_BYPASS_SECRET, fetchImpl });
   const sessions = new Set();
   const server = http.createServer((request, response) => {
     if (request.method === "GET" && request.url === "/health/live") { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ live: true })); return; }

@@ -17,6 +17,7 @@ import { createAgent } from "../src/agent/agent.js";
 import { approvalViewModel } from "../assets/approval-presenter.js";
 import { createRuntimePhoneSession } from "../phone-bridge/runtime-session.js";
 import { bridgeConfig } from "../phone-bridge/server.js";
+import { AUTHORIZED_NOVA_PREVIEW_BASE_URL, createNovaPhoneBridgeClient, protectionBypassHeadersFor } from "../phone-bridge/nova-client.js";
 import { createOpenAiWebSocketTranscriber } from "../phone-bridge/openai-transcriber.js";
 import { TWILIO_MEDIA_FORMAT } from "../src/phone/twilio-media-protocol.js";
 
@@ -208,6 +209,29 @@ test("Fly bridge remains scale-to-zero, one-call-at-a-time, transport-only, and 
 });
 
 test("Preview certification bridge starts without fabricated Twilio credentials and keeps calls disabled", () => {
-  const config=bridgeConfig({NOVA_PHONE_BRIDGE_PUBLIC_URL:"https://bridge.example",NOVA_PHONE_BASE_URL:"https://nova.example",OPENAI_API_KEY:"openai",ELEVENLABS_API_KEY:"eleven",ELEVENLABS_VOICE_ID:"owner-voice"});
-  assert.equal(config.twilioAuthToken,null);assert.equal(config.voiceConfig.voiceV2.ttsModel,"eleven_v3_conversational");
+  const config=bridgeConfig({NOVA_PHONE_BRIDGE_PUBLIC_URL:"https://bridge.example",NOVA_PHONE_BASE_URL:AUTHORIZED_NOVA_PREVIEW_BASE_URL,OPENAI_API_KEY:"openai",ELEVENLABS_API_KEY:"eleven",ELEVENLABS_VOICE_ID:"owner-voice",VERCEL_AUTOMATION_BYPASS_SECRET:"preview-bypass"});
+  assert.equal(config.twilioAuthToken,null);assert.equal(config.voiceConfig.voiceV2.ttsModel,"eleven_v3_conversational");assert.doesNotMatch(JSON.stringify(config),/preview-bypass/);
+});
+
+test("Fly bridge attaches the Vercel bypass only to the exact authorized Nova Preview and preserves Nova bearer auth", async () => {
+  const secret = "preview-bypass-private"; const requests = [];
+  const client = createNovaPhoneBridgeClient({ baseUrl: AUTHORIZED_NOVA_PREVIEW_BASE_URL, protectionBypassSecret: secret, fetchImpl: async (url, input) => { requests.push({ url, input }); return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }); } });
+  await client.turn({ transcript: "hello" }, "nova-session-token");
+  assert.equal(requests.length, 1); assert.equal(requests[0].url, `${AUTHORIZED_NOVA_PREVIEW_BASE_URL}/api/phone/bridge/turn`);
+  assert.equal(requests[0].input.headers["x-vercel-protection-bypass"], secret); assert.equal(requests[0].input.headers.Authorization, "Bearer nova-session-token");
+});
+
+test("bypass configuration fails safely when missing and rejects an unauthorized destination", () => {
+  assert.throws(() => bridgeConfig({ NOVA_PHONE_BRIDGE_PUBLIC_URL: "https://bridge.example", NOVA_PHONE_BASE_URL: AUTHORIZED_NOVA_PREVIEW_BASE_URL, OPENAI_API_KEY: "openai", ELEVENLABS_API_KEY: "eleven", ELEVENLABS_VOICE_ID: "owner-voice" }), /VERCEL_AUTOMATION_BYPASS_SECRET is required/);
+  assert.throws(() => createNovaPhoneBridgeClient({ baseUrl: "https://unrelated.example", protectionBypassSecret: "private" }), (error) => error.code === "nova_preview_destination_not_authorized" && !error.message.includes("private"));
+  assert.deepEqual(protectionBypassHeadersFor({ destination: "https://unrelated.example/api/agent", secret: "private" }), {});
+});
+
+test("bypass secret is absent from safe errors, serialized client state, and unrelated request headers", async () => {
+  const secret = "never-report-this-bypass";
+  const client = createNovaPhoneBridgeClient({ baseUrl: AUTHORIZED_NOVA_PREVIEW_BASE_URL, protectionBypassSecret: secret, fetchImpl: async () => new Response(JSON.stringify({ error: "safe upstream failure", code: "safe_failure" }), { status: 503, headers: { "content-type": "application/json" } }) });
+  await assert.rejects(() => client.start({ sessionToken: "fixture" }), (error) => error.code === "safe_failure" && !JSON.stringify(error).includes(secret));
+  assert.doesNotMatch(JSON.stringify(client), new RegExp(secret));
+  const unrelatedHeaders = { "content-type": "application/json", ...protectionBypassHeadersFor({ destination: "https://unrelated.example/api/agent", secret }) };
+  assert.equal("x-vercel-protection-bypass" in unrelatedHeaders, false);
 });

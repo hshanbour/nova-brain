@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { createElevenLabsTelephonyTts } from "../src/phone/elevenlabs-telephony.js";
 import { createOpenAiWebSocketTranscriber } from "./openai-transcriber.js";
+import { AUTHORIZED_NOVA_PREVIEW_BASE_URL, protectionBypassHeadersFor } from "./nova-client.js";
 
-const required = ["OPENAI_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID", "NOVA_PHONE_BASE_URL"];
+const required = ["OPENAI_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID", "NOVA_PHONE_BASE_URL", "VERCEL_AUTOMATION_BYPASS_SECRET"];
 for (const name of required) if (!process.env[name]) throw new Error(`${name} is required.`);
 
 const timeout = (promise, milliseconds, label) => Promise.race([
@@ -37,7 +38,8 @@ async function transcribe(audio, turnId) {
 
 async function novaTurn(message, conversationId) {
   const started = now();
-  const response = await fetch(`${process.env.NOVA_PHONE_BASE_URL.replace(/\/$/, "")}/api/agent`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message, conversationId, context: { certification: "phone-v1-phase-2" } }), signal: AbortSignal.timeout(75_000) });
+  const destination = `${process.env.NOVA_PHONE_BASE_URL.replace(/\/$/, "")}/api/agent`;
+  const response = await fetch(destination, { method: "POST", headers: { "content-type": "application/json", ...protectionBypassHeadersFor({ destination, secret: process.env.VERCEL_AUTOMATION_BYPASS_SECRET, authorizedBaseUrl: AUTHORIZED_NOVA_PREVIEW_BASE_URL }) }, body: JSON.stringify({ message, conversationId, context: { certification: "phone-v1-phase-2" } }), signal: AbortSignal.timeout(75_000) });
   const value = await response.json().catch(() => null);
   if (!response.ok || !value?.message) throw new Error(`Nova Preview returned HTTP ${response.status}.`);
   if (Array.isArray(value.toolCalls) && value.toolCalls.length) throw new Error("Nova certification unexpectedly invoked a tool.");
