@@ -9,7 +9,7 @@ import { createVoiceV2Client } from "../assets/voice-v2-client.js";
 
 const environment = { OPENAI_API_KEY: "openai-super-secret", ELEVENLABS_API_KEY: "eleven-super-secret", ELEVENLABS_VOICE_ID: "owner-voice-id" };
 const models = [{ model_id: "eleven_v3_conversational", can_do_text_to_speech: true, languages: [{ language_id: "ar", name: "Arabic" }, { language_id: "en", name: "English" }] }, { model_id: "eleven_flash_v2_5", can_do_text_to_speech: true }];
-function withCapabilities(handler = async () => new Response(Buffer.from("mp3"), { status: 200, headers: { "content-type": "audio/mpeg" } }), { availableModels = models, voice = { voice_id: environment.ELEVENLABS_VOICE_ID, high_quality_base_model_ids: ["eleven_v3_conversational"] } } = {}) {
+function withCapabilities(handler = async () => new Response(Buffer.from("mp3"), { status: 200, headers: { "content-type": "audio/mpeg" } }), { availableModels = models, voice = { voice_id: environment.ELEVENLABS_VOICE_ID, name: "Nova Female V1", high_quality_base_model_ids: ["eleven_v3_conversational"] } } = {}) {
   return async (url, options) => {
     if (url === "https://api.elevenlabs.io/v1/models") return new Response(JSON.stringify(availableModels), { status: 200, headers: { "content-type": "application/json" } });
     if (String(url).startsWith("https://api.elevenlabs.io/v1/voices/")) return new Response(JSON.stringify(voice), { status: 200, headers: { "content-type": "application/json" } });
@@ -25,6 +25,7 @@ test("Voice V2 readiness exposes models and limits without exposing credentials 
   const app = createApp({ environment, voiceFetchImpl: withCapabilities() }); const result = await api(app, { url: "/api/voice/readiness" }); assert.equal(result.status, 200); assert.equal(result.body.available, true);
   assert.equal(result.body.stt.model, "gpt-transcribe"); assert.equal(result.body.tts.model, "eleven_v3_conversational"); assert.equal(result.body.rawAudioPolicy, "ephemeral-request-only");
   assert.equal(result.body.tts.status, "Verified"); assert.equal(result.body.tts.capability, "account-model-and-voice-access-verified"); assert.equal(result.body.tts.fallbackUsed, false);
+  assert.equal(result.body.tts.voiceName, "Nova Female V1");
   const serialized = JSON.stringify(result.body); for (const secret of Object.values(environment)) assert.equal(serialized.includes(secret), false);
 });
 

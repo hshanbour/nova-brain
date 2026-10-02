@@ -98,6 +98,7 @@ export function createVoiceService({ config, fetchImpl = fetch, schedule = setTi
           preferredModel: voice.ttsModel,
           outputFormat: voice.ttsOutputFormat,
           voice: "Owner-selected ElevenLabs voice",
+          ...(capability?.voiceName ? { voiceName: capability.voiceName } : {}),
           status: capability ? "Verified" : voice.elevenLabsApiKey && voice.elevenLabsVoiceId ? "Unavailable" : "Missing",
           capability: capability?.verification,
           selection: capability?.model.reason,
@@ -248,10 +249,12 @@ async function verifyElevenLabsCapabilities({ voice, fetchImpl, schedule, cancel
     if (!model) throw new VoiceProviderError("elevenlabs", "No supported multilingual ElevenLabs speech model is available.", 400, "model", "unsupported_model");
     if (!selectedVoice || selectedVoice.voice_id !== voice.elevenLabsVoiceId) throw new VoiceProviderError("elevenlabs", "The selected ElevenLabs voice is unavailable.", 403, "voice_access", "voice_access_denied");
     const highQualityModels = Array.isArray(selectedVoice.high_quality_base_model_ids) ? selectedVoice.high_quality_base_model_ids : [];
+    const voiceName = safeVoiceName(selectedVoice.name, voice.elevenLabsVoiceId);
     return Object.freeze({
       model,
       verification: "account-model-and-voice-access-verified",
-      voiceCompatibility: highQualityModels.includes(model.id) ? "high-quality-model-listed" : "voice-access-verified"
+      voiceCompatibility: highQualityModels.includes(model.id) ? "high-quality-model-listed" : "voice-access-verified",
+      ...(voiceName ? { voiceName } : {})
     });
   } catch (error) {
     if (!(error instanceof VoiceProviderError) || !["authentication", "provider_rejected"].includes(error.category)) throw error;
@@ -268,6 +271,11 @@ async function verifyElevenLabsCapabilities({ voice, fetchImpl, schedule, cancel
     }
   }
   throw new VoiceProviderError("elevenlabs", "No supported multilingual ElevenLabs speech model is available.", 400, "model", "unsupported_model");
+}
+
+function safeVoiceName(value, voiceId) {
+  const name = String(value || "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+  return name && name !== voiceId ? name : null;
 }
 
 async function safeJson(response, service) {
