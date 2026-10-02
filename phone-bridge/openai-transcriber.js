@@ -7,7 +7,7 @@ export function createOpenAiWebSocketTranscriber({ WebSocketImpl, apiKey, model 
   const fail = (error) => { readyReject(error); protocol.close(); onError(error); };
   return Object.freeze({
     start() {
-      socket = new WebSocketImpl("wss://api.openai.com/v1/live/sessions", { headers: { Authorization: `Bearer ${apiKey}`, "OpenAI-Beta": "realtime=v1" } });
+      socket = new WebSocketImpl(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`, { headers: { Authorization: `Bearer ${apiKey}` } });
       socket.on("open", () => { readyResolve(true); for (const data of queued.splice(0)) socket.send(data); });
       socket.on("message", (data) => { try { const event = JSON.parse(String(data)); if (event?.type === "error") { const category = [event.error?.type, event.error?.code, event.error?.param].filter(Boolean).join(":") || "unknown"; fail(new Error(`OpenAI streaming transcription provider error (${category}).`)); return; } protocol.handleServerEvent(event); } catch (error) { fail(error); } });
       socket.on("error", fail);

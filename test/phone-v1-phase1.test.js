@@ -32,7 +32,7 @@ class FakeOpenAiSocket extends EventEmitter {
   static OPEN = 1;
   static last;
   readyState = 1;
-  constructor() { super(); FakeOpenAiSocket.last = this; }
+  constructor(url) { super(); this.url = url; FakeOpenAiSocket.last = this; }
   send() {}
   close() {}
 }
@@ -42,6 +42,7 @@ test("OpenAI bridge surfaces only safe provider error categories", async () => {
   const client = createOpenAiWebSocketTranscriber({ WebSocketImpl: FakeOpenAiSocket, apiKey: "fixture", onError: (error) => { surfaced = error; } });
   client.start();
   const ready = client.ready();
+  assert.equal(FakeOpenAiSocket.last.url, "wss://api.openai.com/v1/realtime?model=gpt-live-transcribe");
   // Exercise the real socket listener without exposing the provider body.
   FakeOpenAiSocket.last.emit("message", JSON.stringify({ type: "error", error: { type: "invalid_request_error", code: "invalid_value", param: "session.audio.input.transcription.model", message: "sensitive provider detail" } }));
   await assert.rejects(ready, /invalid_request_error:invalid_value/);
