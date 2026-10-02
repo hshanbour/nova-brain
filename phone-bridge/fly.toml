@@ -4,7 +4,7 @@ kill_signal = "SIGTERM"
 kill_timeout = "30s"
 
 [build]
-  dockerfile = "phone-bridge/Dockerfile"
+  dockerfile = "Dockerfile"
 
 [env]
   NOVA_PHONE_BASE_URL = "https://nova-test-project-git-codex-combine-ede5f3-hamodehshanbour-6196.vercel.app"

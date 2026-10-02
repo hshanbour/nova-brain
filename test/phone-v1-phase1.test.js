@@ -174,7 +174,12 @@ test("Console restoration and generic approval UI include phone state without a 
 });
 
 test("Fly bridge remains scale-to-zero, one-call-at-a-time, transport-only, and outside Vercel", async () => {
-  const [fly,server]=await Promise.all([readFile(new URL("../phone-bridge/fly.toml.example",import.meta.url),"utf8"),readFile(new URL("../phone-bridge/server.js",import.meta.url),"utf8")]);
+  const [fly, deployedFly, server] = await Promise.all([
+    readFile(new URL("../phone-bridge/fly.toml.example", import.meta.url), "utf8"),
+    readFile(new URL("../phone-bridge/fly.toml", import.meta.url), "utf8"),
+    readFile(new URL("../phone-bridge/server.js", import.meta.url), "utf8"),
+  ]);
+  assert.match(deployedFly, /dockerfile = "Dockerfile"/);
   assert.match(fly,/min_machines_running = 0/); assert.match(fly,/auto_start_machines = true/); assert.match(server,/sessions\.size === 0/); assert.match(server,/\/health\/ready/); assert.doesNotMatch(server,/memory|gmail|workflow|approval/i);
 });
 
