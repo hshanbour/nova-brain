@@ -15,6 +15,7 @@ import { SCHEMA_STATEMENTS, SCHEMA_VERSION } from "../src/storage/schema.js";
 import { createAgent } from "../src/agent/agent.js";
 import { approvalViewModel } from "../assets/approval-presenter.js";
 import { createRuntimePhoneSession } from "../phone-bridge/runtime-session.js";
+import { bridgeConfig } from "../phone-bridge/server.js";
 import { TWILIO_MEDIA_FORMAT } from "../src/phone/twilio-media-protocol.js";
 
 const NOW = new Date("2026-10-02T12:00:00.000Z");
@@ -175,4 +176,9 @@ test("Console restoration and generic approval UI include phone state without a 
 test("Fly bridge remains scale-to-zero, one-call-at-a-time, transport-only, and outside Vercel", async () => {
   const [fly,server]=await Promise.all([readFile(new URL("../phone-bridge/fly.toml.example",import.meta.url),"utf8"),readFile(new URL("../phone-bridge/server.js",import.meta.url),"utf8")]);
   assert.match(fly,/min_machines_running = 0/); assert.match(fly,/auto_start_machines = true/); assert.match(server,/sessions\.size === 0/); assert.match(server,/\/health\/ready/); assert.doesNotMatch(server,/memory|gmail|workflow|approval/i);
+});
+
+test("Preview certification bridge starts without fabricated Twilio credentials and keeps calls disabled", () => {
+  const config=bridgeConfig({NOVA_PHONE_BRIDGE_PUBLIC_URL:"https://bridge.example",NOVA_PHONE_BASE_URL:"https://nova.example",OPENAI_API_KEY:"openai",ELEVENLABS_API_KEY:"eleven",ELEVENLABS_VOICE_ID:"owner-voice"});
+  assert.equal(config.twilioAuthToken,null);assert.equal(config.voiceConfig.voiceV2.ttsModel,"eleven_v3_conversational");
 });

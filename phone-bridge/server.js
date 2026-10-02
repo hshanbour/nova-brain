@@ -8,10 +8,10 @@ import { createOpenAiWebSocketTranscriber } from "./openai-transcriber.js";
 import { createNovaPhoneBridgeClient } from "./nova-client.js";
 import { createRuntimePhoneSession } from "./runtime-session.js";
 
-function bridgeConfig(environment = process.env) {
-  const required = ["NOVA_PHONE_BRIDGE_PUBLIC_URL", "NOVA_PHONE_BASE_URL", "TWILIO_AUTH_TOKEN", "OPENAI_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID"];
+export function bridgeConfig(environment = process.env) {
+  const required = ["NOVA_PHONE_BRIDGE_PUBLIC_URL", "NOVA_PHONE_BASE_URL", "OPENAI_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID"];
   for (const name of required) if (!environment[name]) throw new Error(`${name} is required.`);
-  return Object.freeze({ port: Number(environment.PORT || 8080), publicUrl: environment.NOVA_PHONE_BRIDGE_PUBLIC_URL.replace(/\/$/, ""), novaBaseUrl: environment.NOVA_PHONE_BASE_URL.replace(/\/$/, ""), twilioAuthToken: environment.TWILIO_AUTH_TOKEN, openAIApiKey: environment.OPENAI_API_KEY, voiceConfig: { voiceV2: { elevenLabsApiKey: environment.ELEVENLABS_API_KEY, elevenLabsVoiceId: environment.ELEVENLABS_VOICE_ID, ttsModel: environment.ELEVENLABS_TTS_MODEL || "eleven_v3_conversational", ttsStability: 0.75, maxSpeechCharacters: 4000 } } });
+  return Object.freeze({ port: Number(environment.PORT || 8080), publicUrl: environment.NOVA_PHONE_BRIDGE_PUBLIC_URL.replace(/\/$/, ""), novaBaseUrl: environment.NOVA_PHONE_BASE_URL.replace(/\/$/, ""), twilioAuthToken: environment.TWILIO_AUTH_TOKEN || null, openAIApiKey: environment.OPENAI_API_KEY, voiceConfig: { voiceV2: { elevenLabsApiKey: environment.ELEVENLABS_API_KEY, elevenLabsVoiceId: environment.ELEVENLABS_VOICE_ID, ttsModel: environment.ELEVENLABS_TTS_MODEL || "eleven_v3_conversational", ttsStability: 0.75, maxSpeechCharacters: 4000 } } });
 }
 
 export function createPhoneBridgeServer({ environment = process.env, fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket } = {}) {
@@ -19,13 +19,13 @@ export function createPhoneBridgeServer({ environment = process.env, fetchImpl =
   const sessions = new Set();
   const server = http.createServer((request, response) => {
     if (request.method === "GET" && request.url === "/health/live") { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ live: true })); return; }
-    if (request.method === "GET" && request.url === "/health/ready") { const acceptingCalls = sessions.size === 0; response.writeHead(acceptingCalls ? 200 : 503, { "content-type": "application/json", "cache-control": "no-store" }); response.end(JSON.stringify({ ready: true, acceptingCalls })); return; }
+    if (request.method === "GET" && request.url === "/health/ready") { const acceptingCalls = Boolean(config.twilioAuthToken) && sessions.size === 0; response.writeHead(sessions.size === 0 ? 200 : 503, { "content-type": "application/json", "cache-control": "no-store" }); response.end(JSON.stringify({ ready: sessions.size === 0, acceptingCalls, providerCertificationReady: true })); return; }
     response.writeHead(404).end();
   });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024, perMessageDeflate: false });
   server.on("upgrade", (request, socket, head) => {
     try {
-      if (!request.url?.startsWith("/media") || sessions.size > 0) throw new Error("Bridge is not accepting calls.");
+      if (!config.twilioAuthToken || !request.url?.startsWith("/media") || sessions.size > 0) throw new Error("Bridge is not accepting calls.");
       assertTwilioSignature({ authToken: config.twilioAuthToken, url: `${config.publicUrl}${request.url}`, signature: request.headers["x-twilio-signature"], parameters: {} });
       wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request));
     } catch { socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n"); socket.destroy(); }

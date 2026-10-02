@@ -1,0 +1,36 @@
+app = "nova-phone-v1-preview-hshanbour"
+primary_region = "lhr"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "phone-bridge/Dockerfile"
+
+[env]
+  NOVA_PHONE_BASE_URL = "https://nova-test-project-git-codex-combine-ede5f3-hamodehshanbour-6196.vercel.app"
+  NOVA_PHONE_BRIDGE_PUBLIC_URL = "https://nova-phone-v1-preview-hshanbour.fly.dev"
+  ELEVENLABS_TTS_MODEL = "eleven_v3_conversational"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 20
+    hard_limit = 25
+
+  [[http_service.checks]]
+    grace_period = "5s"
+    interval = "15s"
+    method = "GET"
+    timeout = "2s"
+    path = "/health/ready"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
