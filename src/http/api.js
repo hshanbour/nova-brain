@@ -1,4 +1,4 @@
-import { readJsonBody } from "./body.js";
+import { readFormBody, readJsonBody } from "./body.js";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -56,6 +56,8 @@ import { DeveloperWorkspaceHandoffError } from "../autonomy/developer-workspace-
 import { OpenAIProviderError } from "../providers/openai-model-provider.js";
 import { ModelCostBudgetError } from "../providers/model-cost-budget.js";
 import { GmailError, GMAIL_OAUTH_COOKIE } from "../email/gmail-service.js";
+import { PhoneError } from "../phone/phone-service.js";
+import { assertTwilioSignature } from "../phone/twilio-signature.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -209,6 +211,7 @@ export function createApi({
   browserTaskService,
   durableResearchTaskService,
   gmailService,
+  phoneService,
   logger = console,
 }) {
   const recognitionEngines =
@@ -254,6 +257,39 @@ export function createApi({
       };
 
       try {
+        if (request.method === "GET" && pathname === "/api/phone/calls") {
+          await ready();
+          const conversationId = url.searchParams.get("conversationId");
+          if (!conversationId) throw new ValidationError("conversationId is required.");
+          sendJson(response, 200, { calls: await phoneService.listConversation(conversationId) });
+          return;
+        }
+        if (request.method === "POST" && pathname === "/api/phone/bridge/session/start") {
+          await ready();
+          sendJson(response, 200, await phoneService.startBridgeSession(await readJsonBody(request, config.maxBodyBytes)));
+          return;
+        }
+        if (request.method === "POST" && pathname === "/api/phone/bridge/turn") {
+          await ready();
+          const input = await readJsonBody(request, config.maxBodyBytes);
+          sendJson(response, 200, await phoneService.processBridgeTurn({ ...input, bridgeSessionToken: String(request.headers?.authorization || "").replace(/^Bearer\s+/i, "") }));
+          return;
+        }
+        if (request.method === "POST" && pathname === "/api/phone/bridge/event") {
+          await ready();
+          const input = await readJsonBody(request, config.maxBodyBytes);
+          sendJson(response, 200, await phoneService.recordBridgeEvent({ ...input, bridgeSessionToken: String(request.headers?.authorization || "").replace(/^Bearer\s+/i, "") }));
+          return;
+        }
+        const phoneStatusMatch = pathname.match(/^\/api\/phone\/twilio\/status\/([^/]+)$/);
+        if (request.method === "POST" && phoneStatusMatch) {
+          await ready();
+          const form = await readFormBody(request, config.maxBodyBytes);
+          assertTwilioSignature({ authToken: config.phone.authToken, url: `${config.phone.publicBaseUrl}${pathname}`, parameters: form, signature: request.headers?.["x-twilio-signature"] });
+          await phoneService.providerStatus(decodeURIComponent(phoneStatusMatch[1]), { callSid: form.CallSid, callStatus: form.CallStatus });
+          sendJson(response, 200, { accepted: true });
+          return;
+        }
         if (request.method === "GET" && pathname === "/api/integrations/gmail/status") {
           await ready();
           sendJson(response, 200, await gmailService.status());
@@ -1943,6 +1979,7 @@ export function createApi({
             status: decision,
             summary: `Owner ${decision} ${approval.tool}.`,
           });
+          if (typeof toolRegistry.handleApprovalDecision === "function") await toolRegistry.handleApprovalDecision(approval.tool, approval, decision);
           let execution;
           const codingParent = approval.tool === "coding_job_create" && typeof approval.arguments?.parentTaskId === "string"
             ? await storage.getAutonomyTask(approval.arguments.parentTaskId, ownerId)
@@ -2057,6 +2094,10 @@ export function createApi({
         if (error instanceof GmailError || error?.code?.startsWith?.("gmail_")) {
           logger.error("Nova Gmail request failed", { requestId, code: error.code, category: error.category || "validation" });
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "gmail_error" });
+          return;
+        }
+        if (error instanceof PhoneError || error?.code?.startsWith?.("phone_")) {
+          sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "phone_error", requestId });
           return;
         }
         if (error instanceof ValidationError) {

@@ -61,7 +61,7 @@ export function createToolRegistry({ policy } = {}) {
       tools.set(tool.name, Object.freeze({ ...tool }));
     },
     list({ executableOnly = false } = {}) {
-      return [...tools.values()].filter((tool) => !executableOnly || tool.available !== false).map(({ execute: _execute, validate: _validate, validateApprovedLegacy: _validateApprovedLegacy, ...tool }) => ({
+      return [...tools.values()].filter((tool) => !executableOnly || tool.available !== false).map(({ execute: _execute, validate: _validate, validateApprovedLegacy: _validateApprovedLegacy, onApprovalRequired: _onApprovalRequired, onApprovalDecision: _onApprovalDecision, ...tool }) => ({
         ...tool
       }));
     },
@@ -89,9 +89,20 @@ export function createToolRegistry({ policy } = {}) {
           throw error;
         }
       }
-      if (policy) await policy.authorize(tool, input, context);
+      if (policy) {
+        try { await policy.authorize(tool, input, context); }
+        catch (error) {
+          if (error?.approval && typeof tool.onApprovalRequired === "function") await tool.onApprovalRequired(input, error.approval, context);
+          throw error;
+        }
+      }
 
       return tool.execute(input, context);
+    },
+    async handleApprovalDecision(name, approval, decision) {
+      const tool = tools.get(name);
+      if (tool && typeof tool.onApprovalDecision === "function") return tool.onApprovalDecision(approval, decision);
+      return null;
     }
   });
 }

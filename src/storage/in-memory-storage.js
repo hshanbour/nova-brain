@@ -36,6 +36,9 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const gmailConnections = new Map();
   const gmailDrafts = new Map();
   const gmailSendIntents = new Map();
+  const phoneCallIntents = new Map();
+  const phoneCallEvents = new Map();
+  const phoneCallTurns = new Map();
   const developerSessions = new Map();
   const activity = [];
   const benchmarkSessions = new Map();
@@ -951,6 +954,72 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       gmailSendIntents.set(id, updated);
       return copy(updated);
     },
+    async createPhoneCallIntent(input) {
+      if (phoneCallIntents.has(input.id)) throw Object.assign(new Error("Phone call intent already exists."), { code: "23505" });
+      const timestamp = now(clock);
+      const call = { ...copy(input), status: "prepared", approvalId: null, attemptCount: 0, submissionKey: null, providerCallSid: null, providerStreamSid: null, providerStatus: null, sessionTokenHash: null, sessionTokenExpiresAt: null, sessionTokenUsedAt: null, outcome: null, summary: null, errorCode: null, startedAt: null, endedAt: null, createdAt: timestamp, updatedAt: timestamp };
+      phoneCallIntents.set(call.id, call);
+      return copy(call);
+    },
+    async getPhoneCallIntent(id, ownerId) { const call = phoneCallIntents.get(id); return copy(call?.ownerId === ownerId ? call : null); },
+    async listConversationPhoneCalls(ownerId, conversationId, { limit = 20 } = {}) {
+      return [...phoneCallIntents.values()].filter((call) => call.ownerId === ownerId && call.conversationId === conversationId).sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id)).slice(0, limit).map((call) => {
+        const run = runs.get(call.preparedRunId);
+        return copy({ ...call, ...(run?.result?.assistantMessageId ? { assistantMessageId: run.result.assistantMessageId } : {}) });
+      });
+    },
+    async bindPhoneCallApproval(id, ownerId, { approvalId, status }) {
+      const call = phoneCallIntents.get(id);
+      if (!call || call.ownerId !== ownerId || !["prepared", "waiting_for_approval"].includes(call.status) || (call.approvalId && call.approvalId !== approvalId)) return null;
+      const updated = { ...call, approvalId, status, updatedAt: now(clock) }; phoneCallIntents.set(id, updated); return copy(updated);
+    },
+    async approvePhoneCallIntent(id, ownerId, { approvalId }) {
+      const call = phoneCallIntents.get(id);
+      if (!call || call.ownerId !== ownerId || call.approvalId !== approvalId || !["waiting_for_approval", "approved", "dialing", "in_progress", "completed", "failed", "uncertain"].includes(call.status)) return null;
+      if (call.status !== "waiting_for_approval") return copy(call);
+      const updated = { ...call, status: "approved", updatedAt: now(clock) }; phoneCallIntents.set(id, updated); return copy(updated);
+    },
+    async updatePhoneCallIntent(id, ownerId, patch) {
+      const call = phoneCallIntents.get(id); if (!call || call.ownerId !== ownerId) return null;
+      const updated = { ...call, ...copy(patch), id: call.id, ownerId: call.ownerId, conversationId: call.conversationId, envelope: call.envelope, envelopeHash: call.envelopeHash, attemptCount: call.attemptCount, updatedAt: now(clock) };
+      phoneCallIntents.set(id, updated); return copy(updated);
+    },
+    async bindPhoneProviderCallSid(id, ownerId, { callSid, providerStatus }) {
+      const call=phoneCallIntents.get(id); if(!call||call.ownerId!==ownerId||(call.providerCallSid&&call.providerCallSid!==callSid))return null;
+      const updated={...call,providerCallSid:callSid,providerStatus,updatedAt:now(clock)};phoneCallIntents.set(id,updated);return copy(updated);
+    },
+    async savePhoneSessionToken(id, ownerId, { tokenHash, expiresAt }) {
+      const call = phoneCallIntents.get(id); if (!call || call.ownerId !== ownerId || call.sessionTokenUsedAt) return null;
+      const updated = { ...call, sessionTokenHash: tokenHash, sessionTokenExpiresAt: expiresAt, updatedAt: now(clock) }; phoneCallIntents.set(id, updated); return copy(updated);
+    },
+    async claimPhoneCallDial({ id, ownerId, approvalId, submissionKey, tokenHash, tokenExpiresAt }) {
+      const call = phoneCallIntents.get(id);
+      if (!call || call.ownerId !== ownerId) return null;
+      if (call.status !== "approved" || call.approvalId !== approvalId || call.attemptCount >= call.envelope.maximumAttempts) return { claimed: false, call: copy(call) };
+      const active = [...phoneCallIntents.values()].some((candidate) => candidate.ownerId === ownerId && candidate.id !== id && ["dialing", "in_progress"].includes(candidate.status));
+      if (active) return { claimed: false, call: copy(call), reason: "active_call" };
+      const updated = { ...call, status: "dialing", attemptCount: call.attemptCount + 1, submissionKey, sessionTokenHash: tokenHash, sessionTokenExpiresAt: tokenExpiresAt, sessionTokenUsedAt: null, updatedAt: now(clock) }; phoneCallIntents.set(id, updated); return { claimed: true, call: copy(updated) };
+    },
+    async consumePhoneSessionToken(id, ownerId, { tokenHash, callSid, streamSid, consumedAt }) {
+      const call = phoneCallIntents.get(id);
+      if (!call || call.ownerId !== ownerId || !["dialing","in_progress"].includes(call.status) || call.sessionTokenHash !== tokenHash || call.sessionTokenUsedAt || new Date(call.sessionTokenExpiresAt) <= new Date(consumedAt) || (call.providerCallSid && call.providerCallSid !== callSid) || (call.providerStreamSid && call.providerStreamSid !== streamSid)) return null;
+      const updated = { ...call, providerCallSid: callSid, providerStreamSid: streamSid, sessionTokenUsedAt: consumedAt, status: "in_progress", startedAt: call.startedAt || consumedAt, updatedAt: now(clock) }; phoneCallIntents.set(id, updated); return copy(updated);
+    },
+    async appendPhoneCallEvent(input) {
+      const existing = [...phoneCallEvents.values()].find((event) => event.ownerId === input.ownerId && event.callIntentId === input.callIntentId && event.eventKey === input.eventKey);
+      if (existing) return { inserted: false, event: copy(existing) };
+      const event = { ...copy(input), createdAt: now(clock) }; phoneCallEvents.set(event.id, event); return { inserted: true, event: copy(event) };
+    },
+    async claimPhoneCallTurn(input) {
+      const existing = phoneCallTurns.get(input.id); if (existing) return { claimed: false, turn: copy(existing) };
+      const timestamp = now(clock), turn = { ...copy(input), novaText: null, control: null, runId: null, status: "processing", errorCode: null, createdAt: timestamp, updatedAt: timestamp };
+      phoneCallTurns.set(turn.id, turn); return { claimed: true, turn: copy(turn) };
+    },
+    async completePhoneCallTurn(id, ownerId, patch) {
+      const turn = phoneCallTurns.get(id); if (!turn || turn.ownerId !== ownerId) return null;
+      const updated = { ...turn, ...copy(patch), id: turn.id, ownerId: turn.ownerId, callIntentId: turn.callIntentId, inputHash: turn.inputHash, callerText: turn.callerText, updatedAt: now(clock) }; phoneCallTurns.set(id, updated); return copy(updated);
+    },
+    async listPhoneCallTurns(ownerId, callIntentId) { return [...phoneCallTurns.values()].filter((turn) => turn.ownerId === ownerId && turn.callIntentId === callIntentId).sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)).map(copy); },
     async createApproval(input) {
       const approval = {
         id: input.id || randomUUID(),

@@ -117,8 +117,8 @@ test("Gmail configuration is all-or-nothing and enforces the approved mailbox", 
   assert.equal(readConfig(ENV).gmail.configured, true);
 });
 
-test("schema thirteen adds durable owner-scoped Gmail state, tokens, drafts, and send intents", () => {
-  assert.equal(SCHEMA_VERSION, 13);
+test("schema thirteen or later retains durable owner-scoped Gmail state, tokens, drafts, and send intents", () => {
+  assert.ok(SCHEMA_VERSION >= 13);
   for (const table of ["nova_gmail_oauth_states", "nova_gmail_connections", "nova_gmail_drafts", "nova_gmail_send_intents"])
     assert.ok(SCHEMA_STATEMENTS.some((statement) => statement.includes(`CREATE TABLE IF NOT EXISTS ${table}`)));
   const sends = SCHEMA_STATEMENTS.find((statement) => statement.includes("CREATE TABLE IF NOT EXISTS nova_gmail_send_intents"));

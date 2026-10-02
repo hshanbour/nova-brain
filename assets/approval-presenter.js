@@ -19,7 +19,7 @@ export function approvalViewModel(approval, { gmailAccountEmail } = {}) {
   const common = {
     id: approval.id,
     tool: approval.tool,
-    title: approval.tool === "gmail_send" ? "Approve email send" : "Approval required",
+    title: approval.tool === "gmail_send" ? "Approve email send" : approval.tool === "phone_call_start" ? "Approve outbound call" : "Approval required",
     reason: String(approval.reason || `Nova requested ${approval.tool}.`),
     status,
     pending: status === "pending",
@@ -39,6 +39,20 @@ export function approvalViewModel(approval, { gmailAccountEmail } = {}) {
         ["Body", String(args.body || "")],
       ],
     };
+  }
+  if (approval.tool === "phone_call_start") {
+    const envelope = approval.arguments?.envelope || {};
+    return { ...common, kind: "phone", fields: [
+      ["Destination", String(envelope.destination || "")], ["Expected party", String(envelope.expectedParty || "")],
+      ["Nova disclosure", String(envelope.callerDisclosure || "")], ["Objective", String(envelope.objective || "")],
+      ["Approved context", String(envelope.approvedContext || "None")], ["Permitted questions", textList(envelope.permittedQuestions)],
+      ["Permitted disclosures", textList(envelope.permittedDisclosures)], ["Prohibited disclosures", textList(envelope.prohibitedDisclosures)],
+      ["Prohibited actions", textList(envelope.prohibitedActions)], ["Language", String(envelope.languageStrategy || "")],
+      ["Maximum duration", `${Number(envelope.maximumDurationMinutes || 0)} minutes`], ["Maximum attempts", String(envelope.maximumAttempts || 1)],
+      ["Calling window", `${envelope.callingWindow?.startAt || ""} — ${envelope.callingWindow?.endAt || ""} (${envelope.callingWindow?.timezone || ""})`],
+      ["Voicemail", String(envelope.voicemailPolicy || "do_not_leave")], ["Recording", String(envelope.recordingPolicy || "disabled")],
+      ["Transcript retention", String(envelope.transcriptRetentionPolicy || "")], ["Expiry", String(envelope.expiresAt || "")],
+    ] };
   }
   const safeArguments = safeValue(approval.arguments || {});
   return { ...common, kind: "generic", fields: [["Exact action", JSON.stringify(safeArguments)]] };

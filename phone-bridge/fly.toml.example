@@ -1,4 +1,4 @@
-# Phase 0 design only. Do not deploy without owner approval and provider configuration.
+# Phase 1 Preview design only. Do not deploy without owner approval and provider configuration.
 primary_region = "lhr"
 kill_signal = "SIGTERM"
 kill_timeout = "30s"

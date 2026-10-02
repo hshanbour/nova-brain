@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parseTwilioMediaMessage, twilioClear, twilioMark, twilioMedia } from "./twilio-media-protocol.js";
 
-export function createPhase0PhoneBridgeSession({ sendTwilio, transcriber, novaTurn, tts, idFactory = randomUUID }) {
+export function createPhase0PhoneBridgeSession({ sendTwilio, transcriber, novaTurn, tts, idFactory = randomUUID, bargeInOnMedia = true, onControl = () => {} }) {
   if (![sendTwilio, novaTurn].every((value) => typeof value === "function")) throw new TypeError("Bridge callbacks are required.");
   if (!transcriber || !tts) throw new TypeError("Bridge providers are required.");
   let state = "connecting";
@@ -45,7 +45,7 @@ export function createPhase0PhoneBridgeSession({ sendTwilio, transcriber, novaTu
       }
       if (message.event === "media") {
         if (!streamSid || message.streamSid !== streamSid || state === "ended") return { ignored: true };
-        if (state === "speaking" || state === "thinking" || state === "transcribing") interrupt();
+        if (bargeInOnMedia && (state === "speaking" || state === "thinking" || state === "transcribing")) interrupt();
         transcriber.appendMulaw(message.media.payload);
         inboundFrames += 1;
         pendingInboundFrames += 1;
@@ -92,6 +92,7 @@ export function createPhase0PhoneBridgeSession({ sendTwilio, transcriber, novaTu
         if (state === "ended" || turn.generation !== generation || activeTurn !== turn) return false;
         pendingPlaybackMark = `nova-turn-${turn.id}`;
         send(twilioMark(streamSid, pendingPlaybackMark));
+        onControl(response?.control || "continue", { markName: pendingPlaybackMark, turnId: turn.id });
         completedTurns += 1;
         return true;
       } finally {

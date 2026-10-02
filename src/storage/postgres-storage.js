@@ -268,6 +268,9 @@ const gmailOAuthStateRow = (row) => row && ({ stateHash: row.state_hash, ownerId
 const gmailConnectionRow = (row) => row && ({ ownerId: row.owner_id, email: row.email, scopes: row.scopes, encryptedAccessToken: row.encrypted_access_token, accessTokenExpiresAt: date(row.access_token_expires_at), encryptedRefreshToken: row.encrypted_refresh_token, connectedAt: date(row.connected_at), updatedAt: date(row.updated_at) });
 const gmailDraftRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, to: row.to_recipients, cc: row.cc_recipients, bcc: row.bcc_recipients, subject: row.subject, body: row.body, threadId: row.thread_id, inReplyTo: row.in_reply_to, references: row.references_header, intentHash: row.intent_hash, createdAt: date(row.created_at) });
 const gmailSendIntentRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, draftId: row.draft_id, intentHash: row.intent_hash, messageId: row.message_id, status: row.status, providerMessageId: row.provider_message_id, providerThreadId: row.provider_thread_id, errorCode: row.error_code, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
+const phoneCallRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, conversationId: row.conversation_id, preparedRunId: row.prepared_run_id, callConversationId: row.call_conversation_id, envelope: row.envelope, envelopeHash: row.envelope_hash, status: row.status, approvalId: row.approval_id, attemptCount: Number(row.attempt_count), submissionKey: row.submission_key, providerCallSid: row.provider_call_sid, providerStreamSid: row.provider_stream_sid, providerStatus: row.provider_status, sessionTokenHash: row.session_token_hash, sessionTokenExpiresAt: date(row.session_token_expires_at), sessionTokenUsedAt: date(row.session_token_used_at), outcome: row.outcome, summary: row.summary, errorCode: row.error_code, expiresAt: date(row.expires_at), startedAt: date(row.started_at), endedAt: date(row.ended_at), createdAt: date(row.created_at), updatedAt: date(row.updated_at), ...(row.assistant_message_id ? { assistantMessageId: row.assistant_message_id } : {}) });
+const phoneTurnRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, callIntentId: row.call_intent_id, inputHash: row.input_hash, callerText: row.caller_text, novaText: row.nova_text, control: row.control, runId: row.run_id, status: row.status, errorCode: row.error_code, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
+const phoneEventRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, callIntentId: row.call_intent_id, eventKey: row.event_key, type: row.event_type, providerCallSid: row.provider_call_sid, providerStreamSid: row.provider_stream_sid, metadata: row.metadata, createdAt: date(row.created_at) });
 
 export function createPostgresStorage({ connectionString, sqlClient } = {}) {
   if (!connectionString && !sqlClient)
@@ -1262,6 +1265,92 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         [id, ownerId, patch.status, patch.providerMessageId || null, patch.providerThreadId || null, patch.errorCode || null],
       ))[0]);
     },
+    async createPhoneCallIntent(input) {
+      return phoneCallRow((await run(
+        `INSERT INTO nova_phone_call_intents (id,owner_id,conversation_id,prepared_run_id,call_conversation_id,envelope,envelope_hash,status,expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,'prepared',$8) RETURNING *`,
+        [input.id,input.ownerId,input.conversationId,input.preparedRunId||null,input.callConversationId,json(input.envelope),input.envelopeHash,input.expiresAt],
+      ))[0]);
+    },
+    async getPhoneCallIntent(id, ownerId) { return phoneCallRow((await run("SELECT * FROM nova_phone_call_intents WHERE id=$1 AND owner_id=$2",[id,ownerId]))[0]); },
+    async listConversationPhoneCalls(ownerId, conversationId, { limit = 20 } = {}) {
+      return (await run(
+        `SELECT call.*,execution.result->>'assistantMessageId' AS assistant_message_id FROM nova_phone_call_intents call
+         LEFT JOIN nova_execution_runs execution ON execution.id=call.prepared_run_id AND execution.owner_id=call.owner_id
+         WHERE call.owner_id=$1 AND call.conversation_id=$2 ORDER BY call.created_at DESC,call.id ASC LIMIT $3`,
+        [ownerId,conversationId,limit],
+      )).map(phoneCallRow);
+    },
+    async bindPhoneCallApproval(id, ownerId, { approvalId, status }) {
+      return phoneCallRow((await run(
+        `UPDATE nova_phone_call_intents SET approval_id=$3,status=$4,updated_at=now()
+         WHERE id=$1 AND owner_id=$2 AND status IN ('prepared','waiting_for_approval') AND (approval_id IS NULL OR approval_id=$3) RETURNING *`,
+        [id,ownerId,approvalId,status],
+      ))[0]);
+    },
+    async approvePhoneCallIntent(id, ownerId, { approvalId }) {
+      return phoneCallRow((await run(
+        `UPDATE nova_phone_call_intents SET status=CASE WHEN status='waiting_for_approval' THEN 'approved' ELSE status END,updated_at=now()
+         WHERE id=$1 AND owner_id=$2 AND approval_id=$3 AND status IN ('waiting_for_approval','approved','dialing','in_progress','completed','failed','uncertain') RETURNING *`,
+        [id,ownerId,approvalId],
+      ))[0]);
+    },
+    async updatePhoneCallIntent(id, ownerId, patch) {
+      return phoneCallRow((await run(
+        `UPDATE nova_phone_call_intents SET status=COALESCE($3,status),provider_call_sid=COALESCE($4,provider_call_sid),provider_stream_sid=COALESCE($5,provider_stream_sid),provider_status=COALESCE($6,provider_status),outcome=COALESCE($7,outcome),summary=COALESCE($8,summary),error_code=COALESCE($9,error_code),started_at=COALESCE($10,started_at),ended_at=COALESCE($11,ended_at),updated_at=now() WHERE id=$1 AND owner_id=$2 RETURNING *`,
+        [id,ownerId,patch.status||null,patch.providerCallSid||null,patch.providerStreamSid||null,patch.providerStatus||null,patch.outcome||null,patch.summary||null,patch.errorCode||null,patch.startedAt||null,patch.endedAt||null],
+      ))[0]);
+    },
+    async bindPhoneProviderCallSid(id, ownerId, { callSid, providerStatus }) {
+      return phoneCallRow((await run("UPDATE nova_phone_call_intents SET provider_call_sid=$3,provider_status=$4,updated_at=now() WHERE id=$1 AND owner_id=$2 AND (provider_call_sid IS NULL OR provider_call_sid=$3) RETURNING *",[id,ownerId,callSid,providerStatus]))[0]);
+    },
+    async savePhoneSessionToken(id, ownerId, { tokenHash, expiresAt }) {
+      return phoneCallRow((await run("UPDATE nova_phone_call_intents SET session_token_hash=$3,session_token_expires_at=$4,updated_at=now() WHERE id=$1 AND owner_id=$2 AND session_token_used_at IS NULL RETURNING *",[id,ownerId,tokenHash,expiresAt]))[0]);
+    },
+    async claimPhoneCallDial({ id, ownerId, approvalId, submissionKey, tokenHash, tokenExpiresAt }) {
+      const rows=await run(
+        `WITH claimed AS (
+           UPDATE nova_phone_call_intents SET status='dialing',attempt_count=attempt_count+1,submission_key=$4,session_token_hash=$5,session_token_expires_at=$6,session_token_used_at=NULL,updated_at=now()
+           WHERE id=$1 AND owner_id=$2 AND approval_id=$3 AND status='approved' AND attempt_count<1
+             AND NOT EXISTS (SELECT 1 FROM nova_phone_call_intents active WHERE active.owner_id=$2 AND active.id<>$1 AND active.status IN ('dialing','in_progress'))
+           RETURNING *,true AS claimed,NULL::text AS claim_reason
+         ) SELECT * FROM claimed UNION ALL SELECT existing.*,false AS claimed,
+             CASE WHEN EXISTS (SELECT 1 FROM nova_phone_call_intents active WHERE active.owner_id=$2 AND active.id<>$1 AND active.status IN ('dialing','in_progress')) THEN 'active_call' ELSE 'not_eligible' END AS claim_reason
+           FROM nova_phone_call_intents existing WHERE existing.id=$1 AND existing.owner_id=$2 AND NOT EXISTS(SELECT 1 FROM claimed) LIMIT 1`,
+        [id,ownerId,approvalId,submissionKey,tokenHash,tokenExpiresAt],
+      );
+      return rows[0]?{claimed:rows[0].claimed===true,call:phoneCallRow(rows[0]),reason:rows[0].claim_reason||null}:null;
+    },
+    async consumePhoneSessionToken(id, ownerId, { tokenHash, callSid, streamSid, consumedAt }) {
+      return phoneCallRow((await run(
+        `UPDATE nova_phone_call_intents SET provider_call_sid=COALESCE(provider_call_sid,$4),provider_stream_sid=COALESCE(provider_stream_sid,$5),session_token_used_at=$6,status='in_progress',started_at=COALESCE(started_at,$6),updated_at=now()
+         WHERE id=$1 AND owner_id=$2 AND status IN ('dialing','in_progress') AND session_token_hash=$3 AND session_token_used_at IS NULL AND session_token_expires_at>$6 AND (provider_call_sid IS NULL OR provider_call_sid=$4) AND (provider_stream_sid IS NULL OR provider_stream_sid=$5) RETURNING *`,
+        [id,ownerId,tokenHash,callSid,streamSid,consumedAt],
+      ))[0]);
+    },
+    async appendPhoneCallEvent(input) {
+      const rows=await run(
+        `WITH inserted AS (INSERT INTO nova_phone_call_events (id,owner_id,call_intent_id,event_key,event_type,provider_call_sid,provider_stream_sid,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT DO NOTHING RETURNING *,true AS inserted)
+         SELECT * FROM inserted UNION ALL SELECT existing.*,false AS inserted FROM nova_phone_call_events existing WHERE existing.owner_id=$2 AND existing.call_intent_id=$3 AND existing.event_key=$4 AND NOT EXISTS(SELECT 1 FROM inserted) LIMIT 1`,
+        [input.id,input.ownerId,input.callIntentId,input.eventKey,input.type,input.providerCallSid||null,input.providerStreamSid||null,json(input.metadata)],
+      );
+      return rows[0]?{inserted:rows[0].inserted===true,event:phoneEventRow(rows[0])}:null;
+    },
+    async claimPhoneCallTurn(input) {
+      const rows=await run(
+        `WITH inserted AS (INSERT INTO nova_phone_call_turns (id,owner_id,call_intent_id,input_hash,caller_text,status) VALUES ($1,$2,$3,$4,$5,'processing') ON CONFLICT DO NOTHING RETURNING *,true AS claimed)
+         SELECT * FROM inserted UNION ALL SELECT existing.*,false AS claimed FROM nova_phone_call_turns existing WHERE existing.id=$1 AND existing.owner_id=$2 AND NOT EXISTS(SELECT 1 FROM inserted) LIMIT 1`,
+        [input.id,input.ownerId,input.callIntentId,input.inputHash,input.callerText],
+      );
+      return rows[0]?{claimed:rows[0].claimed===true,turn:phoneTurnRow(rows[0])}:null;
+    },
+    async completePhoneCallTurn(id, ownerId, patch) {
+      return phoneTurnRow((await run(
+        `UPDATE nova_phone_call_turns SET status=$3,nova_text=COALESCE($4,nova_text),control=COALESCE($5,control),run_id=COALESCE($6,run_id),error_code=COALESCE($7,error_code),updated_at=now() WHERE id=$1 AND owner_id=$2 RETURNING *`,
+        [id,ownerId,patch.status,patch.novaText||null,patch.control||null,patch.runId||null,patch.errorCode||null],
+      ))[0]);
+    },
+    async listPhoneCallTurns(ownerId, callIntentId) { return (await run("SELECT * FROM nova_phone_call_turns WHERE owner_id=$1 AND call_intent_id=$2 ORDER BY created_at,id",[ownerId,callIntentId])).map(phoneTurnRow); },
     async createApproval(input) {
       return approvalRow(
         (

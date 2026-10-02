@@ -55,6 +55,10 @@ import {createDurableBrowserTaskService} from "./web/durable-browser-task.js";
 import {createDurableWebResearchService} from "./web/durable-web-research.js";
 import { createGmailService } from "./email/gmail-service.js";
 import { registerGmailTools } from "./email/gmail-tools.js";
+import { createPhoneSessionAuth } from "./phone/session-auth.js";
+import { createPhoneService } from "./phone/phone-service.js";
+import { registerPhoneTools } from "./phone/phone-tools.js";
+import { createTwilioOutboundClient } from "./phone/twilio-client.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -74,6 +78,8 @@ export function createApp({
   webResolveHost,
   browserConnectOverCDP,
   gmailFetchImpl,
+  phoneFetchImpl,
+  phoneDialProvider,
 } = {}) {
   const config = readConfig(environment);
   const storage = storageOverride || createStorage(config);
@@ -115,6 +121,18 @@ export function createApp({
     logger,
   });
   registerGmailTools(toolRegistry, { service: gmailService });
+  let agent;
+  const phoneSessionAuth = config.phone.configured ? createPhoneSessionAuth({ key: config.phone.sessionSigningKeyBytes }) : null;
+  const phoneProvider = phoneDialProvider || createTwilioOutboundClient({
+    accountSid: config.phone.accountSid,
+    authToken: config.phone.authToken,
+    fromNumber: config.phone.fromNumber,
+    bridgeWebSocketUrl: config.phone.bridgeWebSocketUrl,
+    publicBaseUrl: config.phone.publicBaseUrl,
+    fetchImpl: phoneFetchImpl || globalThis.fetch,
+  });
+  const phoneService = createPhoneService({ config, storage, ownerId: OWNER_ID, dialProvider: phoneProvider, sessionAuth: phoneSessionAuth, novaTurn: (input) => agent.run(input), fetchImpl: phoneFetchImpl || globalThis.fetch });
+  registerPhoneTools(toolRegistry, { service: phoneService });
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){
     const webRoute=config.openAI.routes.web;
@@ -219,7 +237,7 @@ export function createApp({
     embeddingKey: config.speakerRecognition.embeddingKey,
     requireEncryption: Boolean(config.speakerRecognition.endpoint),
   });
-  const agent = createAgent({
+  agent = createAgent({
     storage,
     ownerId: OWNER_ID,
     modelProvider,
@@ -343,7 +361,8 @@ export function createApp({
     browserTaskService,
     durableResearchTaskService,
     gmailService,
+    phoneService,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService });
 }

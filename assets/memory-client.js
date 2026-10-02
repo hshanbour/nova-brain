@@ -35,5 +35,6 @@ export const ownerMemoryClient = Object.freeze({
     return request(`/api/approvals${suffix}`);
   },
   gmailStatus: () => request("/api/integrations/gmail/status"),
+  phoneCalls: (conversationId) => request(`/api/phone/calls?conversationId=${encodeURIComponent(conversationId)}`),
   decideApproval: (id, decision) => request(`/api/approvals/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) })
 });

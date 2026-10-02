@@ -9,6 +9,30 @@ const SUPPORTED_OPENAI_SERVICE_TIERS = new Set(["default", "flex"]);
 const SUPPORTED_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const EXPECTED_GMAIL_ACCOUNT = "novadigitalservicesuk@gmail.com";
 
+function parsePhoneConfig(environment) {
+  const values = {
+    accountSid: environment.TWILIO_ACCOUNT_SID || null,
+    authToken: environment.TWILIO_AUTH_TOKEN || null,
+    fromNumber: environment.NOVA_PHONE_NUMBER || null,
+    bridgeBaseUrl: environment.NOVA_PHONE_BRIDGE_URL || null,
+    bridgeWebSocketUrl: environment.NOVA_PHONE_BRIDGE_WEBSOCKET_URL || null,
+    publicBaseUrl: environment.NOVA_PHONE_PUBLIC_BASE_URL || null,
+    sessionSigningKey: environment.NOVA_PHONE_SESSION_SIGNING_KEY || null,
+  };
+  const supplied = Object.values(values).filter(Boolean).length;
+  if (supplied > 0 && supplied !== Object.keys(values).length) throw new Error("All seven Phone V1 environment variables must be configured together.");
+  if (!supplied) return Object.freeze({ configured: false, ...values, bridgeReadinessAttempts: 8, bridgeReadinessDelayMs: 250 });
+  if (!/^AC[a-fA-F0-9]{32}$/.test(values.accountSid)) throw new Error("TWILIO_ACCOUNT_SID is invalid.");
+  if (!/^\+44[1-9]\d{8,9}$/.test(values.fromNumber)) throw new Error("NOVA_PHONE_NUMBER must be a UK E.164 number.");
+  for (const [name, value, protocol] of [["NOVA_PHONE_BRIDGE_URL", values.bridgeBaseUrl, "https:"], ["NOVA_PHONE_BRIDGE_WEBSOCKET_URL", values.bridgeWebSocketUrl, "wss:"], ["NOVA_PHONE_PUBLIC_BASE_URL", values.publicBaseUrl, "https:"]]) {
+    let parsed; try { parsed = new URL(value); } catch { throw new Error(`${name} must be an absolute URL.`); }
+    if (parsed.protocol !== protocol || parsed.username || parsed.password) throw new Error(`${name} must use ${protocol}`);
+  }
+  const key = /^[a-f0-9]{64}$/i.test(values.sessionSigningKey) ? Buffer.from(values.sessionSigningKey, "hex") : Buffer.from(values.sessionSigningKey, "base64");
+  if (key.length !== 32) throw new Error("NOVA_PHONE_SESSION_SIGNING_KEY must decode to exactly 32 bytes.");
+  return Object.freeze({ configured: true, ...values, sessionSigningKeyBytes: key, bridgeReadinessAttempts: 8, bridgeReadinessDelayMs: 250 });
+}
+
 function parseGmailConfig(environment) {
   const values = {
     clientId: environment.GOOGLE_OAUTH_CLIENT_ID || null,
@@ -67,6 +91,7 @@ function parseOrigins(value) {
 export function readConfig(environment = process.env) {
   const modelProvider = environment.NOVA_BRAIN_MODEL_PROVIDER || "mock";
   const gmail = parseGmailConfig(environment);
+  const phone = parsePhoneConfig(environment);
 
   if (!SUPPORTED_MODEL_PROVIDERS.has(modelProvider)) {
     throw new Error(`Unsupported NOVA_BRAIN_MODEL_PROVIDER: ${modelProvider}`);
@@ -228,6 +253,7 @@ export function readConfig(environment = process.env) {
       ),
     }),
     gmail,
+    phone,
     allowedOrigins: parseOrigins(environment.CORS_ALLOWED_ORIGINS),
     maxBodyBytes: 64 * 1024,
     developerWorkspaceHandoffMaxBodyBytes: 3 * 1024 * 1024,

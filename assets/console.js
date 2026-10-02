@@ -38,6 +38,7 @@ const conversationBinding = createConversationBindingState();
 const recentsDrawer = document.querySelector("#recentsDrawer");
 let voiceMessageSequence = 0;
 let voiceV2;
+let phoneStatusTimer;
 function showVoiceDiagnostic(message) { const target=document.querySelector("#voiceDiagnostic");if(target)target.textContent=String(message||"").slice(0,240); }
 const voiceOutput = createVoiceOutput({
   synthesis: window.speechSynthesis,
@@ -71,7 +72,7 @@ const approvalToolLabels=Object.freeze({git_push:"Push to GitHub",preview_deploy
 let gmailAccountPromise;
 const approvalPresenter=createApprovalPresenter({
   render:renderSynchronousApprovalCard,
-  decide:(id,decision)=>ownerMemoryClient.decideApproval(id,decision),
+  async decide(id,decision){const result=await ownerMemoryClient.decideApproval(id,decision);if(client.conversationId)await restorePhoneCalls(client.conversationId).catch(()=>{});return result;},
   async reconcile(id,{conversationId}={}){if(!conversationId)return null;const {approvals}=await ownerMemoryClient.approvals({conversationId,limit:100});return approvals.find(item=>item.id===id)||null;},
   async getGmailAccount(){gmailAccountPromise||=ownerMemoryClient.gmailStatus().then(status=>status.connected?status.email:null).catch(()=>null);return gmailAccountPromise;},
 });
@@ -164,6 +165,7 @@ function restoreLiveActivities(storedMessages=[]){
 
 function clearConversation(conversationId = null,{preserveError=false,resetComposer=true}={}) {
   stopLiveActivityPolling();
+  clearTimeout(phoneStatusTimer);phoneStatusTimer=undefined;
   approvalPresenter.clear();
   conversationBinding.display(conversationId);
   messages.querySelectorAll(".message").forEach((message) => message.remove()); welcome.hidden = false;
@@ -175,6 +177,7 @@ function renderConversationMessages(conversationId,storedMessages,{preserveError
   for(const stored of storedMessages)addMessage({id:stored.id,role:stored.role,text:stored.content,sequence:stored.sequence,createdAt:stored.createdAt});
   restoreLiveActivities(storedMessages);
   void restoreSynchronousApprovals(conversationId);
+  void restorePhoneCalls(conversationId);
   if(!storedMessages.length)welcome.hidden=false;
 }
 
@@ -259,6 +262,18 @@ function addMessage({ id,role, text, sequence, createdAt, metadata, autoSpeak = 
   if(next)messages.insertBefore(node,next);else messages.append(node);scrollToLatest();return node;
 }
 
+function phoneCallCard(call) {
+  let card=[...messages.querySelectorAll("[data-phone-call-id]")].find(node=>node.dataset.phoneCallId===call.id);
+  if(!card){const host=messageNode(call.assistantMessageId)||addMessage({role:"assistant",text:""});card=document.createElement("section");card.className="phone-call-card synchronous-approval-card";card.dataset.phoneCallId=call.id;host.querySelector(".message-content").append(card);}
+  card.dataset.status=call.status;card.replaceChildren();
+  const heading=document.createElement("div");heading.className="synchronous-approval-heading";const title=document.createElement("strong");title.textContent=`Phone · ${call.envelope?.expectedParty||call.envelope?.destination||"Outbound call"}`;const status=document.createElement("span");status.className="synchronous-approval-status";status.textContent=String(call.status||"").replaceAll("_"," ");heading.append(title,status);
+  const details=document.createElement("dl");details.className="synchronous-approval-details";const duration=call.startedAt?elapsedLabel(call.startedAt,call.endedAt,!call.endedAt):"Not started";
+  for(const [label,value] of [["Destination",call.envelope?.destination||""],["Objective",call.envelope?.objective||""],["Duration",duration],["Outcome",call.outcome||call.providerStatus||"Pending"],["Summary",call.summary||"Available after the call"],["Safety",call.errorCode?`Stopped safely: ${call.errorCode}`:"No raw audio recording"]]){const row=document.createElement("div"),term=document.createElement("dt"),description=document.createElement("dd");term.textContent=label;description.textContent=value;row.append(term,description);details.append(row);}
+  card.append(heading,details);return card;
+}
+
+async function restorePhoneCalls(conversationId){if(!conversationId)return;clearTimeout(phoneStatusTimer);phoneStatusTimer=undefined;const {calls}=await ownerMemoryClient.phoneCalls(conversationId);if(client.conversationId!==conversationId||conversationBinding.displayedId!==conversationId)return;for(const call of calls||[])phoneCallCard(call);if((calls||[]).some(call=>["approved","dialing","in_progress"].includes(call.status)))phoneStatusTimer=setTimeout(()=>restorePhoneCalls(conversationId).catch(()=>{}),4000);}
+
 function synchronousApprovalNode(id) {
   return [...messages.querySelectorAll("[data-approval-id]")].find((node) => node.dataset.approvalId === id) || null;
 }
@@ -330,7 +345,7 @@ async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,si
     }
     document.querySelector("#thinkingMessage")?.remove();
     const liveActivity=result.durableTask?.id?ensureLiveActivity(result.durableTask):null;
-    if(!liveActivity){const assistant=addMessage({ id:result.id,role: "assistant", text: result.message, metadata: result, autoSpeak: autoSpeakResponse });if(result.approval)await approvalPresenter.upsert(result.approval,{conversationId:result.conversationId,assistantMessageId:assistant.dataset.messageId||result.id});}
+    if(!liveActivity){const assistant=addMessage({ id:result.id,role: "assistant", text: result.message, metadata: result, autoSpeak: autoSpeakResponse });if(result.approval)await approvalPresenter.upsert(result.approval,{conversationId:result.conversationId,assistantMessageId:assistant.dataset.messageId||result.id});await restorePhoneCalls(result.conversationId).catch(()=>{});}
     providerStatus.textContent = `${result.provider || "Agent"} provider · Ready`;
     void refreshRecents(); return { ...result, preparedAssistant, preparationError };
   } catch (error) {
