@@ -8,6 +8,37 @@ import { createOpenAiWebSocketTranscriber } from "./openai-transcriber.js";
 import { createNovaPhoneBridgeClient } from "./nova-client.js";
 import { createRuntimePhoneSession } from "./runtime-session.js";
 
+const STATUS_BODY_LIMIT = 16 * 1024;
+const STATUS_ROUTE = /^\/api\/phone\/twilio\/status\/(phone_[a-f0-9]{32})$/;
+
+function readBoundedBody(request, limit = STATUS_BODY_LIMIT) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let bytes = 0; let settled = false;
+    request.on("data", (chunk) => {
+      if (settled) return;
+      bytes += chunk.length;
+      if (bytes > limit) {
+        settled = true;
+        request.resume();
+        reject(Object.assign(new Error("Twilio status callback body is too large."), { statusCode: 413 }));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => { if (!settled) resolve(Buffer.concat(chunks).toString("utf8")); });
+    request.on("error", (error) => { if (!settled) reject(error); });
+  });
+}
+
+function formParameters(rawBody) {
+  const parameters = Object.create(null);
+  for (const [key, value] of new URLSearchParams(rawBody)) {
+    if (parameters[key] === undefined) parameters[key] = value;
+    else parameters[key] = Array.isArray(parameters[key]) ? [...parameters[key], value] : [parameters[key], value];
+  }
+  return parameters;
+}
+
 export function bridgeConfig(environment = process.env) {
   const required = ["NOVA_PHONE_BRIDGE_PUBLIC_URL", "NOVA_PHONE_BASE_URL", "OPENAI_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID", "VERCEL_AUTOMATION_BYPASS_SECRET"];
   for (const name of required) if (!environment[name]) throw new Error(`${name} is required.`);
@@ -17,9 +48,27 @@ export function bridgeConfig(environment = process.env) {
 export function createPhoneBridgeServer({ environment = process.env, fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket } = {}) {
   const config = bridgeConfig(environment); const novaClient = createNovaPhoneBridgeClient({ baseUrl: config.novaBaseUrl, protectionBypassSecret: environment.VERCEL_AUTOMATION_BYPASS_SECRET, fetchImpl });
   const sessions = new Set();
-  const server = http.createServer((request, response) => {
+  const server = http.createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health/live") { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ live: true })); return; }
     if (request.method === "GET" && request.url === "/health/ready") { const acceptingCalls = Boolean(config.twilioAuthToken) && sessions.size === 0; response.writeHead(sessions.size === 0 ? 200 : 503, { "content-type": "application/json", "cache-control": "no-store" }); response.end(JSON.stringify({ ready: sessions.size === 0, acceptingCalls, providerCertificationReady: true })); return; }
+    const statusMatch = request.url?.match(STATUS_ROUTE);
+    if (request.method === "POST" && statusMatch) {
+      try {
+        if (!config.twilioAuthToken) throw Object.assign(new Error("Twilio is not configured."), { statusCode: 503 });
+        if (String(request.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase() !== "application/x-www-form-urlencoded") {
+          throw Object.assign(new Error("Twilio status callback content type is unsupported."), { statusCode: 415 });
+        }
+        const rawBody = await readBoundedBody(request);
+        const signature = request.headers["x-twilio-signature"];
+        assertTwilioSignature({ authToken: config.twilioAuthToken, url: `${config.publicUrl}${request.url}`, signature, parameters: formParameters(rawBody) });
+        await novaClient.forwardTwilioStatus({ callIntentId: statusMatch[1], rawBody, signature });
+        response.writeHead(204, { "cache-control": "no-store" }).end();
+      } catch (error) {
+        response.writeHead(Number(error?.statusCode) || 401, { "content-type": "application/json", "cache-control": "no-store" });
+        response.end(JSON.stringify({ error: "Phone status callback rejected." }));
+      }
+      return;
+    }
     response.writeHead(404).end();
   });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024, perMessageDeflate: false });

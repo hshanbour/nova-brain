@@ -40,9 +40,34 @@ export function createNovaPhoneBridgeClient({
     return value;
   };
 
+  const forwardTwilioStatus = async ({ callIntentId, rawBody, signature }) => {
+    if (!/^phone_[a-f0-9]{32}$/.test(callIntentId || "")) {
+      throw Object.assign(new Error("Twilio status callback identity is invalid."), { code: "phone_status_callback_invalid" });
+    }
+    const destination = `${normalizedBaseUrl}/api/phone/twilio/status/${callIntentId}`;
+    const response = await fetchImpl(destination, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Twilio-Signature": String(signature || ""),
+        ...protectionBypassHeadersFor({ destination, secret: protectionBypassSecret, authorizedBaseUrl }),
+      },
+      body: rawBody,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      throw Object.assign(new Error("Nova rejected the Twilio status callback."), {
+        code: "phone_status_callback_rejected",
+        statusCode: response.status,
+      });
+    }
+    return Object.freeze({ accepted: true });
+  };
+
   return Object.freeze({
     start(input) { return post("/api/phone/bridge/session/start", input); },
     turn(input, token) { return post("/api/phone/bridge/turn", input, token); },
     event(input, token) { return post("/api/phone/bridge/event", input, token); },
+    forwardTwilioStatus,
   });
 }

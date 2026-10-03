@@ -16,7 +16,7 @@ import { SCHEMA_STATEMENTS, SCHEMA_VERSION } from "../src/storage/schema.js";
 import { createAgent } from "../src/agent/agent.js";
 import { approvalViewModel } from "../assets/approval-presenter.js";
 import { createRuntimePhoneSession } from "../phone-bridge/runtime-session.js";
-import { bridgeConfig } from "../phone-bridge/server.js";
+import { bridgeConfig, createPhoneBridgeServer } from "../phone-bridge/server.js";
 import { AUTHORIZED_NOVA_PREVIEW_BASE_URL, createNovaPhoneBridgeClient, protectionBypassHeadersFor } from "../phone-bridge/nova-client.js";
 import { createOpenAiWebSocketTranscriber } from "../phone-bridge/openai-transcriber.js";
 import { TWILIO_MEDIA_FORMAT } from "../src/phone/twilio-media-protocol.js";
@@ -235,3 +235,40 @@ test("bypass secret is absent from safe errors, serialized client state, and unr
   const unrelatedHeaders = { "content-type": "application/json", ...protectionBypassHeadersFor({ destination: "https://unrelated.example/api/agent", secret }) };
   assert.equal("x-vercel-protection-bypass" in unrelatedHeaders, false);
 });
+
+async function withBridge(run) {
+  const bridgeEnvironment = { PORT: "0", NOVA_PHONE_BRIDGE_PUBLIC_URL: "https://bridge.example", NOVA_PHONE_BASE_URL: AUTHORIZED_NOVA_PREVIEW_BASE_URL, OPENAI_API_KEY: "openai", ELEVENLABS_API_KEY: "eleven", ELEVENLABS_VOICE_ID: "owner-voice", VERCEL_AUTOMATION_BYPASS_SECRET: "preview-bypass", TWILIO_AUTH_TOKEN: "twilio-auth" };
+  const forwarded = [];
+  const bridge = createPhoneBridgeServer({ environment: bridgeEnvironment, fetchImpl: async (url, input) => { forwarded.push({ url, input }); return new Response("{}", { status: 200, headers: { "content-type": "application/json" } }); } });
+  const listener = bridge.listen();
+  await new Promise((resolve) => listener.once("listening", resolve));
+  try { return await run({ origin: `http://127.0.0.1:${listener.address().port}`, forwarded }); }
+  finally { await bridge.close(); }
+}
+
+const STATUS_INTENT = `phone_${"a".repeat(32)}`;
+const STATUS_PATH = `/api/phone/twilio/status/${STATUS_INTENT}`;
+const STATUS_BODY = new URLSearchParams({ CallSid: CALL_SID, CallStatus: "ringing" }).toString();
+
+test("bounded Fly status relay validates Twilio and forwards only to the fixed protected Preview route", async () => withBridge(async ({ origin, forwarded }) => {
+  const signature = createTwilioSignatureForTest({ authToken: "twilio-auth", url: `https://bridge.example${STATUS_PATH}`, parameters: Object.fromEntries(new URLSearchParams(STATUS_BODY)) });
+  const response = await fetch(`${origin}${STATUS_PATH}`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", "x-twilio-signature": signature }, body: STATUS_BODY });
+  assert.equal(response.status, 204); assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].url, `${AUTHORIZED_NOVA_PREVIEW_BASE_URL}${STATUS_PATH}`);
+  assert.equal(forwarded[0].input.body, STATUS_BODY);
+  assert.equal(forwarded[0].input.headers["X-Twilio-Signature"], signature);
+  assert.equal(forwarded[0].input.headers["x-vercel-protection-bypass"], "preview-bypass");
+  assert.doesNotMatch(JSON.stringify(await response.text()), /twilio-auth|preview-bypass/);
+}));
+
+test("status relay rejects invalid signatures, unsupported content, oversized bodies, and malformed paths without forwarding", async () => withBridge(async ({ origin, forwarded }) => {
+  const invalid = await fetch(`${origin}${STATUS_PATH}`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", "x-twilio-signature": "invalid" }, body: STATUS_BODY });
+  assert.equal(invalid.status, 401);
+  const unsupported = await fetch(`${origin}${STATUS_PATH}`, { method: "POST", headers: { "content-type": "application/json", "x-twilio-signature": "invalid" }, body: "{}" });
+  assert.equal(unsupported.status, 415);
+  const oversized = await fetch(`${origin}${STATUS_PATH}`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", "x-twilio-signature": "invalid" }, body: `CallSid=${"x".repeat(17 * 1024)}` });
+  assert.equal(oversized.status, 413);
+  const malformed = await fetch(`${origin}/api/phone/twilio/status/not-an-intent`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: STATUS_BODY });
+  assert.equal(malformed.status, 404); assert.equal(forwarded.length, 0);
+  for (const response of [invalid, unsupported, oversized]) assert.doesNotMatch(await response.text(), /twilio-auth|preview-bypass|CallSid/);
+}));
