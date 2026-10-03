@@ -2,12 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
+import { WebSocket } from "ws";
 import { readConfig } from "../src/config/env.js";
 import { immutableCallEnvelope } from "../src/phone/call-envelope.js";
 import { createPhoneSessionAuth } from "../src/phone/session-auth.js";
 import { createPhoneService } from "../src/phone/phone-service.js";
 import { registerPhoneTools } from "../src/phone/phone-tools.js";
-import { createTwilioSignatureForTest, verifyTwilioSignature } from "../src/phone/twilio-signature.js";
+import { assertTwilioWebSocketSignature, createTwilioSignatureForTest, verifyTwilioSignature } from "../src/phone/twilio-signature.js";
 import { createActionPolicy, ApprovalRequiredError } from "../src/policy/action-policy.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
@@ -19,7 +20,7 @@ import { createRuntimePhoneSession } from "../phone-bridge/runtime-session.js";
 import { bridgeConfig, createPhoneBridgeServer } from "../phone-bridge/server.js";
 import { AUTHORIZED_NOVA_PREVIEW_BASE_URL, createNovaPhoneBridgeClient, protectionBypassHeadersFor } from "../phone-bridge/nova-client.js";
 import { createOpenAiWebSocketTranscriber } from "../phone-bridge/openai-transcriber.js";
-import { TWILIO_MEDIA_FORMAT } from "../src/phone/twilio-media-protocol.js";
+import { parseTwilioMediaMessage, TWILIO_MEDIA_FORMAT } from "../src/phone/twilio-media-protocol.js";
 
 const NOW = new Date("2026-10-02T12:00:00.000Z");
 const CALL_SID = `CA${"1".repeat(32)}`;
@@ -182,6 +183,21 @@ test("Twilio signatures are exact and tamper-resistant", () => {
   assert.equal(verifyTwilioSignature({...input,signature}),true); assert.equal(verifyTwilioSignature({...input,signature,url:"https://evil.example/media"}),false); assert.equal(verifyTwilioSignature({...input,signature,parameters:{...input.parameters,Digits:"999"}}),false);
 });
 
+test("Twilio WebSocket signatures use the external WSS URL and only its documented slash variant", () => {
+  const exact = createTwilioSignatureForTest({ authToken: "fixture", url: "wss://bridge.example/media", parameters: {} });
+  const slash = createTwilioSignatureForTest({ authToken: "fixture", url: "wss://bridge.example/media/", parameters: {} });
+  assert.equal(assertTwilioWebSocketSignature({ authToken: "fixture", externalUrl: "wss://bridge.example/media", signature: exact }), "exact");
+  assert.equal(assertTwilioWebSocketSignature({ authToken: "fixture", externalUrl: "wss://bridge.example/media", signature: slash }), "documented_trailing_slash_variant");
+  assert.throws(() => assertTwilioWebSocketSignature({ authToken: "fixture", externalUrl: "wss://bridge.example/media", signature: createTwilioSignatureForTest({ authToken: "fixture", url: "https://bridge.example/media", parameters: {} }) }), /invalid/i);
+  assert.throws(() => assertTwilioWebSocketSignature({ authToken: "fixture", externalUrl: "https://bridge.example/media", signature: exact }), /WSS URL/);
+});
+
+test("Twilio connected and start identities reject malformed protocol and mismatched stream metadata", () => {
+  assert.throws(() => parseTwilioMediaMessage({ event: "connected", protocol: "Unknown", version: "1.0.0" }), /protocol/i);
+  assert.throws(() => parseTwilioMediaMessage({ ...START, start: { ...START.start, streamSid: `MZ${"9".repeat(32)}` } }), /does not match/i);
+  assert.throws(() => parseTwilioMediaMessage({ event: "unsupported" }), /unsupported/i);
+});
+
 test("runtime VAD preserves one multilingual turn, barge-in clear, bounded hangup, and ephemeral audio", async () => {
   const sent=[]; const commits=[]; const events=[]; let timerCallback;
   const transcriber={start(){},appendMulaw(){},async commit({turnId}){commits.push(turnId);return{transcript:"مرحبا Nova, English كمان",turnId};},close(){}};
@@ -245,6 +261,54 @@ async function withBridge(run) {
   try { return await run({ origin: `http://127.0.0.1:${listener.address().port}`, forwarded }); }
   finally { await bridge.close(); }
 }
+
+async function withMediaBridge(run) {
+  const logs=[];let starts=0;let runtimeStarts=0;const handled=[];
+  const environment={PORT:"0",NOVA_PHONE_BRIDGE_PUBLIC_URL:"https://bridge.example",NOVA_PHONE_BASE_URL:AUTHORIZED_NOVA_PREVIEW_BASE_URL,OPENAI_API_KEY:"openai",ELEVENLABS_API_KEY:"eleven",ELEVENLABS_VOICE_ID:"owner-voice",VERCEL_AUTOMATION_BYPASS_SECRET:"preview-bypass",TWILIO_AUTH_TOKEN:"twilio-auth"};
+  const bridge=createPhoneBridgeServer({environment,WebSocketImpl:WebSocket,logger:{info(...items){logs.push(items);}},novaClient:{async start(input){starts++;assert.equal(input.sessionToken,"single-use-fixture");assert.equal(input.callSid,CALL_SID);assert.equal(input.streamSid,STREAM_SID);return{bridgeSessionToken:"bridge",callIntentId:"phone_fixture",maximumDurationSeconds:600};}},createTranscriber:()=>({}),createTts:()=>({}),createRuntime:()=>({async start(message){runtimeStarts++;handled.push(message.event);},handle(message){handled.push(message.event);},async stop(){}})});
+  const listener=bridge.listen();await new Promise(resolve=>listener.once("listening",resolve));
+  try{return await run({port:listener.address().port,logs,counts:()=>({starts,runtimeStarts}),handled});}
+  finally{await bridge.close();}
+}
+
+function mediaSocket(port,{signatureUrl="wss://bridge.example/media",signature="valid"}={}) {
+  const value=signature==="valid"?createTwilioSignatureForTest({authToken:"twilio-auth",url:signatureUrl,parameters:{}}):signature;
+  return new WebSocket(`ws://127.0.0.1:${port}/media`,{headers:{"X-Twilio-Signature":value}});
+}
+
+function once(socket,event){return new Promise((resolve,reject)=>{socket.once(event,resolve);if(event!=="error")socket.once("error",reject);});}
+function closeCode(socket){return new Promise((resolve)=>socket.once("close",resolve));}
+function expectUpgradeFailure(socket){return new Promise((resolve,reject)=>{socket.once("open",()=>reject(new Error("Unexpected WebSocket acceptance.")));socket.once("error",resolve);socket.once("unexpected-response",resolve);});}
+
+test("realistic connected then start waits to consume the token and binds one authorized session",async()=>withMediaBridge(async({port,logs,counts,handled})=>{
+  const socket=mediaSocket(port);await once(socket,"open");
+  socket.send(JSON.stringify({event:"connected",protocol:"Call",version:"1.0.0"}));await new Promise(resolve=>setTimeout(resolve,10));
+  assert.deepEqual(counts(),{starts:0,runtimeStarts:0});
+  socket.send(JSON.stringify({...START,start:{...START.start,customParameters:{novaSessionToken:"single-use-fixture"}}}));
+  for(let index=0;index<20&&counts().runtimeStarts===0;index++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.deepEqual(counts(),{starts:1,runtimeStarts:1});assert.deepEqual(handled,["start"]);
+  socket.send(JSON.stringify({event:"media",streamSid:STREAM_SID,media:{payload:SPEECH}}));
+  socket.send(JSON.stringify({event:"stop",streamSid:STREAM_SID,stop:{accountSid:`AC${"a".repeat(32)}`,callSid:CALL_SID}}));await new Promise(resolve=>setTimeout(resolve,10));
+  assert.deepEqual(handled,["start","media","stop"]);
+  const events=logs.map(([,entry])=>entry.event);for(const event of ["websocket_upgrade_received","websocket_upgrade_accepted","connected_received","start_received","session_token_accepted","stream_bound","stt_started","stream_started","stream_stopped"])assert.ok(events.includes(event),event);
+  assert.doesNotMatch(JSON.stringify(logs),/single-use-fixture|twilio-auth|preview-bypass/);socket.close();
+}));
+
+test("duplicate start and invalid ordering fail closed without replaying authorization",async()=>withMediaBridge(async({port,counts})=>{
+  const socket=mediaSocket(port);await once(socket,"open");
+  socket.send(JSON.stringify({event:"connected",protocol:"Call",version:"1.0.0"}));
+  const start={...START,start:{...START.start,customParameters:{novaSessionToken:"single-use-fixture"}}};socket.send(JSON.stringify(start));
+  for(let index=0;index<20&&counts().starts===0;index++)await new Promise(resolve=>setTimeout(resolve,5));
+  socket.send(JSON.stringify(start));const code=await closeCode(socket);assert.equal(code,1008);assert.equal(counts().starts,1);
+  const outOfOrder=mediaSocket(port);await once(outOfOrder,"open");outOfOrder.send(JSON.stringify(start));const badCode=await closeCode(outOfOrder);assert.equal(badCode,1008);assert.equal(counts().starts,1);
+}));
+
+test("WebSocket upgrade rejects tampered signatures and accepts the bounded slash variant",async()=>withMediaBridge(async({port,logs})=>{
+  const invalid=mediaSocket(port,{signature:"invalid"});await expectUpgradeFailure(invalid);
+  const slash=mediaSocket(port,{signatureUrl:"wss://bridge.example/media/"});await once(slash,"open");slash.close();
+  const accepted=logs.find(([,entry])=>entry.event==="websocket_upgrade_accepted");assert.equal(accepted[1].signatureVariant,"documented_trailing_slash_variant");
+  const rejected=logs.find(([,entry])=>entry.event==="websocket_upgrade_rejected");assert.equal(rejected[1].category,"phone_twilio_signature_invalid");
+}));
 
 const STATUS_INTENT = `phone_${"a".repeat(32)}`;
 const STATUS_PATH = `/api/phone/twilio/status/${STATUS_INTENT}`;

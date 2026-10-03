@@ -15,15 +15,17 @@ import { createTranscriptionSessionRotator } from "../src/phone/transcription-se
 import { waitForBridgeReady } from "../src/phone/bridge-readiness.js";
 import { parseTwilioMediaMessage, TWILIO_MEDIA_FORMAT } from "../src/phone/twilio-media-protocol.js";
 
-const START = Object.freeze({ event: "start", streamSid: "MZ-stream-1", start: { callSid: "CA-call-1", mediaFormat: TWILIO_MEDIA_FORMAT } });
-const STOP = Object.freeze({ event: "stop", streamSid: "MZ-stream-1" });
+const CALL_SID = `CA${"1".repeat(32)}`;
+const STREAM_SID = `MZ${"2".repeat(32)}`;
+const START = Object.freeze({ event: "start", streamSid: STREAM_SID, start: { callSid: CALL_SID, mediaFormat: TWILIO_MEDIA_FORMAT } });
+const STOP = Object.freeze({ event: "stop", streamSid: STREAM_SID });
 const TWENTY_MS_MULAW = Buffer.alloc(160, 0xff);
-const MEDIA = Object.freeze({ event: "media", streamSid: "MZ-stream-1", media: { payload: TWENTY_MS_MULAW.toString("base64") } });
+const MEDIA = Object.freeze({ event: "media", streamSid: STREAM_SID, media: { payload: TWENTY_MS_MULAW.toString("base64") } });
 
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 
 test("Twilio bidirectional boundary accepts only mono 8 kHz mu-law and constructs media, mark, clear flows", () => {
-  assert.equal(parseTwilioMediaMessage(START).start.callSid, "CA-call-1");
+  assert.equal(parseTwilioMediaMessage(START).start.callSid, CALL_SID);
   assert.throws(() => parseTwilioMediaMessage({ ...START, start: { ...START.start, mediaFormat: { encoding: "audio/pcm", sampleRate: 8_000, channels: 1 } } }), /mu-law/);
   assert.throws(() => parseTwilioMediaMessage("not-json"), /valid JSON/);
 });
@@ -146,7 +148,7 @@ test("duplicate start is idempotent and a session cannot be rebound to a differe
   assert.equal(session.handleTwilio(START).started, true);
   assert.equal(session.handleTwilio(START).duplicate, true);
   assert.equal(starts, 1);
-  assert.throws(() => session.handleTwilio({ ...START, streamSid: "MZ-other", start: { ...START.start, callSid: "CA-other" } }), /cannot be rebound/);
+  assert.throws(() => session.handleTwilio({ ...START, streamSid: `MZ${"3".repeat(32)}`, start: { ...START.start, callSid: `CA${"4".repeat(32)}` } }), /cannot be rebound/);
 });
 
 test("no-audio and duplicate finalization cannot create duplicate Nova turns", async () => {
@@ -177,9 +179,9 @@ test("bridge registry converges duplicate WebSocket starts on one call session a
   assert.equal(duplicate.session, first.session);
   assert.equal(sessions, 1);
   assert.equal(registry.size(), 1);
-  assert.throws(() => registry.open({ ...START, streamSid: "MZ-other" }), /another media stream/);
-  assert.throws(() => registry.open({ ...START, start: { ...START.start, callSid: "CA-other" } }), /another call/);
-  assert.equal(registry.close("CA-call-1"), true);
+  assert.throws(() => registry.open({ ...START, streamSid: `MZ${"3".repeat(32)}` }), /another media stream/);
+  assert.throws(() => registry.open({ ...START, start: { ...START.start, callSid: `CA${"4".repeat(32)}` } }), /another call/);
+  assert.equal(registry.close(CALL_SID), true);
   assert.equal(registry.size(), 0);
 });
 

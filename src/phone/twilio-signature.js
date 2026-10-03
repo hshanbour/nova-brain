@@ -22,4 +22,21 @@ export function assertTwilioSignature(input) {
   return true;
 }
 
+export function assertTwilioWebSocketSignature({ authToken, externalUrl, signature }) {
+  const canonical = new URL(externalUrl);
+  if (canonical.protocol !== "wss:" || canonical.username || canonical.password) {
+    throw new TypeError("Twilio WebSocket signature verification requires an external WSS URL.");
+  }
+  const alternate = new URL(canonical);
+  alternate.pathname = alternate.pathname.endsWith("/")
+    ? alternate.pathname.slice(0, -1) || "/"
+    : `${alternate.pathname}/`;
+  const candidates = [...new Set([canonical.toString(), alternate.toString()])];
+  const matchIndex = candidates.findIndex((url) => verifyTwilioSignature({ authToken, url, signature, parameters: {} }));
+  if (matchIndex < 0) {
+    throw Object.assign(new Error("Twilio request signature is invalid."), { code: "phone_twilio_signature_invalid", statusCode: 401 });
+  }
+  return matchIndex === 0 ? "exact" : "documented_trailing_slash_variant";
+}
+
 export const createTwilioSignatureForTest = expectedSignature;

@@ -8,11 +8,11 @@ export function createRuntimePhoneSession({ sendTwilio, hangup = () => {}, trans
     return novaClient.turn({ callIntentId, callSid, streamSid, turnId, transcript }, bridgeToken);
   } });
   const timer = setTimer(() => stop("completed", "maximum_duration"), maximumDurationSeconds * 1000);
-  async function stop(type = "completed", providerStatus = "disconnected") {
+  async function stop(type = "completed", providerStatus = "disconnected", { hangupSocket = true } = {}) {
     if (closed) return false; closed = true; clearTimer(timer);
     core.handleTwilio({ event: "stop", streamSid });
     if (bridgeToken) await novaClient.event({ callIntentId, callSid, streamSid, eventId: `bridge-stop-${callIntentId}-${streamSid}`, type, providerStatus }, bridgeToken).catch(() => {});
-    hangup();
+    if (hangupSocket) hangup();
     return true;
   }
   return Object.freeze({
