@@ -226,8 +226,8 @@ export function createAgent({
   }
 
   return Object.freeze({
-    async run({ message, conversationId = randomUUID(), context = {}, requestId, signal }) {
-      const userMessageId = randomUUID();
+    async run({ message, conversationId = randomUUID(), context = {}, requestId, signal, userMessageId: requestedUserMessageId, assistantMessageId: requestedAssistantMessageId }) {
+      const userMessageId = requestedUserMessageId || randomUUID();
       const executionController = new AbortController();
       const abortFromRequest = () => executionController.abort(requestAbortError(signal?.reason));
       if (signal?.aborted) abortFromRequest();
@@ -253,6 +253,7 @@ export function createAgent({
       if(verifiedSpeaker?.anonymous_speaker_id&&!anonymousValid)verifiedSpeaker={...verifiedSpeaker,speaker_familiarity:"none",anonymous_speaker_id:null};
       const speakerRestricted = context?.voice === true && verifiedSpeaker?.speaker_label !== "owner";
       const phoneCallProfile = context?.phoneCall?.profile === "bounded_outbound";
+      const liveReadOnly = context?.gptLiveRound2?.authority === "read_only";
       const trustedContext=context?.voice===true?{...context,speaker:verifiedSpeaker?.match_status==="confirmed"?{speaker_profile_id:verifiedSpeaker.speaker_profile_id,speaker_label:verifiedSpeaker.speaker_label,match_status:"confirmed",authenticated_identity:verifiedSpeaker.speaker_label==="owner"?"owner":"known_member",speaker_familiarity:"none",anonymous_speaker_id:null}:{speaker_profile_id:null,speaker_label:"unknown",match_status:verifiedSpeaker?.match_status||"unknown",authenticated_identity:"none",speaker_familiarity:verifiedSpeaker?.speaker_familiarity||"none",anonymous_speaker_id:verifiedSpeaker?.anonymous_speaker_id||null}}:context;
       if(context?.voice===true)logger.info("Nova speaker context verified",{requestId,assertionVerified:Boolean(verifiedSpeaker),matchStatus:trustedContext.speaker.match_status,speakerCategory:trustedContext.speaker.speaker_label,recognizedProfileId:trustedContext.speaker.speaker_profile_id,ownerPrivateContext:!speakerRestricted});
       const transformIntent=!speakerRestricted&&!phoneCallProfile&&isConversationLocalTransform(message);
@@ -344,8 +345,8 @@ export function createAgent({
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"conversation_transform_completed",status:"completed",summary:"Transformed an exact persisted same-conversation assistant source without tools or durable workflow routing.",metadata:{historyMessages:transformHistory.length,sourceMessageId:transformSource.id||null,sourceKind:transformRetrieval.reason,pagesScanned:transformRetrieval.pages,messagesScanned:transformRetrieval.messages}});
           return response;
         }
-        const durableWebResearch=!speakerRestricted&&!phoneCallProfile&&durableResearchTaskService&&shouldUseDurableWebResearch(message,webAuthority);
-        const existingTaskRoute=speakerRestricted||phoneCallProfile||durableWebResearch?null:await routeExistingTaskRequest({message,conversationId,context:trustedContext,requestId,signal:executionSignal});
+        const durableWebResearch=!speakerRestricted&&!phoneCallProfile&&!liveReadOnly&&durableResearchTaskService&&shouldUseDurableWebResearch(message,webAuthority);
+        const existingTaskRoute=speakerRestricted||phoneCallProfile||liveReadOnly||durableWebResearch?null:await routeExistingTaskRequest({message,conversationId,context:trustedContext,requestId,signal:executionSignal});
         if(existingTaskRoute){
           const task=existingTaskRoute.task;
           if(existingTaskRoute.action==="report"){
@@ -383,7 +384,7 @@ export function createAgent({
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"public_web_research_handed_off",status:"completed",summary:"Long public Web research was durably owned before provider contact.",metadata:{taskId:prepared.task.id,idempotent:prepared.idempotent===true}});
           return completeDurableSelfDevelopment({task:prepared.task,idempotent:prepared.idempotent});
         }
-        const durable = speakerRestricted||phoneCallProfile||existingTaskRoute||webAuthority.explicitBrowser||webAuthority.explicitResearch ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, conversationId, signal: executionSignal});
+        const durable = speakerRestricted||phoneCallProfile||liveReadOnly||existingTaskRoute||webAuthority.explicitBrowser||webAuthority.explicitResearch ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, conversationId, signal: executionSignal});
         executionSignal.throwIfAborted();
         if(durable?.providerUsage)providerUsage.push(durable.providerUsage);
         const routingDiagnostics=safeRoutingDiagnostics(durable?.routingDiagnostics);
@@ -431,7 +432,7 @@ export function createAgent({
           context:trustedContext,
           systemContext,
           conversationHistory,
-          tools: speakerRestricted||phoneCallProfile ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")),
+          tools: speakerRestricted||phoneCallProfile ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
           toolResults,
           continuationToken,
           signal: executionSignal,
@@ -451,7 +452,7 @@ export function createAgent({
         if (generated.type === "final") {
           const modelMessage=bindWebCitations(enforceSpeakerIdentityContract(generated.message, trustedContext.speaker),webSources);
           const response = {
-            id: randomUUID(),
+            id: requestedAssistantMessageId || randomUUID(),
             conversationId,
             message: CANONICAL_DURABLE_ACKNOWLEDGEMENT.test(modelMessage) ? "Nova could not verify that durable task acknowledgement." : modelMessage,
             provider: modelProvider.name,
@@ -501,6 +502,7 @@ export function createAgent({
             if(allowedTaskTools&&!allowedTaskTools.has(call.name))throw Object.assign(new Error("Existing-task control cannot invoke this tool."),{code:"task_control_tool_forbidden"});
             if(!allowedTaskTools&&ROUTED_CREATION_TOOLS.has(call.name))throw Object.assign(new Error("Durable creation requires the authoritative turn-routing path."),{code:"task_control_tool_forbidden"});
             if(webEvidenceActive&&!readOnlyToolNames.has(call.name))throw Object.assign(new Error("Untrusted web evidence cannot authorize a write-capable tool in the same run."),{code:"web_evidence_tool_forbidden"});
+            if(liveReadOnly&&!readOnlyToolNames.has(call.name))throw Object.assign(new Error("GPT-Live information delegation cannot invoke a write-capable tool."),{code:"gpt_live_read_only_tool_forbidden"});
             const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, conversationId, signal: executionSignal,delegationRequestFingerprint:durable?.requestFingerprint,webAuthority,webUsage });
             executionSignal.throwIfAborted();
             execution.status = "completed";

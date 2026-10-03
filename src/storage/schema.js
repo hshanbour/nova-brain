@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -41,6 +41,23 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     created_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS nova_messages_conversation_order_idx ON nova_messages (conversation_id, sequence)`,
+  `CREATE TABLE IF NOT EXISTS nova_conversation_live_state (
+    conversation_id text PRIMARY KEY REFERENCES nova_conversations(id) ON DELETE CASCADE,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    context_version bigint NOT NULL DEFAULT 0 CHECK (context_version >= 0),
+    rolling_summary text NOT NULL DEFAULT '' CHECK (octet_length(rolling_summary) <= 65536),
+    unresolved_state jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (octet_length(unresolved_state::text) <= 16384),
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS nova_conversation_events (
+    sequence bigserial PRIMARY KEY, id text UNIQUE NOT NULL,
+    conversation_id text NOT NULL REFERENCES nova_conversations(id) ON DELETE CASCADE,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    turn_id text, message_id text, event_type text NOT NULL, status text NOT NULL,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (octet_length(metadata::text) <= 65536),
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_conversation_events_order_idx ON nova_conversation_events (owner_id,conversation_id,sequence)`,
   `CREATE TABLE IF NOT EXISTS nova_memories (
     id text PRIMARY KEY,
     owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
@@ -342,5 +359,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     FOREIGN KEY(owner_id,budget_id) REFERENCES nova_model_cost_budgets(owner_id,budget_id) ON DELETE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS nova_model_cost_task_idx ON nova_model_cost_reservations (owner_id,budget_id,task_id,created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15) ON CONFLICT (version) DO NOTHING`
 ]);

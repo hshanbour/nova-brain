@@ -198,6 +198,8 @@ const approvalRow = (row) =>
     ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
     ...(row.assistant_message_id ? { assistantMessageId: row.assistant_message_id } : {}),
   };
+const liveConversationStateRow = (row) => row && ({ conversationId: row.conversation_id, ownerId: row.owner_id, contextVersion: Number(row.context_version), rollingSummary: row.rolling_summary, unresolvedState: row.unresolved_state, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
+const conversationEventRow = (row) => row && ({ id: row.id, conversationId: row.conversation_id, ownerId: row.owner_id, turnId: row.turn_id, messageId: row.message_id, eventType: row.event_type, status: row.status, metadata: row.metadata, sequence: Number(row.sequence), createdAt: date(row.created_at) });
 const activityRow = (row) =>
   row && {
     id: row.id,
@@ -450,6 +452,37 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         [conversationId, ownerId, limit, offset],
       );
       return rows.map(messageRow);
+    },
+    async ensureLiveConversationState({ conversationId, ownerId, rollingSummary = "", unresolvedState = {} }) {
+      const rows = await run(`INSERT INTO nova_conversation_live_state (conversation_id,owner_id,rolling_summary,unresolved_state)
+        SELECT $1,$2,$3,$4::jsonb WHERE EXISTS (SELECT 1 FROM nova_conversations WHERE id=$1 AND owner_id=$2)
+        ON CONFLICT (conversation_id) DO UPDATE SET conversation_id=EXCLUDED.conversation_id WHERE nova_conversation_live_state.owner_id=EXCLUDED.owner_id RETURNING *`, [conversationId, ownerId, String(rollingSummary).slice(0,16384), json(unresolvedState)]);
+      if (!rows[0]) throw new Error("Conversation not found.");
+      return liveConversationStateRow(rows[0]);
+    },
+    async getLiveConversationState(conversationId, ownerId) {
+      return liveConversationStateRow((await run("SELECT * FROM nova_conversation_live_state WHERE conversation_id=$1 AND owner_id=$2", [conversationId, ownerId]))[0]);
+    },
+    async updateLiveConversationState(conversationId, ownerId, { expectedContextVersion, rollingSummary, unresolvedState }) {
+      const rows = await run(`UPDATE nova_conversation_live_state SET context_version=context_version+1,
+        rolling_summary=COALESCE($4,rolling_summary), unresolved_state=COALESCE($5::jsonb,unresolved_state), updated_at=now()
+        WHERE conversation_id=$1 AND owner_id=$2 AND context_version=$3 RETURNING *`, [conversationId, ownerId, expectedContextVersion, rollingSummary === undefined ? null : String(rollingSummary).slice(0,16384), unresolvedState === undefined ? null : json(unresolvedState)]);
+      if (!rows[0]) throw Object.assign(new Error("Live context version conflict."), { code: "live_context_version_conflict" });
+      return liveConversationStateRow(rows[0]);
+    },
+    async appendConversationEvent(input) {
+      const params=[input.id,input.conversationId,input.ownerId,input.turnId||null,input.messageId||null,input.eventType,input.status,json(input.metadata)];
+      const rows=await run(`INSERT INTO nova_conversation_events (id,conversation_id,owner_id,turn_id,message_id,event_type,status,metadata)
+        SELECT $1,$2,$3,$4,$5,$6,$7,$8::jsonb WHERE EXISTS (SELECT 1 FROM nova_conversations WHERE id=$2 AND owner_id=$3)
+        ON CONFLICT (id) DO NOTHING RETURNING *`,params);
+      const row=rows[0]||(await run("SELECT * FROM nova_conversation_events WHERE id=$1",[input.id]))[0];
+      if(!row)throw new Error("Conversation not found.");
+      const record=conversationEventRow(row);
+      if(record.conversationId!==input.conversationId||record.ownerId!==input.ownerId||record.turnId!==(input.turnId||null)||record.messageId!==(input.messageId||null)||record.eventType!==input.eventType||record.status!==input.status||JSON.stringify(record.metadata)!==JSON.stringify(input.metadata??{}))throw new Error("Conversation event identity conflict.");
+      return record;
+    },
+    async listConversationEvents(conversationId, ownerId, { limit = 128 } = {}) {
+      return (await run(`SELECT * FROM (SELECT * FROM nova_conversation_events WHERE conversation_id=$1 AND owner_id=$2 ORDER BY sequence DESC LIMIT $3) recent ORDER BY sequence ASC`,[conversationId,ownerId,limit])).map(conversationEventRow);
     },
     async createMemory(input) {
       const rows = await run(

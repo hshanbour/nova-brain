@@ -212,6 +212,8 @@ export function createApi({
   durableResearchTaskService,
   gmailService,
   phoneService,
+  gptLiveRound2,
+  gptLiveRound2Authorization = () => false,
   logger = console,
 }) {
   const recognitionEngines =
@@ -257,6 +259,20 @@ export function createApi({
       };
 
       try {
+        if (request.method === "POST" && pathname.startsWith("/api/internal/phone/gpt-live-round2/")) {
+          if (!gptLiveRound2 || !gptLiveRound2Authorization(request)) {
+            sendJson(response, 404, { error: "Not found." });
+            return;
+          }
+          await ready();
+          const input = await readJsonBody(request, config.maxBodyBytes);
+          const action = pathname.slice("/api/internal/phone/gpt-live-round2/".length);
+          const operations = { start: "start", turn: "handleTurn", delivery: "recordDelivery", restore: "restore", extract: "extractMemoryCandidates" };
+          const operation = operations[action];
+          if (!operation) { sendJson(response, 404, { error: "Not found." }); return; }
+          sendJson(response, 200, await gptLiveRound2[operation](input));
+          return;
+        }
         if (request.method === "GET" && pathname === "/api/phone/calls") {
           await ready();
           const conversationId = url.searchParams.get("conversationId");

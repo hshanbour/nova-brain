@@ -6,7 +6,7 @@ const MAX_HISTORY_TOKENS_APPROX = 8_192;
 const MAX_AUDIT_EVENTS = 2_000;
 const CONSEQUENTIAL_REQUEST = /\b(?:send|approve|purchase|buy|pay|book|deploy|ship|call)\b|(?:ابعث|أرسل|ارسل|وافق|اشتري|ادفع|احجز|انشر|اتصل)/iu;
 
-const LIVE_INSTRUCTIONS = `You are Nova, Mohammad's conversational AI interface. Speak naturally, directly, and concisely in the caller's language, including Jordanian/Levantine Arabic, English, and mixed Arabic-English. Maintain one continuous conversation, remember corrections and references, and do not repeat introductions or disclosures after they have already happened. Listen through incomplete thoughts and thinking pauses. Use brief natural acknowledgements only when contextually useful. You may ask an immediate clarification when continuing without it would materially misunderstand the caller, but do not interrupt merely to appear human; if the caller resumes, yield immediately.
+const LIVE_INSTRUCTIONS = `${NOVA_COMMUNICATION_POLICY}\n\nPHONE PRESENTATION OVERLAY: Speak naturally, directly, and concisely in the caller's language, including Jordanian/Levantine Arabic, English, and mixed Arabic-English. Maintain one continuous conversation, remember corrections and references, and do not repeat introductions or disclosures after they have already happened. Listen through incomplete thoughts and thinking pauses. Use brief natural acknowledgements only when contextually useful. You may ask an immediate clarification when continuing without it would materially misunderstand the caller, but do not interrupt merely to appear human; if the caller resumes, yield immediately.
 
 You control conversational timing and presentation only.
 
@@ -261,3 +261,4 @@ export const GPT_LIVE_PROTOTYPE_CONTRACT = Object.freeze({
   authority: "nova_brain",
   rawAudioPersisted: false,
 });
+import { NOVA_COMMUNICATION_POLICY } from "../identity/communication-policy.js";

@@ -72,8 +72,8 @@ async function fixture({ dial = async () => ({ callSid: CALL_SID, providerStatus
   return { config, storage, auth, service, registry, run, prepared };
 }
 
-test("schema fourteen adds bounded durable phone authority, events, and transcript turns", async () => {
-  assert.equal(SCHEMA_VERSION, 14);
+test("schema fifteen preserves bounded durable phone authority, events, and transcript turns", async () => {
+  assert.equal(SCHEMA_VERSION, 15);
   for (const table of ["nova_phone_call_intents", "nova_phone_call_events", "nova_phone_call_turns"]) assert.ok(SCHEMA_STATEMENTS.some((statement) => statement.includes(`CREATE TABLE IF NOT EXISTS ${table}`)));
   const migration = await readFile(new URL("../migrations/005_phone_v1.sql", import.meta.url), "utf8");
   assert.match(migration, /ON CONFLICT \(version\) DO NOTHING/); assert.match(migration, /attempt_count integer NOT NULL DEFAULT 0/); assert.doesNotMatch(migration, /raw_audio|recording_url|audio_blob/i);

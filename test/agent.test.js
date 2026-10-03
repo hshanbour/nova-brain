@@ -66,6 +66,16 @@ test("agent returns a stable response and records a conversation turn", async ()
   ]);
 });
 
+test("GPT-Live information delegation preserves exact message identity and exposes only read-only tools",async()=>{
+  const storage=testStorage(),registry=createToolRegistry();let durableRoutes=0;let observed;
+  registry.register({name:"project_status",riskLevel:"READ_ONLY",async execute(){return{ok:true};}});
+  registry.register({name:"external_write",riskLevel:"SENSITIVE",async execute(){throw new Error("must not execute");}});
+  const agent=createTestAgent({storage,toolRegistry:registry,modelProvider:scriptedProvider([{type:"final",message:"authoritative answer"}],input=>{observed=input;}),routeDurableRequest:async()=>{durableRoutes++;return null;}});
+  const result=await agent.run({message:"What is the Sharp Cuts status?",conversationId:"live-read-only",userMessageId:"livemsg_user",assistantMessageId:"livemsg_assistant",context:{gptLiveRound2:{authority:"read_only",contextVersion:4}}});
+  assert.deepEqual(observed.tools.map(tool=>tool.name),["project_status"]);assert.equal(durableRoutes,0);assert.equal(result.userMessageId,"livemsg_user");assert.equal(result.id,"livemsg_assistant");
+  assert.deepEqual((await storage.listMessages("live-read-only",OWNER_ID)).map(item=>item.id),["livemsg_user","livemsg_assistant"]);
+});
+
 test("a failed turn persists and exposes exact request run user-message correlation without inventing an assistant message",async()=>{
   const storage=testStorage(),agent=createTestAgent({storage,toolRegistry:createToolRegistry(),modelProvider:{name:"broken",async generate(){throw new Error("safe test failure");}}});
   let failure;try{await agent.run({message:"Ordinary failed turn",conversationId:"failed-correlation",requestId:"request-failed"});}catch(error){failure=error;}

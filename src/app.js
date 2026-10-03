@@ -59,6 +59,7 @@ import { createPhoneSessionAuth } from "./phone/session-auth.js";
 import { createPhoneService } from "./phone/phone-service.js";
 import { registerPhoneTools } from "./phone/phone-tools.js";
 import { createTwilioOutboundClient } from "./phone/twilio-client.js";
+import { createGptLiveRound2Service, createRound2Authorization } from "./phone/gpt-live-round2.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -305,6 +306,7 @@ export function createApp({
     },
     logger,
   });
+  const gptLiveRound2 = createGptLiveRound2Service({ storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input) });
   const benchmarkProviders = createBenchmarkProviders({
     config: config.voiceBenchmark,
   });
@@ -362,6 +364,8 @@ export function createApp({
     durableResearchTaskService,
     gmailService,
     phoneService,
+    gptLiveRound2,
+    gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
   return Object.freeze({ ...api, initialize, workerRuntime, phoneService });

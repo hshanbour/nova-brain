@@ -39,6 +39,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const phoneCallIntents = new Map();
   const phoneCallEvents = new Map();
   const phoneCallTurns = new Map();
+  const liveConversationStates = new Map();
+  const conversationEvents = new Map();
   const developerSessions = new Map();
   const activity = [];
   const benchmarkSessions = new Map();
@@ -208,6 +210,48 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const end = history.length - offset;
       const start = Math.max(0, end - limit);
       return end <= 0 ? [] : history.slice(start, end).map(copy);
+    },
+    async ensureLiveConversationState({ conversationId, ownerId, rollingSummary = "", unresolvedState = {} }) {
+      const conversation = conversations.get(conversationId);
+      if (!conversation || conversation.ownerId !== ownerId) throw new Error("Conversation not found.");
+      const current = liveConversationStates.get(conversationId);
+      if (current) return copy(current);
+      const record = { conversationId, ownerId, contextVersion: 0, rollingSummary: String(rollingSummary).slice(0, 16_384), unresolvedState: copy(unresolvedState), createdAt: now(clock), updatedAt: now(clock) };
+      liveConversationStates.set(conversationId, record);
+      conversationEvents.set(conversationId, []);
+      return copy(record);
+    },
+    async getLiveConversationState(conversationId, ownerId) {
+      const record = liveConversationStates.get(conversationId);
+      return copy(record?.ownerId === ownerId ? record : null);
+    },
+    async updateLiveConversationState(conversationId, ownerId, { expectedContextVersion, rollingSummary, unresolvedState }) {
+      const current = liveConversationStates.get(conversationId);
+      if (!current || current.ownerId !== ownerId) throw new Error("Live conversation not found.");
+      if (current.contextVersion !== expectedContextVersion) throw Object.assign(new Error("Live context version conflict."), { code: "live_context_version_conflict" });
+      current.contextVersion += 1;
+      if (rollingSummary !== undefined) current.rollingSummary = String(rollingSummary).slice(0, 16_384);
+      if (unresolvedState !== undefined) current.unresolvedState = copy(unresolvedState);
+      current.updatedAt = now(clock);
+      return copy(current);
+    },
+    async appendConversationEvent(input) {
+      const conversation = conversations.get(input.conversationId);
+      if (!conversation || conversation.ownerId !== input.ownerId) throw new Error("Conversation not found.");
+      const all = [...conversationEvents.values()].flat();
+      const existing = all.find((item) => item.id === input.id);
+      if (existing) {
+        if (!sameJson({ ...existing, sequence: undefined, createdAt: undefined }, { ...input, sequence: undefined, createdAt: undefined })) throw new Error("Conversation event identity conflict.");
+        return copy(existing);
+      }
+      const record = { ...copy(input), sequence: ++sequence, createdAt: now(clock) };
+      conversationEvents.set(input.conversationId, [...(conversationEvents.get(input.conversationId) || []), record]);
+      return copy(record);
+    },
+    async listConversationEvents(conversationId, ownerId, { limit = 128 } = {}) {
+      const conversation = conversations.get(conversationId);
+      if (!conversation || conversation.ownerId !== ownerId) return [];
+      return (conversationEvents.get(conversationId) || []).slice(-limit).map(copy);
     },
     async createMemory(input) {
       const timestamp = now(clock);
