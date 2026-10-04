@@ -26,7 +26,7 @@ export function createGptLiveRound2Client({ apiKey, round2Api, conversationId, v
     if (["session.output_audio.done", "session.output.done", "session.response.done"].includes(event.type)) return gate.providerOutputCompleted();
     if (event.type === "session.usage.updated") { usageSeconds = Math.max(usageSeconds, Number(event.usage?.seconds) || 0); return true; }
     if (event.type === "session.closed") { usageSeconds = Math.max(usageSeconds, Number(event.usage?.seconds) || 0); clearTimeout(closeTimer); closedResolve({ ...gate.snapshot(), usageSeconds }); socket.close(); return true; }
-    if (event.type === "error") throw Object.assign(new Error("GPT-Live provider rejected the Round 2 session."), { code: "gpt_live_provider_error", providerCategory: String(event.error?.code || event.error?.type || "unknown").slice(0, 80) });
+    if (event.type === "error") return gate.providerFailed(String(event.error?.code || event.error?.type || "unknown").slice(0, 80));
     return false;
   }
 
@@ -36,8 +36,8 @@ export function createGptLiveRound2Client({ apiKey, round2Api, conversationId, v
       socket = new WebSocketImpl(LIVE_URL, { headers: { Authorization: `Bearer ${apiKey}`, "OpenAI-Beta": "realtime=v1" } });
       const timer = setTimeout(() => readyReject(Object.assign(new Error("GPT-Live connection timed out."), { code: "gpt_live_connect_timeout" })), timeoutMs); timer.unref?.();
       socket.on("open", () => { const session = { ...buildGptLivePrototypeSession({ voice, history }), instructions: buildRound2LiveInstructions() }; sendLive({ type: "session.start", event_id: crypto.randomUUID(), session }); });
-      socket.on("message", async (raw) => { try { const event = JSON.parse(String(raw)); await handle(event); if (event.type === "session.started") clearTimeout(timer); } catch (error) { clearTimeout(timer); readyReject(error); } });
-      socket.on("error", () => readyReject(Object.assign(new Error("GPT-Live transport failed."), { code: "gpt_live_transport_failed" })));
+      socket.on("message", async (raw) => { try { const event = JSON.parse(String(raw)); await handle(event); if (event.type === "session.started") clearTimeout(timer); } catch (error) { clearTimeout(timer); await gate.providerFailed(error?.code || "gpt_live_event_failed"); readyReject(error); } });
+      socket.on("error", async () => { await gate.providerFailed("gpt_live_transport_failed"); readyReject(Object.assign(new Error("GPT-Live transport failed."), { code: "gpt_live_transport_failed" })); });
       socket.on("close", () => closedResolve(gate.snapshot()));
       return true;
     },

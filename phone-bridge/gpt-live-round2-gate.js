@@ -3,6 +3,24 @@ import { classifyLiveAuthority, LIVE_AUTHORITY } from "../src/phone/gpt-live-rou
 
 const MAX_BUFFERED_AUDIO_BYTES = 2_000_000;
 const MAX_TRANSCRIPT = 8_000;
+const MAX_COMMENTARY_BYTES = 400;
+
+function commentaryChunks(value) {
+  const chunks = [];
+  let current = "";
+  const flush = () => { const chunk = current.trim(); if (chunk) chunks.push(chunk); current = ""; };
+  for (const token of String(value || "").split(/(\s+)/u)) {
+    if (!token) continue;
+    if (Buffer.byteLength(current + token) <= MAX_COMMENTARY_BYTES) { current += token; continue; }
+    flush();
+    for (const character of token) {
+      if (Buffer.byteLength(current + character) > MAX_COMMENTARY_BYTES) flush();
+      current += character;
+    }
+  }
+  flush();
+  return chunks;
+}
 
 export function createGptLiveRound2OutputGate({ api, sendLive, onAudio = () => {}, onClearAudio = () => {}, clock = () => performance.now(), idFactory = randomUUID } = {}) {
   if (!api || typeof sendLive !== "function") throw new TypeError("Round 2 API and Live sender are required.");
@@ -43,9 +61,22 @@ export function createGptLiveRound2OutputGate({ api, sendLive, onAudio = () => {
     }
     turn.phase = "verified_output";
     turn.deliveredText = "";
-    sendLive(Object.freeze({ type: "session.commentary.append", event_id: idFactory(), delegation_id: null, content: result.message }));
-    record("verified_result_appended", { turnId: turn.turnId, authority: result.authority });
+    const chunks = commentaryChunks(result.message);
+    for (const content of chunks) sendLive(Object.freeze({ type: "session.commentary.append", event_id: idFactory(), delegation_id: null, content }));
+    record("verified_result_appended", { turnId: turn.turnId, authority: result.authority, chunks: chunks.length });
     return turn.promise;
+  }
+
+  async function providerFailed(category = "gpt_live_provider_error") {
+    const turn = current;
+    if (!turn || turn.terminal) return false;
+    turn.terminal = "failed";
+    onClearAudio();
+    if (turn.messageId && turn.intendedText) await api.delivery({ conversationId, turnId: turn.turnId, messageId: turn.messageId, intendedText: turn.intendedText, deliveredText: turn.deliveredText, status: "truncated" }).catch(() => {});
+    turn.result = Object.freeze({ status: "failed", turnId: turn.turnId, authority: turn.decision?.authority || null, providerCategory: String(category).slice(0, 80) });
+    turn.resolve?.(turn.result);
+    record("provider_failed", { turnId: turn.turnId, category: turn.result.providerCategory });
+    return true;
   }
 
   async function complete(turn, status = "delivered") {
@@ -69,6 +100,7 @@ export function createGptLiveRound2OutputGate({ api, sendLive, onAudio = () => {
     async providerOutputCompleted() { const turn = current; if (!turn || turn.terminal) return false; if (turn.phase === "local_buffering") return route(turn); if (turn.phase === "verified_output") { turn.phase="playback_pending"; return true; } return false; },
     async playbackCompleted() { const turn=current;if(!turn||turn.terminal||turn.phase!=="playback_pending")return false;return complete(turn,"delivered"); },
     async waitForTerminal({ signal } = {}) { const turn = current; if (!turn) return null; if (turn.terminal) return turn.result || { status: turn.terminal, turnId: turn.turnId }; if (!signal) return turn.promise; return Promise.race([turn.promise, new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))]); },
+    providerFailed,
     supersede,
     snapshot() { return Object.freeze({ conversationId, contextVersion, generation, current: current ? { turnId: current.turnId, phase: current.phase, terminal: current.terminal, authority: current.decision?.authority || null, bufferedBytes: current.bufferedBytes, transcriptCharacters:current.transcript.length } : null, rawAudioPersisted: false, audit: Object.freeze([...audit]) }); },
   });
