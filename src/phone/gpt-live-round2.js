@@ -41,7 +41,7 @@ export function classifyLiveAuthority(utterance, { unresolvedState = {} } = {}) 
 export const GPT_LIVE_PHONE_GUIDANCE = `PHONE PRESENTATION OVERLAY: Keep spoken answers concise and natural. Use contemporary Jordanian/Levantine Arabic with Mohammad, preserve useful English product and technical names, yield immediately on interruption, and ask one brief clarification only when necessary. Never invent filler. This overlay changes presentation only; Nova's shared policy and application authority remain controlling.`;
 
 export function buildRound2LiveInstructions() {
-  return `${NOVA_COMMUNICATION_POLICY}\n\n${GPT_LIVE_PHONE_GUIDANCE}\n\nAUTHORITY: Application decisions are deterministic. Do not speak buffered output until the application releases it. Project, business, email, Codex, memory, workflow, and external facts require NOVA_INFORMATION. Actions require NOVA_ACTION and formal UI approval; spoken approval is never authoritative.`;
+  return `${NOVA_COMMUNICATION_POLICY}\n\n${GPT_LIVE_PHONE_GUIDANCE}\n\nAUTHORITY: Application decisions are deterministic. Do not speak buffered output until the application releases it. Project, business, email, Codex, memory, workflow, and external facts require NOVA_INFORMATION. Actions require NOVA_ACTION and formal UI approval; spoken approval is never authoritative. For NOVA_INFORMATION, before verified commentary arrives you may give only one brief, natural acknowledgement that you are checking; add no fact, number, result, status, completion claim, or external action. When verified commentary arrives, present only that verified result naturally and concisely.`;
 }
 
 export function createRound2Authorization(secret) {

@@ -22,8 +22,9 @@ export function createGptLiveRound2Client({ apiKey, round2Api, conversationId, v
     if (event.type === "session.started") { const started = await gate.start({ conversationId }); readyResolve({ ...started, providerSessionId: event.session?.id || null }); return true; }
     if (event.type === "session.input_transcript.delta") return gate.appendTranscript(event.delta);
     if (event.type === "session.delegation.created") return gate.bindDelegation(event.delegation?.id);
-    if (event.type === "session.output_transcript.delta") { const accepted=gate.appendOutputTranscript(event.delta);scheduleOutputCompletion();return accepted; }
-    if (event.type === "session.output_audio.delta") { const accepted=gate.appendOutputAudio(Buffer.from(String(event.delta || ""), "base64"));scheduleOutputCompletion();return accepted; }
+    if (event.type === "session.output_transcript.delta") { const accepted=gate.appendOutputTranscript(event.delta,event);scheduleOutputCompletion();return accepted; }
+    if (event.type === "session.output_audio.delta") { const accepted=gate.appendOutputAudio(Buffer.from(String(event.delta || ""), "base64"),event);scheduleOutputCompletion();return accepted; }
+    if (event.type === "session.commentary.appended") return gate.commentaryAcknowledged(event);
     if (["session.output_audio.done", "session.output.done", "session.response.done"].includes(event.type)) return gate.providerOutputCompleted();
     if (event.type === "session.usage.updated") { usageSeconds = Math.max(usageSeconds, Number(event.usage?.seconds) || 0); return true; }
     if (event.type === "session.closed") { usageSeconds = Math.max(usageSeconds, Number(event.usage?.seconds) || 0); clearTimeout(closeTimer); closedResolve({ ...gate.snapshot(), usageSeconds }); socket.close(); return true; }
@@ -45,7 +46,7 @@ export function createGptLiveRound2Client({ apiKey, round2Api, conversationId, v
     ready() { return readyPromise; },
     async callerSpeechStarted() { clearTimeout(outputQuietTimer);return gate.callerSpeechStarted(); },
     appendAudio(audio) { if (!socket || socket.readyState !== WebSocketImpl.OPEN || !Buffer.isBuffer(audio) || !audio.length) return false; sendLive({ type: "session.input_audio.append", event_id: crypto.randomUUID(), audio: audio.toString("base64") }); return true; },
-    async callerSpeechEnded() { const result=await gate.callerSpeechEnded();if(gate.snapshot().current?.bufferedBytes)scheduleOutputCompletion();return result; },
+    async callerSpeechEnded() { const result=await gate.callerSpeechEnded();if(result)scheduleOutputCompletion();return result; },
     providerOutputCompleted() { return gate.providerOutputCompleted(); },
     playbackCompleted() { return gate.playbackCompleted(); },
     waitForTerminal(options) { return gate.waitForTerminal(options); },
