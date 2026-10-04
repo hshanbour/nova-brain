@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
+import { createPostgresStorage } from "../src/storage/postgres-storage.js";
 import { createGptLiveRound2Service, createRound2Authorization, classifyLiveAuthority, LIVE_AUTHORITY, buildRound2LiveInstructions } from "../src/phone/gpt-live-round2.js";
 
 const OWNER = "owner";
@@ -32,6 +33,14 @@ test("Preview internal authorization is constant-time hashed and fail closed",()
   assert.equal(authorize({headers:{"x-nova-round2-authorization":"wrong"}}),false);
   assert.equal(createRound2Authorization("")({headers:{}}),false);
   assert.doesNotMatch(String(authorize),/preview-only-secret/);
+});
+
+test("Postgres event replay accepts semantically identical JSONB metadata with canonicalized key order",async()=>{
+  const input={id:"event-jsonb-order",conversationId:"conversation-jsonb-order",ownerId:OWNER,turnId:"turn-1",messageId:"message-1",eventType:"assistant_output_intended",status:"buffered",metadata:{authority:"LOCAL_CONVERSATION",outputGate:"released",approvalCreated:false,actionExecuted:false}};
+  const row={id:input.id,conversation_id:input.conversationId,owner_id:input.ownerId,turn_id:input.turnId,message_id:input.messageId,event_type:input.eventType,status:input.status,metadata:{actionExecuted:false,approvalCreated:false,authority:"LOCAL_CONVERSATION",outputGate:"released"},sequence:1,created_at:new Date("2026-10-04T00:00:00Z")};
+  let calls=0;const storage=createPostgresStorage({sqlClient:{async query(){calls++;return calls===1?[]:[row];}}});
+  const event=await storage.appendConversationEvent(input);
+  assert.equal(event.id,input.id);assert.deepEqual(event.metadata,row.metadata);assert.equal(calls,2);
 });
 
 test("local GPT-Live answer is gated, canonical, and exactly once",async()=>{

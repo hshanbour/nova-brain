@@ -5,6 +5,12 @@ import { rankRelevantMemories } from "../memory/relevance.js";
 import {validateRejectedReviewEvidenceEnvelope} from "../autonomy/rejected-review-evidence.js";
 
 const json = (value) => JSON.stringify(value ?? {});
+function stableJson(value) {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableJson(value[key])]));
+  return value;
+}
+const sameJson = (left, right) => JSON.stringify(stableJson(left)) === JSON.stringify(stableJson(right));
 const date = (value) => (value instanceof Date ? value.toISOString() : value);
 const ownerRow = (row) =>
   row && {
@@ -478,7 +484,7 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
       const row=rows[0]||(await run("SELECT * FROM nova_conversation_events WHERE id=$1",[input.id]))[0];
       if(!row)throw new Error("Conversation not found.");
       const record=conversationEventRow(row);
-      if(record.conversationId!==input.conversationId||record.ownerId!==input.ownerId||record.turnId!==(input.turnId||null)||record.messageId!==(input.messageId||null)||record.eventType!==input.eventType||record.status!==input.status||JSON.stringify(record.metadata)!==JSON.stringify(input.metadata??{}))throw new Error("Conversation event identity conflict.");
+      if(record.conversationId!==input.conversationId||record.ownerId!==input.ownerId||record.turnId!==(input.turnId||null)||record.messageId!==(input.messageId||null)||record.eventType!==input.eventType||record.status!==input.status||!sameJson(record.metadata,input.metadata??{}))throw new Error("Conversation event identity conflict.");
       return record;
     },
     async listConversationEvents(conversationId, ownerId, { limit = 128 } = {}) {
