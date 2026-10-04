@@ -59,6 +59,8 @@ export function createGptLiveRound2OutputGate({ api, sendLive, onAudio = () => {
       turn.deliveredText = turn.speculativeTranscript.trim();
       return true;
     }
+    turn.speculativeAudio = [];
+    turn.bufferedBytes = 0;
     turn.phase = "verified_output";
     turn.deliveredText = "";
     const chunks = commentaryChunks(result.message);
