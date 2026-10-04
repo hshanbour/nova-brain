@@ -21,6 +21,7 @@ export function createGptLiveRound2Client({ apiKey, round2Api, conversationId, v
     onEvent(event.type);
     if (event.type === "session.started") { const started = await gate.start({ conversationId }); readyResolve({ ...started, providerSessionId: event.session?.id || null }); return true; }
     if (event.type === "session.input_transcript.delta") return gate.appendTranscript(event.delta);
+    if (event.type === "session.delegation.created") return gate.bindDelegation(event.delegation?.id);
     if (event.type === "session.output_transcript.delta") { const accepted=gate.appendOutputTranscript(event.delta);scheduleOutputCompletion();return accepted; }
     if (event.type === "session.output_audio.delta") { const accepted=gate.appendOutputAudio(Buffer.from(String(event.delta || ""), "base64"));scheduleOutputCompletion();return accepted; }
     if (["session.output_audio.done", "session.output.done", "session.response.done"].includes(event.type)) return gate.providerOutputCompleted();

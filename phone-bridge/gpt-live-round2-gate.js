@@ -62,7 +62,7 @@ export function createGptLiveRound2OutputGate({ api, sendLive, onAudio = () => {
     turn.phase = "verified_output";
     turn.deliveredText = "";
     const chunks = commentaryChunks(result.message);
-    for (const content of chunks) sendLive(Object.freeze({ type: "session.commentary.append", event_id: idFactory(), delegation_id: null, content }));
+    for (const content of chunks) sendLive(Object.freeze({ type: "session.commentary.append", event_id: idFactory(), delegation_id: turn.delegationId, content }));
     record("verified_result_appended", { turnId: turn.turnId, authority: result.authority, chunks: chunks.length });
     return turn.promise;
   }
@@ -92,7 +92,8 @@ export function createGptLiveRound2OutputGate({ api, sendLive, onAudio = () => {
 
   return Object.freeze({
     async start(input = {}) { const started = await api.start(input); conversationId = started.conversationId; contextVersion = started.contextVersion; record("session_started", { conversationId }); return started; },
-    async callerSpeechStarted() { ensure(); const didSupersede=await supersede(); if(!didSupersede){onClearAudio();record("output_cleared",{reason:"caller_barge_in"});} const turnId = idFactory(); current = { turnId, generation: ++generation, transcript: "", speculativeTranscript: "", speculativeAudio: [], bufferedBytes: 0, deliveredText: "", intendedText: "", messageId: null, decision: null, phase: "capturing", terminal: null, abort: new AbortController(), expectedContextVersion: didSupersede ? null : contextVersion, inputEndedAt: null }; current.promise = new Promise((resolve) => { current.resolve = resolve; }); record("caller_speech_started", { turnId }); return turnId; },
+    async callerSpeechStarted() { ensure(); const didSupersede=await supersede(); if(!didSupersede){onClearAudio();record("output_cleared",{reason:"caller_barge_in"});} const turnId = idFactory(); current = { turnId, generation: ++generation, transcript: "", speculativeTranscript: "", speculativeAudio: [], bufferedBytes: 0, deliveredText: "", intendedText: "", messageId: null, delegationId: null, decision: null, phase: "capturing", terminal: null, abort: new AbortController(), expectedContextVersion: didSupersede ? null : contextVersion, inputEndedAt: null }; current.promise = new Promise((resolve) => { current.resolve = resolve; }); record("caller_speech_started", { turnId }); return turnId; },
+    bindDelegation(delegationId) { const value=String(delegationId||"");if(!current||current.terminal||!/^item_[A-Za-z0-9_-]{8,128}$/.test(value))return false;current.delegationId=value;record("provider_delegation_bound",{turnId:current.turnId});return true; },
     appendTranscript(delta) { if (!current || current.terminal) return false; current.transcript = `${current.transcript}${String(delta || "")}`.slice(-MAX_TRANSCRIPT); return true; },
     appendOutputTranscript(delta) { if (!current || current.terminal) return false; const value = String(delta || ""); if (current.phase === "verified_output") current.deliveredText = `${current.deliveredText}${value}`.slice(-MAX_TRANSCRIPT); else current.speculativeTranscript = `${current.speculativeTranscript}${value}`.slice(-MAX_TRANSCRIPT); return true; },
     appendOutputAudio(audio) { if (!current || current.terminal || !Buffer.isBuffer(audio) || !audio.length) return false; if (current.phase === "verified_output") { onAudio(audio); return true; } if (current.phase === "released") { onAudio(audio); return true; } if (current.bufferedBytes + audio.length > MAX_BUFFERED_AUDIO_BYTES) throw Object.assign(new Error("Speculative Live audio exceeded the bounded gate."), { code: "gpt_live_output_gate_overflow" }); current.speculativeAudio.push(audio); current.bufferedBytes += audio.length; return true; },

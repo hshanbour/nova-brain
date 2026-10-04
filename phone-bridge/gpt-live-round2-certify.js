@@ -12,6 +12,7 @@ const round2Api=createGptLiveRound2Api({baseUrl:process.env.NOVA_PHONE_BASE_URL,
 const conversationId=`gpt-live-round2-cert-${randomUUID()}`,playback=[],timeline=[],providerEvents=[];
 let clearedAt=null,ttsRequests=0,ttsCharacters=0,silenceTimer=null;
 const client=createGptLiveRound2Client({apiKey:process.env.OPENAI_API_KEY,round2Api,conversationId,onAudio(audio){for(let offset=0;offset<audio.length;offset+=160)playback.push(audio.subarray(offset,Math.min(offset+160,audio.length)));},onClearAudio(){playback.length=0;clearedAt=now();},onEvent:type=>providerEvents.push(type)});
+process.on("uncaughtException",error=>{console.error(JSON.stringify({ok:false,code:String(error?.code||"certification_failed").slice(0,80),providerEvents:[...new Set(providerEvents)],snapshot:client.snapshot(),timeline}));process.exit(1);});
 
 async function speech(text){const chunks=[];for await(const chunk of tts.stream(text))chunks.push(chunk);ttsRequests+=1;ttsCharacters+=text.length;return Buffer.concat(chunks);}
 async function streamInput(text){const audio=await speech(text);for(let offset=0;offset<audio.length;offset+=160){client.appendAudio(audio.subarray(offset,Math.min(offset+160,audio.length)));await sleep(20);}}
