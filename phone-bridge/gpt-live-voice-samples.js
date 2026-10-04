@@ -9,15 +9,12 @@ import { buildGptLivePrototypeSession } from "../src/phone/gpt-live-prototype.js
 
 export const GPT_LIVE_SAMPLE_VOICES = Object.freeze(["marin", "willow", "gleam"]);
 export const GPT_LIVE_SAMPLE_LINES = Object.freeze([
-  "أهلين محمد، أنا نوفا، جاهزة نحكي بطريقة طبيعية وواضحة.",
-  "Hello Mohammad, I’m Nova, and I’m ready to help.",
-  "بالنسبة لمشروع Sharp Cuts، بقدر أراجع Codex والـ API معك.",
-  "لحظة، قصدك نكمل من النقطة السابقة ولا نبدأ من جديد؟",
+  "أهلين محمد، أنا نوفا، وجاهزة نحكي معك بطريقة طبيعية وواضحة. Hello Mohammad, I’m Nova, and I’m ready to help. بالنسبة لمشروع Sharp Cuts، بقدر أراجع Codex والـ API معك. لحظة، قصدك نكمل من النقطة السابقة ولا نبدأ من جديد؟",
 ]);
 
 const LIVE_URL = "wss://api.openai.com/v1/live/sessions";
-const QUIET_MS = 1_200;
-const TIMEOUT_MS = 30_000;
+const QUIET_MS = 2_000;
+const TIMEOUT_MS = 45_000;
 const sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 
 export function pcm16Wav(samples, sampleRate = 8_000) {
@@ -84,7 +81,7 @@ async function generateVoiceSample({ apiKey, voice, outputDirectory, callerAudio
     socket.on("open", () => {
       const session = {
         ...buildGptLivePrototypeSession({ voice }),
-        instructions: `VOICE SAMPLE ONLY: When the caller asks for the configured comparison script, speak these four lines exactly once, naturally, with no introduction, translation, explanation, added facts, or external action. Preserve Arabic, English, names, and technical terms exactly.\n\n${GPT_LIVE_SAMPLE_LINES.join("\n")}`,
+        instructions: `VOICE SAMPLE ONLY: When the caller asks for the configured comparison script, speak this complete script exactly once, naturally, with no introduction, translation, explanation, added facts, or external action. Preserve Arabic, English, names, and technical terms exactly.\n\n${GPT_LIVE_SAMPLE_LINES.join("\n")}`,
       };
       socket.send(JSON.stringify({ type: "session.start", event_id: randomUUID(), session }));
     });
