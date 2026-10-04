@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
+import { createElevenLabsTelephonyTts } from "../src/phone/elevenlabs-telephony.js";
 import { decodeMulaw8k, pcm16ToLittleEndianBuffer } from "../src/phone/g711.js";
 import { buildGptLivePrototypeSession } from "../src/phone/gpt-live-prototype.js";
 
@@ -17,6 +18,7 @@ export const GPT_LIVE_SAMPLE_LINES = Object.freeze([
 const LIVE_URL = "wss://api.openai.com/v1/live/sessions";
 const QUIET_MS = 1_200;
 const TIMEOUT_MS = 30_000;
+const sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 
 export function pcm16Wav(samples, sampleRate = 8_000) {
   if (!(samples instanceof Int16Array)) throw new TypeError("PCM samples are required.");
@@ -44,7 +46,7 @@ export function sampleFilename(voice) {
   return `nova-gpt-live-${voice}-pcmu8k.wav`;
 }
 
-async function generateVoiceSample({ apiKey, voice, outputDirectory, WebSocketImpl = WebSocket }) {
+async function generateVoiceSample({ apiKey, voice, outputDirectory, callerAudio, WebSocketImpl = WebSocket }) {
   const audio = [];
   let transcript = "";
   let usageSeconds = 0;
@@ -82,16 +84,19 @@ async function generateVoiceSample({ apiKey, voice, outputDirectory, WebSocketIm
     socket.on("open", () => {
       const session = {
         ...buildGptLivePrototypeSession({ voice }),
-        instructions: "VOICE SAMPLE ONLY: Speak each application commentary line exactly once, naturally, with no introduction, translation, explanation, added facts, or external action. Preserve Arabic, English, names, and technical terms exactly.",
+        instructions: `VOICE SAMPLE ONLY: When the caller asks for the configured comparison script, speak these four lines exactly once, naturally, with no introduction, translation, explanation, added facts, or external action. Preserve Arabic, English, names, and technical terms exactly.\n\n${GPT_LIVE_SAMPLE_LINES.join("\n")}`,
       };
       socket.send(JSON.stringify({ type: "session.start", event_id: randomUUID(), session }));
     });
     socket.on("message", (raw) => {
       const event = JSON.parse(String(raw));
       if (event.type === "session.started") {
-        for (const content of GPT_LIVE_SAMPLE_LINES) {
-          socket.send(JSON.stringify({ type: "session.commentary.append", event_id: randomUUID(), delegation_id: null, content }));
-        }
+        void (async () => {
+          for (let offset = 0; offset < callerAudio.length; offset += 160) {
+            socket.send(JSON.stringify({ type: "session.input_audio.append", event_id: randomUUID(), audio: callerAudio.subarray(offset, Math.min(offset + 160, callerAudio.length)).toString("base64") }));
+            await sleep(20);
+          }
+        })().catch(fail);
       } else if (event.type === "session.output_audio.delta") {
         const chunk = Buffer.from(String(event.delta || ""), "base64");
         if (chunk.length) audio.push(chunk);
@@ -113,12 +118,27 @@ async function generateVoiceSample({ apiKey, voice, outputDirectory, WebSocketIm
 
 export async function generateGptLiveVoiceSamples({ apiKey = process.env.OPENAI_API_KEY, outputDirectory = process.argv[2] || "/tmp/nova-gpt-live-voice-samples" } = {}) {
   if (!apiKey) throw new Error("OPENAI_API_KEY is required.");
+  if (!process.env.ELEVENLABS_API_KEY || !process.env.ELEVENLABS_VOICE_ID) throw new Error("ElevenLabs caller fixture configuration is required.");
   await mkdir(outputDirectory, { recursive: true });
+  const tts = createElevenLabsTelephonyTts({
+    config: {
+      voiceV2: {
+        elevenLabsApiKey: process.env.ELEVENLABS_API_KEY,
+        elevenLabsVoiceId: process.env.ELEVENLABS_VOICE_ID,
+        ttsModel: process.env.ELEVENLABS_TTS_MODEL || "eleven_v3_conversational",
+        ttsStability: 0.75,
+        maxSpeechCharacters: 4_000,
+      },
+    },
+  });
+  const callerChunks = [];
+  for await (const chunk of tts.stream("Please read the configured voice comparison script exactly once now.")) callerChunks.push(chunk);
+  const callerAudio = Buffer.concat(callerChunks);
   const samples = [];
   for (const voice of GPT_LIVE_SAMPLE_VOICES) {
-    samples.push(await generateVoiceSample({ apiKey, voice, outputDirectory }));
+    samples.push(await generateVoiceSample({ apiKey, voice, outputDirectory, callerAudio }));
   }
-  return Object.freeze({ ok: true, audioFormat: "provider PCMU 8 kHz decoded to PCM16 WAV for owner playback", rawCallerAudioPersisted: false, samples });
+  return Object.freeze({ ok: true, audioFormat: "provider PCMU 8 kHz decoded to PCM16 WAV for owner playback", rawCallerAudioPersisted: false, callerFixtureTtsRequests: 1, samples });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
