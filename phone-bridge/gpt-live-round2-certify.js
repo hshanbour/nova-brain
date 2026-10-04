@@ -10,16 +10,17 @@ const now=()=>performance.now();
 const tts=createElevenLabsTelephonyTts({config:{voiceV2:{elevenLabsApiKey:process.env.ELEVENLABS_API_KEY,elevenLabsVoiceId:process.env.ELEVENLABS_VOICE_ID,ttsModel:process.env.ELEVENLABS_TTS_MODEL||"eleven_v3_conversational",ttsStability:.75,maxSpeechCharacters:4_000}}});
 const round2Api=createGptLiveRound2Api({baseUrl:process.env.NOVA_PHONE_BASE_URL,authorizationSecret:process.env.VERCEL_AUTOMATION_BYPASS_SECRET,protectionBypassSecret:process.env.VERCEL_AUTOMATION_BYPASS_SECRET});
 const conversationId=`gpt-live-round2-cert-${randomUUID()}`,playback=[],timeline=[],providerEvents=[];
-let clearedAt=null,ttsRequests=0,ttsCharacters=0;
+let clearedAt=null,ttsRequests=0,ttsCharacters=0,sendingSpeech=false;
 const client=createGptLiveRound2Client({apiKey:process.env.OPENAI_API_KEY,round2Api,conversationId,onAudio(audio){for(let offset=0;offset<audio.length;offset+=160)playback.push(audio.subarray(offset,Math.min(offset+160,audio.length)));},onClearAudio(){playback.length=0;clearedAt=now();},onEvent:type=>providerEvents.push(type)});
 
 async function speech(text){const chunks=[];for await(const chunk of tts.stream(text))chunks.push(chunk);ttsRequests+=1;ttsCharacters+=text.length;return Buffer.concat(chunks);}
-async function streamInput(text){const audio=await speech(text);for(let offset=0;offset<audio.length;offset+=160){client.appendAudio(audio.subarray(offset,Math.min(offset+160,audio.length)));await sleep(20);}}
+async function streamInput(text){const audio=await speech(text);sendingSpeech=true;try{for(let offset=0;offset<audio.length;offset+=160){client.appendAudio(audio.subarray(offset,Math.min(offset+160,audio.length)));await sleep(20);}}finally{sendingSpeech=false;}}
 async function waitFor(predicate,{timeoutMs=75_000,label="condition"}={}){const deadline=now()+timeoutMs;while(now()<deadline){const value=predicate();if(value)return value;await sleep(20);}throw Object.assign(new Error(`${label} timed out.`),{code:"certification_timeout"});}
 async function drainPlayback(){let frames=0;while(playback.length){playback.shift();frames+=1;await sleep(20);}await client.playbackCompleted();return frames;}
 async function turn(name,text){const startedAt=now();await client.callerSpeechStarted();await streamInput(text);await waitFor(()=>client.snapshot().current?.transcriptCharacters>0,{timeoutMs:8_000,label:`${name} transcript`});const inputEndedAt=now();const decision=await client.callerSpeechEnded();await waitFor(()=>["playback_pending","superseded"].includes(client.snapshot().current?.phase)||client.snapshot().current?.terminal,{label:`${name} output`});const frames=await drainPlayback();const result=await client.waitForTerminal({signal:AbortSignal.timeout(15_000)});const record={name,text,authority:decision?.authority||null,status:result?.status||null,routeLatencyMs:result?.routeLatencyMs??null,gateOverheadMs:result?.gateOverheadMs??null,inputToTerminalMs:Math.round(now()-inputEndedAt),totalMs:Math.round(now()-startedAt),outputFrames:frames};timeline.push(record);return record;}
 
 client.connect();const started=await client.ready();
+const silenceTimer=setInterval(()=>{if(!sendingSpeech)client.appendAudio(Buffer.alloc(160,0xff));},20);silenceTimer.unref?.();
 const local=await turn("local_arabic","أهلين نوفا، كيفك اليوم؟");
 const information=await turn("information_mixed","شو بتعرفي بشكل موثّق عن مشروع Sharp Cuts و Codex؟");
 const followup=await turn("followup_arabic","طيب ليش؟");
@@ -31,5 +32,5 @@ await client.callerSpeechStarted();await streamInput("احكيلي رد طويل
 
 const restored=await round2Api.restore({conversationId,messageLimit:128,eventLimit:256});
 const memory=await round2Api.extract({conversationId});
-const snapshot=client.snapshot();await client.close();
+clearInterval(silenceTimer);const snapshot=client.snapshot();await client.close();
 console.log(JSON.stringify({ok:true,architecture:"gpt-live-round2-deterministic-authority",conversationId,contextVersion:restored.contextVersion,pstnCalls:0,phoneIntentsCreated:0,approvalsCreated:0,rawAudioPersisted:false,local,information,followup,action,correction:timeline.find(item=>item.name==="correction"),interruption:{queuedFramesBefore:queuedBefore,staleStatus:interrupted.status,clearLatencyMs,staleFramesAfterClear,resumedStatus:resumed.status},canonical:{messages:restored.messages.length,events:restored.events.length,uniqueMessageIds:new Set(restored.messages.map(item=>item.id)).size,uniqueEventIds:new Set(restored.events.map(item=>item.id)).size},memory:{writes:memory.writes,accepted:memory.accepted.length,rejected:memory.rejected.length,interrogativesAccepted:memory.accepted.filter(item=>/[?؟]\s*$/.test(item.content)).length},usage:{gptLiveSeconds:snapshot.usageSeconds||null,ttsRequests,ttsCharacters},providerEvents:[...new Set(providerEvents)],timeline},null,2));
