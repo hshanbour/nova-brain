@@ -226,7 +226,7 @@ export function createAgent({
   }
 
   return Object.freeze({
-    async run({ message, conversationId = randomUUID(), context = {}, requestId, signal, userMessageId: requestedUserMessageId, assistantMessageId: requestedAssistantMessageId }) {
+    async run({ message, conversationId = randomUUID(), context = {}, requestId, signal, userMessageId: requestedUserMessageId, assistantMessageId: requestedAssistantMessageId, commitGuard, deferConversationPersistence = false }) {
       const userMessageId = requestedUserMessageId || randomUUID();
       const executionController = new AbortController();
       const abortFromRequest = () => executionController.abort(requestAbortError(signal?.reason));
@@ -267,13 +267,14 @@ export function createAgent({
       executionSignal.throwIfAborted();
       await Promise.all([
         storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: run.id, action: "run_created", status: "completed", summary: "Execution run created.", metadata: { requestId: requestId || null, userMessageId } }),
-        storage.appendMessage({ id: userMessageId, conversationId, ownerId, role: "user", content: message }),
+        deferConversationPersistence?Promise.resolve():storage.appendMessage({ id: userMessageId, conversationId, ownerId, role: "user", content: message }),
         storage.updateRun(run.id,ownerId,{status:"running",currentStep:1})
       ]);
       const persistAssistantMessage=async(response)=>{
+        if(typeof commitGuard==="function")await commitGuard({conversationId,userMessageId,assistantMessageId:response.id,runId:run.id});
         response.requestId=requestId||null;
         response.userMessageId=userMessageId;
-        await storage.appendMessage({id:response.id,conversationId,ownerId,role:"assistant",content:response.message});
+        if(!deferConversationPersistence)await storage.appendMessage({id:response.id,conversationId,ownerId,role:"assistant",content:response.message});
         return response;
       };
       const correlatedRunResult=(response,extra={})=>({message:response.message,requestId:requestId||null,userMessageId,assistantMessageId:response.id,...(response.approval?.id?{approvalId:response.approval.id}:{}),...extra});

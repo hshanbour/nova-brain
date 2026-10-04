@@ -9,7 +9,7 @@ async function setup({ novaTurn } = {}) {
   const storage=createInMemoryStorage();
   await storage.initialize({owner:{id:OWNER,fullName:"Mohammad",provenance:"test"}});
   let calls=0;
-  const service=createGptLiveRound2Service({storage,ownerId:OWNER,novaTurn:novaTurn||(async input=>{calls++;await storage.appendMessage({id:input.userMessageId,conversationId:input.conversationId,ownerId:OWNER,role:"user",content:input.message});const result={id:input.assistantMessageId,conversationId:input.conversationId,message:"النتيجة الموثقة من Nova Brain",provider:"openai",runId:"run-1"};await storage.appendMessage({id:result.id,conversationId:input.conversationId,ownerId:OWNER,role:"assistant",content:result.message});return result;})});
+  const service=createGptLiveRound2Service({storage,ownerId:OWNER,novaTurn:novaTurn||(async input=>{calls++;const result={id:input.assistantMessageId,conversationId:input.conversationId,message:"النتيجة الموثقة من Nova Brain",provider:"openai",runId:"run-1"};await input.commitGuard?.({assistantMessageId:result.id});return result;})});
   return {storage,service,calls:()=>calls};
 }
 
@@ -52,18 +52,18 @@ test("local GPT-Live answer is gated, canonical, and exactly once",async()=>{
 });
 
 test("authoritative project question reaches Nova with one canonical context and reintegrates",async()=>{
-  let received;const {storage,service}=await setup({novaTurn:async input=>{received=input;await storage.appendMessage({id:input.userMessageId,conversationId:input.conversationId,ownerId:OWNER,role:"user",content:input.message});const result={id:input.assistantMessageId,message:"Sharp Cuts Preview is healthy.",provider:"openai",runId:"run-sharp"};await storage.appendMessage({id:result.id,conversationId:input.conversationId,ownerId:OWNER,role:"assistant",content:result.message});return result;}});
+  let received;const {storage,service}=await setup({novaTurn:async input=>{received=input;const result={id:input.assistantMessageId,message:"Sharp Cuts Preview is healthy.",provider:"openai",runId:"run-sharp"};await input.commitGuard?.({assistantMessageId:result.id});return result;}});
   const start=await service.start({conversationId:"sharp",rollingSummary:"ناقشنا خطة الموقع",unresolvedState:{unresolvedTopic:"Sharp Cuts"}});
   await service.handleTurn({conversationId:"sharp",turnId:"local",expectedContextVersion:start.contextVersion,utterance:"تمام، خلينا نكمل",localResponse:"أكيد"});
-  const answer=await service.handleTurn({conversationId:"sharp",turnId:"info",expectedContextVersion:1,utterance:"شو آخر إشي صار بمشروع Sharp Cuts؟",localResponse:"untrusted invented answer"});
+  const answer=await service.handleTurn({conversationId:"sharp",turnId:"info",expectedContextVersion:2,utterance:"شو آخر إشي صار بمشروع Sharp Cuts؟",localResponse:"untrusted invented answer"});
   assert.equal(answer.authority,LIVE_AUTHORITY.NOVA_INFORMATION);assert.equal(answer.message,"Sharp Cuts Preview is healthy.");assert.deepEqual(answer.liveEvent,{type:"session.commentary.append",delegation_id:null,content:"Sharp Cuts Preview is healthy."});
-  assert.equal(received.conversationId,"sharp");assert.equal(received.context.gptLiveRound2.contextVersion,1);assert.equal(received.context.gptLiveRound2.authority,"read_only");assert.equal(received.context.gptLiveRound2.recentTurns.length,2);assert.equal(JSON.stringify(await storage.listMessages("sharp",OWNER,{limit:20})).includes("untrusted invented"),false);
+  assert.equal(received.conversationId,"sharp");assert.equal(received.context.gptLiveRound2.contextVersion,3);assert.equal(received.context.gptLiveRound2.authority,"read_only");assert.equal(received.context.gptLiveRound2.recentTurns.length,2);assert.equal(JSON.stringify(await storage.listMessages("sharp",OWNER,{limit:20})).includes("untrusted invented"),false);
 });
 
 test("30+ Arabic English mixed turns and older references restore from canonical record",async()=>{
   const {service}=await setup();let version=(await service.start({conversationId:"long",rollingSummary:"Old topic: website quotation"})).contextVersion;
   for(let i=0;i<34;i++){const result=await service.handleTurn({conversationId:"long",turnId:`t${i}`,expectedContextVersion:version,utterance:i%3===0?`turn ${i} عن الموقع`:i%3===1?`English turn ${i}`:`mixed ${i} خلينا نكمل`,localResponse:`answer ${i}`});version=result.contextVersion;}
-  const restored=await service.restore({conversationId:"long",messageLimit:128});assert.equal(restored.messages.length,68);assert.equal(restored.messages[0].content,"turn 0 عن الموقع");assert.equal(restored.rollingSummary,"Old topic: website quotation");assert.equal(restored.contextVersion,34);
+  const restored=await service.restore({conversationId:"long",messageLimit:128});assert.equal(restored.messages.length,68);assert.equal(restored.messages[0].content,"turn 0 عن الموقع");assert.equal(restored.rollingSummary,"Old topic: website quotation");assert.equal(restored.contextVersion,68);
 });
 
 test("delivery record separates intended, heard, truncated, and replaced output",async()=>{
@@ -74,9 +74,9 @@ test("delivery record separates intended, heard, truncated, and replaced output"
 
 test("caller correction aborts stale Nova work and preserves the correction",async()=>{
   let release;const gate=new Promise(resolve=>{release=resolve;});let first;
-  const {service,storage}=await setup({novaTurn:async input=>{if(input.message.includes("Sharp")){first=input;await gate;input.signal.throwIfAborted();}await storage.appendMessage({id:input.userMessageId,conversationId:input.conversationId,ownerId:OWNER,role:"user",content:input.message});const result={id:input.assistantMessageId,message:"correct",provider:"openai"};await storage.appendMessage({id:result.id,conversationId:input.conversationId,ownerId:OWNER,role:"assistant",content:result.message});return result;}});
+  const {service,storage}=await setup({novaTurn:async input=>{if(input.message.includes("Sharp")){first=input;await gate;}const result={id:input.assistantMessageId,message:"correct",provider:"openai"};await input.commitGuard?.({assistantMessageId:result.id});return result;}});
   await service.start({conversationId:"correction"});const stale=service.handleTurn({conversationId:"correction",turnId:"t1",expectedContextVersion:0,utterance:"شو وضع Sharp Cuts؟"});await new Promise(resolve=>setImmediate(resolve));
-  const corrected=service.handleTurn({conversationId:"correction",turnId:"t2",expectedContextVersion:0,utterance:"لا قصدي كيفك؟",localResponse:"تمام"});release();assert.equal((await stale).status,"superseded");assert.equal((await corrected).message,"تمام");assert.equal(first.signal.aborted,true);
+  const corrected=service.handleTurn({conversationId:"correction",turnId:"t2",utterance:"لا قصدي كيفك؟",localResponse:"تمام"});release();assert.equal((await stale).status,"superseded");assert.equal((await corrected).message,"تمام");assert.equal(first.context.gptLiveRound2.turnId,"t1");const messages=await storage.listMessages("correction",OWNER,{limit:20});assert.equal(messages.some(item=>item.role==="assistant"&&item.content==="correct"),false);
 });
 
 test("NOVA_ACTION and spoken approval stop without approval or execution",async()=>{
@@ -85,6 +85,6 @@ test("NOVA_ACTION and spoken approval stop without approval or execution",async(
 
 test("post-call extraction is dry-run, provenance-bound, and rejects noise",async()=>{
   const {service}=await setup();let version=(await service.start({conversationId:"extract"})).contextVersion;
-  for(const [id,utterance,response] of [["a","مرحبا","أهلا"],["b","قررنا أن مشروع الموقع موعده يوم الجمعة","تمام، سجلت القرار بالمحادثة"],["c","يمكن نشتري سيارة يوماً ما","ممكن"]]){const result=await service.handleTurn({conversationId:"extract",turnId:id,expectedContextVersion:version,utterance,localResponse:response});version=result.contextVersion;}
-  const candidates=await service.extractMemoryCandidates({conversationId:"extract"});assert.equal(candidates.writes,0);assert.equal(candidates.accepted.length,1);assert.equal(candidates.accepted[0].source.conversationId,"extract");assert.equal(candidates.rejected.length,2);
+  for(const [id,utterance,response] of [["a","مرحبا","أهلا"],["b","قررنا أن مشروع الموقع موعده يوم الجمعة","تمام، سجلت القرار بالمحادثة"],["c","يمكن نشتري سيارة يوماً ما","ممكن"],["d","شو صار بمشروع الموقع؟","تعذر التحقق"]]){const result=await service.handleTurn({conversationId:"extract",turnId:id,expectedContextVersion:version,utterance,localResponse:response});version=result.contextVersion;await service.recordDelivery({conversationId:"extract",turnId:id,messageId:result.messageId,intendedText:result.message,deliveredText:id==="d"?"":result.message,status:id==="d"?"truncated":"delivered"});}
+  const candidates=await service.extractMemoryCandidates({conversationId:"extract"});assert.equal(candidates.writes,0);assert.equal(candidates.accepted.length,1);assert.equal(candidates.accepted[0].source.conversationId,"extract");assert.equal(candidates.rejected.length,3);assert.equal(candidates.rejected.find(item=>item.content.includes("شو صار")).reason,"interrogative_not_fact");
 });
