@@ -9,12 +9,15 @@ import { buildGptLivePrototypeSession } from "../src/phone/gpt-live-prototype.js
 
 export const GPT_LIVE_SAMPLE_VOICES = Object.freeze(["marin", "willow", "gleam"]);
 export const GPT_LIVE_SAMPLE_LINES = Object.freeze([
-  "أهلين محمد، أنا نوفا، وجاهزة نحكي معك بطريقة طبيعية وواضحة. Hello Mohammad, I’m Nova, and I’m ready to help. بالنسبة لمشروع Sharp Cuts، بقدر أراجع Codex والـ API معك. لحظة، قصدك نكمل من النقطة السابقة ولا نبدأ من جديد؟",
+  "أهلين محمد، أنا نوفا، وجاهزة نحكي معك بطريقة طبيعية وواضحة.",
+  "Hello Mohammad, I’m Nova, and I’m ready to help.",
+  "بالنسبة لمشروع Sharp Cuts، بقدر أراجع Codex والـ API معك.",
+  "لحظة، قصدك نكمل من النقطة السابقة ولا نبدأ من جديد؟",
 ]);
 
 const LIVE_URL = "wss://api.openai.com/v1/live/sessions";
 const QUIET_MS = 2_000;
-const TIMEOUT_MS = 45_000;
+const TIMEOUT_MS = 90_000;
 const sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 
 export function pcm16Wav(samples, sampleRate = 8_000) {
@@ -47,6 +50,7 @@ async function generateVoiceSample({ apiKey, voice, outputDirectory, callerAudio
   const audio = [];
   let transcript = "";
   let usageSeconds = 0;
+  let callerIndex = 0;
   let quietTimer;
   let timeoutTimer;
   let socket;
@@ -77,28 +81,36 @@ async function generateVoiceSample({ apiKey, voice, outputDirectory, callerAudio
         socket?.close();
       }
     };
+    const streamCaller = async () => {
+      const prompt = callerAudio[callerIndex];
+      for (let offset = 0; offset < prompt.length; offset += 160) {
+        socket.send(JSON.stringify({ type: "session.input_audio.append", event_id: randomUUID(), audio: prompt.subarray(offset, Math.min(offset + 160, prompt.length)).toString("base64") }));
+        await sleep(20);
+      }
+    };
+    const completeOutput = async () => {
+      if (callerIndex + 1 >= callerAudio.length) return finish();
+      callerIndex += 1;
+      transcript += "\n";
+      await streamCaller();
+    };
     socket = new WebSocketImpl(LIVE_URL, { headers: { Authorization: `Bearer ${apiKey}`, "OpenAI-Beta": "realtime=v1" } });
     socket.on("open", () => {
       const session = {
         ...buildGptLivePrototypeSession({ voice }),
-        instructions: `VOICE SAMPLE ONLY: When the caller asks for the configured comparison script, speak this complete script exactly once, naturally, with no introduction, translation, explanation, added facts, or external action. Preserve Arabic, English, names, and technical terms exactly.\n\n${GPT_LIVE_SAMPLE_LINES.join("\n")}`,
+        instructions: `VOICE SAMPLE ONLY: The comparison script below has four numbered lines. When the caller asks for a specific line number, speak only that complete line exactly once, naturally, with no introduction, translation, explanation, added facts, or external action. Preserve Arabic, English, names, and technical terms exactly.\n\n${GPT_LIVE_SAMPLE_LINES.map((line, index) => `${index + 1}. ${line}`).join("\n")}`,
       };
       socket.send(JSON.stringify({ type: "session.start", event_id: randomUUID(), session }));
     });
     socket.on("message", (raw) => {
       const event = JSON.parse(String(raw));
       if (event.type === "session.started") {
-        void (async () => {
-          for (let offset = 0; offset < callerAudio.length; offset += 160) {
-            socket.send(JSON.stringify({ type: "session.input_audio.append", event_id: randomUUID(), audio: callerAudio.subarray(offset, Math.min(offset + 160, callerAudio.length)).toString("base64") }));
-            await sleep(20);
-          }
-        })().catch(fail);
+        void streamCaller().catch(fail);
       } else if (event.type === "session.output_audio.delta") {
         const chunk = Buffer.from(String(event.delta || ""), "base64");
         if (chunk.length) audio.push(chunk);
         clearTimeout(quietTimer);
-        quietTimer = setTimeout(finish, QUIET_MS);
+        quietTimer = setTimeout(() => { void completeOutput().catch(fail); }, QUIET_MS);
       } else if (event.type === "session.output_transcript.delta") {
         transcript += String(event.delta || "");
       } else if (event.type === "session.usage.updated" || event.type === "session.closed") {
@@ -128,14 +140,17 @@ export async function generateGptLiveVoiceSamples({ apiKey = process.env.OPENAI_
       },
     },
   });
-  const callerChunks = [];
-  for await (const chunk of tts.stream("Please read the configured voice comparison script exactly once now.")) callerChunks.push(chunk);
-  const callerAudio = Buffer.concat(callerChunks);
+  const callerAudio = [];
+  for (let index = 0; index < GPT_LIVE_SAMPLE_LINES.length; index += 1) {
+    const callerChunks = [];
+    for await (const chunk of tts.stream(`Please read configured sample line ${index + 1} exactly once now.`)) callerChunks.push(chunk);
+    callerAudio.push(Buffer.concat(callerChunks));
+  }
   const samples = [];
   for (const voice of GPT_LIVE_SAMPLE_VOICES) {
     samples.push(await generateVoiceSample({ apiKey, voice, outputDirectory, callerAudio }));
   }
-  return Object.freeze({ ok: true, audioFormat: "provider PCMU 8 kHz decoded to PCM16 WAV for owner playback", rawCallerAudioPersisted: false, callerFixtureTtsRequests: 1, samples });
+  return Object.freeze({ ok: true, audioFormat: "provider PCMU 8 kHz decoded to PCM16 WAV for owner playback", rawCallerAudioPersisted: false, callerFixtureTtsRequests: callerAudio.length, samples });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
