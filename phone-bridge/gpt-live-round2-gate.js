@@ -79,6 +79,7 @@ export function createGptLiveRound2OutputGate({
     gateAcceptToReleaseMs: elapsed(turn.milestones.firstGateAcceptedAudioAt, turn.milestones.firstReleasedAudioAt),
     classificationToFirstReleasedAudioMs: elapsed(turn.milestones.classificationAt, turn.milestones.firstReleasedAudioAt),
     speechEndToAcknowledgementAudioMs: elapsed(turn.milestones.callerSpeechEndedAt, turn.milestones.firstAcknowledgementAudioAt),
+    speechEndToAcknowledgementReleasedAudioMs: elapsed(turn.milestones.callerSpeechEndedAt, turn.milestones.firstAcknowledgementReleasedAt),
     acknowledgementAppendToAcknowledgedMs: elapsed(turn.milestones.ackCommentaryAppendedAt, turn.milestones.ackCommentaryAcknowledgedAt),
     novaRouteMs: elapsed(turn.milestones.novaRouteStartedAt, turn.milestones.novaRouteEndedAt),
     resultReadyToCommentaryAppendMs: elapsed(turn.milestones.novaRouteEndedAt, turn.milestones.resultCommentaryAppendedAt),
@@ -96,12 +97,14 @@ export function createGptLiveRound2OutputGate({
   }
 
   function acceptAudio(turn, entry, kind) {
-    const releasedAt = clock();
+    const acceptedAt = clock();
+    stamp(turn, "firstGateAcceptedAudioAt", acceptedAt);
     onAudio(entry.audio);
-    stamp(turn, "firstGateAcceptedAudioAt", entry.at);
+    const releasedAt = clock();
     stamp(turn, "firstReleasedAudioAt", releasedAt);
     if (kind === "acknowledgement") {
       stamp(turn, "firstAcknowledgementAudioAt", entry.at);
+      stamp(turn, "firstAcknowledgementReleasedAt", releasedAt);
     }
     if (kind === "authoritative") {
       stamp(turn, "firstAuthoritativeAudioAt", entry.at);
@@ -131,6 +134,7 @@ export function createGptLiveRound2OutputGate({
     if (!current || current.terminal) return false;
     const turn = current;
     stamp(turn, "interruptionAt");
+    turn.milestones.clearCompletedAt = null;
     turn.abort.abort(new DOMException("Superseded by caller correction.", "AbortError"));
     turn.terminal = "superseded";
     clearOutput(turn, reason);
@@ -301,6 +305,7 @@ export function createGptLiveRound2OutputGate({
           firstGateAcceptedAudioAt: null,
           firstReleasedAudioAt: null,
           firstAcknowledgementAudioAt: null,
+          firstAcknowledgementReleasedAt: null,
           novaRouteStartedAt: null,
           novaRouteEndedAt: null,
           resultCommentaryAppendedAt: null,

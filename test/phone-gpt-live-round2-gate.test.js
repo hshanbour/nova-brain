@@ -67,6 +67,7 @@ test("LOCAL_CONVERSATION releases buffered audio at classification without waiti
   const result = await f.gate.waitForTerminal();
   assert.equal(result.status, "delivered");
   assert.equal(result.timing.speechEndToFirstReleasedAudioMs, 0);
+  assert.equal(result.timing.gateAcceptToReleaseMs, 0);
 });
 
 test("NOVA_INFORMATION releases a natural acknowledgement, then only verified result audio", async () => {
@@ -101,6 +102,7 @@ test("NOVA_INFORMATION releases a natural acknowledgement, then only verified re
   assert.deepEqual(f.audio.map((value) => value.toString()), ["ack", "safe"]);
   assert.doesNotMatch(JSON.stringify(f.calls), /invented status/);
   assert.notEqual(result.timing.speechEndToAcknowledgementAudioMs, null);
+  assert.notEqual(result.timing.speechEndToAcknowledgementReleasedAudioMs, null);
   assert.notEqual(result.timing.resultReadyToFirstAuthoritativeReleasedAudioMs, null);
 });
 
