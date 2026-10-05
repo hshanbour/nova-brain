@@ -39,8 +39,8 @@ export function applyLiveAuthorityPolicy(semantic, { speaker = {} } = {}) {
   const durable = ["work_proposal", "durable_work_request", "callback_request"].includes(value.category) || value.effects.some((effect) => ["research", "create_work", "contact_owner"].includes(effect));
   const verified = speaker.authenticatedIdentity === "owner" || speaker.verified === true;
   if (external) return Object.freeze({ authority: "NOVA_ACTION", category: value.category, effects: value.effects, reason: "formal_authority_required", projectReference: value.projectReference, workState: null });
-  if (durable) return Object.freeze({ authority: "NOVA_WORK_PROPOSAL", category: value.category, effects: value.effects, reason: verified ? "durable_work_requires_receipt" : "unauthenticated_speaker_proposal_only", projectReference: value.projectReference, workState: verified ? "waiting_for_owner" : "proposal_only" });
   if (value.category === "information_lookup") return Object.freeze({ authority: "NOVA_INFORMATION", category: value.category, effects: value.effects, reason: "read_only_information", projectReference: value.projectReference, workState: null });
+  if (durable) return Object.freeze({ authority: "NOVA_WORK_PROPOSAL", category: value.category, effects: value.effects, reason: verified ? "durable_work_requires_receipt" : "unauthenticated_speaker_proposal_only", projectReference: value.projectReference, workState: verified ? "waiting_for_owner" : "proposal_only" });
   if (value.category === "clarification_required") return Object.freeze({ authority: "CLARIFICATION_REQUIRED", category: value.category, effects: value.effects, reason: "semantic_ambiguity", projectReference: value.projectReference, workState: null });
   return Object.freeze({ authority: "LOCAL_CONVERSATION", category: value.category, effects: value.effects, reason: "conversation_local", projectReference: value.projectReference, workState: null });
 }

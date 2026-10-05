@@ -100,6 +100,7 @@ test("semantic classifier handles Arabic, English, and mixed work/callback meani
   ];let index=0;const classifier=createPhoneLiveIntentClassifier({modelProvider:{async generate(){return{message:JSON.stringify(outputs[index++])};}}});
   for(const utterance of["ابحث عن الموضوع واتصل بمحمد لما تخلص","Research this and create a task","اعمل research وبعدين callback لمحمد"]){const result=await classifier.classify({utterance,speaker:{authenticatedIdentity:"none"}});assert.equal(result.authority,"NOVA_WORK_PROPOSAL");assert.equal(result.workState,"proposal_only");}
   assert.equal(applyLiveAuthorityPolicy({category:"external_action",effects:["send"],projectReference:null,rationale:"send"},{speaker:{authenticatedIdentity:"owner"}}).authority,"NOVA_ACTION");
+  assert.equal(applyLiveAuthorityPolicy({category:"information_lookup",effects:["research"],projectReference:"Sharp Cuts",rationale:"answer from existing trusted context"},{speaker:{authenticatedIdentity:"none"}}).authority,"NOVA_INFORMATION");
 });
 
 test("unauthenticated durable work creates an immutable proposal receipt and claimed identity is not verified",async()=>{
