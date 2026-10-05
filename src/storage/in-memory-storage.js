@@ -1007,7 +1007,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     },
     async getPhoneCallIntent(id, ownerId) { const call = phoneCallIntents.get(id); return copy(call?.ownerId === ownerId ? call : null); },
     async listConversationPhoneCalls(ownerId, conversationId, { limit = 20 } = {}) {
-      return [...phoneCallIntents.values()].filter((call) => call.ownerId === ownerId && call.conversationId === conversationId).sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id)).slice(0, limit).map((call) => {
+      return [...phoneCallIntents.values()].filter((call) => call.ownerId === ownerId && (call.conversationId === conversationId || call.callConversationId === conversationId)).sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id)).slice(0, limit).map((call) => {
         const run = runs.get(call.preparedRunId);
         return copy({ ...call, ...(run?.result?.assistantMessageId ? { assistantMessageId: run.result.assistantMessageId } : {}) });
       });

@@ -174,7 +174,7 @@ function clearConversation(conversationId = null,{preserveError=false,resetCompo
 
 function renderConversationMessages(conversationId,storedMessages,{preserveError=false,resetComposer=true}={}){
   clearConversation(conversationId,{preserveError,resetComposer});
-  for(const stored of storedMessages)addMessage({id:stored.id,role:stored.role,text:stored.content,sequence:stored.sequence,createdAt:stored.createdAt});
+  for(const stored of storedMessages)addMessage({id:stored.id,role:stored.role,text:stored.content,sequence:stored.sequence,createdAt:stored.createdAt,delivery:stored.delivery});
   restoreLiveActivities(storedMessages);
   void restoreSynchronousApprovals(conversationId);
   void restorePhoneCalls(conversationId);
@@ -234,7 +234,7 @@ async function selectConversation(id) {
   }
 }
 
-function addMessage({ id,role, text, sequence, createdAt, metadata, autoSpeak = false }) {
+function addMessage({ id,role, text, sequence, createdAt, metadata, delivery, autoSpeak = false }) {
   if(id){const existing=[...messages.querySelectorAll("[data-message-id]")].find(node=>node.dataset.messageId===id);if(existing)return existing;}
   welcome.hidden = true;
   const node = template.content.firstElementChild.cloneNode(true);
@@ -246,6 +246,7 @@ function addMessage({ id,role, text, sequence, createdAt, metadata, autoSpeak = 
   node.querySelector("strong").textContent = isNova ? "Nova" : "You";
   node.querySelector("time").textContent = timeLabel(createdAt);
   const body=node.querySelector(".message-body");body.textContent="";if(isNova)renderSafeMarkdown(body,text);else appendSafeLinkedText(body,text);
+  if(isNova&&delivery&&delivery.status!=="delivered"){node.dataset.deliveryStatus=delivery.status;const state=document.createElement("small");state.className="phone-delivery-state";state.textContent=delivery.status==="partially_delivered"||delivery.status==="interrupted"||delivery.status==="truncated"?"Interrupted · confirmed audible portion":"Phone output status: "+delivery.status.replaceAll("_"," ");body.after(state);}
   if (isNova && voiceOutput.supported) {
     const speak = node.querySelector(".speak-response"); const voiceId = `message-${++voiceMessageSequence}`;
     speak.hidden = false; speak.dataset.voiceId = voiceId; speak.dataset.speechText = text;
@@ -266,9 +267,9 @@ function phoneCallCard(call) {
   let card=[...messages.querySelectorAll("[data-phone-call-id]")].find(node=>node.dataset.phoneCallId===call.id);
   if(!card){const host=messageNode(call.assistantMessageId)||addMessage({role:"assistant",text:""});card=document.createElement("section");card.className="phone-call-card synchronous-approval-card";card.dataset.phoneCallId=call.id;host.querySelector(".message-content").append(card);}
   card.dataset.status=call.status;card.replaceChildren();
-  const heading=document.createElement("div");heading.className="synchronous-approval-heading";const title=document.createElement("strong");title.textContent=`Phone · ${call.envelope?.expectedParty||call.envelope?.destination||"Outbound call"}`;const status=document.createElement("span");status.className="synchronous-approval-status";status.textContent=String(call.status||"").replaceAll("_"," ");heading.append(title,status);
+  const heading=document.createElement("div");heading.className="synchronous-approval-heading";const title=document.createElement("strong");title.textContent=`Phone / GPT-Live · ${call.envelope?.expectedParty||call.envelope?.destination||"Outbound call"}`;const status=document.createElement("span");status.className="synchronous-approval-status";status.textContent=String(call.status||"").replaceAll("_"," ");heading.append(title,status);
   const details=document.createElement("dl");details.className="synchronous-approval-details";const duration=call.startedAt?elapsedLabel(call.startedAt,call.endedAt,!call.endedAt):"Not started";
-  for(const [label,value] of [["Destination",call.envelope?.destination||""],["Objective",call.envelope?.objective||""],["Duration",duration],["Outcome",call.outcome||call.providerStatus||"Pending"],["Summary",call.summary||"Available after the call"],["Safety",call.errorCode?`Stopped safely: ${call.errorCode}`:"No raw audio recording"]]){const row=document.createElement("div"),term=document.createElement("dt"),description=document.createElement("dd");term.textContent=label;description.textContent=value;row.append(term,description);details.append(row);}
+  for(const [label,value] of [["Destination",call.envelope?.destination||""],["Objective",call.envelope?.objective||""],["Duration",duration],["Outcome",call.outcome||call.providerStatus||"Pending"],["Voice",call.envelope?.liveVoice||"Phone V1 fallback"],["Summary",call.summary||"Available after the call"],["Recording",call.envelope?.recordingPolicy||"disabled"],["Safety",call.errorCode?`Stopped safely: ${call.errorCode}`:"No raw audio recording"]]){const row=document.createElement("div"),term=document.createElement("dt"),description=document.createElement("dd");term.textContent=label;description.textContent=value;row.append(term,description);details.append(row);}
   card.append(heading,details);return card;
 }
 

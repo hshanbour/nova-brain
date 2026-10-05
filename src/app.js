@@ -60,6 +60,7 @@ import { createPhoneService } from "./phone/phone-service.js";
 import { registerPhoneTools } from "./phone/phone-tools.js";
 import { createTwilioOutboundClient } from "./phone/twilio-client.js";
 import { createGptLiveRound2Service, createRound2Authorization } from "./phone/gpt-live-round2.js";
+import { createPhoneLiveIntentClassifier } from "./phone/live-intent-classifier.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -306,7 +307,8 @@ export function createApp({
     },
     logger,
   });
-  const gptLiveRound2 = createGptLiveRound2Service({ storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input) });
+  const phoneLiveIntentClassifier = createPhoneLiveIntentClassifier({ modelProvider });
+  const gptLiveRound2 = createGptLiveRound2Service({ storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), intentClassifier: phoneLiveIntentClassifier });
   const benchmarkProviders = createBenchmarkProviders({
     config: config.voiceBenchmark,
   });

@@ -1316,7 +1316,7 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
       return (await run(
         `SELECT call.*,execution.result->>'assistantMessageId' AS assistant_message_id FROM nova_phone_call_intents call
          LEFT JOIN nova_execution_runs execution ON execution.id=call.prepared_run_id AND execution.owner_id=call.owner_id
-         WHERE call.owner_id=$1 AND call.conversation_id=$2 ORDER BY call.created_at DESC,call.id ASC LIMIT $3`,
+         WHERE call.owner_id=$1 AND (call.conversation_id=$2 OR call.call_conversation_id=$2) ORDER BY call.created_at DESC,call.id ASC LIMIT $3`,
         [ownerId,conversationId,limit],
       )).map(phoneCallRow);
     },

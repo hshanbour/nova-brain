@@ -6,16 +6,18 @@ const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 
 export function createGptLivePstnSession({ sendTwilio, hangup = () => {}, novaClient, authorization, callIntentId, maximumDurationSeconds, callSid, streamSid, apiKey, round2Api, createClient = createGptLiveRound2Client, clock = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   if (!authorization?.bridgeSessionToken || authorization.mediaProfile !== "gpt_live_round2_preview" || !authorization.callConversationId || !authorization.liveVoice) throw Object.assign(new Error("The GPT-Live call authorization is incomplete."), { code: "gpt_live_phone_authorization_invalid" });
-  let closed = false, timer, pendingPlaybackMark = null, markSequence = 0, finalizeGeneration = 0, inputReady = Promise.resolve();
+  let closed = false, timer, markSequence = 0, finalizeGeneration = 0, inputReady = Promise.resolve(), lastAudioMeta = null, checkpointBytes = 0;
+  const pendingPlaybackMarks = new Map();
   const startedAt = clock();
   const vad = createTelephonyVad();
   const client = createClient({
     apiKey,
     round2Api,
     conversationId: authorization.callConversationId,
+    callContext: { active: true, callIntentId, objective: authorization.objective || null, lifecycle: "in_progress", mediaProfile: authorization.mediaProfile, permittedActions: authorization.permittedActions || [], prohibitedActions: authorization.prohibitedActions || [], maximumDurationSeconds, speakerAuthenticated: false },
     voice: authorization.liveVoice,
-    onAudio(audio) { if (!closed) sendTwilio(twilioMedia(streamSid, audio)); },
-    onClearAudio() { if (!closed) sendTwilio(twilioClear(streamSid)); },
+    onAudio(audio, metadata = {}) { if (!closed) { sendTwilio(twilioMedia(streamSid, audio)); lastAudioMeta = metadata; checkpointBytes += audio.length; if (checkpointBytes >= 4_000) { checkpointBytes = 0; const name = `nova-segment-${++markSequence}-${metadata.turnId || "turn"}`; pendingPlaybackMarks.set(name, { ...metadata, checkpointId: name, final: false, cleared: false }); sendTwilio(twilioMark(streamSid, name)); } } },
+    onClearAudio() { if (!closed) { checkpointBytes = 0; for (const value of pendingPlaybackMarks.values()) value.cleared = true; sendTwilio(twilioClear(streamSid)); } },
     onEvent(type) { if (["session.output_audio.done", "session.output.done", "session.response.done"].includes(type)) queueMicrotask(schedulePlaybackMark); },
   });
 
@@ -29,13 +31,14 @@ export function createGptLivePstnSession({ sendTwilio, hangup = () => {}, novaCl
   }
   async function schedulePlaybackMark() {
     const turnId = client.snapshot().current?.turnId;
-    if (!turnId || pendingPlaybackMark) return false;
+    if (!turnId) return false;
     for (let index = 0; index < 3_000 && !closed; index += 1) {
       const current = client.snapshot().current;
       if (!current || current.turnId !== turnId || current.terminal) return false;
-      if (current.phase === "playback_pending") {
-        pendingPlaybackMark = `nova-live-${++markSequence}-${turnId}`;
-        sendTwilio(twilioMark(streamSid, pendingPlaybackMark));
+      if (["playback_pending", "backend_pending"].includes(current.phase)) {
+        const name = `nova-final-${++markSequence}-${turnId}`;
+        pendingPlaybackMarks.set(name, { ...(lastAudioMeta || {}), turnId, outputKind: current.phase === "backend_pending" ? "acknowledgement" : "final", checkpointId: name, final: true, cleared: false });
+        sendTwilio(twilioMark(streamSid, name));
         return true;
       }
       await sleep(25);
@@ -63,7 +66,7 @@ export function createGptLivePstnSession({ sendTwilio, hangup = () => {}, novaCl
       if (message.event === "media") {
         const activity = vad.push(message.media.payload);
         if (activity.event === "speech_started") {
-          finalizeGeneration += 1; pendingPlaybackMark = null;
+          finalizeGeneration += 1;
           inputReady = client.callerSpeechStarted();
         }
         const audio = Buffer.from(message.media.payload, "base64");
@@ -71,8 +74,11 @@ export function createGptLivePstnSession({ sendTwilio, hangup = () => {}, novaCl
         if (activity.event === "speech_ended") { const generation = ++finalizeGeneration; void finalizeInboundTurn(generation); }
         return { accepted: true };
       }
-      if (message.event === "mark" && message.mark?.name === pendingPlaybackMark) {
-        pendingPlaybackMark = null; void client.playbackCompleted(); return { playbackCompleted: true };
+      if (message.event === "mark" && pendingPlaybackMarks.has(message.mark?.name)) {
+        const checkpoint = pendingPlaybackMarks.get(message.mark.name); pendingPlaybackMarks.delete(message.mark.name);
+        const confirmation = typeof client.playbackCheckpoint === "function" ? client.playbackCheckpoint(checkpoint) : Promise.resolve(false);
+        void confirmation.then(() => { if (checkpoint.final && !checkpoint.cleared && checkpoint.outputKind === "final") return client.playbackCompleted(); return null; });
+        return { playbackCheckpoint: true, cleared: checkpoint.cleared, final: checkpoint.final };
       }
       if (message.event === "stop") { void stop("completed", "disconnected", { hangupSocket: false }); return { ended: true }; }
       return { ignored: true };

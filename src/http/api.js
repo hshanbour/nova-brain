@@ -267,7 +267,7 @@ export function createApi({
           await ready();
           const input = await readJsonBody(request, config.maxBodyBytes);
           const action = pathname.slice("/api/internal/phone/gpt-live-round2/".length);
-          const operations = { start: "start", turn: "handleTurn", delivery: "recordDelivery", restore: "restore", extract: "extractMemoryCandidates" };
+          const operations = { start: "start", classify: "classifyTurn", turn: "handleTurn", playback: "recordPlaybackEvent", delivery: "recordDelivery", restore: "restore", extract: "extractMemoryCandidates" };
           const operation = operations[action];
           if (!operation) { sendJson(response, 404, { error: "Not found." }); return; }
           sendJson(response, 200, await gptLiveRound2[operation](input));
@@ -2084,8 +2084,11 @@ export function createApi({
             ownerId,
             { limit, offset },
           );
+          const conversationId = decodeURIComponent(conversationMatch[1]);
+          const deliveryEvents = await storage.listConversationEvents(conversationId, ownerId, { limit: 256 });
+          const deliveryByMessage = new Map(deliveryEvents.filter((item) => item.eventType === "assistant_output_delivery" && item.messageId).map((item) => [item.messageId, item]));
           sendJson(response, 200, {
-            messages,
+            messages: messages.map((message) => { const delivery = deliveryByMessage.get(message.id); return delivery ? { ...message, delivery: { status: delivery.status, outputKind: delivery.metadata?.outputKind || "final", heardCompletely: delivery.metadata?.heardCompletely === true } } : message; }),
             ...(messages.length === limit
               ? { nextOffset: offset + limit }
               : {}),

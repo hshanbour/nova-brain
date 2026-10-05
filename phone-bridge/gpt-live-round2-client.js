@@ -5,7 +5,7 @@ import { createGptLiveRound2OutputGate } from "./gpt-live-round2-gate.js";
 
 const LIVE_URL = "wss://api.openai.com/v1/live/sessions";
 
-export function createGptLiveRound2Client({ apiKey, round2Api, conversationId, voice = "marin", history = [], onAudio, onClearAudio, onEvent = () => {}, WebSocketImpl = WebSocket, timeoutMs = 20_000, outputQuietMs = 900 } = {}) {
+export function createGptLiveRound2Client({ apiKey, round2Api, conversationId, callContext = null, voice = "marin", history = [], onAudio, onClearAudio, onEvent = () => {}, WebSocketImpl = WebSocket, timeoutMs = 20_000, outputQuietMs = 900 } = {}) {
   if (!apiKey) throw new Error("OPENAI_API_KEY is required.");
   let socket, readyResolve, readyReject, closedResolve, closeTimer, outputQuietTimer, usageSeconds = 0;
   const readyPromise = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
@@ -19,7 +19,7 @@ export function createGptLiveRound2Client({ apiKey, round2Api, conversationId, v
     if (!event?.type || (event.event_id && seen.has(event.event_id))) return false;
     if (event.event_id) seen.add(event.event_id);
     onEvent(event.type);
-    if (event.type === "session.started") { const started = await gate.start({ conversationId }); readyResolve({ ...started, providerSessionId: event.session?.id || null }); return true; }
+    if (event.type === "session.started") { const started = await gate.start({ conversationId, callContext }); readyResolve({ ...started, providerSessionId: event.session?.id || null }); return true; }
     if (event.type === "session.input_transcript.delta") return gate.appendTranscript(event.delta);
     if (event.type === "session.delegation.created") return gate.bindDelegation(event.delegation?.id);
     if (event.type === "session.output_transcript.delta") { const accepted=gate.appendOutputTranscript(event.delta,event);scheduleOutputCompletion();return accepted; }
@@ -37,7 +37,7 @@ export function createGptLiveRound2Client({ apiKey, round2Api, conversationId, v
       if (socket) return false;
       socket = new WebSocketImpl(LIVE_URL, { headers: { Authorization: `Bearer ${apiKey}`, "OpenAI-Beta": "realtime=v1" } });
       const timer = setTimeout(() => readyReject(Object.assign(new Error("GPT-Live connection timed out."), { code: "gpt_live_connect_timeout" })), timeoutMs); timer.unref?.();
-      socket.on("open", () => { const session = { ...buildGptLivePrototypeSession({ voice, history }), instructions: buildRound2LiveInstructions() }; sendLive({ type: "session.start", event_id: crypto.randomUUID(), session }); });
+      socket.on("open", () => { const session = { ...buildGptLivePrototypeSession({ voice, history }), instructions: buildRound2LiveInstructions(callContext) }; sendLive({ type: "session.start", event_id: crypto.randomUUID(), session }); });
       socket.on("message", async (raw) => { try { const event = JSON.parse(String(raw)); await handle(event); if (event.type === "session.started") clearTimeout(timer); } catch (error) { clearTimeout(timer); await gate.providerFailed(error?.code || "gpt_live_event_failed"); readyReject(error); } });
       socket.on("error", async () => { await gate.providerFailed("gpt_live_transport_failed"); readyReject(Object.assign(new Error("GPT-Live transport failed."), { code: "gpt_live_transport_failed" })); });
       socket.on("close", () => closedResolve(gate.snapshot()));
@@ -49,6 +49,7 @@ export function createGptLiveRound2Client({ apiKey, round2Api, conversationId, v
     async callerSpeechEnded() { const result=await gate.callerSpeechEnded();if(result)scheduleOutputCompletion();return result; },
     providerOutputCompleted() { return gate.providerOutputCompleted(); },
     playbackCompleted() { return gate.playbackCompleted(); },
+    playbackCheckpoint(input) { return gate.playbackCheckpoint(input); },
     waitForTerminal(options) { return gate.waitForTerminal(options); },
     supersede(reason) { return gate.supersede(reason); },
     close() { clearTimeout(outputQuietTimer);if (!socket || socket.readyState !== WebSocketImpl.OPEN) return closedPromise; sendLive({ type: "session.close", event_id: crypto.randomUUID() }); closeTimer = setTimeout(() => { socket?.terminate?.(); closedResolve(gate.snapshot()); }, timeoutMs); closeTimer.unref?.(); return closedPromise; },

@@ -122,8 +122,38 @@ test("verified commentary is bounded and provider rejection terminates fail clos
   const result = await f.gate.waitForTerminal();
   assert.equal(result.status, "failed");
   assert.equal(result.providerCategory, "invalid_event");
-  assert.equal(f.calls.at(-1).delivery.status, "truncated");
+  assert.equal(f.calls.at(-1).delivery.status, "not_delivered");
   assert.equal(f.audio.length, 0);
+});
+
+test("generated output stays unheard until checkpoints and a clear invalidates later marks", async () => {
+  const f = fixture();
+  await f.gate.start({ conversationId: "ledger" });
+  const turnId = await f.gate.callerSpeechStarted();
+  f.gate.appendTranscript("كيفك؟");
+  f.gate.appendOutputTranscript("الجزء الأول", { start_ms: 0, end_ms: 400 });
+  f.gate.appendOutputAudio(Buffer.from("one"), { start_ms: 0, end_ms: 400 });
+  f.gate.appendOutputTranscript(" والجزء الثاني", { start_ms: 401, end_ms: 900 });
+  f.gate.appendOutputAudio(Buffer.from("two"), { start_ms: 401, end_ms: 900 });
+  await f.gate.callerSpeechEnded(); await f.gate.providerOutputCompleted();
+  await f.gate.playbackCheckpoint({ turnId, outputKind: "final", endMs: 400, checkpointId: "mark-1" });
+  const waiting = f.gate.waitForTerminal();
+  await f.gate.callerSpeechStarted();
+  const result = await waiting;
+  assert.equal(result.status, "superseded");
+  const delivery = f.calls.find((item) => item.delivery)?.delivery;
+  assert.equal(delivery.deliveredText, "الجزء الأول");
+  assert.equal(delivery.status, "interrupted");
+  assert.equal(await f.gate.playbackCheckpoint({ turnId, outputKind: "final", endMs: 900, final: true, cleared: true }), false);
+});
+
+test("empty playback truth never falls back to intended text", async () => {
+  const f = fixture(); await f.gate.start({ conversationId: "unheard" }); await f.gate.callerSpeechStarted();
+  f.gate.appendTranscript("كيفك؟"); f.gate.appendOutputTranscript("generated but unheard");
+  await f.gate.callerSpeechEnded(); await f.gate.providerOutputCompleted();
+  await f.gate.providerFailed("transport_closed");
+  const delivery = f.calls.find((item) => item.delivery)?.delivery;
+  assert.equal(delivery.deliveredText, ""); assert.equal(delivery.status, "not_delivered");
 });
 
 test("caller correction clears output, aborts stale Nova work, and records interruption latency", async () => {

@@ -259,7 +259,7 @@ export function createAgent({
       const transformIntent=!speakerRestricted&&!phoneCallProfile&&isConversationLocalTransform(message);
       const [run,conversationHistory,retrieved,transformRetrieval] = await Promise.all([
         storage.createRun({ ownerId, projectId: context.projectId || null, conversationId, goal: message, status: "planning" }),
-        speakerRestricted||phoneCallProfile ? Promise.resolve([]) : storage.listMessages(conversationId, ownerId, { limit: historyLimit }),
+        (speakerRestricted&&!context?.gptLiveRound2)||phoneCallProfile ? Promise.resolve([]) : storage.listMessages(conversationId, ownerId, { limit: historyLimit }),
         speakerRestricted||phoneCallProfile||transformIntent ? Promise.resolve(null) : retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit }),
         transformIntent?retrieveConversationTransformSource({storage,ownerId,conversationId,request:message,signal:executionSignal}):Promise.resolve(null),
       ]);
@@ -280,6 +280,7 @@ export function createAgent({
       const correlatedRunResult=(response,extra={})=>({message:response.message,requestId:requestId||null,userMessageId,assistantMessageId:response.id,...(response.approval?.id?{approvalId:response.approval.id}:{}),...extra});
       const baseSystemContext = phoneCallProfile ? buildPhoneCallSystemContext(context.phoneCall.envelope) : speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker) : buildSystemContext(retrieved);
       let systemContext = `${context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext}\n\n${ANSWER_PRESENTATION_GUIDANCE}`;
+      if(context?.gptLiveRound2)systemContext+=`\n\nGPT-LIVE TRUSTED SERVER CONTEXT: This is an active phone session. The speaker is not authenticated as the owner. Do not disclose private owner memory or infer identity from the destination. Same-call canonical messages may be used for conversational continuity. The following bounded prior Nova results are server-recorded and remain authoritative unless a newer successful authoritative result supersedes them: ${JSON.stringify(context.gptLiveRound2.trustedResults||[])}. An unrelated failure does not invalidate an earlier successful result. Only project_list is available as bounded read-only project context; no write or external-action tools are available.`;
       const toolExecutions = [];
       const providerUsage = [];
       const webSources=[];
@@ -433,7 +434,7 @@ export function createAgent({
           context:trustedContext,
           systemContext,
           conversationHistory,
-          tools: speakerRestricted||phoneCallProfile ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
+          tools: phoneCallProfile ? [] : speakerRestricted ? (context?.gptLiveRound2 ? toolRegistry.list({ executableOnly: true }).filter((tool) => tool.name === "project_list" && tool.riskLevel === "READ_ONLY") : []) : toolRegistry.list({ executableOnly: true }).filter(tool=>(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
           toolResults,
           continuationToken,
           signal: executionSignal,
@@ -446,7 +447,7 @@ export function createAgent({
         }
         executionSignal.throwIfAborted();
         validateModelOutput(generated);
-        if(speakerRestricted&&generated.type==="tool_calls")generated={type:"final",message:"I can help with general conversation, but this voice turn is not authorized to use tools or access private owner information."};
+        if(speakerRestricted&&generated.type==="tool_calls"&&!context?.gptLiveRound2)generated={type:"final",message:"I can help with general conversation, but this voice turn is not authorized to use tools or access private owner information."};
         if(phoneCallProfile&&generated.type==="tool_calls")generated={type:"final",message:"I can't take that action during this call. I need the owner's confirmation outside the call."};
         const agentGenerationCompletedAt=Date.now();
 

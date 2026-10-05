@@ -168,6 +168,22 @@ test("bridge authorization returns only the immutable call-selected media profil
   const authorized=await f.service.startBridgeSession({sessionToken:token,callSid:CALL_SID,streamSid:STREAM_SID});assert.equal(authorized.mediaProfile,"gpt_live_round2_preview");assert.equal(authorized.liveVoice,"gleam");assert.equal(authorized.callConversationId,`phone-session-${call.id}`);
 });
 
+test("GPT-Live call summary and Console lookup use canonical conversation events instead of legacy turn rows",async()=>{
+  const f=await fixture(),context={conversationId:CONVERSATION,runId:f.run.id};const prepared=await f.registry.execute("phone_call_prepare",envelope({mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"}),context);let approval;
+  await assert.rejects(()=>f.registry.execute("phone_call_start",prepared,context),error=>{approval=error.approval;return true;});await f.storage.decideApproval(approval.id,OWNER_ID,"approved");await f.registry.execute("phone_call_start",prepared,{...context,approvalId:approval.id});
+  const call=await f.storage.getPhoneCallIntent(prepared.callIntentId,OWNER_ID),token=f.auth.issueStart({ownerId:OWNER_ID,callIntentId:call.id,envelopeHash:call.envelopeHash},300);await f.storage.savePhoneSessionToken(call.id,OWNER_ID,{tokenHash:f.auth.tokenHash(token),expiresAt:"2026-10-02T12:05:00.000Z"});const authorized=await f.service.startBridgeSession({sessionToken:token,callSid:CALL_SID,streamSid:STREAM_SID});
+  await f.storage.ensureConversation({id:call.callConversationId,ownerId:OWNER_ID,title:"Phone · GPT-Live"});
+  for(const event of[
+    {id:"canonical-caller",eventType:"authority_classified",status:"NOVA_INFORMATION",metadata:{}},
+    {id:"canonical-ack",eventType:"assistant_output_delivery",status:"delivered",metadata:{outputKind:"acknowledgement",deliveredText:"Checking."}},
+    {id:"canonical-partial",eventType:"assistant_output_delivery",status:"partially_delivered",metadata:{outputKind:"final",deliveredText:"Result"}},
+    {id:"canonical-run",eventType:"nova_result_reintegrated",status:"generated",metadata:{runId:"run-live"}},
+  ])await f.storage.appendConversationEvent({...event,conversationId:call.callConversationId,ownerId:OWNER_ID,turnId:"turn-1"});
+  await f.service.recordBridgeEvent({bridgeSessionToken:authorized.bridgeSessionToken,callIntentId:call.id,callSid:CALL_SID,streamSid:STREAM_SID,eventId:"bridge-stop-canonical",type:"completed",providerStatus:"completed"});
+  const updated=await f.storage.getPhoneCallIntent(call.id,OWNER_ID);assert.match(updated.summary,/1 caller turn/);assert.match(updated.summary,/1 acknowledgement/);assert.match(updated.summary,/1 partial\/interrupted/);assert.match(updated.summary,/1 Nova run/);
+  const byCanonical=await f.service.listConversation(call.callConversationId);assert.equal(byCanonical[0].callConversationId,call.callConversationId);
+});
+
 test("bridge turn authentication is call-bound, idempotent, multilingual, and persists no audio", async () => {
   let turns = 0; const f = await fixture({ novaTurn: async ({ message, context }) => { turns += 1; assert.equal(context.phoneCall.profile, "bounded_outbound"); return { message: `سمعت: ${message}`, runId: "run-phone" }; } }); const context = { conversationId: CONVERSATION, runId: f.run.id }; let approval;
   await assert.rejects(() => f.registry.execute("phone_call_start", f.prepared, context), (error) => { approval = error.approval; return true; }); await f.storage.decideApproval(approval.id, OWNER_ID, "approved"); await f.registry.execute("phone_call_start", f.prepared, { ...context, approvalId: approval.id });
@@ -229,7 +245,7 @@ test("runtime VAD preserves one multilingual turn, barge-in clear, bounded hangu
 
 test("Console restoration and generic approval UI include phone state without a parallel approval path", async () => {
   const [consoleSource,presenterSource,css]=await Promise.all([readFile(new URL("../assets/console.js",import.meta.url),"utf8"),readFile(new URL("../assets/approval-presenter.js",import.meta.url),"utf8"),readFile(new URL("../assets/console.css",import.meta.url),"utf8")]);
-  assert.match(consoleSource,/restorePhoneCalls\(conversationId\)/); assert.match(consoleSource,/data-phone-call-id/); assert.match(consoleSource,/ownerMemoryClient\.decideApproval/); assert.match(presenterSource,/phone_call_start/); assert.match(css,/phone-call-card/);
+  assert.match(consoleSource,/restorePhoneCalls\(conversationId\)/); assert.match(consoleSource,/data-phone-call-id/); assert.match(consoleSource,/ownerMemoryClient\.decideApproval/); assert.match(consoleSource,/delivery:stored\.delivery/); assert.match(consoleSource,/confirmed audible portion/); assert.match(consoleSource,/Phone \/ GPT-Live/); assert.match(presenterSource,/phone_call_start/); assert.match(css,/phone-call-card/); assert.match(css,/phone-delivery-state/);
 });
 
 test("Fly bridge remains scale-to-zero, one-call-at-a-time, transport-only, and outside Vercel", async () => {
@@ -361,7 +377,7 @@ test("Preview GPT-Live PSTN adapter keeps PCMU transport canonical, supports bar
     connect(){return true;},async ready(){return{providerSessionId:"live-fixture"};},
     async callerSpeechStarted(){speechStarts+=1;},appendAudio(audio){assert.ok(Buffer.isBuffer(audio));return true;},
     async callerSpeechEnded(){speechEnds+=1;phase="playback_pending";return{authority:"LOCAL_CONVERSATION"};},
-    async playbackCompleted(){playbackCompleted+=1;phase="done";return true;},
+    async playbackCheckpoint(){return true;},async playbackCompleted(){playbackCompleted+=1;phase="done";return true;},
     async close(){closed+=1;},
     snapshot(){return{current:{turnId:"turn-1",phase,terminal:null,transcriptCharacters},rawAudioPersisted:false};},
   };
@@ -370,8 +386,9 @@ test("Preview GPT-Live PSTN adapter keeps PCMU transport canonical, supports bar
   for(let index=0;index<3;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SPEECH}});
   for(let index=0;index<50;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SILENCE}});
   for(let index=0;index<20&&speechEnds===0;index+=1)await new Promise(resolve=>setTimeout(resolve,5));assert.equal(speechStarts,1);assert.equal(speechEnds,1);
-  callbacks.onAudio(Buffer.alloc(160,1));callbacks.onClearAudio();assert.equal(sent.some(item=>item.event==="media"),true);assert.equal(sent.some(item=>item.event==="clear"),true);
-  callbacks.onEvent("session.output.done");for(let index=0;index<20&&!sent.some(item=>item.event==="mark");index+=1)await new Promise(resolve=>setTimeout(resolve,5));const mark=sent.find(item=>item.event==="mark");assert.ok(mark);runtime.handle(mark);assert.equal(playbackCompleted,1);
+  callbacks.onAudio(Buffer.alloc(4000,1),{turnId:"turn-1",outputKind:"final",startMs:0,endMs:500});callbacks.onClearAudio();assert.equal(sent.some(item=>item.event==="media"),true);assert.equal(sent.some(item=>item.event==="clear"),true);
+  const clearedMark=sent.find(item=>item.event==="mark");runtime.handle(clearedMark);assert.equal(playbackCompleted,0);
+  callbacks.onAudio(Buffer.alloc(160,1),{turnId:"turn-1",outputKind:"final",startMs:21,endMs:40});callbacks.onEvent("session.output.done");for(let index=0;index<20&&!sent.some(item=>item.event==="mark"&&item.mark.name.includes("final"));index+=1)await new Promise(resolve=>setTimeout(resolve,5));const mark=sent.find(item=>item.event==="mark"&&item.mark.name.includes("final"));assert.ok(mark);runtime.handle(mark);await new Promise(resolve=>setImmediate(resolve));assert.equal(playbackCompleted,1);
   await runtime.stop("completed","fixture",{hangupSocket:false});assert.equal(closed,1);assert.equal(events.length,1);assert.equal(runtime.metrics().rawAudioPersisted,false);assert.doesNotMatch(JSON.stringify(events),/audio|base64|payload/i);
 });
 

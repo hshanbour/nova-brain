@@ -92,6 +92,7 @@ export function createGptLiveRound2OutputGate({
 
   function clearOutput(turn, reason) {
     onClearAudio();
+    if (turn && conversationId && typeof api.playback === "function") void api.playback({ conversationId, turnId: turn.turnId, stage: "cleared", outputKind: turn.phase === "ack_streaming" || turn.phase === "ack_waiting" || turn.phase === "backend_pending" ? "acknowledgement" : "final", cleared: true, reason }).catch(() => {});
     stamp(turn, "clearCompletedAt");
     record("output_cleared", { turnId: turn.turnId, reason });
   }
@@ -99,7 +100,9 @@ export function createGptLiveRound2OutputGate({
   function acceptAudio(turn, entry, kind) {
     const acceptedAt = clock();
     stamp(turn, "firstGateAcceptedAudioAt", acceptedAt);
-    onAudio(entry.audio);
+    onAudio(entry.audio, { turnId: turn.turnId, outputKind: kind === "acknowledgement" ? "acknowledgement" : "final", startMs: entry.startMs, endMs: entry.endMs });
+    const outputKind = kind === "acknowledgement" ? "acknowledgement" : "final";
+    if (!turn.releasedKinds.has(outputKind)) { turn.releasedKinds.add(outputKind); if (typeof api.playback === "function") void api.playback({ conversationId, turnId: turn.turnId, stage: "released_to_playback", outputKind, endMs: entry.endMs }).catch(() => {}); }
     const releasedAt = clock();
     stamp(turn, "firstReleasedAudioAt", releasedAt);
     if (kind === "acknowledgement") {
@@ -124,8 +127,8 @@ export function createGptLiveRound2OutputGate({
     const selected = turn.bufferedTranscript.filter((entry) => afterTimeline(entry, startMs));
     const value = selected.map((entry) => entry.value).join("");
     turn.bufferedTranscript = [];
-    if (destination === "delivered") turn.deliveredText = value.slice(-MAX_TRANSCRIPT);
-    else if (destination === "acknowledgement") turn.acknowledgementText = value.slice(-MAX_TRANSCRIPT);
+    if (destination === "delivered") { turn.generatedText = value.slice(-MAX_TRANSCRIPT); turn.transcriptTimeline.final.push(...selected); }
+    else if (destination === "acknowledgement") { turn.acknowledgementGeneratedText = value.slice(-MAX_TRANSCRIPT); turn.transcriptTimeline.acknowledgement.push(...selected); }
     else turn.speculativeTranscript = value.slice(-MAX_TRANSCRIPT);
     return value;
   }
@@ -145,8 +148,10 @@ export function createGptLiveRound2OutputGate({
         turnId: turn.turnId,
         messageId: turn.messageId,
         intendedText: turn.intendedText,
-        deliveredText: turn.deliveredText,
-        status: "superseded",
+        deliveredText: turn.confirmedText,
+        status: turn.confirmedText.trim() ? "interrupted" : "superseded",
+        outputKind: "final",
+        checkpoints: turn.playbackCheckpoints,
       }).catch(() => {});
     }
     turn.result = Object.freeze({ status: "superseded", turnId: turn.turnId, timing: timing(turn) });
@@ -159,6 +164,8 @@ export function createGptLiveRound2OutputGate({
       conversationId,
       turnId: turn.turnId,
       utterance: turn.transcript,
+      decision: turn.decision,
+      speaker: { authenticatedIdentity: "none", contactProvenance: "pstn" },
       ...(turn.expectedContextVersion === null ? {} : { expectedContextVersion: turn.expectedContextVersion }),
     };
     if ([LIVE_AUTHORITY.LOCAL_CONVERSATION, LIVE_AUTHORITY.CLARIFICATION_REQUIRED].includes(turn.decision.authority)) {
@@ -183,7 +190,7 @@ export function createGptLiveRound2OutputGate({
     record("authority_resolved", { turnId: turn.turnId, authority: result.authority, routeLatencyMs: turn.routeLatencyMs });
     if (result.authority === LIVE_AUTHORITY.LOCAL_CONVERSATION) {
       turn.phase = "playback_pending";
-      turn.deliveredText = turn.speculativeTranscript.trim();
+      turn.generatedText = turn.speculativeTranscript.trim();
       return true;
     }
     turn.bufferedAudio = [];
@@ -191,7 +198,7 @@ export function createGptLiveRound2OutputGate({
     turn.bufferedBytes = 0;
     clearOutput(turn, "verified_result_ready");
     turn.phase = "verified_waiting_ack";
-    turn.deliveredText = "";
+    turn.generatedText = "";
     const chunks = commentaryChunks(result.message);
     turn.resultCommentaryEventIds = new Set();
     for (const content of chunks) {
@@ -216,8 +223,10 @@ export function createGptLiveRound2OutputGate({
         turnId: turn.turnId,
         messageId: turn.messageId,
         intendedText: turn.intendedText,
-        deliveredText: turn.deliveredText,
-        status: "truncated",
+        deliveredText: turn.confirmedText,
+        status: turn.confirmedText.trim() ? "truncated" : "not_delivered",
+        outputKind: "final",
+        checkpoints: turn.playbackCheckpoints,
       }).catch(() => {});
     }
     turn.result = Object.freeze({
@@ -234,16 +243,18 @@ export function createGptLiveRound2OutputGate({
 
   async function complete(turn, status = "delivered") {
     if (turn !== current || turn.terminal) return false;
-    turn.terminal = status;
-    const delivered = turn.deliveredText.trim();
+    const delivered = turn.confirmedText.trim();
     await api.delivery({
       conversationId,
       turnId: turn.turnId,
       messageId: turn.messageId,
       intendedText: turn.intendedText,
-      deliveredText: delivered || turn.intendedText,
-      status,
+      deliveredText: delivered,
+      status: delivered && delivered === turn.intendedText.trim() ? "delivered" : delivered ? "partially_delivered" : "not_delivered",
+      outputKind: "final",
+      checkpoints: turn.playbackCheckpoints,
     });
+    turn.terminal = status;
     stamp(turn, "terminalAt");
     turn.result = Object.freeze({
       status,
@@ -252,7 +263,7 @@ export function createGptLiveRound2OutputGate({
       contextVersion,
       messageId: turn.messageId,
       intendedText: turn.intendedText,
-      deliveredText: delivered || turn.intendedText,
+      deliveredText: delivered,
       routeLatencyMs: turn.routeLatencyMs,
       gateOverheadMs: turn.decision.authority === LIVE_AUTHORITY.LOCAL_CONVERSATION
         ? elapsed(turn.milestones.classificationAt, turn.milestones.firstReleasedAudioAt)
@@ -285,8 +296,14 @@ export function createGptLiveRound2OutputGate({
         bufferedTranscript: [],
         bufferedAudio: [],
         bufferedBytes: 0,
-        deliveredText: "",
-        acknowledgementText: "",
+        generatedText: "",
+        confirmedText: "",
+        acknowledgementGeneratedText: "",
+        acknowledgementConfirmedText: "",
+        transcriptTimeline: { acknowledgement: [], final: [] },
+        playbackCheckpoints: [],
+        releasedKinds: new Set(),
+        acknowledgementRecorded: false,
         intendedText: "",
         messageId: null,
         delegationId: null,
@@ -350,11 +367,14 @@ export function createGptLiveRound2OutputGate({
       const entry = { value, startMs: finite(event.start_ms), endMs: finite(event.end_ms), at: clock() };
       if (["local_streaming", "local_persisting"].includes(current.phase)) {
         current.speculativeTranscript = `${current.speculativeTranscript}${value}`.slice(-MAX_TRANSCRIPT);
-        current.deliveredText = `${current.deliveredText}${value}`.slice(-MAX_TRANSCRIPT);
+        current.generatedText = `${current.generatedText}${value}`.slice(-MAX_TRANSCRIPT);
+        current.transcriptTimeline.final.push(entry);
       } else if (current.phase === "ack_streaming") {
-        current.acknowledgementText = `${current.acknowledgementText}${value}`.slice(-MAX_TRANSCRIPT);
+        current.acknowledgementGeneratedText = `${current.acknowledgementGeneratedText}${value}`.slice(-MAX_TRANSCRIPT);
+        current.transcriptTimeline.acknowledgement.push(entry);
       } else if (current.phase === "authoritative_streaming") {
-        current.deliveredText = `${current.deliveredText}${value}`.slice(-MAX_TRANSCRIPT);
+        current.generatedText = `${current.generatedText}${value}`.slice(-MAX_TRANSCRIPT);
+        current.transcriptTimeline.final.push(entry);
       } else {
         current.bufferedTranscript.push(entry);
         current.speculativeTranscript = `${current.speculativeTranscript}${value}`.slice(-MAX_TRANSCRIPT);
@@ -392,11 +412,12 @@ export function createGptLiveRound2OutputGate({
       if (!turn || turn.terminal || !turn.transcript.trim()) return false;
       stamp(turn, "callerSpeechEndedAt");
       stamp(turn, "endpointDecisionAt");
-      turn.decision = classifyLiveAuthority(turn.transcript);
+      turn.decision = typeof api.classify === "function" ? await api.classify({ conversationId, utterance: turn.transcript, speaker: { authenticatedIdentity: "none", contactProvenance: "pstn" } }, { signal: turn.abort.signal }) : classifyLiveAuthority(turn.transcript);
       stamp(turn, "classificationAt");
       if (turn.decision.authority === LIVE_AUTHORITY.LOCAL_CONVERSATION) {
         turn.phase = "local_streaming";
-        turn.deliveredText = turn.speculativeTranscript.trim();
+        releaseTranscript(turn, "delivered");
+        turn.generatedText = turn.speculativeTranscript.trim();
         releaseBuffered(turn, "local");
         record("local_output_released", { turnId: turn.turnId });
       } else {
@@ -468,7 +489,27 @@ export function createGptLiveRound2OutputGate({
     async playbackCompleted() {
       const turn = current;
       if (!turn || turn.terminal || turn.phase !== "playback_pending") return false;
+      if (!turn.confirmedText && turn.generatedText) { turn.confirmedText = turn.generatedText; turn.playbackCheckpoints.push({ id: null, outputKind: "final", endMs: null, final: true }); }
       return complete(turn, "delivered");
+    },
+
+    async playbackCheckpoint({ turnId, outputKind = "final", endMs = null, final = false, cleared = false, checkpointId = null } = {}) {
+      const turn = current;
+      if (!turn || turn.terminal || turn.turnId !== turnId || cleared) return false;
+      const kind = outputKind === "acknowledgement" ? "acknowledgement" : "final";
+      const entries = turn.transcriptTimeline[kind];
+      const boundary = finite(endMs);
+      const confirmed = entries.filter((entry) => final || (boundary !== null && entry.endMs !== null && entry.endMs <= boundary)).map((entry) => entry.value).join("").slice(-MAX_TRANSCRIPT);
+      if (kind === "acknowledgement") turn.acknowledgementConfirmedText = confirmed;
+      else turn.confirmedText = confirmed;
+      turn.playbackCheckpoints.push({ id: checkpointId || null, outputKind: kind, endMs: boundary, final: final === true });
+      if (typeof api.playback === "function") await api.playback({ conversationId, turnId, stage: "playback_checkpoint", outputKind: kind, checkpointId, endMs: boundary, cleared: false });
+      record("playback_checkpoint_confirmed", { turnId, outputKind: kind, endMs: boundary, final: final === true });
+      if (kind === "acknowledgement" && final && !turn.acknowledgementRecorded && confirmed.trim()) {
+        turn.acknowledgementRecorded = true;
+        await api.delivery({ conversationId, turnId, messageId: `${turn.turnId}-ack`, intendedText: turn.acknowledgementGeneratedText || confirmed, deliveredText: confirmed, status: confirmed === (turn.acknowledgementGeneratedText || confirmed) ? "delivered" : "partially_delivered", outputKind: "acknowledgement", checkpoints: turn.playbackCheckpoints });
+      }
+      return true;
     },
 
     async waitForTerminal({ signal } = {}) {
