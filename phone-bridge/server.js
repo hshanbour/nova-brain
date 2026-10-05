@@ -7,6 +7,8 @@ import { createElevenLabsTelephonyTts } from "../src/phone/elevenlabs-telephony.
 import { createOpenAiWebSocketTranscriber } from "./openai-transcriber.js";
 import { createNovaPhoneBridgeClient } from "./nova-client.js";
 import { createRuntimePhoneSession } from "./runtime-session.js";
+import { createGptLiveRound2Api } from "./gpt-live-round2-api.js";
+import { createGptLivePstnSession } from "./gpt-live-pstn-session.js";
 
 const STATUS_BODY_LIMIT = 16 * 1024;
 const STATUS_ROUTE = /^\/api\/phone\/twilio\/status\/(phone_[a-f0-9]{32})$/;
@@ -42,7 +44,7 @@ function formParameters(rawBody) {
 export function bridgeConfig(environment = process.env) {
   const required = ["NOVA_PHONE_BRIDGE_PUBLIC_URL", "NOVA_PHONE_BASE_URL", "OPENAI_API_KEY", "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID", "VERCEL_AUTOMATION_BYPASS_SECRET"];
   for (const name of required) if (!environment[name]) throw new Error(`${name} is required.`);
-  return Object.freeze({ port: Number(environment.PORT || 8080), publicUrl: environment.NOVA_PHONE_BRIDGE_PUBLIC_URL.replace(/\/$/, ""), novaBaseUrl: environment.NOVA_PHONE_BASE_URL.replace(/\/$/, ""), twilioAuthToken: environment.TWILIO_AUTH_TOKEN || null, openAIApiKey: environment.OPENAI_API_KEY, voiceConfig: { voiceV2: { elevenLabsApiKey: environment.ELEVENLABS_API_KEY, elevenLabsVoiceId: environment.ELEVENLABS_VOICE_ID, ttsModel: environment.ELEVENLABS_TTS_MODEL || "eleven_v3_conversational", ttsStability: 0.75, maxSpeechCharacters: 4000 } } });
+  return Object.freeze({ port: Number(environment.PORT || 8080), publicUrl: environment.NOVA_PHONE_BRIDGE_PUBLIC_URL.replace(/\/$/, ""), novaBaseUrl: environment.NOVA_PHONE_BASE_URL.replace(/\/$/, ""), twilioAuthToken: environment.TWILIO_AUTH_TOKEN || null, openAIApiKey: environment.OPENAI_API_KEY, gptLivePreviewEnabled: environment.NOVA_PHONE_GPT_LIVE_PREVIEW_ENABLED === "true", voiceConfig: { voiceV2: { elevenLabsApiKey: environment.ELEVENLABS_API_KEY, elevenLabsVoiceId: environment.ELEVENLABS_VOICE_ID, ttsModel: environment.ELEVENLABS_TTS_MODEL || "eleven_v3_conversational", ttsStability: 0.75, maxSpeechCharacters: 4000 } } });
 }
 
 function safeCategory(error, fallback = "unexpected_failure") {
@@ -63,11 +65,13 @@ function externalWebSocketUrl(publicUrl, requestUrl) {
   return url.toString();
 }
 
-export function createPhoneBridgeServer({ environment = process.env, fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, logger = console, novaClient: providedNovaClient, createTranscriber, createTts, createRuntime } = {}) {
+export function createPhoneBridgeServer({ environment = process.env, fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, logger = console, novaClient: providedNovaClient, createTranscriber, createTts, createRuntime, createGptLiveRuntime } = {}) {
   const config = bridgeConfig(environment); const novaClient = providedNovaClient || createNovaPhoneBridgeClient({ baseUrl: config.novaBaseUrl, protectionBypassSecret: environment.VERCEL_AUTOMATION_BYPASS_SECRET, fetchImpl });
   const transcriberFactory = createTranscriber || (({ onError }) => createTranscriptionSessionRotator({ rotateAfterSeconds: 55 * 60, createSession: () => createOpenAiWebSocketTranscriber({ WebSocketImpl, apiKey: config.openAIApiKey, onError }) }));
   const ttsFactory = createTts || (() => createElevenLabsTelephonyTts({ config: config.voiceConfig, fetchImpl }));
   const runtimeFactory = createRuntime || createRuntimePhoneSession;
+  const round2Api = createGptLiveRound2Api({ baseUrl: config.novaBaseUrl, authorizationSecret: environment.VERCEL_AUTOMATION_BYPASS_SECRET, protectionBypassSecret: environment.VERCEL_AUTOMATION_BYPASS_SECRET, fetchImpl });
+  const gptLiveRuntimeFactory = createGptLiveRuntime || ((input) => createGptLivePstnSession({ ...input, apiKey: config.openAIApiKey, round2Api }));
   const diagnostic = (event, metadata = {}) => logger.info?.("[nova-phone-bridge]", { event, ...metadata });
   const sessions = new Set();
   const server = http.createServer(async (request, response) => {
@@ -126,7 +130,11 @@ export function createPhoneBridgeServer({ environment = process.env, fetchImpl =
           diagnostic("session_token_accepted");
           boundStreamSid = message.streamSid;
           const transcriber = transcriberFactory({ onError: (error) => { diagnostic("stt_failed", { category: safeCategory(error, "stt_provider_failure") }); closeSafely(1011, "transcription failure"); } });
-          runtime = runtimeFactory({ sendTwilio: (value) => { if (ws.readyState === WebSocketImpl.OPEN) ws.send(JSON.stringify(value)); }, hangup:()=>closeSafely(1000,"safe hangup"), transcriber, tts: ttsFactory(), novaClient, authorization: authorized, callIntentId: authorized.callIntentId, maximumDurationSeconds: authorized.maximumDurationSeconds, callSid: message.start.callSid, streamSid: message.streamSid });
+          const commonRuntime = { sendTwilio: (value) => { if (ws.readyState === WebSocketImpl.OPEN) ws.send(JSON.stringify(value)); }, hangup:()=>closeSafely(1000,"safe hangup"), novaClient, authorization: authorized, callIntentId: authorized.callIntentId, maximumDurationSeconds: authorized.maximumDurationSeconds, callSid: message.start.callSid, streamSid: message.streamSid };
+          if (authorized.mediaProfile === "gpt_live_round2_preview") {
+            if (!config.gptLivePreviewEnabled || authorized.liveVoice !== "gleam") throw Object.assign(new Error("The GPT-Live Preview route is disabled or not authorized for this voice."), { code: "gpt_live_phone_route_disabled" });
+            runtime = gptLiveRuntimeFactory(commonRuntime);
+          } else runtime = runtimeFactory({ ...commonRuntime, transcriber, tts: ttsFactory() });
           await runtime.start(message);
           phase = "active"; diagnostic("stream_bound"); diagnostic("stt_started"); diagnostic("stream_started"); return;
         }

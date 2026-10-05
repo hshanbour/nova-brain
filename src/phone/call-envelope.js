@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
 export const PHONE_CALL_DURATIONS = Object.freeze([5, 10, 15, 30, 60]);
+export const PHONE_MEDIA_PROFILES = Object.freeze(["chained_v1", "gpt_live_round2_preview"]);
+export const GPT_LIVE_PHONE_VOICES = Object.freeze(["marin", "willow", "gleam"]);
 const MAX_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 function text(value, name, max, { optional = false } = {}) {
@@ -53,9 +55,17 @@ export function normalizeCallEnvelope(input, { now = new Date() } = {}) {
   const voicemailPolicy = input.voicemailPolicy ?? "do_not_leave";
   if (!new Set(["do_not_leave", "leave_approved_message"]).has(voicemailPolicy))
     throw Object.assign(new Error("The voicemail policy is invalid."), { code: "phone_call_envelope_invalid", statusCode: 400 });
+  const mediaProfile = input.mediaProfile || "chained_v1";
+  if (!PHONE_MEDIA_PROFILES.includes(mediaProfile))
+    throw Object.assign(new Error("The phone media profile is invalid."), { code: "phone_call_envelope_invalid", statusCode: 400 });
+  const liveVoice = mediaProfile === "gpt_live_round2_preview" ? text(input.liveVoice, "liveVoice", 64) : null;
+  if (liveVoice && !GPT_LIVE_PHONE_VOICES.includes(liveVoice))
+    throw Object.assign(new Error("The GPT-Live phone voice is invalid."), { code: "phone_call_envelope_invalid", statusCode: 400 });
 
   return Object.freeze({
     version: 1,
+    mediaProfile,
+    liveVoice,
     destination,
     expectedParty: text(input.expectedParty, "expectedParty", 200),
     callerDisclosure: text(input.callerDisclosure, "callerDisclosure", 500),

@@ -117,7 +117,7 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
       const bridgeSessionToken = sessionAuth.issueBridge({ ownerId, callIntentId: call.id, envelopeHash: call.envelopeHash, callSid, streamSid }, ttlSeconds);
       await storage.appendPhoneCallEvent({ id: `phone-event-${sha256(`${call.id}:${streamSid}:started`)}`, ownerId, callIntentId: call.id, eventKey: `stream:${streamSid}:started`, type: "stream_started", providerCallSid: callSid, providerStreamSid: streamSid, metadata: {} });
       await storage.appendActivity({ ownerId, projectId: null, runId: call.preparedRunId || null, action: "phone_call_started", tool: "phone_call_start", status: "in_progress", summary: "Approved outbound call media session started.", metadata: { callIntentId: call.id } });
-      return { bridgeSessionToken, callIntentId: call.id, maximumDurationSeconds: call.envelope.maximumDurationMinutes * 60, languageStrategy: call.envelope.languageStrategy };
+      return { bridgeSessionToken, callIntentId: call.id, callConversationId: call.callConversationId, maximumDurationSeconds: call.envelope.maximumDurationMinutes * 60, languageStrategy: call.envelope.languageStrategy, mediaProfile: call.envelope.mediaProfile || "chained_v1", liveVoice: call.envelope.liveVoice || null };
     },
     async processBridgeTurn({ bridgeSessionToken, callIntentId, callSid, streamSid, turnId, transcript }) {
       requireConfigured();

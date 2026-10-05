@@ -44,6 +44,7 @@ export function approvalViewModel(approval, { gmailAccountEmail } = {}) {
     const envelope = approval.arguments?.envelope || {};
     return { ...common, kind: "phone", fields: [
       ["Destination", String(envelope.destination || "")], ["Expected party", String(envelope.expectedParty || "")],
+      ["Conversation path", String(envelope.mediaProfile || "chained_v1")], ["GPT-Live voice", String(envelope.liveVoice || "Not used")],
       ["Nova disclosure", String(envelope.callerDisclosure || "")], ["Objective", String(envelope.objective || "")],
       ["Approved context", String(envelope.approvedContext || "None")], ["Permitted questions", textList(envelope.permittedQuestions)],
       ["Permitted disclosures", textList(envelope.permittedDisclosures)], ["Prohibited disclosures", textList(envelope.prohibitedDisclosures)],

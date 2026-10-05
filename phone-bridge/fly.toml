@@ -10,6 +10,7 @@ kill_timeout = "30s"
   NOVA_PHONE_BASE_URL = "https://nova-test-project-git-codex-combine-ede5f3-hamodehshanbour-6196.vercel.app"
   NOVA_PHONE_BRIDGE_PUBLIC_URL = "https://nova-phone-v1-preview-hshanbour.fly.dev"
   ELEVENLABS_TTS_MODEL = "eleven_v3_conversational"
+  NOVA_PHONE_GPT_LIVE_PREVIEW_ENABLED = "true"
 
 [http_service]
   internal_port = 8080

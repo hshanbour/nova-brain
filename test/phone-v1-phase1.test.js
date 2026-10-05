@@ -17,6 +17,7 @@ import { SCHEMA_STATEMENTS, SCHEMA_VERSION } from "../src/storage/schema.js";
 import { createAgent } from "../src/agent/agent.js";
 import { approvalViewModel } from "../assets/approval-presenter.js";
 import { createRuntimePhoneSession } from "../phone-bridge/runtime-session.js";
+import { createGptLivePstnSession } from "../phone-bridge/gpt-live-pstn-session.js";
 import { bridgeConfig, createPhoneBridgeServer } from "../phone-bridge/server.js";
 import { AUTHORIZED_NOVA_PREVIEW_BASE_URL, createNovaPhoneBridgeClient, protectionBypassHeadersFor } from "../phone-bridge/nova-client.js";
 import { createOpenAiWebSocketTranscriber } from "../phone-bridge/openai-transcriber.js";
@@ -81,8 +82,10 @@ test("schema fifteen preserves bounded durable phone authority, events, and tran
 
 test("immutable envelope hashing is deterministic and rejects non-UK, recording, redial, and excessive duration", () => {
   const first = immutableCallEnvelope(envelope(), { now: NOW }), second = immutableCallEnvelope({ ...envelope(), permittedQuestions: [...envelope().permittedQuestions] }, { now: NOW });
-  assert.equal(first.envelopeHash, second.envelopeHash); assert.equal(first.maximumAttempts, 1); assert.equal(first.recordingPolicy, "disabled");
+  assert.equal(first.envelopeHash, second.envelopeHash); assert.equal(first.maximumAttempts, 1); assert.equal(first.recordingPolicy, "disabled"); assert.equal(first.mediaProfile,"chained_v1"); assert.equal(first.liveVoice,null);
+  const live=immutableCallEnvelope(envelope({mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"}),{now:NOW});assert.equal(live.mediaProfile,"gpt_live_round2_preview");assert.equal(live.liveVoice,"gleam");
   for (const input of [envelope({ destination: "+12025550123" }), envelope({ maximumAttempts: 2 }), envelope({ recordingPolicy: "enabled" }), envelope({ maximumDurationMinutes: 20 })]) assert.throws(() => immutableCallEnvelope(input, { now: NOW }), /Phone V1|recording|duration|attempt/i);
+  for(const input of[envelope({mediaProfile:"gpt_live_round2_preview"}),envelope({mediaProfile:"gpt_live_round2_preview",liveVoice:"alloy"}),envelope({mediaProfile:"other",liveVoice:"gleam"})])assert.throws(()=>immutableCallEnvelope(input,{now:NOW}),/media profile|voice|liveVoice/i);
 });
 
 test("generic formal approval binds the exact envelope; typed approval is non-authoritative and deduplicated", async () => {
@@ -93,6 +96,14 @@ test("generic formal approval binds the exact envelope; typed approval is non-au
   assert.equal((await f.storage.listApprovals(OWNER_ID, { conversationId: CONVERSATION })).length, 1);
   const call = await f.storage.getPhoneCallIntent(f.prepared.callIntentId, OWNER_ID); assert.equal(call.status, "waiting_for_approval"); assert.equal(call.approvalId, pending.id);
   const view = approvalViewModel(pending); assert.equal(view.kind, "phone"); assert.ok(view.fields.some(([label, value]) => label === "Destination" && value === envelope().destination));
+});
+
+test("formal Approval visibly binds the exact Preview GPT-Live profile and gleam voice",async()=>{
+  const f=await fixture(),context={conversationId:CONVERSATION,runId:f.run.id};
+  const prepared=await f.registry.execute("phone_call_prepare",envelope({mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"}),context);let approval;
+  await assert.rejects(()=>f.registry.execute("phone_call_start",prepared,context),error=>{approval=error.approval;return error instanceof ApprovalRequiredError;});
+  const view=approvalViewModel(approval);assert.ok(view.fields.some(([label,value])=>label==="Conversation path"&&value==="gpt_live_round2_preview"));assert.ok(view.fields.some(([label,value])=>label==="GPT-Live voice"&&value==="gleam"));
+  const call=await f.storage.getPhoneCallIntent(prepared.callIntentId,OWNER_ID);assert.equal(call.status,"waiting_for_approval");assert.equal(call.attemptCount,0);
 });
 
 test("approved execution claims exactly one dial and duplicate execution cannot redial", async () => {
@@ -148,6 +159,13 @@ test("single-use start token binds Call SID and Stream SID and rejects replay or
   await assert.rejects(() => f.service.startBridgeSession({ sessionToken: startToken, callSid: `CA${"3".repeat(32)}`, streamSid: STREAM_SID }), (error) => error.code === "phone_session_replay");
   const authorized = await f.service.startBridgeSession({ sessionToken: startToken, callSid: CALL_SID, streamSid: STREAM_SID }); assert.ok(authorized.bridgeSessionToken);
   await assert.rejects(() => f.service.startBridgeSession({ sessionToken: startToken, callSid: CALL_SID, streamSid: STREAM_SID }), (error) => error.code === "phone_session_replay");
+});
+
+test("bridge authorization returns only the immutable call-selected media profile, voice, and canonical conversation",async()=>{
+  const f=await fixture(),context={conversationId:CONVERSATION,runId:f.run.id};const prepared=await f.registry.execute("phone_call_prepare",envelope({mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"}),context);let approval;
+  await assert.rejects(()=>f.registry.execute("phone_call_start",prepared,context),error=>{approval=error.approval;return true;});await f.storage.decideApproval(approval.id,OWNER_ID,"approved");await f.registry.execute("phone_call_start",prepared,{...context,approvalId:approval.id});
+  const call=await f.storage.getPhoneCallIntent(prepared.callIntentId,OWNER_ID),token=f.auth.issueStart({ownerId:OWNER_ID,callIntentId:call.id,envelopeHash:call.envelopeHash},300);await f.storage.savePhoneSessionToken(call.id,OWNER_ID,{tokenHash:f.auth.tokenHash(token),expiresAt:"2026-10-02T12:05:00.000Z"});
+  const authorized=await f.service.startBridgeSession({sessionToken:token,callSid:CALL_SID,streamSid:STREAM_SID});assert.equal(authorized.mediaProfile,"gpt_live_round2_preview");assert.equal(authorized.liveVoice,"gleam");assert.equal(authorized.callConversationId,`phone-session-${call.id}`);
 });
 
 test("bridge turn authentication is call-bound, idempotent, multilingual, and persists no audio", async () => {
@@ -336,3 +354,33 @@ test("status relay rejects invalid signatures, unsupported content, oversized bo
   assert.equal(malformed.status, 404); assert.equal(forwarded.length, 0);
   for (const response of [invalid, unsupported, oversized]) assert.doesNotMatch(await response.text(), /twilio-auth|preview-bypass|CallSid/);
 }));
+
+test("Preview GPT-Live PSTN adapter keeps PCMU transport canonical, supports barge-in clear, and persists no raw audio",async()=>{
+  const sent=[],events=[];let speechStarts=0,speechEnds=0,playbackCompleted=0,closed=0,phase="capturing",transcriptCharacters=20;
+  const client={
+    connect(){return true;},async ready(){return{providerSessionId:"live-fixture"};},
+    async callerSpeechStarted(){speechStarts+=1;},appendAudio(audio){assert.ok(Buffer.isBuffer(audio));return true;},
+    async callerSpeechEnded(){speechEnds+=1;phase="playback_pending";return{authority:"LOCAL_CONVERSATION"};},
+    async playbackCompleted(){playbackCompleted+=1;phase="done";return true;},
+    async close(){closed+=1;},
+    snapshot(){return{current:{turnId:"turn-1",phase,terminal:null,transcriptCharacters},rawAudioPersisted:false};},
+  };
+  let callbacks;const runtime=createGptLivePstnSession({sendTwilio:value=>sent.push(value),novaClient:{async event(value){events.push(value);}},authorization:{bridgeSessionToken:"bridge-token",callIntentId:"phone_fixture",callConversationId:"phone-session-phone_fixture",maximumDurationSeconds:600,mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"},callIntentId:"phone_fixture",maximumDurationSeconds:600,callSid:CALL_SID,streamSid:STREAM_SID,apiKey:"openai",round2Api:{},createClient(options){callbacks=options;return client;}});
+  const started=await runtime.start();assert.equal(started.providerSessionId,"live-fixture");assert.equal(callbacks.voice,"gleam");assert.equal(callbacks.conversationId,"phone-session-phone_fixture");
+  for(let index=0;index<3;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SPEECH}});
+  for(let index=0;index<50;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SILENCE}});
+  for(let index=0;index<20&&speechEnds===0;index+=1)await new Promise(resolve=>setTimeout(resolve,5));assert.equal(speechStarts,1);assert.equal(speechEnds,1);
+  callbacks.onAudio(Buffer.alloc(160,1));callbacks.onClearAudio();assert.equal(sent.some(item=>item.event==="media"),true);assert.equal(sent.some(item=>item.event==="clear"),true);
+  callbacks.onEvent("session.output.done");for(let index=0;index<20&&!sent.some(item=>item.event==="mark");index+=1)await new Promise(resolve=>setTimeout(resolve,5));const mark=sent.find(item=>item.event==="mark");assert.ok(mark);runtime.handle(mark);assert.equal(playbackCompleted,1);
+  await runtime.stop("completed","fixture",{hangupSocket:false});assert.equal(closed,1);assert.equal(events.length,1);assert.equal(runtime.metrics().rawAudioPersisted,false);assert.doesNotMatch(JSON.stringify(events),/audio|base64|payload/i);
+});
+
+test("bridge selects GPT-Live only for an immutable authorized Preview profile and leaves chained runtime untouched",async()=>{
+  const logs=[];let chained=0,live=0;
+  const environment={PORT:"0",NOVA_PHONE_BRIDGE_PUBLIC_URL:"https://bridge.example",NOVA_PHONE_BASE_URL:AUTHORIZED_NOVA_PREVIEW_BASE_URL,OPENAI_API_KEY:"openai",ELEVENLABS_API_KEY:"eleven",ELEVENLABS_VOICE_ID:"owner-voice",VERCEL_AUTOMATION_BYPASS_SECRET:"preview-bypass",TWILIO_AUTH_TOKEN:"twilio-auth",NOVA_PHONE_GPT_LIVE_PREVIEW_ENABLED:"true"};
+  const bridge=createPhoneBridgeServer({environment,WebSocketImpl:WebSocket,logger:{info(...items){logs.push(items);}},novaClient:{async start(){return{bridgeSessionToken:"bridge",callIntentId:"phone_fixture",callConversationId:"phone-session-phone_fixture",maximumDurationSeconds:600,mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"};}},createTranscriber:()=>({}),createTts:()=>({}),createRuntime:()=>{chained+=1;return{async start(){},handle(){},async stop(){}};},createGptLiveRuntime:()=>{live+=1;return{async start(){},handle(){},async stop(){}};}});
+  const listener=bridge.listen();await new Promise(resolve=>listener.once("listening",resolve));
+  try{const socket=mediaSocket(listener.address().port);await once(socket,"open");socket.send(JSON.stringify({event:"connected",protocol:"Call",version:"1.0.0"}));socket.send(JSON.stringify({...START,start:{...START.start,customParameters:{novaSessionToken:"single-use-fixture"}}}));for(let index=0;index<20&&live===0;index+=1)await new Promise(resolve=>setTimeout(resolve,5));assert.equal(live,1);assert.equal(chained,0);socket.close();}
+  finally{await bridge.close();}
+  assert.ok(logs.some(([,entry])=>entry.event==="stream_bound"));
+});
