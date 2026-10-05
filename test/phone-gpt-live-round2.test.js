@@ -103,6 +103,15 @@ test("semantic classifier handles Arabic, English, and mixed work/callback meani
   assert.equal(applyLiveAuthorityPolicy({category:"information_lookup",effects:["research"],projectReference:"Sharp Cuts",rationale:"answer from existing trusted context"},{speaker:{authenticatedIdentity:"none"}}).authority,"NOVA_INFORMATION");
 });
 
+test("semantic classifier prompt keeps self-contained corrections local and clarification fail-closed",async()=>{
+  let request;
+  const classifier=createPhoneLiveIntentClassifier({modelProvider:{async generate(value){request=value;return{message:JSON.stringify({category:"local_conversation",effects:[],projectReference:null,rationale:"complete correction"})};}}});
+  const result=await classifier.classify({utterance:"لا، قصدي احكيلي كيفك بس.",recentContext:[{role:"user",content:"شو آخر حالة؟"}]});
+  assert.equal(result.authority,"LOCAL_CONVERSATION");
+  assert.match(request.systemContext,/current utterance itself/);
+  assert.match(request.systemContext,/clarification_required only when/);
+});
+
 test("unauthenticated durable work creates an immutable proposal receipt and claimed identity is not verified",async()=>{
   const storage=createInMemoryStorage();await storage.initialize({owner:{id:OWNER,fullName:"Mohammad",provenance:"test"}});
   const service=createGptLiveRound2Service({storage,ownerId:OWNER,novaTurn:async()=>{throw new Error("must not run");},intentClassifier:{async classify(){return{authority:"NOVA_WORK_PROPOSAL",category:"callback_request",effects:["research","contact_owner"],reason:"unauthenticated_speaker_proposal_only",projectReference:"Sharp Cuts",workState:"proposal_only"};}}});
