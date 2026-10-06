@@ -4,7 +4,7 @@ import { createGptLiveRound2Client } from "./gpt-live-round2-client.js";
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-export function createGptLivePstnSession({ sendTwilio, hangup = () => {}, novaClient, authorization, callIntentId, maximumDurationSeconds, callSid, streamSid, apiKey, round2Api, createClient = createGptLiveRound2Client, clock = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+export function createGptLivePstnSession({ sendTwilio, hangup = () => {}, novaClient, authorization, callIntentId, maximumDurationSeconds, callSid, streamSid, apiKey, round2Api, createClient = createGptLiveRound2Client, diagnostic = () => {}, clock = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   if (!authorization?.bridgeSessionToken || authorization.mediaProfile !== "gpt_live_round2_preview" || !authorization.callConversationId || !authorization.liveVoice) throw Object.assign(new Error("The GPT-Live call authorization is incomplete."), { code: "gpt_live_phone_authorization_invalid" });
   let closed = false, timer, markSequence = 0, finalizeGeneration = 0, inputReady = Promise.resolve(), lastAudioMeta = null, checkpointBytes = 0;
   const pendingPlaybackMarks = new Map();
@@ -28,6 +28,27 @@ export function createGptLivePstnSession({ sendTwilio, hangup = () => {}, novaCl
       await sleep(25);
     }
     return false;
+  }
+  function expectedTurnCancellation(error, generation) {
+    return generation !== finalizeGeneration || error?.name === "AbortError" || error?.code === "gpt_live_round2_superseded";
+  }
+  async function handleFinalizeFailure(error, generation) {
+    if (closed || expectedTurnCancellation(error, generation)) {
+      try { diagnostic("turn_superseded", { category: "caller_correction" }); } catch {}
+      return false;
+    }
+    const providerCode = String(error?.code || "");
+    const category = /^[a-z0-9_]{1,64}$/i.test(providerCode) ? providerCode : "live_turn_failure";
+    try { diagnostic("turn_finalize_failed", { category }); } catch {}
+    await stop("failed", "live_turn_failure");
+    return false;
+  }
+  function finalizeDetached(generation) {
+    void finalizeInboundTurn(generation).catch((error) => {
+      void handleFinalizeFailure(error, generation).catch(() => {
+        try { diagnostic("turn_finalize_cleanup_failed", { category: "live_turn_failure" }); } catch {}
+      });
+    });
   }
   async function schedulePlaybackMark() {
     const turnId = client.snapshot().current?.turnId;
@@ -71,7 +92,7 @@ export function createGptLivePstnSession({ sendTwilio, hangup = () => {}, novaCl
         }
         const audio = Buffer.from(message.media.payload, "base64");
         void inputReady.then(() => { if (!closed) client.appendAudio(audio); }).catch(() => { void stop("failed", "live_input_failure"); });
-        if (activity.event === "speech_ended") { const generation = ++finalizeGeneration; void finalizeInboundTurn(generation); }
+        if (activity.event === "speech_ended") { const generation = ++finalizeGeneration; finalizeDetached(generation); }
         return { accepted: true };
       }
       if (message.event === "mark" && pendingPlaybackMarks.has(message.mark?.name)) {

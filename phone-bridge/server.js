@@ -130,7 +130,7 @@ export function createPhoneBridgeServer({ environment = process.env, fetchImpl =
           diagnostic("session_token_accepted");
           boundStreamSid = message.streamSid;
           const transcriber = transcriberFactory({ onError: (error) => { diagnostic("stt_failed", { category: safeCategory(error, "stt_provider_failure") }); closeSafely(1011, "transcription failure"); } });
-          const commonRuntime = { sendTwilio: (value) => { if (ws.readyState === WebSocketImpl.OPEN) ws.send(JSON.stringify(value)); }, hangup:()=>closeSafely(1000,"safe hangup"), novaClient, authorization: authorized, callIntentId: authorized.callIntentId, maximumDurationSeconds: authorized.maximumDurationSeconds, callSid: message.start.callSid, streamSid: message.streamSid };
+          const commonRuntime = { sendTwilio: (value) => { if (ws.readyState === WebSocketImpl.OPEN) ws.send(JSON.stringify(value)); }, hangup:()=>closeSafely(1000,"safe hangup"), diagnostic, novaClient, authorization: authorized, callIntentId: authorized.callIntentId, maximumDurationSeconds: authorized.maximumDurationSeconds, callSid: message.start.callSid, streamSid: message.streamSid };
           if (authorized.mediaProfile === "gpt_live_round2_preview") {
             if (!config.gptLivePreviewEnabled || authorized.liveVoice !== "gleam") throw Object.assign(new Error("The GPT-Live Preview route is disabled or not authorized for this voice."), { code: "gpt_live_phone_route_disabled" });
             runtime = gptLiveRuntimeFactory(commonRuntime);

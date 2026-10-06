@@ -392,6 +392,48 @@ test("Preview GPT-Live PSTN adapter keeps PCMU transport canonical, supports bar
   await runtime.stop("completed","fixture",{hangupSocket:false});assert.equal(closed,1);assert.equal(events.length,1);assert.equal(runtime.metrics().rawAudioPersisted,false);assert.doesNotMatch(JSON.stringify(events),/audio|base64|payload/i);
 });
 
+test("PSTN adapter treats repeated caller correction as benign and completes the newest realistic PCMU turn",async()=>{
+  const sent=[],events=[],diagnostics=[],pending=[];let speechStarts=0,speechEnds=0,playbackCompleted=0,closed=0,hangups=0,phase="capturing",turnId="turn-1",transcriptCharacters=20;
+  const client={
+    connect(){return true;},async ready(){return{providerSessionId:"live-overlap"};},
+    async callerSpeechStarted(){
+      speechStarts+=1;phase="capturing";turnId=`turn-${speechStarts}`;
+      if(pending.length)pending.shift().reject(new DOMException("Superseded by caller correction.","AbortError"));
+    },
+    appendAudio(audio){assert.equal(audio.length,160);return true;},
+    callerSpeechEnded(){
+      speechEnds+=1;
+      if(speechEnds<3)return new Promise((resolve,reject)=>pending.push({resolve,reject}));
+      phase="playback_pending";return Promise.resolve({authority:"LOCAL_CONVERSATION"});
+    },
+    async playbackCheckpoint(){return true;},async playbackCompleted(){playbackCompleted+=1;phase="done";return true;},
+    async close(){closed+=1;},snapshot(){return{current:{turnId,phase,terminal:null,transcriptCharacters},rawAudioPersisted:false};},
+  };
+  let callbacks;const runtime=createGptLivePstnSession({sendTwilio:value=>sent.push(value),hangup(){hangups+=1;},diagnostic:(event,metadata)=>diagnostics.push({event,...metadata}),novaClient:{async event(value){events.push(value);}},authorization:{bridgeSessionToken:"bridge-token",callIntentId:"phone_overlap",callConversationId:"phone-session-phone_overlap",maximumDurationSeconds:600,mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"},callIntentId:"phone_overlap",maximumDurationSeconds:600,callSid:CALL_SID,streamSid:STREAM_SID,apiKey:"openai",round2Api:{},createClient(options){callbacks=options;return client;}});
+  await runtime.start();
+  const burst=()=>{for(let index=0;index<3;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SPEECH}});for(let index=0;index<50;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SILENCE}});};
+  burst();for(let index=0;index<20&&speechEnds<1;index+=1)await new Promise(resolve=>setTimeout(resolve,5));assert.equal(speechEnds,1);
+  burst();for(let index=0;index<40&&speechEnds<2;index+=1)await new Promise(resolve=>setTimeout(resolve,5));assert.equal(speechStarts,2);assert.equal(speechEnds,2);
+  burst();for(let index=0;index<40&&speechEnds<3;index+=1)await new Promise(resolve=>setTimeout(resolve,5));assert.equal(speechStarts,3);assert.equal(speechEnds,3);
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(closed,0);assert.equal(hangups,0);assert.equal(diagnostics.filter(item=>item.event==="turn_superseded").length,2);assert.equal(diagnostics.some(item=>item.event==="turn_finalize_failed"),false);
+  callbacks.onAudio(Buffer.alloc(160,1),{turnId:"turn-3",outputKind:"final",startMs:0,endMs:20});callbacks.onEvent("session.output.done");
+  for(let index=0;index<20&&!sent.some(item=>item.event==="mark");index+=1)await new Promise(resolve=>setTimeout(resolve,5));
+  const mark=sent.find(item=>item.event==="mark");assert.ok(mark);runtime.handle(mark);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(playbackCompleted,1);assert.equal(sent.some(item=>item.event==="media"),true);assert.equal(events.length,0);assert.equal(runtime.metrics().rawAudioPersisted,false);
+  await runtime.stop("completed","fixture",{hangupSocket:false});assert.equal(closed,1);
+});
+
+test("PSTN adapter converts unexpected detached finalization failure into exactly one controlled stop",async()=>{
+  const events=[],diagnostics=[];let closed=0,hangups=0,speechEnds=0;
+  const client={connect(){},async ready(){return{};},async callerSpeechStarted(){},appendAudio(){},async callerSpeechEnded(){speechEnds+=1;throw Object.assign(new Error("provider detail must stay private"),{code:"provider_turn_failed"});},async close(){closed+=1;},snapshot(){return{current:{turnId:"turn-1",phase:"capturing",terminal:null,transcriptCharacters:10},rawAudioPersisted:false};}};
+  const runtime=createGptLivePstnSession({sendTwilio(){},hangup(){hangups+=1;},diagnostic:(event,metadata)=>diagnostics.push({event,...metadata}),novaClient:{async event(value){events.push(value);}},authorization:{bridgeSessionToken:"bridge-token",callIntentId:"phone_failure",callConversationId:"phone-session-phone_failure",maximumDurationSeconds:600,mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"},callIntentId:"phone_failure",maximumDurationSeconds:600,callSid:CALL_SID,streamSid:STREAM_SID,apiKey:"openai",round2Api:{},createClient(){return client;}});
+  await runtime.start();for(let index=0;index<3;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SPEECH}});for(let index=0;index<50;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SILENCE}});
+  for(let index=0;index<30&&events.length===0;index+=1)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(speechEnds,1);assert.equal(closed,1);assert.equal(hangups,1);assert.equal(events.length,1);assert.equal(events[0].type,"failed");assert.equal(events[0].providerStatus,"live_turn_failure");
+  assert.deepEqual(diagnostics,[{event:"turn_finalize_failed",category:"provider_turn_failed"}]);assert.doesNotMatch(JSON.stringify(diagnostics),/provider detail/);
+  await runtime.stop("failed","duplicate");assert.equal(closed,1);assert.equal(hangups,1);assert.equal(events.length,1);
+});
+
 test("bridge selects GPT-Live only for an immutable authorized Preview profile and leaves chained runtime untouched",async()=>{
   const logs=[];let chained=0,live=0;
   const environment={PORT:"0",NOVA_PHONE_BRIDGE_PUBLIC_URL:"https://bridge.example",NOVA_PHONE_BASE_URL:AUTHORIZED_NOVA_PREVIEW_BASE_URL,OPENAI_API_KEY:"openai",ELEVENLABS_API_KEY:"eleven",ELEVENLABS_VOICE_ID:"owner-voice",VERCEL_AUTOMATION_BYPASS_SECRET:"preview-bypass",TWILIO_AUTH_TOKEN:"twilio-auth",NOVA_PHONE_GPT_LIVE_PREVIEW_ENABLED:"true"};
