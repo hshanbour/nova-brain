@@ -7,7 +7,7 @@ export async function waitForBridgeReady({ healthUrl, fetchImpl, attempts = 8, r
     try {
       const response = await fetchImpl(healthUrl, { method: "GET", headers: { Accept: "application/json" }, signal: controller.signal });
       const body = response.ok ? await response.json().catch(() => null) : null;
-      if (body?.ready === true && body?.acceptingCalls === true) return Object.freeze({ ready: true, attempts: attempt });
+      if (body?.ready === true && body?.acceptingCalls === true && body?.providerCertificationReady === true) return Object.freeze({ ready: true, providerCertificationReady: true, attempts: attempt });
     } catch (error) {
       if (attempt === attempts) throw new Error("Realtime bridge did not become ready before dial.", { cause: error });
     } finally { clearTimeout(timeout); }

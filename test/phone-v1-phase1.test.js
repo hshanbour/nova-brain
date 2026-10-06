@@ -61,23 +61,27 @@ function envelope(overrides = {}) {
   return { destination: "+447700900456", expectedParty: "Example Business", callerDisclosure: "Hello, I am Nova, an AI assistant calling for Mohammad.", objective: "Ask whether the business accepts new website enquiries.", approvedContext: "Mohammad is evaluating a website project.", permittedQuestions: ["Do you accept new website enquiries?"], permittedDisclosures: ["Mohammad requested this exploratory call."], prohibitedDisclosures: ["Private account information"], prohibitedActions: ["No purchases, contracts, prices, or commitments"], languageStrategy: "Use English, Arabic, or mixed Arabic-English to match the other party.", maximumDurationMinutes: 10, maximumAttempts: 1, callingWindow: { timezone: "Europe/London", startAt: "2026-10-02T12:00:00.000Z", endAt: "2026-10-02T13:00:00.000Z" }, voicemailPolicy: "do_not_leave", recordingPolicy: "disabled", terminationBehavior: "Return to scope once, then end safely.", expiresAt: "2026-10-02T13:00:00.000Z", ...overrides };
 }
 
-async function fixture({ dial = async () => ({ callSid: CALL_SID, providerStatus: "queued" }), health = async () => new Response(JSON.stringify({ ready: true, acceptingCalls: true }), { status: 200 }), novaTurn = async () => ({ message: "Thanks. I will stay within the approved objective.", runId: "run-phone-turn" }) } = {}) {
+async function fixture({ dial = async () => ({ callSid: CALL_SID, providerStatus: "queued" }), health = async () => new Response(JSON.stringify({ ready: true, acceptingCalls: true, providerCertificationReady: true }), { status: 200 }), prewarmSpeaker = null, novaTurn = async () => ({ message: "Thanks. I will stay within the approved objective.", runId: "run-phone-turn" }) } = {}) {
   const config = readConfig(environment()); const storage = createInMemoryStorage({ clock: () => NOW });
   await storage.initialize({ owner: INITIAL_OWNER_PROFILE, projects: INITIAL_PROJECTS, memories: INITIAL_MEMORIES });
   await storage.ensureConversation({ id: CONVERSATION, ownerId: OWNER_ID, title: "Phone" });
   let nonce=0,callNonce=0;const auth = createPhoneSessionAuth({ key: config.phone.sessionSigningKeyBytes, clock: () => NOW, randomBytesImpl: () => Buffer.alloc(18, ++nonce) });
-  const service = createPhoneService({ config, storage, ownerId: OWNER_ID, dialProvider: { configured: true, dial }, sessionAuth: auth, novaTurn, fetchImpl: health, clock: () => NOW, idFactory: () => `11111111-1111-4111-8111-${String(++callNonce).padStart(12,"0")}` });
+  const service = createPhoneService({ config, storage, ownerId: OWNER_ID, dialProvider: { configured: true, dial }, sessionAuth: auth, novaTurn, prewarmSpeaker, fetchImpl: health, clock: () => NOW, idFactory: () => `11111111-1111-4111-8111-${String(++callNonce).padStart(12,"0")}` });
   const registry = createToolRegistry({ policy: createActionPolicy({ storage, ownerId: OWNER_ID, approvedBranch: "preview" }) }); registerPhoneTools(registry, { service });
   const run = await storage.createRun({ ownerId: OWNER_ID, conversationId: CONVERSATION, goal: "Prepare call", status: "running" });
   const prepared = await registry.execute("phone_call_prepare", envelope(), { conversationId: CONVERSATION, runId: run.id });
   return { config, storage, auth, service, registry, run, prepared };
 }
 
-test("schema seventeen preserves bounded durable phone authority, events, transcript turns, owner contact policy, and PSTN calibration", async () => {
+test("schema seventeen preserves bounded durable phone authority, events, transcript turns, owner contact policy, callback eligibility, and PSTN calibration", async () => {
   assert.equal(SCHEMA_VERSION, 17);
-  for (const table of ["nova_phone_call_intents", "nova_phone_call_events", "nova_phone_call_turns", "nova_owner_contact_policies", "nova_speaker_channel_calibrations"]) assert.ok(SCHEMA_STATEMENTS.some((statement) => statement.includes(`CREATE TABLE IF NOT EXISTS ${table}`)));
+  for (const table of ["nova_phone_call_intents", "nova_phone_call_events", "nova_phone_call_turns", "nova_owner_contact_policies", "nova_owner_callback_eligibilities", "nova_speaker_channel_calibrations"]) assert.ok(SCHEMA_STATEMENTS.some((statement) => statement.includes(`CREATE TABLE IF NOT EXISTS ${table}`)));
   const migration = await readFile(new URL("../migrations/005_phone_v1.sql", import.meta.url), "utf8");
   assert.match(migration, /ON CONFLICT \(version\) DO NOTHING/); assert.match(migration, /attempt_count integer NOT NULL DEFAULT 0/); assert.doesNotMatch(migration, /raw_audio|recording_url|audio_blob/i);
+  const ownerExperienceMigration = await readFile(new URL("../migrations/007_phone_owner_experience.sql", import.meta.url), "utf8");
+  assert.match(ownerExperienceMigration, /CREATE TABLE IF NOT EXISTS nova_owner_callback_eligibilities/);
+  assert.match(ownerExperienceMigration, /PRIMARY KEY\(owner_id,task_id,terminal_state_version\)/);
+  assert.doesNotMatch(ownerExperienceMigration, /\b(?:DROP|TRUNCATE)\b|\bDELETE\s+FROM\b/i);
 });
 
 test("immutable envelope hashing is deterministic and rejects non-UK, recording, redial, and excessive duration", () => {
@@ -112,6 +116,20 @@ test("approved execution claims exactly one dial and duplicate execution cannot 
   await f.storage.decideApproval(approval.id, OWNER_ID, "approved");
   const first = await f.registry.execute("phone_call_start", f.prepared, { ...context, approvalId: approval.id }); const duplicate = await f.registry.execute("phone_call_start", f.prepared, { ...context, approvalId: approval.id });
   assert.equal(dials, 1); assert.equal(first.idempotent, false); assert.equal(duplicate.idempotent, true); assert.equal((await f.storage.getPhoneCallIntent(f.prepared.callIntentId, OWNER_ID)).attemptCount, 1);
+});
+
+test("speaker readiness runs before the final provider-certified bridge wake gate and dial", async () => {
+  const order = [];
+  const f = await fixture({
+    prewarmSpeaker: async () => { order.push("speaker"); return { available: true }; },
+    health: async () => { order.push("bridge"); return new Response(JSON.stringify({ ready: true, acceptingCalls: true, providerCertificationReady: true }), { status: 200 }); },
+    dial: async () => { order.push("dial"); return { callSid: CALL_SID, providerStatus: "queued" }; },
+  });
+  const context = { conversationId: CONVERSATION, runId: f.run.id }; let approval;
+  await assert.rejects(() => f.registry.execute("phone_call_start", f.prepared, context), (error) => { approval = error.approval; return true; });
+  await f.storage.decideApproval(approval.id, OWNER_ID, "approved");
+  await f.registry.execute("phone_call_start", f.prepared, { ...context, approvalId: approval.id });
+  assert.deepEqual(order, ["speaker", "bridge", "dial"]);
 });
 
 test("concurrent duplicate execution atomically binds only the winning dial token",async()=>{

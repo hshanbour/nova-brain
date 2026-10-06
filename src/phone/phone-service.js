@@ -97,11 +97,13 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
       if (["dialing", "in_progress", "completed"].includes(call.status)) return { callIntentId: call.id, status: call.status, idempotent: true, callSid: call.providerCallSid || null };
       if (["failed", "uncertain"].includes(call.status) || call.attemptCount >= call.envelope.maximumAttempts)
         throw new PhoneError("This call is terminal or has an uncertain outcome; Nova will not dial again automatically.", { code: "phone_call_not_retryable", statusCode: 409, category: "idempotency" });
-      await waitForBridgeReady({ healthUrl: `${phone.bridgeBaseUrl}/health/ready`, fetchImpl, attempts: phone.bridgeReadinessAttempts, delayMs: phone.bridgeReadinessDelayMs });
       if (typeof prewarmSpeaker === "function") {
         const readiness = await prewarmSpeaker();
         if (readiness?.available !== true) throw new PhoneError("Speaker verification is not ready for the owner call.", { code: "phone_speaker_not_ready", statusCode: 503, category: "readiness" });
       }
+      // Make the bridge the final readiness gate so Fly is awake immediately before
+      // the exactly-once dial claim; a long-lived paid warm worker is unnecessary.
+      await waitForBridgeReady({ healthUrl: `${phone.bridgeBaseUrl}/health/ready`, fetchImpl, attempts: phone.bridgeReadinessAttempts, delayMs: phone.bridgeReadinessDelayMs });
       if (standing) {
         await ownerContactPolicy.consume(context.standingPolicy.policyVersion);
         call = await storage.authorizePhoneCallByPolicy(call.id, ownerId, { policyVersion: context.standingPolicy.policyVersion });

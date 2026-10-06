@@ -87,5 +87,27 @@ export function createOwnerContactPolicy({ storage, ownerId, ownerNumber, deploy
       if (!result) throw new OwnerContactPolicyError("Owner contact authority could not be claimed.", "owner_contact_policy_claim_failed", 409);
       return result;
     },
+    async reconcileTerminalTasks({ limit = 100 } = {}) {
+      const candidates = await storage.listOwnerCallbackEligibilityCandidates(ownerId, { limit });
+      let recorded = 0; let eligible = 0;
+      for (const task of candidates) {
+        const reason = task.status === "completed" ? "task_completed" : "task_blocked_owner_required";
+        const decision = await this.authorize({ destination: ownerNumber, reason, sourceTaskId: task.id });
+        const result = await storage.recordOwnerCallbackEligibility({
+          ownerId,
+          taskId: task.id,
+          terminalStateVersion: task.stateVersion,
+          conversationId: task.metadata?.terminalReporting?.conversationId || null,
+          reason,
+          status: decision.authorized ? "eligible" : "ineligible",
+          decisionCode: decision.authorized ? "policy_authorized" : decision.reason,
+          policyVersion: decision.policyVersion || null,
+        });
+        if (!result?.inserted) continue;
+        recorded += 1; if (decision.authorized) eligible += 1;
+        await storage.appendActivity({ ownerId, projectId: task.projectId || null, runId: task.id, action: "owner_callback_eligibility_recorded", tool: "phone_owner_callback_prepare", status: decision.authorized ? "eligible" : "ineligible", summary: decision.authorized ? "A terminal task is eligible for bounded owner callback preparation." : "A terminal task did not receive standing callback eligibility.", metadata: { taskId: task.id, terminalStateVersion: task.stateVersion, reason, decisionCode: decision.authorized ? "policy_authorized" : decision.reason, policyVersion: decision.policyVersion || null, callPrepared: false, dialed: false } });
+      }
+      return { recorded, eligible, callIntentsCreated: 0, dials: 0 };
+    },
   });
 }

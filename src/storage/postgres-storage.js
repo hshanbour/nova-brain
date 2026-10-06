@@ -278,6 +278,7 @@ const gmailDraftRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, to: 
 const gmailSendIntentRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, draftId: row.draft_id, intentHash: row.intent_hash, messageId: row.message_id, status: row.status, providerMessageId: row.provider_message_id, providerThreadId: row.provider_thread_id, errorCode: row.error_code, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
 const phoneCallRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, conversationId: row.conversation_id, preparedRunId: row.prepared_run_id, callConversationId: row.call_conversation_id, envelope: row.envelope, envelopeHash: row.envelope_hash, status: row.status, approvalId: row.approval_id, attemptCount: Number(row.attempt_count), submissionKey: row.submission_key, providerCallSid: row.provider_call_sid, providerStreamSid: row.provider_stream_sid, providerStatus: row.provider_status, sessionTokenHash: row.session_token_hash, sessionTokenExpiresAt: date(row.session_token_expires_at), sessionTokenUsedAt: date(row.session_token_used_at), outcome: row.outcome, summary: row.summary, errorCode: row.error_code, expiresAt: date(row.expires_at), startedAt: date(row.started_at), endedAt: date(row.ended_at), createdAt: date(row.created_at), updatedAt: date(row.updated_at), ...(row.assistant_message_id ? { assistantMessageId: row.assistant_message_id } : {}) });
 const ownerContactPolicyRow = (row) => row && ({ ownerId: row.owner_id, version: Number(row.version), enabled: row.enabled === true, allowedReasons: row.allowed_reasons, quietHours: row.quiet_hours, cooldownMinutes: Number(row.cooldown_minutes), dailyLimit: Number(row.daily_limit), maximumCalls: Number(row.maximum_calls), usedCalls: Number(row.used_calls), expiresAt: date(row.expires_at), pausedAt: date(row.paused_at), revokedAt: date(row.revoked_at), createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
+const ownerCallbackEligibilityRow = (row) => row && ({ ownerId: row.owner_id, taskId: row.task_id, terminalStateVersion: Number(row.terminal_state_version), conversationId: row.conversation_id, reason: row.reason, status: row.status, decisionCode: row.decision_code, policyVersion: row.policy_version === null ? null : Number(row.policy_version), createdAt: date(row.created_at) });
 const speakerChannelCalibrationRow = (row) => row && ({ ownerId: row.owner_id, speakerProfileId: row.speaker_profile_id, channel: row.channel, status: row.status, representationVersion: row.representation_version, ownerMatchThreshold: row.owner_match_threshold === null ? null : Number(row.owner_match_threshold), ambiguityMargin: row.ambiguity_margin === null ? null : Number(row.ambiguity_margin), sampleCount: Number(row.sample_count), sessionCount: Number(row.session_count), conditions: row.conditions || [], consentAt: date(row.consent_at), createdAt: date(row.created_at), updatedAt: date(row.updated_at), revokedAt: date(row.revoked_at) });
 const phoneTurnRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, callIntentId: row.call_intent_id, inputHash: row.input_hash, callerText: row.caller_text, novaText: row.nova_text, control: row.control, runId: row.run_id, status: row.status, errorCode: row.error_code, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
 const phoneEventRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, callIntentId: row.call_intent_id, eventKey: row.event_key, type: row.event_type, providerCallSid: row.provider_call_sid, providerStreamSid: row.provider_stream_sid, metadata: row.metadata, createdAt: date(row.created_at) });
@@ -1345,6 +1346,31 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         `UPDATE nova_owner_contact_policies SET used_calls=used_calls+1,updated_at=now() WHERE owner_id=$1 AND version=$2 AND enabled=true AND paused_at IS NULL AND revoked_at IS NULL AND expires_at>$3 AND used_calls<maximum_calls AND used_calls<daily_limit RETURNING *`,
         [ownerId,version,consumedAt],
       ))[0]);
+    },
+    async recordOwnerCallbackEligibility(input) {
+      const rows = await run(
+        `WITH inserted AS (
+           INSERT INTO nova_owner_callback_eligibilities (owner_id,task_id,terminal_state_version,conversation_id,reason,status,decision_code,policy_version)
+           SELECT $1,$2,$3,$4,$5,$6,$7,$8 WHERE EXISTS (SELECT 1 FROM nova_autonomy_tasks WHERE id=$2 AND owner_id=$1)
+           ON CONFLICT DO NOTHING RETURNING *,true AS inserted
+         ) SELECT * FROM inserted UNION ALL
+         SELECT existing.*,false AS inserted FROM nova_owner_callback_eligibilities existing
+           WHERE existing.owner_id=$1 AND existing.task_id=$2 AND existing.terminal_state_version=$3 AND NOT EXISTS (SELECT 1 FROM inserted) LIMIT 1`,
+        [input.ownerId,input.taskId,input.terminalStateVersion,input.conversationId||null,input.reason,input.status,input.decisionCode,input.policyVersion||null],
+      );
+      return rows[0] ? { inserted: rows[0].inserted === true, eligibility: ownerCallbackEligibilityRow(rows[0]) } : null;
+    },
+    async listOwnerCallbackEligibilityCandidates(ownerId, { limit = 100 } = {}) {
+      return (await run(
+        `SELECT task.* FROM nova_autonomy_tasks task WHERE task.owner_id=$1 AND task.status IN ('completed','blocked')
+           AND task.metadata->'terminalReporting'->>'version'='1'
+           AND NOT EXISTS (SELECT 1 FROM nova_owner_callback_eligibilities eligibility WHERE eligibility.owner_id=$1 AND eligibility.task_id=task.id AND eligibility.terminal_state_version=task.state_version)
+         ORDER BY task.updated_at DESC,task.id ASC LIMIT $2`,
+        [ownerId,limit],
+      )).map(autonomyTaskRow);
+    },
+    async listOwnerCallbackEligibilities(ownerId, { limit = 100 } = {}) {
+      return (await run("SELECT * FROM nova_owner_callback_eligibilities WHERE owner_id=$1 ORDER BY created_at DESC,task_id ASC LIMIT $2", [ownerId,limit])).map(ownerCallbackEligibilityRow);
     },
     async bindPhoneCallApproval(id, ownerId, { approvalId, status }) {
       return phoneCallRow((await run(

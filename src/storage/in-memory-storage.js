@@ -41,6 +41,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const phoneCallEvents = new Map();
   const phoneCallTurns = new Map();
   const ownerContactPolicies = new Map();
+  const ownerCallbackEligibilities = new Map();
   const liveConversationStates = new Map();
   const conversationEvents = new Map();
   const developerSessions = new Map();
@@ -1035,6 +1036,23 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const current = ownerContactPolicies.get(ownerId);
       if (!current || !current.enabled || current.version !== version || current.pausedAt || current.revokedAt || new Date(current.expiresAt) <= new Date(consumedAt) || current.usedCalls >= current.maximumCalls || current.usedCalls >= current.dailyLimit) return null;
       const value = { ...current, usedCalls: current.usedCalls + 1, updatedAt: now(clock) }; ownerContactPolicies.set(ownerId, value); return copy(value);
+    },
+    async recordOwnerCallbackEligibility(input) {
+      const key = `${input.ownerId}:${input.taskId}:${input.terminalStateVersion}`;
+      const existing = ownerCallbackEligibilities.get(key);
+      if (existing) return { inserted: false, eligibility: copy(existing) };
+      const task = autonomyTasks.get(input.taskId);
+      if (!task || task.ownerId !== input.ownerId) return null;
+      const value = { ...copy(input), createdAt: now(clock) };
+      ownerCallbackEligibilities.set(key, value);
+      return { inserted: true, eligibility: copy(value) };
+    },
+    async listOwnerCallbackEligibilityCandidates(ownerId, { limit = 100 } = {}) {
+      const recorded = new Set([...ownerCallbackEligibilities.values()].map((item) => `${item.taskId}:${item.terminalStateVersion}`));
+      return [...autonomyTasks.values()].filter((task) => task.ownerId === ownerId && ["completed", "blocked"].includes(task.status) && task.metadata?.terminalReporting?.version === 1 && !recorded.has(`${task.id}:${task.stateVersion}`)).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id)).slice(0, limit).map(copy);
+    },
+    async listOwnerCallbackEligibilities(ownerId, { limit = 100 } = {}) {
+      return [...ownerCallbackEligibilities.values()].filter((item) => item.ownerId === ownerId).sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.taskId.localeCompare(right.taskId)).slice(0, limit).map(copy);
     },
     async bindPhoneCallApproval(id, ownerId, { approvalId, status }) {
       const call = phoneCallIntents.get(id);

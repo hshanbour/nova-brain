@@ -28,6 +28,12 @@ test("completed coding result is delivered exactly once to its originating conve
   assert.equal((await f.reporter.latestForConversation(CONVERSATION)).task.id,task.id);
 });
 
+test("terminal reporting reconciles callback eligibility without changing its report result contract",async()=>{
+  const f=await fixture();await terminal(f,{id:"web_"+"c".repeat(32),type:"public_web_research"});let reconciliations=0;
+  const reporter=createTerminalTaskReporter({storage:f.storage,ownerId:OWNER,ownerContactPolicy:{async reconcileTerminalTasks({limit}){reconciliations+=1;assert.equal(limit,100);return{recorded:1,eligible:0,callIntentsCreated:0,dials:0};}}});
+  assert.deepEqual(await reporter.reconcile(),{enqueued:1,delivered:1});assert.equal(reconciliations,1);
+});
+
 for(const status of ["failed","blocked","cancelled"])test(`${status} task emits one bounded safe terminal report`,async()=>{
   const f=await fixture();await terminal(f,{id:`selfdev_${status.padEnd(32,"a").slice(0,32)}`,status,phase:"run_focused_tests"});
   await f.reporter.reconcile();await f.reporter.reconcile();const [message]=await f.storage.listMessages(CONVERSATION,OWNER,{limit:10});

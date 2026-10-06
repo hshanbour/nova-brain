@@ -232,9 +232,9 @@ test("Fly scale-to-zero design and pre-dial readiness prevent dialing before a c
   const readiness = await waitForBridgeReady({ healthUrl: "https://bridge.example/health/ready", delayMs: 0, schedule: (resolve) => resolve(), fetchImpl: async () => {
     probes += 1;
     if (probes < 3) return new Response(JSON.stringify({ ready: false, acceptingCalls: false }), { status: 503 });
-    return new Response(JSON.stringify({ ready: true, acceptingCalls: true }), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ ready: true, acceptingCalls: true, providerCertificationReady: true }), { status: 200, headers: { "content-type": "application/json" } });
   } });
-  assert.deepEqual(readiness, { ready: true, attempts: 3 });
+  assert.deepEqual(readiness, { ready: true, providerCertificationReady: true, attempts: 3 });
   if (readiness.ready) dialed = true;
   assert.equal(dialed, true);
 });
@@ -243,4 +243,14 @@ test("failed bridge readiness exits before a future dial adapter could run", asy
   let dialed = false;
   await assert.rejects(() => waitForBridgeReady({ healthUrl: "https://bridge.example/health/ready", attempts: 2, delayMs: 0, schedule: (resolve) => resolve(), fetchImpl: async () => new Response("not ready", { status: 503 }) }), /before dial/);
   assert.equal(dialed, false);
+});
+
+test("bridge readiness rejects a healthy transport whose provider certification is not ready", async () => {
+  await assert.rejects(() => waitForBridgeReady({
+    healthUrl: "https://bridge.example/health/ready",
+    attempts: 1,
+    delayMs: 0,
+    schedule: (resolve) => resolve(),
+    fetchImpl: async () => new Response(JSON.stringify({ ready: true, acceptingCalls: true, providerCertificationReady: false }), { status: 200, headers: { "content-type": "application/json" } }),
+  }), /before dial/);
 });

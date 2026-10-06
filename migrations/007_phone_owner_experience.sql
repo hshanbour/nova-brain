@@ -38,6 +38,22 @@ CREATE TABLE IF NOT EXISTS nova_speaker_channel_calibrations (
 CREATE INDEX IF NOT EXISTS nova_speaker_channel_calibrations_owner_idx
   ON nova_speaker_channel_calibrations (owner_id,channel,status,updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS nova_owner_callback_eligibilities (
+  owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+  task_id text NOT NULL REFERENCES nova_autonomy_tasks(id) ON DELETE CASCADE,
+  terminal_state_version integer NOT NULL,
+  conversation_id text REFERENCES nova_conversations(id) ON DELETE SET NULL,
+  reason text NOT NULL CHECK (reason IN ('task_completed','task_blocked_owner_required')),
+  status text NOT NULL CHECK (status IN ('eligible','ineligible')),
+  decision_code text NOT NULL,
+  policy_version integer,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(owner_id,task_id,terminal_state_version)
+);
+
+CREATE INDEX IF NOT EXISTS nova_owner_callback_eligibilities_owner_idx
+  ON nova_owner_callback_eligibilities (owner_id,status,created_at DESC);
+
 INSERT INTO nova_schema_migrations (version) VALUES (16), (17) ON CONFLICT (version) DO NOTHING;
 
 COMMIT;

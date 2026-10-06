@@ -178,7 +178,7 @@ export function createApp({
     deploymentEnvironment: environment.VERCEL_ENV || "local",
     executionTruth,
   });
-  const terminalReporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID});
+  const terminalReporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID,ownerContactPolicy});
   const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,terminalReporter,executionTruth});
   const codingExecutor=typeof storage?.getAutonomyTask==="function"?createCodingExecutorService({
     runtime:workerRuntime,
