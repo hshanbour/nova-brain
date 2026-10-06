@@ -210,13 +210,13 @@ test("real WebSocket adapter groups Live audio with bounded inactivity while loc
     close() {}
     terminate() {}
   }
-  const audio = [], calls = [];
+  const audio = [], calls = [], completions = [];
   const api = {
     async start() { return { conversationId: "quiet", contextVersion: 0 }; },
     async turn(input) { calls.push(input); return { ...input, authority: "LOCAL_CONVERSATION", status: "ready_to_present", contextVersion: 2, message: input.localResponse, messageId: "message" }; },
     async delivery(input) { calls.push({ delivery: input }); return input; },
   };
-  const client = createGptLiveRound2Client({ apiKey: "server-only", round2Api: api, conversationId: "quiet", WebSocketImpl: Socket, outputQuietMs: 5, onAudio: (value) => audio.push(value) });
+  const client = createGptLiveRound2Client({ apiKey: "server-only", round2Api: api, conversationId: "quiet", WebSocketImpl: Socket, outputQuietMs: 5, onAudio: (value) => audio.push(value), onOutputCompleted: (value) => completions.push(value) });
   client.connect();
   await new Promise((resolve) => setImmediate(resolve));
   Socket.instance.emit("message", JSON.stringify({ type: "session.started", event_id: "started", session: { id: "live" } }));
@@ -233,9 +233,62 @@ test("real WebSocket adapter groups Live audio with bounded inactivity while loc
   assert.equal(calls[0].localResponse, "تمام");
   assert.equal(client.snapshot().usageSeconds, 1.25);
   assert.equal(client.snapshot().current.phase, "playback_pending");
+  assert.deepEqual(completions, [{ turnId: client.snapshot().current.turnId, source: "inactivity" }]);
   await client.playbackCompleted();
   assert.equal((await client.waitForTerminal()).status, "delivered");
   assert.doesNotMatch(JSON.stringify(client.snapshot()), /server-only|pcmu/);
+});
+
+test("explicit provider completion notifies once and cancels the later inactivity completion", async () => {
+  class Socket extends EventEmitter {
+    static OPEN = 1; static instance; readyState = 1;
+    constructor() { super(); Socket.instance = this; queueMicrotask(() => this.emit("open")); }
+    send() {} close() {} terminate() {}
+  }
+  const completions = [];
+  const api = {
+    async start() { return { conversationId: "explicit", contextVersion: 0 }; },
+    async turn(input) { return { ...input, authority: "LOCAL_CONVERSATION", status: "ready_to_present", contextVersion: 1, message: input.localResponse, messageId: "explicit-message" }; },
+    async delivery(input) { return input; },
+  };
+  const client = createGptLiveRound2Client({ apiKey: "server-only", round2Api: api, conversationId: "explicit", WebSocketImpl: Socket, outputQuietMs: 10, onAudio() {}, onOutputCompleted: (value) => completions.push(value) });
+  client.connect(); await new Promise((resolve) => setImmediate(resolve));
+  Socket.instance.emit("message", JSON.stringify({ type: "session.started", event_id: "explicit-started", session: { id: "live" } })); await client.ready();
+  await client.callerSpeechStarted();
+  Socket.instance.emit("message", JSON.stringify({ type: "session.input_transcript.delta", event_id: "explicit-input", delta: "hello" }));
+  Socket.instance.emit("message", JSON.stringify({ type: "session.output_transcript.delta", event_id: "explicit-text", delta: "hello back" }));
+  Socket.instance.emit("message", JSON.stringify({ type: "session.output_audio.delta", event_id: "explicit-audio", delta: Buffer.from("pcmu").toString("base64") }));
+  await client.callerSpeechEnded();
+  Socket.instance.emit("message", JSON.stringify({ type: "session.output.done", event_id: "explicit-done" }));
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(completions.length, 1); assert.equal(completions[0].source, "provider_event");
+  assert.equal(client.snapshot().current.phase, "playback_pending");
+});
+
+test("inactivity completion remains idempotent when a late provider done event arrives", async () => {
+  class Socket extends EventEmitter {
+    static OPEN = 1; static instance; readyState = 1;
+    constructor() { super(); Socket.instance = this; queueMicrotask(() => this.emit("open")); }
+    send() {} close() {} terminate() {}
+  }
+  const completions = [];
+  const api = {
+    async start() { return { conversationId: "late", contextVersion: 0 }; },
+    async turn(input) { return { ...input, authority: "LOCAL_CONVERSATION", status: "ready_to_present", contextVersion: 1, message: input.localResponse, messageId: "late-message" }; },
+    async delivery(input) { return input; },
+  };
+  const client = createGptLiveRound2Client({ apiKey: "server-only", round2Api: api, conversationId: "late", WebSocketImpl: Socket, outputQuietMs: 5, onAudio() {}, onOutputCompleted: (value) => completions.push(value) });
+  client.connect(); await new Promise((resolve) => setImmediate(resolve));
+  Socket.instance.emit("message", JSON.stringify({ type: "session.started", event_id: "late-started", session: { id: "live" } })); await client.ready();
+  await client.callerSpeechStarted();
+  Socket.instance.emit("message", JSON.stringify({ type: "session.input_transcript.delta", event_id: "late-input", delta: "hello" }));
+  Socket.instance.emit("message", JSON.stringify({ type: "session.output_transcript.delta", event_id: "late-text", delta: "hello back" }));
+  Socket.instance.emit("message", JSON.stringify({ type: "session.output_audio.delta", event_id: "late-audio", delta: Buffer.from("pcmu").toString("base64") }));
+  await client.callerSpeechEnded(); await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(completions.length, 1); assert.equal(completions[0].source, "inactivity");
+  Socket.instance.emit("message", JSON.stringify({ type: "session.response.done", event_id: "late-done" }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(completions.length, 1); assert.equal(client.snapshot().current.phase, "playback_pending");
 });
 
 test("client correlates commentary acknowledgement before releasing verified audio", async () => {

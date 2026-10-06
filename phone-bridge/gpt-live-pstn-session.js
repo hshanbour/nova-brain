@@ -8,6 +8,7 @@ export function createGptLivePstnSession({ sendTwilio, hangup = () => {}, novaCl
   if (!authorization?.bridgeSessionToken || authorization.mediaProfile !== "gpt_live_round2_preview" || !authorization.callConversationId || !authorization.liveVoice) throw Object.assign(new Error("The GPT-Live call authorization is incomplete."), { code: "gpt_live_phone_authorization_invalid" });
   let closed = false, timer, markSequence = 0, finalizeGeneration = 0, inputReady = Promise.resolve(), lastAudioMeta = null, checkpointBytes = 0;
   const pendingPlaybackMarks = new Map();
+  const finalMarkTurns = new Set();
   const startedAt = clock();
   const vad = createTelephonyVad();
   const client = createClient({
@@ -18,7 +19,7 @@ export function createGptLivePstnSession({ sendTwilio, hangup = () => {}, novaCl
     voice: authorization.liveVoice,
     onAudio(audio, metadata = {}) { if (!closed) { sendTwilio(twilioMedia(streamSid, audio)); lastAudioMeta = metadata; checkpointBytes += audio.length; if (checkpointBytes >= 4_000) { checkpointBytes = 0; const name = `nova-segment-${++markSequence}-${metadata.turnId || "turn"}`; pendingPlaybackMarks.set(name, { ...metadata, checkpointId: name, final: false, cleared: false }); sendTwilio(twilioMark(streamSid, name)); } } },
     onClearAudio() { if (!closed) { checkpointBytes = 0; for (const value of pendingPlaybackMarks.values()) value.cleared = true; sendTwilio(twilioClear(streamSid)); } },
-    onEvent(type) { if (["session.output_audio.done", "session.output.done", "session.response.done"].includes(type)) queueMicrotask(schedulePlaybackMark); },
+    onOutputCompleted({ turnId } = {}) { queueMicrotask(() => schedulePlaybackMark(turnId)); },
   });
 
   async function finalizeInboundTurn(generation) {
@@ -50,13 +51,14 @@ export function createGptLivePstnSession({ sendTwilio, hangup = () => {}, novaCl
       });
     });
   }
-  async function schedulePlaybackMark() {
-    const turnId = client.snapshot().current?.turnId;
-    if (!turnId) return false;
+  async function schedulePlaybackMark(turnId) {
+    if (!turnId || finalMarkTurns.has(turnId)) return false;
     for (let index = 0; index < 3_000 && !closed; index += 1) {
       const current = client.snapshot().current;
       if (!current || current.turnId !== turnId || current.terminal) return false;
       if (["playback_pending", "backend_pending"].includes(current.phase)) {
+        if (finalMarkTurns.has(turnId)) return false;
+        finalMarkTurns.add(turnId);
         const name = `nova-final-${++markSequence}-${turnId}`;
         pendingPlaybackMarks.set(name, { ...(lastAudioMeta || {}), turnId, outputKind: current.phase === "backend_pending" ? "acknowledgement" : "final", checkpointId: name, final: true, cleared: false });
         sendTwilio(twilioMark(streamSid, name));

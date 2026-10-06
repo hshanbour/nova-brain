@@ -388,7 +388,7 @@ test("Preview GPT-Live PSTN adapter keeps PCMU transport canonical, supports bar
   for(let index=0;index<20&&speechEnds===0;index+=1)await new Promise(resolve=>setTimeout(resolve,5));assert.equal(speechStarts,1);assert.equal(speechEnds,1);
   callbacks.onAudio(Buffer.alloc(4000,1),{turnId:"turn-1",outputKind:"final",startMs:0,endMs:500});callbacks.onClearAudio();assert.equal(sent.some(item=>item.event==="media"),true);assert.equal(sent.some(item=>item.event==="clear"),true);
   const clearedMark=sent.find(item=>item.event==="mark");runtime.handle(clearedMark);assert.equal(playbackCompleted,0);
-  callbacks.onAudio(Buffer.alloc(160,1),{turnId:"turn-1",outputKind:"final",startMs:21,endMs:40});callbacks.onEvent("session.output.done");for(let index=0;index<20&&!sent.some(item=>item.event==="mark"&&item.mark.name.includes("final"));index+=1)await new Promise(resolve=>setTimeout(resolve,5));const mark=sent.find(item=>item.event==="mark"&&item.mark.name.includes("final"));assert.ok(mark);runtime.handle(mark);await new Promise(resolve=>setImmediate(resolve));assert.equal(playbackCompleted,1);
+  callbacks.onAudio(Buffer.alloc(160,1),{turnId:"turn-1",outputKind:"final",startMs:21,endMs:40});callbacks.onOutputCompleted({turnId:"turn-1",source:"provider_event"});callbacks.onOutputCompleted({turnId:"turn-1",source:"inactivity"});for(let index=0;index<20&&!sent.some(item=>item.event==="mark"&&item.mark.name.includes("final"));index+=1)await new Promise(resolve=>setTimeout(resolve,5));const finalMarks=sent.filter(item=>item.event==="mark"&&item.mark.name.includes("final"));assert.equal(finalMarks.length,1);runtime.handle(finalMarks[0]);await new Promise(resolve=>setImmediate(resolve));assert.equal(playbackCompleted,1);
   await runtime.stop("completed","fixture",{hangupSocket:false});assert.equal(closed,1);assert.equal(events.length,1);assert.equal(runtime.metrics().rawAudioPersisted,false);assert.doesNotMatch(JSON.stringify(events),/audio|base64|payload/i);
 });
 
@@ -416,11 +416,22 @@ test("PSTN adapter treats repeated caller correction as benign and completes the
   burst();for(let index=0;index<40&&speechEnds<2;index+=1)await new Promise(resolve=>setTimeout(resolve,5));assert.equal(speechStarts,2);assert.equal(speechEnds,2);
   burst();for(let index=0;index<40&&speechEnds<3;index+=1)await new Promise(resolve=>setTimeout(resolve,5));assert.equal(speechStarts,3);assert.equal(speechEnds,3);
   await new Promise(resolve=>setImmediate(resolve));assert.equal(closed,0);assert.equal(hangups,0);assert.equal(diagnostics.filter(item=>item.event==="turn_superseded").length,2);assert.equal(diagnostics.some(item=>item.event==="turn_finalize_failed"),false);
-  callbacks.onAudio(Buffer.alloc(160,1),{turnId:"turn-3",outputKind:"final",startMs:0,endMs:20});callbacks.onEvent("session.output.done");
+  callbacks.onOutputCompleted({turnId:"turn-1",source:"provider_event"});callbacks.onOutputCompleted({turnId:"turn-2",source:"inactivity"});await new Promise(resolve=>setImmediate(resolve));assert.equal(sent.some(item=>item.event==="mark"),false);
+  callbacks.onAudio(Buffer.alloc(160,1),{turnId:"turn-3",outputKind:"final",startMs:0,endMs:20});callbacks.onOutputCompleted({turnId:"turn-3",source:"inactivity"});callbacks.onOutputCompleted({turnId:"turn-3",source:"provider_event"});
   for(let index=0;index<20&&!sent.some(item=>item.event==="mark");index+=1)await new Promise(resolve=>setTimeout(resolve,5));
   const mark=sent.find(item=>item.event==="mark");assert.ok(mark);runtime.handle(mark);await new Promise(resolve=>setImmediate(resolve));
   assert.equal(playbackCompleted,1);assert.equal(sent.some(item=>item.event==="media"),true);assert.equal(events.length,0);assert.equal(runtime.metrics().rawAudioPersisted,false);
   await runtime.stop("completed","fixture",{hangupSocket:false});assert.equal(closed,1);
+});
+
+test("clearing a sent final mark prevents its late acknowledgement from completing delivery",async()=>{
+  const sent=[];let playbackCompleted=0,phase="playback_pending";
+  const client={connect(){},async ready(){return{};},async callerSpeechStarted(){},appendAudio(){},async callerSpeechEnded(){return true;},async playbackCheckpoint(){return true;},async playbackCompleted(){playbackCompleted+=1;return true;},async close(){},snapshot(){return{current:{turnId:"turn-clear",phase,terminal:null,transcriptCharacters:10},rawAudioPersisted:false};}};
+  let callbacks;const runtime=createGptLivePstnSession({sendTwilio:value=>sent.push(value),novaClient:{async event(){}},authorization:{bridgeSessionToken:"bridge-token",callIntentId:"phone_clear",callConversationId:"phone-session-phone_clear",maximumDurationSeconds:600,mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"},callIntentId:"phone_clear",maximumDurationSeconds:600,callSid:CALL_SID,streamSid:STREAM_SID,apiKey:"openai",round2Api:{},createClient(options){callbacks=options;return client;}});
+  await runtime.start();callbacks.onAudio(Buffer.alloc(160,1),{turnId:"turn-clear",outputKind:"final",startMs:0,endMs:20});callbacks.onOutputCompleted({turnId:"turn-clear",source:"inactivity"});
+  for(let index=0;index<20&&!sent.some(item=>item.event==="mark"&&item.mark.name.includes("final"));index+=1)await new Promise(resolve=>setTimeout(resolve,5));
+  const mark=sent.find(item=>item.event==="mark"&&item.mark.name.includes("final"));assert.ok(mark);callbacks.onClearAudio();runtime.handle(mark);await new Promise(resolve=>setImmediate(resolve));assert.equal(playbackCompleted,0);
+  await runtime.stop("completed","fixture",{hangupSocket:false});
 });
 
 test("PSTN adapter converts unexpected detached finalization failure into exactly one controlled stop",async()=>{
