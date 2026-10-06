@@ -6,7 +6,7 @@ import { createGptLiveRound2OutputGate } from "../phone-bridge/gpt-live-round2-g
 import { createGptLiveRound2Client } from "../phone-bridge/gpt-live-round2-client.js";
 import { GPT_LIVE_SAMPLE_LINES, GPT_LIVE_SAMPLE_VOICES, pcm16Wav, sampleFilename } from "../phone-bridge/gpt-live-voice-samples.js";
 
-function fixture({ holdInformation = false, informationMessage = "Verified Sharp Cuts result.", clock } = {}) {
+function fixture({ holdInformation = false, informationMessage = "Verified Sharp Cuts result.", authorityFor, clock } = {}) {
   const calls = [], live = [], audio = [], clears = [];
   let resolveInformation;
   const informationGate = new Promise((resolve) => { resolveInformation = resolve; });
@@ -22,13 +22,14 @@ function fixture({ holdInformation = false, informationMessage = "Verified Sharp
       }
       const information = /Sharp Cuts|Codex/.test(input.utterance);
       const action = /send|ابعث/.test(input.utterance);
+      const authority = authorityFor?.(input) || (information ? "NOVA_INFORMATION" : action ? "NOVA_ACTION" : "LOCAL_CONVERSATION");
       return {
         conversationId: input.conversationId,
         turnId: input.turnId,
         contextVersion: (input.expectedContextVersion ?? 0) + 2,
-        authority: information ? "NOVA_INFORMATION" : action ? "NOVA_ACTION" : "LOCAL_CONVERSATION",
-        status: information ? "ready_to_present" : action ? "waiting_for_formal_approval" : "ready_to_present",
-        message: information ? informationMessage : action ? "Formal approval is required." : input.localResponse,
+        authority,
+        status: authority === "NOVA_ACTION" ? "waiting_for_formal_approval" : "ready_to_present",
+        message: authority === "NOVA_INFORMATION" ? informationMessage : authority === "NOVA_ACTION" ? "Formal approval is required." : input.localResponse,
         messageId: `message-${input.turnId}`,
       };
     },
@@ -178,6 +179,82 @@ test("caller correction clears output, aborts stale Nova work, and records inter
   assert.equal((await f.gate.waitForTerminal()).authority, "LOCAL_CONVERSATION");
   assert.equal(Object.hasOwn(f.calls[1], "expectedContextVersion"), false);
   assert.ok(f.clears.length >= 2);
+});
+
+test("corrected clarification correlates only the current acknowledgement and reaches canonical delivery", async () => {
+  const f = fixture({ holdInformation: true, authorityFor: ({ utterance }) => utterance === "شو" ? "CLARIFICATION_REQUIRED" : "NOVA_INFORMATION" });
+  await f.gate.start({ conversationId: "corrected-clarification" });
+  await f.gate.callerSpeechStarted();
+  f.gate.appendTranscript("شو صار بمشروع Sharp Cuts؟");
+  await f.gate.callerSpeechEnded();
+  const staleAck = f.live[0];
+  const staleTerminal = f.gate.waitForTerminal();
+  await f.gate.callerSpeechStarted();
+  assert.equal((await staleTerminal).status, "superseded");
+  f.resolveInformation();
+  f.gate.appendTranscript("شو");
+  f.gate.appendOutputTranscript("speculative stale text");
+  f.gate.appendOutputAudio(Buffer.from("stale"));
+  const decision = await f.gate.callerSpeechEnded();
+  assert.equal(decision.authority, "CLARIFICATION_REQUIRED");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(f.gate.snapshot().current.phase, "verified_waiting_ack");
+  const verified = f.live.at(-1);
+  assert.equal(f.live.filter((event) => event.content === verified.content).length, 1);
+  assert.equal(f.gate.commentaryAcknowledged({ client_event_id: staleAck.event_id, start_ms: 10 }), false);
+  assert.equal(f.gate.snapshot().current.phase, "verified_waiting_ack");
+  assert.equal(f.gate.commentaryAcknowledged({ client_event_id: verified.event_id, start_ms: 20 }), true);
+  assert.equal(f.gate.snapshot().current.phase, "authoritative_streaming");
+  f.gate.appendOutputTranscript("أي مشروع تقصد؟", { start_ms: 20, end_ms: 300 });
+  f.gate.appendOutputAudio(Buffer.from("safe"), { start_ms: 20, end_ms: 300 });
+  await f.gate.providerOutputCompleted();
+  const turnId = f.gate.snapshot().current.turnId;
+  await f.gate.playbackCheckpoint({ turnId, outputKind: "final", endMs: 300, final: true, checkpointId: "mark-current" });
+  await f.gate.playbackCompleted();
+  const result = await f.gate.waitForTerminal();
+  assert.equal(result.status, "delivered");
+  assert.equal(result.authority, "CLARIFICATION_REQUIRED");
+  assert.deepEqual(f.audio.map((value) => value.toString()), ["safe"]);
+  const audit = f.gate.snapshot().audit;
+  assert.equal(audit.some((entry) => entry.type === "commentary_ack_ignored" && entry.reason === "stale_generation"), true);
+  assert.equal(audit.some((entry) => entry.type === "commentary_ack_received" && entry.turnId === turnId && entry.category === "verified_result"), true);
+  const delivery = f.calls.filter((item) => item.delivery).at(-1).delivery;
+  assert.equal(delivery.status, "delivered");
+  assert.equal(delivery.deliveredText, "أي مشروع تقصد؟");
+});
+
+test("caller correction can replace a local turn with one verified information response", async () => {
+  const f = fixture({ holdInformation: true });
+  await f.gate.start({ conversationId: "corrected-information" });
+  await f.gate.callerSpeechStarted();
+  f.gate.appendTranscript("كيفك؟");
+  f.gate.appendOutputTranscript("تمام");
+  f.gate.appendOutputAudio(Buffer.from("old"));
+  await f.gate.callerSpeechEnded();
+  const staleTerminal = f.gate.waitForTerminal();
+  await f.gate.callerSpeechStarted();
+  assert.equal((await staleTerminal).status, "superseded");
+  f.gate.appendTranscript("شو صار بمشروع Sharp Cuts؟");
+  const decision = await f.gate.callerSpeechEnded();
+  assert.equal(decision.authority, "NOVA_INFORMATION");
+  const progress = f.live.at(-1);
+  assert.equal(f.gate.commentaryAcknowledged({ client_event_id: progress.event_id, start_ms: 10 }), true);
+  f.gate.appendOutputTranscript("عم بتأكد", { start_ms: 10, end_ms: 100 });
+  f.gate.appendOutputAudio(Buffer.from("progress"), { start_ms: 10, end_ms: 100 });
+  await f.gate.providerOutputCompleted();
+  f.resolveInformation();
+  await new Promise((resolve) => setImmediate(resolve));
+  const verified = f.live.at(-1);
+  assert.equal(f.gate.commentaryAcknowledged({ client_event_id: verified.event_id, start_ms: 110 }), true);
+  f.gate.appendOutputTranscript("نتيجة موثقة", { start_ms: 110, end_ms: 300 });
+  f.gate.appendOutputAudio(Buffer.from("verified"), { start_ms: 110, end_ms: 300 });
+  await f.gate.providerOutputCompleted();
+  await f.gate.playbackCompleted();
+  const result = await f.gate.waitForTerminal();
+  assert.equal(result.status, "delivered");
+  assert.equal(result.authority, "NOVA_INFORMATION");
+  assert.deepEqual(f.audio.map((value) => value.toString()), ["old", "progress", "verified"]);
+  assert.equal(f.live.filter((event) => event.content === "Verified Sharp Cuts result.").length, 1);
 });
 
 test("NOVA_ACTION remains blocked until the verified formal-boundary response is accepted", async () => {
@@ -330,6 +407,9 @@ test("non-PSTN certification preserves timeline activity only while backend work
   const source = await readFile(new URL("../phone-bridge/gpt-live-round2-certify.js", import.meta.url), "utf8");
   assert.match(source, /function startPendingSilence\(\).*setInterval\(\(\)=>client\.appendAudio\(Buffer\.alloc\(160,0xff\)\),20\)/s);
   assert.match(source, /if\(decision\?\.authority!==\"LOCAL_CONVERSATION\"\)startPendingSilence\(\)/);
+  assert.match(source, /if\(correctionDecision\?\.authority!==\"LOCAL_CONVERSATION\"\)startPendingSilence\(\)/);
+  assert.doesNotMatch(source, /\[\"verified_waiting_ack\",\"authoritative_streaming\",\"playback_pending\"\]\.includes/);
+  assert.match(source, /\[\"authoritative_streaming\",\"playback_pending\"\]\.includes\(state\?\.phase\)/);
   assert.match(source, /stopPendingSilence\(\);await client\.callerSpeechStarted\(\)/);
 });
 

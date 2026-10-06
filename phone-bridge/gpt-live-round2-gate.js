@@ -4,6 +4,7 @@ import { classifyLiveAuthority, LIVE_AUTHORITY } from "../src/phone/gpt-live-rou
 const MAX_BUFFERED_AUDIO_BYTES = 2_000_000;
 const MAX_TRANSCRIPT = 8_000;
 const MAX_COMMENTARY_BYTES = 400;
+const MAX_COMMENTARY_CORRELATIONS = 512;
 const INFORMATION_ACKNOWLEDGEMENT = "Backend progress for natural spoken delivery: Nova is checking the requested information, and no verified result is available yet. Give one brief acknowledgement in the caller's language and conversational style without adding any fact, number, result, status, completion claim, or external action, then wait.";
 
 function commentaryChunks(value) {
@@ -60,7 +61,13 @@ export function createGptLiveRound2OutputGate({
   let callerLifecycle = Object.freeze({ phase: "idle", turnId: null });
   let assistantLifecycle = Object.freeze({ phase: "idle", turnId: null, outputKind: null });
   const audit = [];
+  const commentaryOwners = new Map();
   const record = (type, fields = {}) => audit.push(Object.freeze({ type, atMs: Math.round(clock()), ...fields }));
+  const registerCommentary = (turn, eventId, category) => {
+    if (commentaryOwners.size >= MAX_COMMENTARY_CORRELATIONS) commentaryOwners.delete(commentaryOwners.keys().next().value);
+    commentaryOwners.set(eventId, Object.freeze({ turnId: turn.turnId, generation: turn.generation, category }));
+    record("commentary_append_sent", { turnId: turn.turnId, generation: turn.generation, eventId, category });
+  };
   const ensure = () => {
     if (!conversationId) throw new Error("Round 2 session has not started.");
   };
@@ -221,6 +228,7 @@ export function createGptLiveRound2OutputGate({
     for (const content of chunks) {
       const eventId = idFactory();
       turn.resultCommentaryEventIds.add(eventId);
+      registerCommentary(turn, eventId, "verified_result");
       sendLive(Object.freeze({ type: "session.commentary.append", event_id: eventId, delegation_id: turn.delegationId, content }));
       stamp(turn, "resultCommentaryAppendedAt");
     }
@@ -363,6 +371,7 @@ export function createGptLiveRound2OutputGate({
       };
       current.promise = new Promise((resolve) => { current.resolve = resolve; });
       const eventId = idFactory(); current.resultCommentaryEventIds.add(eventId);
+      registerCommentary(current, eventId, "initial_greeting");
       sendLive(Object.freeze({ type: "session.commentary.append", event_id: eventId, content: result.message }));
       stamp(current, "resultCommentaryAppendedAt");
       record("initial_greeting_appended", { turnId: current.turnId });
@@ -456,6 +465,7 @@ export function createGptLiveRound2OutputGate({
         if (turn.decision.authority === LIVE_AUTHORITY.NOVA_INFORMATION) {
           turn.phase = "ack_waiting";
           turn.acknowledgementEventId = idFactory();
+          registerCommentary(turn, turn.acknowledgementEventId, "progress_acknowledgement");
           sendLive(Object.freeze({
             type: "session.commentary.append",
             event_id: turn.acknowledgementEventId,
@@ -475,13 +485,21 @@ export function createGptLiveRound2OutputGate({
     commentaryAcknowledged(event = {}) {
       const turn = current;
       const clientEventId = String(event.client_event_id || "");
-      if (!turn || turn.terminal || !clientEventId) return false;
+      const owner = commentaryOwners.get(clientEventId);
+      if (!clientEventId) { record("commentary_ack_ignored", { reason: "missing_client_event_id" }); return false; }
+      if (!owner) { record("commentary_ack_ignored", { eventId: clientEventId, reason: "unknown_event" }); return false; }
+      if (!turn || turn.terminal) { record("commentary_ack_ignored", { ...owner, eventId: clientEventId, reason: "no_active_turn" }); return false; }
+      if (owner.turnId !== turn.turnId || owner.generation !== turn.generation) {
+        record("commentary_ack_ignored", { ...owner, eventId: clientEventId, currentTurnId: turn.turnId, currentGeneration: turn.generation, reason: "stale_generation" });
+        return false;
+      }
       const startMs = finite(event.start_ms);
       if (clientEventId === turn.acknowledgementEventId && turn.phase === "ack_waiting") {
         stamp(turn, "ackCommentaryAcknowledgedAt");
         turn.phase = "ack_streaming";
         releaseTranscript(turn, "acknowledgement", startMs);
         releaseBuffered(turn, "acknowledgement", startMs);
+        record("commentary_ack_received", { ...owner, eventId: clientEventId });
         record("information_acknowledgement_accepted", { turnId: turn.turnId });
         return true;
       }
@@ -490,9 +508,11 @@ export function createGptLiveRound2OutputGate({
         turn.phase = "authoritative_streaming";
         releaseTranscript(turn, "delivered", startMs);
         releaseBuffered(turn, "authoritative", startMs);
+        record("commentary_ack_received", { ...owner, eventId: clientEventId });
         record("verified_commentary_accepted", { turnId: turn.turnId });
         return true;
       }
+      record("commentary_ack_ignored", { ...owner, eventId: clientEventId, currentPhase: turn.phase, reason: "phase_mismatch" });
       return false;
     },
 
