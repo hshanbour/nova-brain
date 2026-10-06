@@ -1,19 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
 import { callEnvelopeHash, callStartArguments, immutableCallEnvelope } from "./call-envelope.js";
 import { waitForBridgeReady } from "./bridge-readiness.js";
+import { projectCallTimeline, summarizeCall } from "./call-projection.js";
 
 export class PhoneError extends Error {
   constructor(message, { code = "phone_error", statusCode = 400, category = "safety" } = {}) { super(message); this.name = "PhoneError"; this.code = code; this.statusCode = statusCode; this.category = category; }
 }
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
-const safeSummary = (call, events) => { const counts = { caller: 0, acknowledgements: 0, delivered: 0, partial: 0, cleared: 0, superseded: 0, novaRuns: 0 }; for (const item of events) { if (item.eventType === "authority_classified") counts.caller += 1; if (item.eventType === "nova_result_reintegrated") counts.novaRuns += 1; if (item.eventType === "assistant_output_delivery") { if (item.metadata?.outputKind === "acknowledgement" && item.metadata?.deliveredText) counts.acknowledgements += 1; if (item.status === "delivered" && item.metadata?.outputKind !== "acknowledgement") counts.delivered += 1; if (["partially_delivered", "interrupted", "truncated"].includes(item.status)) counts.partial += 1; if (["cleared", "not_delivered"].includes(item.status)) counts.cleared += 1; if (item.status === "superseded") counts.superseded += 1; } } return `${call.outcome || "Call ended"}. ${counts.caller} caller turn(s), ${counts.acknowledgements} acknowledgement(s), ${counts.delivered} delivered answer(s), ${counts.partial} partial/interrupted, ${counts.cleared} cleared/unheard, ${counts.superseded} superseded, ${counts.novaRuns} Nova run(s).`; };
 const publicCall = (call) => ({ id: call.id, conversationId: call.conversationId, callConversationId: call.callConversationId, envelope: call.envelope, envelopeHash: call.envelopeHash, status: call.status, attemptCount: call.attemptCount, providerStatus: call.providerStatus, outcome: call.outcome, summary: call.summary, errorCode: call.errorCode, startedAt: call.startedAt, endedAt: call.endedAt, createdAt: call.createdAt, updatedAt: call.updatedAt, ...(call.assistantMessageId ? { assistantMessageId: call.assistantMessageId } : {}) });
 const CONSEQUENTIAL_CALL_REQUEST=/\b(?:buy|purchase|pay|charge|sign|contract|agree to|commit to|place (?:the|an) order|send (?:an )?email|transfer money|share (?:a )?(?:password|code|account))\b|(?:اشتري|ادفع|وقّع|وقع|عقد|حوّل|حول|كلمة السر|رمز التحقق)/iu;
 const CONSEQUENTIONAL_COMMITMENT=/\b(?:I|we)\s+(?:agree|accept|promise|commit|authorize|confirm (?:the|your) order|will (?:buy|purchase|pay|sign|send))\b|(?:أوافق|أتعهد|سأشتري|راح أشتري|سأدفع|راح أدفع|سأوقّع|راح أوقع)/iu;
 const OWNER_CONFIRMATION_RESPONSE="I can't authorize that during this call. The owner must confirm it separately, so I'll end here safely.";
 
-export function createPhoneService({ config, storage, ownerId, dialProvider, sessionAuth, novaTurn, fetchImpl = globalThis.fetch, clock = () => new Date(), idFactory = randomUUID }) {
+export function createPhoneService({ config, storage, ownerId, dialProvider, sessionAuth, novaTurn, ownerContactPolicy = null, prewarmSpeaker = null, fetchImpl = globalThis.fetch, clock = () => new Date(), idFactory = randomUUID }) {
   const phone = config.phone;
   const requireConfigured = () => { if (!phone.configured) throw new PhoneError("Phone V1 is not configured.", { code: "phone_not_configured", statusCode: 503, category: "configuration" }); };
   const load = async (id) => {
@@ -44,6 +44,19 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
       await storage.appendActivity({ ownerId, projectId: context.projectId || null, runId: context.runId || null, action: "phone_call_prepared", tool: "phone_call_prepare", status: "completed", summary: "Prepared an immutable outbound call envelope.", metadata: { callIntentId: id, envelopeHash, maximumDurationMinutes: envelope.maximumDurationMinutes } });
       return callStartArguments(call);
     },
+    async prepareOwnerContact(input, context = {}) {
+      requireConfigured();
+      if (!ownerContactPolicy) throw new PhoneError("Owner contact policy is unavailable.", { code: "owner_contact_policy_unavailable", statusCode: 503 });
+      const grant = await ownerContactPolicy.authorize({ destination: phone.ownerNumber, reason: input.reason, sourceTaskId: input.sourceTaskId || context.runId || null });
+      if (!grant.authorized) throw new PhoneError("Standing owner contact authority is not currently available.", { code: `owner_contact_policy_${grant.reason}`, statusCode: 403 });
+      return this.prepare({
+        destination: grant.destination, expectedParty: "Mohammad", callerDisclosure: "Nova, Mohammad's AI operating partner.", objective: input.objective,
+        approvedContext: input.approvedContext || null, permittedQuestions: input.permittedQuestions || [], permittedDisclosures: input.permittedDisclosures || [], prohibitedDisclosures: input.prohibitedDisclosures || [], prohibitedActions: input.prohibitedActions || [],
+        languageStrategy: input.languageStrategy || "Arabic first; match Mohammad's Arabic, English, or mixed Arabic-English naturally.", maximumDurationMinutes: input.maximumDurationMinutes || 10, maximumAttempts: 1,
+        callingWindow: input.callingWindow, voicemailPolicy: "do_not_leave", recordingPolicy: "disabled", mediaProfile: "gpt_live_round2_preview", liveVoice: "gleam", expiresAt: grant.expiresAt,
+        ownerContactReason: grant.reason, ownerContactPolicyVersion: grant.policyVersion, sourceTaskId: grant.sourceTaskId,
+      }, context);
+    },
     async current(_input, context = {}) {
       if (!context.conversationId) throw new PhoneError("A conversation is required.", { code: "phone_conversation_required" });
       const [call] = await storage.listConversationPhoneCalls(ownerId, context.conversationId, { limit: 1 });
@@ -51,6 +64,13 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
       return callStartArguments(call);
     },
     validateStart: validatedStart,
+    async authorizeStanding(input, context = {}) {
+      if (!ownerContactPolicy) return { authorized: false };
+      const call = await validatedStart(input, context);
+      if (!call.envelope.ownerContactPolicyVersion || !call.envelope.ownerContactReason) return { authorized: false };
+      const grant = await ownerContactPolicy.authorize({ destination: call.envelope.destination, reason: call.envelope.ownerContactReason, sourceTaskId: call.envelope.sourceTaskId });
+      return grant.authorized && grant.policyVersion === call.envelope.ownerContactPolicyVersion ? grant : { authorized: false };
+    },
     async approvalRequired(input, approval, context = {}) {
       const call = await validatedStart(input, context);
       return storage.bindPhoneCallApproval(call.id, ownerId, { approvalId: approval.id, status: "waiting_for_approval" });
@@ -70,19 +90,29 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
     async start(input, context = {}) {
       requireConfigured();
       let call = await validatedStart(input, context);
-      if (!context.approvalId) throw new PhoneError("Formal owner approval is required.", { code: "phone_approval_required", statusCode: 403 });
-      call = await storage.approvePhoneCallIntent(call.id, ownerId, { approvalId: context.approvalId });
+      const standing = context.standingPolicy?.authorized === true && context.standingPolicy.policyVersion === call.envelope.ownerContactPolicyVersion;
+      if (!context.approvalId && !standing) throw new PhoneError("Formal owner approval or an active bounded owner-contact policy is required.", { code: "phone_approval_required", statusCode: 403 });
+      if (!standing) call = await storage.approvePhoneCallIntent(call.id, ownerId, { approvalId: context.approvalId });
       if (!call) throw new PhoneError("The approved call could not be bound safely.", { code: "phone_approval_binding_invalid", statusCode: 409 });
       if (["dialing", "in_progress", "completed"].includes(call.status)) return { callIntentId: call.id, status: call.status, idempotent: true, callSid: call.providerCallSid || null };
       if (["failed", "uncertain"].includes(call.status) || call.attemptCount >= call.envelope.maximumAttempts)
         throw new PhoneError("This call is terminal or has an uncertain outcome; Nova will not dial again automatically.", { code: "phone_call_not_retryable", statusCode: 409, category: "idempotency" });
       await waitForBridgeReady({ healthUrl: `${phone.bridgeBaseUrl}/health/ready`, fetchImpl, attempts: phone.bridgeReadinessAttempts, delayMs: phone.bridgeReadinessDelayMs });
+      if (typeof prewarmSpeaker === "function") {
+        const readiness = await prewarmSpeaker();
+        if (readiness?.available !== true) throw new PhoneError("Speaker verification is not ready for the owner call.", { code: "phone_speaker_not_ready", statusCode: 503, category: "readiness" });
+      }
+      if (standing) {
+        await ownerContactPolicy.consume(context.standingPolicy.policyVersion);
+        call = await storage.authorizePhoneCallByPolicy(call.id, ownerId, { policyVersion: context.standingPolicy.policyVersion });
+        if (!call) throw new PhoneError("Standing owner-contact authority could not be bound safely.", { code: "owner_contact_policy_binding_failed", statusCode: 409 });
+      }
       const sessionToken = sessionAuth.issueStart({ ownerId, callIntentId: call.id, envelopeHash: call.envelopeHash }, 300);
       const tokenHash = sessionAuth.tokenHash(sessionToken);
       const tokenExpiresAt = new Date(clock().getTime() + 300_000).toISOString();
       const submissionKey = `phone-dial-${sha256(`${call.id}:${call.envelopeHash}`).slice(0, 48)}`;
       let claim;
-      try { claim = await storage.claimPhoneCallDial({ id: call.id, ownerId, approvalId: context.approvalId, submissionKey, tokenHash, tokenExpiresAt }); }
+      try { claim = await storage.claimPhoneCallDial({ id: call.id, ownerId, approvalId: context.approvalId || null, policyVersion: standing ? context.standingPolicy.policyVersion : null, submissionKey, tokenHash, tokenExpiresAt }); }
       catch (error) {
         if (error?.code === "23505") throw new PhoneError("Another outbound call is already active.", { code: "phone_call_already_active", statusCode: 409, category: "concurrency" });
         throw error;
@@ -162,7 +192,8 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
         const call = await load(callIntentId);
         const canonicalEvents = call.callConversationId ? await storage.listConversationEvents(call.callConversationId, ownerId, { limit: 512 }) : [];
         const legacyTurns = canonicalEvents.length ? [] : await storage.listPhoneCallTurns(ownerId, callIntentId);
-        await storage.updatePhoneCallIntent(callIntentId, ownerId, { status: type, outcome: providerStatus || type, summary: canonicalEvents.length ? safeSummary({ outcome: providerStatus || type }, canonicalEvents) : `${providerStatus || type}. ${legacyTurns.length} completed conversation turn${legacyTurns.length === 1 ? "" : "s"}.`, endedAt: clock().toISOString() });
+        const canonicalMessages = call.callConversationId ? await storage.listMessages(call.callConversationId, ownerId, { limit: 256 }) : [];
+        await storage.updatePhoneCallIntent(callIntentId, ownerId, { status: type, outcome: providerStatus || type, summary: canonicalEvents.length ? summarizeCall(providerStatus || type, canonicalEvents, canonicalMessages).text : `${providerStatus || type}. ${legacyTurns.length} completed conversation turn${legacyTurns.length === 1 ? "" : "s"}.`, endedAt: clock().toISOString() });
         await storage.appendActivity({ ownerId, projectId: null, runId: null, action: `phone_call_${type}`, tool: "phone_call_start", status: type, summary: `Outbound call ended with ${providerStatus || type}.`, metadata: { callIntentId, turnCount: canonicalEvents.filter((item) => item.eventType === "authority_classified").length, canonicalLiveEvents: canonicalEvents.length } });
       }
       return { accepted: true, idempotent: false };
@@ -180,5 +211,21 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
       return updated;
     },
     async listConversation(conversationId) { return (await storage.listConversationPhoneCalls(ownerId, conversationId, { limit: 20 })).map(publicCall); },
+    async listCalls({ limit = 50 } = {}) { return (await storage.listPhoneCalls(ownerId, { limit })).map(publicCall); },
+    async callDetail(id) {
+      const call = await load(id);
+      const [events, messages] = await Promise.all([
+        storage.listConversationEvents(call.callConversationId, ownerId, { limit: 512 }),
+        storage.listMessages(call.callConversationId, ownerId, { limit: 256 }),
+      ]);
+      return { call: publicCall(call), timeline: projectCallTimeline(messages, events), events: events.filter((item) => ["assistant_output_playback", "assistant_output_delivery", "backend_work_superseded", "live_session_started"].includes(item.eventType)) };
+    },
+    async reconcile(id) {
+      const call = await load(id);
+      const [events, messages] = await Promise.all([storage.listConversationEvents(call.callConversationId, ownerId, { limit: 512 }), storage.listMessages(call.callConversationId, ownerId, { limit: 256 })]);
+      const summary = summarizeCall(call.outcome || call.providerStatus || call.status, events, messages).text;
+      const updated = await storage.updatePhoneCallIntent(call.id, ownerId, { summary });
+      return publicCall(updated);
+    },
   });
 }

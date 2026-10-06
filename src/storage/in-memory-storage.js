@@ -23,6 +23,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const taskReportOutbox = new Map();
   const memories = new Map();
   const speakerProfiles = new Map();
+  const speakerChannelCalibrations = new Map();
   const anonymousSpeakerProfiles = new Map();
   const voiceUtterances = new Map();
   const runs = new Map();
@@ -39,6 +40,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const phoneCallIntents = new Map();
   const phoneCallEvents = new Map();
   const phoneCallTurns = new Map();
+  const ownerContactPolicies = new Map();
   const liveConversationStates = new Map();
   const conversationEvents = new Map();
   const developerSessions = new Map();
@@ -970,6 +972,14 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const draft = gmailDrafts.get(id);
       return copy(draft?.ownerId === ownerId ? draft : null);
     },
+    async getSpeakerChannelCalibration(ownerId, channel) {
+      return copy([...speakerChannelCalibrations.values()].find((item) => item.ownerId === ownerId && item.channel === channel && item.status !== "revoked") || null);
+    },
+    async saveSpeakerChannelCalibration(input) {
+      const key = `${input.ownerId}:${input.speakerProfileId}:${input.channel}`, current = speakerChannelCalibrations.get(key), timestamp = now(clock);
+      const value = { ...copy(current || {}), ...copy(input), createdAt: current?.createdAt || timestamp, updatedAt: timestamp };
+      speakerChannelCalibrations.set(key, value); return copy(value);
+    },
     async listConversationGmailDrafts(ownerId, conversationId, { limit = 2 } = {}) {
       const seen = new Set();
       return activity
@@ -1012,6 +1022,20 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         return copy({ ...call, ...(run?.result?.assistantMessageId ? { assistantMessageId: run.result.assistantMessageId } : {}) });
       });
     },
+    async listPhoneCalls(ownerId, { limit = 50 } = {}) {
+      return [...phoneCallIntents.values()].filter((call) => call.ownerId === ownerId).sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id)).slice(0, limit).map(copy);
+    },
+    async getOwnerContactPolicy(ownerId) { return copy(ownerContactPolicies.get(ownerId) || null); },
+    async saveOwnerContactPolicy(input) {
+      const current = ownerContactPolicies.get(input.ownerId); const timestamp = now(clock);
+      const value = { ...copy(current || {}), ...copy(input), createdAt: current?.createdAt || timestamp, updatedAt: timestamp };
+      ownerContactPolicies.set(input.ownerId, value); return copy(value);
+    },
+    async consumeOwnerContactPolicy(ownerId, version, consumedAt) {
+      const current = ownerContactPolicies.get(ownerId);
+      if (!current || !current.enabled || current.version !== version || current.pausedAt || current.revokedAt || new Date(current.expiresAt) <= new Date(consumedAt) || current.usedCalls >= current.maximumCalls || current.usedCalls >= current.dailyLimit) return null;
+      const value = { ...current, usedCalls: current.usedCalls + 1, updatedAt: now(clock) }; ownerContactPolicies.set(ownerId, value); return copy(value);
+    },
     async bindPhoneCallApproval(id, ownerId, { approvalId, status }) {
       const call = phoneCallIntents.get(id);
       if (!call || call.ownerId !== ownerId || !["prepared", "waiting_for_approval"].includes(call.status) || (call.approvalId && call.approvalId !== approvalId)) return null;
@@ -1021,6 +1045,11 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const call = phoneCallIntents.get(id);
       if (!call || call.ownerId !== ownerId || call.approvalId !== approvalId || !["waiting_for_approval", "approved", "dialing", "in_progress", "completed", "failed", "uncertain"].includes(call.status)) return null;
       if (call.status !== "waiting_for_approval") return copy(call);
+      const updated = { ...call, status: "approved", updatedAt: now(clock) }; phoneCallIntents.set(id, updated); return copy(updated);
+    },
+    async authorizePhoneCallByPolicy(id, ownerId, { policyVersion }) {
+      const call = phoneCallIntents.get(id);
+      if (!call || call.ownerId !== ownerId || call.status !== "prepared" || call.envelope?.ownerContactPolicyVersion !== policyVersion) return null;
       const updated = { ...call, status: "approved", updatedAt: now(clock) }; phoneCallIntents.set(id, updated); return copy(updated);
     },
     async updatePhoneCallIntent(id, ownerId, patch) {
@@ -1036,10 +1065,11 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const call = phoneCallIntents.get(id); if (!call || call.ownerId !== ownerId || call.sessionTokenUsedAt) return null;
       const updated = { ...call, sessionTokenHash: tokenHash, sessionTokenExpiresAt: expiresAt, updatedAt: now(clock) }; phoneCallIntents.set(id, updated); return copy(updated);
     },
-    async claimPhoneCallDial({ id, ownerId, approvalId, submissionKey, tokenHash, tokenExpiresAt }) {
+    async claimPhoneCallDial({ id, ownerId, approvalId, policyVersion, submissionKey, tokenHash, tokenExpiresAt }) {
       const call = phoneCallIntents.get(id);
       if (!call || call.ownerId !== ownerId) return null;
-      if (call.status !== "approved" || call.approvalId !== approvalId || call.attemptCount >= call.envelope.maximumAttempts) return { claimed: false, call: copy(call) };
+      const authorityMatches = approvalId ? call.approvalId === approvalId : policyVersion && call.envelope?.ownerContactPolicyVersion === policyVersion;
+      if (call.status !== "approved" || !authorityMatches || call.attemptCount >= call.envelope.maximumAttempts) return { claimed: false, call: copy(call) };
       const active = [...phoneCallIntents.values()].some((candidate) => candidate.ownerId === ownerId && candidate.id !== id && ["dialing", "in_progress"].includes(candidate.status));
       if (active) return { claimed: false, call: copy(call), reason: "active_call" };
       const updated = { ...call, status: "dialing", attemptCount: call.attemptCount + 1, submissionKey, sessionTokenHash: tokenHash, sessionTokenExpiresAt: tokenExpiresAt, sessionTokenUsedAt: null, updatedAt: now(clock) }; phoneCallIntents.set(id, updated); return { claimed: true, call: copy(updated) };

@@ -84,6 +84,9 @@ export function normalizeCallEnvelope(input, { now = new Date() } = {}) {
     recordingPolicy: "disabled",
     transcriptRetentionPolicy: "owner_private_until_deleted",
     terminationBehavior: text(input.terminationBehavior || "State that owner confirmation is required for anything outside scope, return to scope once, then end safely if needed.", "terminationBehavior", 1000),
+    ownerContactReason: input.ownerContactReason ? text(input.ownerContactReason, "ownerContactReason", 80) : null,
+    ownerContactPolicyVersion: input.ownerContactPolicyVersion ? Number(input.ownerContactPolicyVersion) : null,
+    sourceTaskId: input.sourceTaskId ? text(input.sourceTaskId, "sourceTaskId", 160) : null,
     expiresAt: expiresAt.toISOString(),
   });
 }

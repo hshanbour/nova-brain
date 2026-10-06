@@ -35,6 +35,10 @@ export const ownerMemoryClient = Object.freeze({
     return request(`/api/approvals${suffix}`);
   },
   gmailStatus: () => request("/api/integrations/gmail/status"),
-  phoneCalls: (conversationId) => request(`/api/phone/calls?conversationId=${encodeURIComponent(conversationId)}`),
+  phoneCalls: (conversationId) => request(conversationId ? `/api/phone/calls?conversationId=${encodeURIComponent(conversationId)}` : "/api/phone/calls?limit=50"),
+  phoneCall: (id) => request(`/api/phone/calls/${encodeURIComponent(id)}`),
+  ownerContactPolicy: () => request("/api/phone/owner-contact-policy"),
+  configureOwnerContactPolicy: (input) => request("/api/phone/owner-contact-policy", { method: "POST", body: JSON.stringify(input) }),
+  disableOwnerContactPolicy: (revoke = false) => request("/api/phone/owner-contact-policy/disable", { method: "POST", body: JSON.stringify({ revoke }) }),
   decideApproval: (id, decision) => request(`/api/approvals/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) })
 });

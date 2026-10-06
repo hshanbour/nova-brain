@@ -389,7 +389,7 @@ function showSection(name) {
   stopVoiceActivity();
   const selected = selectWorkspace({ workspaces: document.querySelectorAll("main.workspace"), links: document.querySelectorAll("[data-section]"), name });
   if (selected === "memory") loadMemoryWorkspace();
-  if (["projects","activity","tools","approvals"].includes(selected)) loadDashboard(selected);
+  if (["projects","activity","tools","approvals","calls"].includes(selected)) loadDashboard(selected);
   if (selected === "voice-benchmark") voiceBenchmark.refresh().catch(() => {});
 }
 
@@ -478,10 +478,26 @@ async function loadDashboard(section) {
   try {
     if(section==="projects") { const {projects}=await ownerMemoryClient.projects(); list.replaceChildren(...projects.map((project)=>dashboardCard(project.name,project.id,project.description,[`${project.memories.length} memories`,`${project.runs.length} runs`]))); }
     if(section==="activity") { const {activity}=await ownerMemoryClient.activity(); list.replaceChildren(...activity.map((event)=>dashboardCard(event.action,event.createdAt,event.summary,[event.status,event.tool,event.projectId]))); }
+    if(section==="calls") {
+      const [{calls},{policy}]=await Promise.all([ownerMemoryClient.phoneCalls(),ownerMemoryClient.ownerContactPolicy()]);
+      renderOwnerContactPolicy(policy);
+      list.replaceChildren(...calls.map((call)=>{const card=dashboardCard(call.envelope?.expectedParty||"Owner call",new Date(call.createdAt).toLocaleString(),call.summary||"No terminal summary yet.",[call.envelope?.direction||"outbound",call.status,call.outcome,call.envelope?.liveVoice,call.envelope?.recordingEnabled===true?"recorded":"recording off"]);card.classList.add("call-list-card");card.tabIndex=0;card.dataset.callId=call.id;card.addEventListener("click",()=>loadCallDetail(call.id));card.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();loadCallDetail(call.id);}});return card;}));
+      if(calls[0])await loadCallDetail(calls[0].id);
+    }
     if(section==="tools") { const {tools}=await ownerMemoryClient.tools(); list.replaceChildren(...tools.map((tool)=>dashboardCard(tool.name,tool.description,tool.available===false?"Configuration required or adapter unavailable.":"Connected to Nova's runtime registry.",[tool.category,tool.riskLevel,tool.capability,tool.available===false?"Unavailable":"Ready"]))); }
     if(section==="approvals") { const {approvals}=await ownerMemoryClient.approvals(); list.replaceChildren(...approvals.map((approval)=>{const card=dashboardCard(approval.tool,approval.reason,JSON.stringify(approval.arguments),[approval.riskLevel,approval.status,approval.projectId]);if(approval.status==="pending"){const actions=document.createElement("div");actions.className="approval-actions";for(const decision of ["approved","rejected"]){const button=document.createElement("button");button.type="button";button.className=decision==="approved"?"send-button":"secondary-button";button.textContent=decision==="approved"?"Approve":"Reject";button.addEventListener("click",async()=>{button.disabled=true;try{await ownerMemoryClient.decideApproval(approval.id,decision);await loadDashboard("approvals");}catch(cause){list.innerHTML=`<p class="dashboard-state error">${cause.message}</p>`;}});actions.append(button);}card.append(actions);}return card;})); }
     if(!list.children.length)list.innerHTML=`<p class="dashboard-state">No ${section} yet.</p>`;
   } catch(cause) { list.innerHTML=`<p class="dashboard-state error">${cause.message}</p>`; }
+}
+
+function renderOwnerContactPolicy(policy){const host=document.querySelector("#ownerContactPolicy"),status=document.querySelector("#ownerContactPolicyStatus");host.dataset.enabled=policy.enabled===true?"true":"false";host.querySelector("h2").textContent=policy.enabled?"Active bounded Preview grant":"Disabled by default";status.textContent=!policy.configured?"The verified owner contact is not configured server-side.":policy.enabled?`Active until ${new Date(policy.expiresAt).toLocaleString()} · ${policy.remainingCalls} call(s) remain.`:"No standing call authority is active.";document.querySelector("#enableOwnerTestGrant").disabled=!policy.configured||!policy.preview||policy.enabled;document.querySelector("#disableOwnerTestGrant").disabled=!policy.enabled;}
+
+document.querySelector("#enableOwnerTestGrant").addEventListener("click",async()=>{const button=document.querySelector("#enableOwnerTestGrant");button.disabled=true;try{const {policy}=await ownerMemoryClient.configureOwnerContactPolicy({enabled:true,allowedReasons:["preview_owner_test"],maximumCalls:2,dailyLimit:2,cooldownMinutes:10,expiresAt:new Date(Date.now()+60*60*1000).toISOString()});renderOwnerContactPolicy(policy);}catch(cause){document.querySelector("#ownerContactPolicyStatus").textContent=cause.message;}finally{if(document.querySelector("#ownerContactPolicy").dataset.enabled!=="true")button.disabled=false;}});
+document.querySelector("#disableOwnerTestGrant").addEventListener("click",async()=>{try{const {policy}=await ownerMemoryClient.disableOwnerContactPolicy(false);renderOwnerContactPolicy(policy);}catch(cause){document.querySelector("#ownerContactPolicyStatus").textContent=cause.message;}});
+
+async function loadCallDetail(id){
+  const target=document.querySelector("#callDetail");target.innerHTML='<p class="dashboard-state">Loading confirmed call timeline…</p>';
+  try{const {call,timeline}=await ownerMemoryClient.phoneCall(id);const heading=document.createElement("div");heading.className="call-detail-heading";const title=document.createElement("h2");title.textContent=call.envelope?.expectedParty||"Phone call";const meta=document.createElement("p");meta.textContent=`${call.status} · ${call.startedAt?new Date(call.startedAt).toLocaleString():"not started"} · recording off`;heading.append(title,meta);const summary=document.createElement("p");summary.className="call-summary";summary.textContent=call.summary||"No terminal summary yet.";const stream=document.createElement("div");stream.className="call-timeline";for(const item of timeline){const row=document.createElement("article");row.className=`call-line ${item.role}`;row.dataset.deliveryStatus=item.status;const who=document.createElement("strong");who.textContent=item.role==="user"?"Caller":"Nova";const body=document.createElement("p");body.textContent=item.content||"No audio was confirmed as heard.";const status=document.createElement("small");status.textContent=item.role==="user"?(item.speaker?.authenticatedIdentity==="owner"?"Verified owner":"Speaker not verified"):`${String(item.outputKind||"answer").replaceAll("_"," ")} · ${String(item.status||"").replaceAll("_"," ")}`;row.append(who,body,status);stream.append(row);}if(!timeline.length)stream.innerHTML='<p class="dashboard-state">No canonical conversation events are available.</p>';target.replaceChildren(heading,summary,stream);}catch(cause){target.innerHTML=`<p class="dashboard-state error">${cause.message}</p>`;}
 }
 
 messages.addEventListener("click",(event)=>{const button=event.target.closest(".speak-response");if(!button)return;if(voiceOutput.activeId()===button.dataset.voiceId)voiceOutput.stop();else voiceOutput.speak(button.dataset.speechText,{id:button.dataset.voiceId});});
@@ -526,6 +542,6 @@ await restoreConversation();
 const queuedConversationId=conversationBinding.finish(client.conversationId);setPending(false);
 if(queuedConversationId)await selectConversation(queuedConversationId);
 await refreshRecents();
-showSection(["#projects","#activity","#memory","#tools","#approvals","#voice-benchmark"].includes(location.hash)?location.hash.slice(1):"chat");
+showSection(["#projects","#activity","#calls","#memory","#tools","#approvals","#voice-benchmark"].includes(location.hash)?location.hash.slice(1):"chat");
 
 export { voiceControl };

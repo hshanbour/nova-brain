@@ -122,7 +122,7 @@ test("verified commentary is bounded and provider rejection terminates fail clos
   const result = await f.gate.waitForTerminal();
   assert.equal(result.status, "failed");
   assert.equal(result.providerCategory, "invalid_event");
-  assert.equal(f.calls.at(-1).delivery.status, "not_delivered");
+  assert.equal(f.calls.at(-1).delivery.status, "generated_not_released");
   assert.equal(f.audio.length, 0);
 });
 
@@ -143,7 +143,7 @@ test("generated output stays unheard until checkpoints and a clear invalidates l
   assert.equal(result.status, "superseded");
   const delivery = f.calls.find((item) => item.delivery)?.delivery;
   assert.equal(delivery.deliveredText, "الجزء الأول");
-  assert.equal(delivery.status, "interrupted");
+  assert.equal(delivery.status, "partially_delivered");
   assert.equal(await f.gate.playbackCheckpoint({ turnId, outputKind: "final", endMs: 900, final: true, cleared: true }), false);
 });
 
@@ -153,7 +153,7 @@ test("empty playback truth never falls back to intended text", async () => {
   await f.gate.callerSpeechEnded(); await f.gate.providerOutputCompleted();
   await f.gate.providerFailed("transport_closed");
   const delivery = f.calls.find((item) => item.delivery)?.delivery;
-  assert.equal(delivery.deliveredText, ""); assert.equal(delivery.status, "not_delivered");
+  assert.equal(delivery.deliveredText, ""); assert.equal(delivery.status, "generated_not_released");
 });
 
 test("caller correction clears output, aborts stale Nova work, and records interruption latency", async () => {

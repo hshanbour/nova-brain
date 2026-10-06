@@ -11,6 +11,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/assets/nova-mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/console.css">
+  <link rel="stylesheet" href="/assets/owner-phone.css">
   <title>Nova Brain — Console</title>
 </head>
 <body>
@@ -24,6 +25,7 @@
         <a class="nav-item active" href="#chat" data-section="chat" aria-current="page"><span class="nav-icon" aria-hidden="true">⌁</span><span>Chat</span></a>
         <a class="nav-item" href="#projects" data-section="projects"><span class="nav-icon">◇</span><span>Projects</span></a>
         <a class="nav-item" href="#activity" data-section="activity"><span class="nav-icon">✓</span><span>Activity</span></a>
+        <a class="nav-item" href="#calls" data-section="calls"><span class="nav-icon">☎</span><span>Calls</span></a>
         <a class="nav-item" href="#memory" data-section="memory"><span class="nav-icon">◫</span><span>Memory</span></a>
         <a class="nav-item" href="#tools" data-section="tools"><span class="nav-icon">⌘</span><span>Tools</span></a>
         <a class="nav-item" href="#approvals" data-section="approvals"><span class="nav-icon">◈</span><span>Approvals</span></a>
@@ -74,6 +76,7 @@
 
     <main class="workspace dashboard-workspace" id="projects" hidden><header class="topbar"><div><p class="eyebrow">Portfolio</p><h1>Projects</h1></div></header><div class="dashboard-scroll"><div class="dashboard-grid" id="projectsList"><p class="dashboard-state">Loading projects…</p></div></div></main>
     <main class="workspace dashboard-workspace" id="activity" hidden><header class="topbar"><div><p class="eyebrow">Audit trail</p><h1>Activity</h1></div></header><div class="dashboard-scroll"><div class="dashboard-list" id="activityList"><p class="dashboard-state">Loading activity…</p></div></div></main>
+    <main class="workspace dashboard-workspace" id="calls" hidden><header class="topbar"><div><p class="eyebrow">Canonical phone history</p><h1>Calls</h1></div><span class="benchmark-private">Recording off · Confirmed playback only</span></header><div class="dashboard-scroll"><section class="owner-contact-policy" id="ownerContactPolicy"><div><p class="eyebrow">Standing owner contact policy</p><h2>Disabled by default</h2><p>Preview-only, exact server-configured owner contact, bounded reasons, expiry, cooldown, one attempt and full Activity audit.</p></div><div class="owner-contact-actions"><button type="button" class="send-button" id="enableOwnerTestGrant">Enable 1-hour test grant</button><button type="button" class="secondary-button" id="disableOwnerTestGrant">Disable</button></div><p id="ownerContactPolicyStatus" role="status"></p></section><div class="calls-layout"><div class="dashboard-list" id="callsList"><p class="dashboard-state">Loading calls…</p></div><section class="call-detail" id="callDetail" aria-live="polite"><p class="dashboard-state">Choose a call to inspect its confirmed conversation.</p></section></div></div></main>
     <main class="workspace dashboard-workspace" id="tools" hidden><header class="topbar"><div><p class="eyebrow">Runtime capabilities</p><h1>Tools</h1></div></header><div class="dashboard-scroll"><div class="dashboard-grid" id="toolsList"><p class="dashboard-state">Loading tools…</p></div></div></main>
     <main class="workspace dashboard-workspace" id="approvals" hidden><header class="topbar"><div><p class="eyebrow">Owner control</p><h1>Approvals</h1></div></header><div class="dashboard-scroll"><div class="dashboard-list" id="approvalsList"><p class="dashboard-state">Loading approvals…</p></div></div></main>
 
@@ -114,6 +117,7 @@
       <a href="#chat" class="active" data-section="chat"><span>⌁</span><small>Chat</small></a>
       <a href="#projects" data-section="projects"><span>◇</span><small>Projects</small></a>
       <a href="#activity" data-section="activity"><span>✓</span><small>Activity</small></a>
+      <a href="#calls" data-section="calls"><span>☎</span><small>Calls</small></a>
       <a href="#memory" data-section="memory"><span>◫</span><small>Memory</small></a>
       <a href="#tools" data-section="tools"><span>⌘</span><small>Tools</small></a>
       <a href="#approvals" data-section="approvals"><span>◈</span><small>Approvals</small></a>

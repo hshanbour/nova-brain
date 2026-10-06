@@ -57,6 +57,7 @@ import { OpenAIProviderError } from "../providers/openai-model-provider.js";
 import { ModelCostBudgetError } from "../providers/model-cost-budget.js";
 import { GmailError, GMAIL_OAUTH_COOKIE } from "../email/gmail-service.js";
 import { PhoneError } from "../phone/phone-service.js";
+import { OwnerContactPolicyError } from "../phone/owner-contact-policy.js";
 import { assertTwilioSignature } from "../phone/twilio-signature.js";
 
 class StorageUnavailableError extends Error {}
@@ -212,6 +213,7 @@ export function createApi({
   durableResearchTaskService,
   gmailService,
   phoneService,
+  ownerContactPolicy,
   gptLiveRound2,
   gptLiveRound2Authorization = () => false,
   logger = console,
@@ -267,7 +269,7 @@ export function createApi({
           await ready();
           const input = await readJsonBody(request, config.maxBodyBytes);
           const action = pathname.slice("/api/internal/phone/gpt-live-round2/".length);
-          const operations = { start: "start", classify: "classifyTurn", turn: "handleTurn", playback: "recordPlaybackEvent", delivery: "recordDelivery", restore: "restore", extract: "extractMemoryCandidates" };
+          const operations = { start: "start", greeting: "prepareGreeting", classify: "classifyTurn", speaker: "recognizeSpeaker", turn: "handleTurn", playback: "recordPlaybackEvent", delivery: "recordDelivery", restore: "restore", extract: "extractMemoryCandidates" };
           const operation = operations[action];
           if (!operation) { sendJson(response, 404, { error: "Not found." }); return; }
           sendJson(response, 200, await gptLiveRound2[operation](input));
@@ -276,8 +278,35 @@ export function createApi({
         if (request.method === "GET" && pathname === "/api/phone/calls") {
           await ready();
           const conversationId = url.searchParams.get("conversationId");
-          if (!conversationId) throw new ValidationError("conversationId is required.");
-          sendJson(response, 200, { calls: await phoneService.listConversation(conversationId) });
+          const limit = validateListLimit(url.searchParams.get("limit"), 50);
+          sendJson(response, 200, { calls: conversationId ? await phoneService.listConversation(conversationId) : await phoneService.listCalls({ limit }) });
+          return;
+        }
+        if (request.method === "GET" && pathname === "/api/phone/owner-contact-policy") {
+          await ready(); sendJson(response, 200, { policy: await ownerContactPolicy.status() }); return;
+        }
+        if (request.method === "GET" && pathname === "/api/phone/speaker-calibration/status") {
+          await ready();
+          const calibration = await storage.getSpeakerChannelCalibration?.(ownerId, "pstn_8khz_v1");
+          sendJson(response, 200, { calibration: calibration ? { channel: "pstn_8khz_v1", status: calibration.status, ready: calibration.status === "ready", consentAt: calibration.consentAt || null, sampleCount: calibration.sampleCount || 0, sessionCount: calibration.sessionCount || 0, representationVersion: calibration.representationVersion } : { channel: "pstn_8khz_v1", status: "consent_required", ready: false, consentAt: null, sampleCount: 0, sessionCount: 0, representationVersion: null } });
+          return;
+        }
+        if (request.method === "POST" && pathname === "/api/phone/owner-contact-policy") {
+          await ready(); sendJson(response, 200, { policy: await ownerContactPolicy.configure(await readJsonBody(request, config.maxBodyBytes)) }); return;
+        }
+        if (request.method === "POST" && pathname === "/api/phone/owner-contact-policy/disable") {
+          await ready(); sendJson(response, 200, { policy: await ownerContactPolicy.disable(await readJsonBody(request, config.maxBodyBytes)) }); return;
+        }
+        const phoneCallMatch = pathname.match(/^\/api\/phone\/calls\/([^/]+)$/);
+        if (request.method === "GET" && phoneCallMatch) {
+          await ready();
+          sendJson(response, 200, await phoneService.callDetail(decodeURIComponent(phoneCallMatch[1])));
+          return;
+        }
+        const phoneReconcileMatch = pathname.match(/^\/api\/phone\/calls\/([^/]+)\/reconcile$/);
+        if (request.method === "POST" && phoneReconcileMatch) {
+          await ready();
+          sendJson(response, 200, { call: await phoneService.reconcile(decodeURIComponent(phoneReconcileMatch[1])) });
           return;
         }
         if (request.method === "POST" && pathname === "/api/phone/bridge/session/start") {
@@ -2115,7 +2144,7 @@ export function createApi({
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "gmail_error" });
           return;
         }
-        if (error instanceof PhoneError || error?.code?.startsWith?.("phone_")) {
+        if (error instanceof PhoneError || error instanceof OwnerContactPolicyError || error?.code?.startsWith?.("phone_") || error?.code?.startsWith?.("owner_contact_")) {
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "phone_error", requestId });
           return;
         }

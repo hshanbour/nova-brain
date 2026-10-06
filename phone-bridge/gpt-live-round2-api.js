@@ -16,7 +16,9 @@ export function createGptLiveRound2Api({ baseUrl, authorizationSecret, protectio
   };
   return Object.freeze({
     start(input, options = {}) { return post("start", input, options.signal); },
+    greeting(input, options = {}) { return post("greeting", input, options.signal); },
     classify(input, options = {}) { return post("classify", input, options.signal); },
+    speaker(input, options = {}) { return post("speaker", input, options.signal); },
     turn(input, options = {}) { return post("turn", input, options.signal); },
     playback(input, options = {}) { return post("playback", input, options.signal); },
     delivery(input, options = {}) { return post("delivery", input, options.signal); },

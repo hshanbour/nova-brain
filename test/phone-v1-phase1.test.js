@@ -73,9 +73,9 @@ async function fixture({ dial = async () => ({ callSid: CALL_SID, providerStatus
   return { config, storage, auth, service, registry, run, prepared };
 }
 
-test("schema fifteen preserves bounded durable phone authority, events, and transcript turns", async () => {
-  assert.equal(SCHEMA_VERSION, 15);
-  for (const table of ["nova_phone_call_intents", "nova_phone_call_events", "nova_phone_call_turns"]) assert.ok(SCHEMA_STATEMENTS.some((statement) => statement.includes(`CREATE TABLE IF NOT EXISTS ${table}`)));
+test("schema seventeen preserves bounded durable phone authority, events, transcript turns, owner contact policy, and PSTN calibration", async () => {
+  assert.equal(SCHEMA_VERSION, 17);
+  for (const table of ["nova_phone_call_intents", "nova_phone_call_events", "nova_phone_call_turns", "nova_owner_contact_policies", "nova_speaker_channel_calibrations"]) assert.ok(SCHEMA_STATEMENTS.some((statement) => statement.includes(`CREATE TABLE IF NOT EXISTS ${table}`)));
   const migration = await readFile(new URL("../migrations/005_phone_v1.sql", import.meta.url), "utf8");
   assert.match(migration, /ON CONFLICT \(version\) DO NOTHING/); assert.match(migration, /attempt_count integer NOT NULL DEFAULT 0/); assert.doesNotMatch(migration, /raw_audio|recording_url|audio_blob/i);
 });
@@ -381,7 +381,7 @@ test("Preview GPT-Live PSTN adapter keeps PCMU transport canonical, supports bar
     async close(){closed+=1;},
     snapshot(){return{current:{turnId:"turn-1",phase,terminal:null,transcriptCharacters},rawAudioPersisted:false};},
   };
-  let callbacks;const runtime=createGptLivePstnSession({sendTwilio:value=>sent.push(value),novaClient:{async event(value){events.push(value);}},authorization:{bridgeSessionToken:"bridge-token",callIntentId:"phone_fixture",callConversationId:"phone-session-phone_fixture",maximumDurationSeconds:600,mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"},callIntentId:"phone_fixture",maximumDurationSeconds:600,callSid:CALL_SID,streamSid:STREAM_SID,apiKey:"openai",round2Api:{},createClient(options){callbacks=options;return client;}});
+  let callbacks;const runtime=createGptLivePstnSession({endpointGraceMs:5,sendTwilio:value=>sent.push(value),novaClient:{async event(value){events.push(value);}},authorization:{bridgeSessionToken:"bridge-token",callIntentId:"phone_fixture",callConversationId:"phone-session-phone_fixture",maximumDurationSeconds:600,mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"},callIntentId:"phone_fixture",maximumDurationSeconds:600,callSid:CALL_SID,streamSid:STREAM_SID,apiKey:"openai",round2Api:{},createClient(options){callbacks=options;return client;}});
   const started=await runtime.start();assert.equal(started.providerSessionId,"live-fixture");assert.equal(callbacks.voice,"gleam");assert.equal(callbacks.conversationId,"phone-session-phone_fixture");
   for(let index=0;index<3;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SPEECH}});
   for(let index=0;index<50;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SILENCE}});
@@ -409,7 +409,7 @@ test("PSTN adapter treats repeated caller correction as benign and completes the
     async playbackCheckpoint(){return true;},async playbackCompleted(){playbackCompleted+=1;phase="done";return true;},
     async close(){closed+=1;},snapshot(){return{current:{turnId,phase,terminal:null,transcriptCharacters},rawAudioPersisted:false};},
   };
-  let callbacks;const runtime=createGptLivePstnSession({sendTwilio:value=>sent.push(value),hangup(){hangups+=1;},diagnostic:(event,metadata)=>diagnostics.push({event,...metadata}),novaClient:{async event(value){events.push(value);}},authorization:{bridgeSessionToken:"bridge-token",callIntentId:"phone_overlap",callConversationId:"phone-session-phone_overlap",maximumDurationSeconds:600,mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"},callIntentId:"phone_overlap",maximumDurationSeconds:600,callSid:CALL_SID,streamSid:STREAM_SID,apiKey:"openai",round2Api:{},createClient(options){callbacks=options;return client;}});
+  let callbacks;const runtime=createGptLivePstnSession({endpointGraceMs:5,sendTwilio:value=>sent.push(value),hangup(){hangups+=1;},diagnostic:(event,metadata)=>diagnostics.push({event,...metadata}),novaClient:{async event(value){events.push(value);}},authorization:{bridgeSessionToken:"bridge-token",callIntentId:"phone_overlap",callConversationId:"phone-session-phone_overlap",maximumDurationSeconds:600,mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"},callIntentId:"phone_overlap",maximumDurationSeconds:600,callSid:CALL_SID,streamSid:STREAM_SID,apiKey:"openai",round2Api:{},createClient(options){callbacks=options;return client;}});
   await runtime.start();
   const burst=()=>{for(let index=0;index<3;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SPEECH}});for(let index=0;index<50;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SILENCE}});};
   burst();for(let index=0;index<20&&speechEnds<1;index+=1)await new Promise(resolve=>setTimeout(resolve,5));assert.equal(speechEnds,1);
@@ -437,11 +437,11 @@ test("clearing a sent final mark prevents its late acknowledgement from completi
 test("PSTN adapter converts unexpected detached finalization failure into exactly one controlled stop",async()=>{
   const events=[],diagnostics=[];let closed=0,hangups=0,speechEnds=0;
   const client={connect(){},async ready(){return{};},async callerSpeechStarted(){},appendAudio(){},async callerSpeechEnded(){speechEnds+=1;throw Object.assign(new Error("provider detail must stay private"),{code:"provider_turn_failed"});},async close(){closed+=1;},snapshot(){return{current:{turnId:"turn-1",phase:"capturing",terminal:null,transcriptCharacters:10},rawAudioPersisted:false};}};
-  const runtime=createGptLivePstnSession({sendTwilio(){},hangup(){hangups+=1;},diagnostic:(event,metadata)=>diagnostics.push({event,...metadata}),novaClient:{async event(value){events.push(value);}},authorization:{bridgeSessionToken:"bridge-token",callIntentId:"phone_failure",callConversationId:"phone-session-phone_failure",maximumDurationSeconds:600,mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"},callIntentId:"phone_failure",maximumDurationSeconds:600,callSid:CALL_SID,streamSid:STREAM_SID,apiKey:"openai",round2Api:{},createClient(){return client;}});
+  const runtime=createGptLivePstnSession({endpointGraceMs:5,sendTwilio(){},hangup(){hangups+=1;},diagnostic:(event,metadata)=>diagnostics.push({event,...metadata}),novaClient:{async event(value){events.push(value);}},authorization:{bridgeSessionToken:"bridge-token",callIntentId:"phone_failure",callConversationId:"phone-session-phone_failure",maximumDurationSeconds:600,mediaProfile:"gpt_live_round2_preview",liveVoice:"gleam"},callIntentId:"phone_failure",maximumDurationSeconds:600,callSid:CALL_SID,streamSid:STREAM_SID,apiKey:"openai",round2Api:{},createClient(){return client;}});
   await runtime.start();for(let index=0;index<3;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SPEECH}});for(let index=0;index<50;index+=1)runtime.handle({event:"media",streamSid:STREAM_SID,media:{payload:SILENCE}});
   for(let index=0;index<30&&events.length===0;index+=1)await new Promise(resolve=>setTimeout(resolve,5));
   assert.equal(speechEnds,1);assert.equal(closed,1);assert.equal(hangups,1);assert.equal(events.length,1);assert.equal(events[0].type,"failed");assert.equal(events[0].providerStatus,"live_turn_failure");
-  assert.deepEqual(diagnostics,[{event:"turn_finalize_failed",category:"provider_turn_failed"}]);assert.doesNotMatch(JSON.stringify(diagnostics),/provider detail/);
+  assert.deepEqual(diagnostics.filter(item=>item.event==="turn_finalize_failed"),[{event:"turn_finalize_failed",category:"provider_turn_failed"}]);assert.doesNotMatch(JSON.stringify(diagnostics),/provider detail/);
   await runtime.stop("failed","duplicate");assert.equal(closed,1);assert.equal(hangups,1);assert.equal(events.length,1);
 });
 

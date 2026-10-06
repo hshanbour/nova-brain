@@ -61,14 +61,29 @@ export function createGptLiveRound2Client({ apiKey, round2Api, conversationId, c
       return true;
     },
     ready() { return readyPromise; },
+    beginGreeting() { return gate.beginGreeting(); },
     async callerSpeechStarted() { clearTimeout(outputQuietTimer);activeOutputTurnId=null;return gate.callerSpeechStarted(); },
+    resumeCallerSpeech() { clearTimeout(outputQuietTimer); return gate.resumeCallerSpeech(); },
     appendAudio(audio) { if (!socket || socket.readyState !== WebSocketImpl.OPEN || !Buffer.isBuffer(audio) || !audio.length) return false; sendLive({ type: "session.input_audio.append", event_id: crypto.randomUUID(), audio: audio.toString("base64") }); return true; },
-    async callerSpeechEnded() { const result=await gate.callerSpeechEnded();if(result)scheduleOutputCompletion();return result; },
+    async callerSpeechEnded(input) { const result=await gate.callerSpeechEnded(input);if(result)scheduleOutputCompletion();return result; },
     providerOutputCompleted() { clearTimeout(outputQuietTimer);return completeProviderOutput("application"); },
     playbackCompleted() { return gate.playbackCompleted(); },
     playbackCheckpoint(input) { return gate.playbackCheckpoint(input); },
     waitForTerminal(options) { return gate.waitForTerminal(options); },
     supersede(reason) { return gate.supersede(reason); },
+    async drain({ timeoutMs: drainTimeoutMs = 1_500 } = {}) {
+      clearTimeout(outputQuietTimer);
+      const snapshot = gate.snapshot();
+      if (!snapshot.current || snapshot.current.terminal) return snapshot;
+      if (snapshot.current.phase === "capturing" && snapshot.current.transcriptCharacters > 0) await gate.callerSpeechEnded().catch(() => false);
+      await Promise.race([
+        gate.waitForTerminal(),
+        new Promise((resolve) => setTimeout(() => resolve(gate.snapshot()), drainTimeoutMs)),
+      ]);
+      const settled = gate.snapshot();
+      if (settled.current && !settled.current.terminal) await gate.supersede("call_terminated").catch(() => false);
+      return gate.snapshot();
+    },
     close() { clearTimeout(outputQuietTimer);if (!socket || socket.readyState !== WebSocketImpl.OPEN) return closedPromise; sendLive({ type: "session.close", event_id: crypto.randomUUID() }); closeTimer = setTimeout(() => { socket?.terminate?.(); closedResolve(gate.snapshot()); }, timeoutMs); closeTimer.unref?.(); return closedPromise; },
     snapshot() { return Object.freeze({ ...gate.snapshot(), usageSeconds }); },
   });

@@ -8,10 +8,15 @@ export function registerPhoneTools(registry, { service }) {
     execute: (input, context) => service.prepare(input, context),
   });
   registry.register({ ...common, name: "phone_call_current", description: "Resolve the latest exact prepared outbound call in this conversation.", riskLevel: RISK_LEVELS.READ_ONLY, inputSchema: { type: "object", properties: {}, additionalProperties: false }, execute: (input, context) => service.current(input, context) });
+  registry.register({ ...common, name: "phone_owner_callback_prepare", description: "Prepare one exact callback to Nova's server-configured owner contact under an active bounded owner-contact policy. The model cannot provide or substitute the destination.", riskLevel: RISK_LEVELS.LOW_RISK_WRITE, autonomous: true,
+    inputSchema: { type: "object", properties: { reason: { type: "string" }, sourceTaskId: { type: "string" }, objective: { type: "string" }, approvedContext: { type: "string" }, permittedQuestions: { type: "array" }, permittedDisclosures: { type: "array" }, prohibitedDisclosures: { type: "array" }, prohibitedActions: { type: "array" }, languageStrategy: { type: "string" }, maximumDurationMinutes: { type: "number" }, callingWindow: { type: "object" } }, required: ["reason", "objective"], additionalProperties: false },
+    execute: (input, context) => service.prepareOwnerContact(input, context),
+  });
   registry.register({
-    ...common, name: "phone_call_start", description: "Start one exact immutable prepared call. Always requires formal owner approval and has one dial attempt.", riskLevel: RISK_LEVELS.SENSITIVE, approvalReason: "Place this exact outbound phone call within the immutable approved envelope.",
+    ...common, name: "phone_call_start", description: "Start one exact immutable prepared call. Requires formal owner approval unless the server authorises the exact owner contact under an active bounded standing policy; every call has one dial attempt.", riskLevel: RISK_LEVELS.SENSITIVE, approvalReason: "Place this exact outbound phone call within the immutable approved envelope.",
     inputSchema: { type: "object", properties: { callIntentId: { type: "string" }, envelopeHash: { type: "string" }, envelope: { type: "object" } }, required: ["callIntentId", "envelopeHash", "envelope"], additionalProperties: false },
     validate: (input, context) => service.validateStart(input, context),
+    authorizeStandingPolicy: (input, context) => service.authorizeStanding(input, context),
     onApprovalRequired: (input, approval, context) => service.approvalRequired(input, approval, context),
     onApprovalDecision: (approval, decision) => service.approvalDecision(approval, decision),
     execute: (input, context) => service.start(input, context),

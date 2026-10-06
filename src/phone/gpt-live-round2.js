@@ -43,7 +43,7 @@ export const GPT_LIVE_PHONE_GUIDANCE = `PHONE PRESENTATION OVERLAY: Keep spoken 
 
 export function buildRound2LiveInstructions(callContext = null) {
   const trusted = callContext ? `\n\nTRUSTED ACTIVE CALL ENVELOPE (server-authored): ${JSON.stringify(callContext)}. The destination is a channel, not proof of the speaker's identity.` : "";
-  return `${NOVA_COMMUNICATION_POLICY}\n\n${GPT_LIVE_PHONE_GUIDANCE}${trusted}\n\nAUTHORITY: Application decisions are deterministic. Do not speak buffered output until the application releases it. Project, business, email, Codex, memory, workflow, and external facts require NOVA_INFORMATION. Durable work requires a server-issued work receipt. Actions require NOVA_ACTION and formal UI approval; spoken approval is never authoritative. Never claim work started, queued, running, completed, or promised without the matching receipt state. For NOVA_INFORMATION, before verified commentary arrives you may give only one brief, natural acknowledgement that you are checking; add no fact, number, result, status, completion claim, or external action. When verified commentary arrives, present only that verified result naturally and concisely.`;
+  return `${NOVA_COMMUNICATION_POLICY}\n\n${GPT_LIVE_PHONE_GUIDANCE}${trusted}\n\nIDENTITY: The trusted owner fact is Mohammad. Never infer that the current caller is Mohammad from the destination, a name claim, or a prior turn. Private owner context requires an authoritative current-turn signed speaker result.\n\nAUTHORITY: Application decisions are deterministic. Do not speak buffered output until the application releases it. Project, business, email, Codex, memory, workflow, and external facts require NOVA_INFORMATION. Durable work requires a server-issued work receipt. Actions require NOVA_ACTION and formal UI approval; spoken approval is never authoritative. Never claim work started, queued, running, completed, or promised without the matching receipt state. For NOVA_INFORMATION, before verified commentary arrives you may give only one brief, natural acknowledgement that you are checking; add no fact, number, result, status, completion claim, or external action. When verified commentary arrives, present only that verified result naturally and concisely.`;
 }
 
 export function createRound2Authorization(secret) {
@@ -55,7 +55,7 @@ export function createRound2Authorization(secret) {
   };
 }
 
-export function createGptLiveRound2Service({ storage, ownerId, novaTurn, intentClassifier = null, clock = () => new Date(), idFactory = randomUUID } = {}) {
+export function createGptLiveRound2Service({ storage, ownerId, novaTurn, intentClassifier = null, recognizeSpeaker = null, verifySpeakerAssertion = null, clock = () => new Date(), idFactory = randomUUID } = {}) {
   if (!storage || !ownerId || typeof novaTurn !== "function") throw new Error("Round 2 requires storage, owner identity, and Nova Brain.");
   async function stateFor(conversationId) {
     const value = await storage.getLiveConversationState(conversationId, ownerId);
@@ -81,6 +81,15 @@ export function createGptLiveRound2Service({ storage, ownerId, novaTurn, intentC
       return { conversationId, contextVersion: state.contextVersion, instructions: buildRound2LiveInstructions(callContext) };
     },
 
+    async prepareGreeting({ conversationId } = {}) {
+      const current = await stateFor(conversationId);
+      const turnId = stableId("greeting", conversationId, "initial", "turn");
+      const messageId = stableId("livemsg", conversationId, turnId, "assistant");
+      const message = "أهلين، معك نوفا.";
+      await event({ id: stableId("liveevt", conversationId, turnId, "intended"), conversationId, turnId, messageId, eventType: "assistant_output_intended", status: "intended", metadata: { authority: LIVE_AUTHORITY.LOCAL_CONVERSATION, intendedText: message, outputGate: "initial_greeting", approvalCreated: false, actionExecuted: false } });
+      return { conversationId, contextVersion: current.contextVersion, turnId, messageId, message };
+    },
+
     async classifyTurn({ conversationId, utterance, speaker = {}, signal } = {}) {
       const input = text(utterance, "utterance", 4_000);
       const recent = await storage.listMessages(conversationId, ownerId, { limit: 8 });
@@ -89,8 +98,15 @@ export function createGptLiveRound2Service({ storage, ownerId, novaTurn, intentC
       catch { return Object.freeze({ authority: LIVE_AUTHORITY.CLARIFICATION_REQUIRED, category: "clarification_required", effects: [], reason: "semantic_classifier_unavailable", projectReference: null, workState: null }); }
     },
 
+    async recognizeSpeaker(input = {}) {
+      if (typeof recognizeSpeaker !== "function") return { authenticated_identity: "none", match_status: "unavailable", assertion: null };
+      return recognizeSpeaker(input);
+    },
+
     async handleTurn({ conversationId, turnId = idFactory(), utterance, localResponse, expectedContextVersion, unresolvedState, decision: suppliedDecision = null, speaker = {} } = {}) {
       const input = text(utterance, "utterance", 4_000);
+      const verifiedSpeaker = speaker?.assertion && typeof verifySpeakerAssertion === "function" ? verifySpeakerAssertion(speaker.assertion) : null;
+      speaker = verifiedSpeaker ? { ...speaker, ...verifiedSpeaker, authenticatedIdentity: verifiedSpeaker.authenticated_identity || "none" } : { claimedIdentity: speaker?.claimedIdentity || null, authenticatedIdentity: "none", contactProvenance: "pstn", assertion: null };
       let current = await stateFor(conversationId);
       if (expectedContextVersion !== undefined && expectedContextVersion !== current.contextVersion) throw Object.assign(new Error("Live context version is stale."), { code: "gpt_live_round2_stale_context" });
       const decision = suppliedDecision?.authority ? suppliedDecision : intentClassifier ? await this.classifyTurn({ conversationId, utterance: input, speaker }) : classifyLiveAuthority(input, { unresolvedState: unresolvedState || current.unresolvedState });
@@ -115,7 +131,7 @@ export function createGptLiveRound2Service({ storage, ownerId, novaTurn, intentC
             assistantMessageId,
             deferConversationPersistence: true,
             commitGuard:()=>fenceCurrent(conversationId,turnId,reserved.contextVersion),
-            context: { voice: true, speaker: {}, gptLiveRound2: { authority: "read_only", speakerAuthenticated: false, contextVersion: reserved.contextVersion, turnId, recentTurns: recentTurns.map(({ id, role, content, sequence }) => ({ id, role, content, sequence })), trustedResults, rollingSummary: current.rollingSummary, unresolvedState: current.unresolvedState, currentUtterance: input } },
+            context: { voice: true, speaker: speaker.assertion ? { assertion: speaker.assertion } : {}, gptLiveRound2: { authority: "read_only", speakerAuthenticated: speaker.authenticatedIdentity === "owner", contextVersion: reserved.contextVersion, turnId, recentTurns: recentTurns.map(({ id, role, content, sequence }) => ({ id, role, content, sequence })), trustedResults, rollingSummary: current.rollingSummary, unresolvedState: current.unresolvedState, currentUtterance: input } },
           });
           await fenceCurrent(conversationId,turnId,reserved.contextVersion);
           const next = await advance(conversationId, reserved, { unresolvedState: safeState({ unresolvedTopic: input, pendingAuthority: null, lastTurnId: turnId,generationStatus:"completed" }) });
@@ -149,20 +165,21 @@ export function createGptLiveRound2Service({ storage, ownerId, novaTurn, intentC
       return { authority: decision.authority, status: decision.authority === LIVE_AUTHORITY.NOVA_ACTION ? "waiting_for_formal_approval" : receipt?.state || "ready_to_present", conversationId, turnId, contextVersion: next.contextVersion, message: response, messageId: assistantMessageId, actionExecuted: false, approvalCreated: false, receipt };
     },
 
-    async recordDelivery({ conversationId, turnId, messageId, intendedText, deliveredText = "", status = "delivered", replacedByTurnId = null, outputKind = "final", checkpoints = [] } = {}) {
-      if (!["delivered", "partially_delivered", "interrupted", "truncated", "cleared", "not_delivered", "replaced", "superseded"].includes(status)) throw new Error("Delivery status is invalid.");
+    async recordDelivery({ conversationId, turnId, messageId, intendedText, deliveredText = "", status = "delivered", replacedByTurnId = null, outputKind = "final", checkpoints = [], timing = null } = {}) {
+      if (!["delivered", "partially_delivered", "interrupted", "truncated", "cleared", "not_delivered", "replaced", "superseded", "cleared_unheard", "generated_not_released", "superseded_before_generation"].includes(status)) throw new Error("Delivery status is invalid.");
       const intended = text(intendedText, "intendedText", 8_000);
       const delivered = String(deliveredText || "").slice(0, 8_000);
       const heardCompletely = status === "delivered" && delivered === intended;
       const persistedMessageId = `${messageId}-${outputKind}`;
-      await event({ id: stableId("liveevt", conversationId, turnId, `delivery:${status}:${messageId}:${outputKind}`), conversationId, turnId, messageId: delivered.trim() ? persistedMessageId : messageId, eventType: "assistant_output_delivery", status, metadata: { outputKind, intendedText: intended, deliveredText: delivered, replacedByTurnId, heardCompletely, checkpoints: checkpoints.slice(0, 128) } });
+      const checkpointKey = checkpoints.at(-1)?.id || "terminal";
+      await event({ id: stableId("liveevt", conversationId, turnId, `delivery:${status}:${messageId}:${outputKind}:${checkpointKey}`), conversationId, turnId, messageId: delivered.trim() ? persistedMessageId : messageId, eventType: "assistant_output_delivery", status, metadata: { outputKind, intendedText: intended, deliveredText: delivered, replacedByTurnId, heardCompletely, checkpoints: checkpoints.slice(0, 128), timing: timing && typeof timing === "object" ? timing : null } });
       if (delivered.trim()) await storage.appendMessage({ id: persistedMessageId, conversationId, ownerId, role: "assistant", content: delivered.trim() });
       return { status, heardCompletely, messageId: delivered.trim() ? persistedMessageId : null };
     },
 
-    async recordPlaybackEvent({ conversationId, turnId, stage, outputKind = "final", checkpointId = null, endMs = null, cleared = false, reason = null } = {}) {
+    async recordPlaybackEvent({ conversationId, turnId, stage, outputKind = "final", checkpointId = null, endMs = null, cleared = false, reason = null, byteStart = null, byteEnd = null, durationStartMs = null, durationEndMs = null, textPrefix = "", sentAt = null, acknowledgedAt = null } = {}) {
       if (!["released_to_playback", "playback_checkpoint", "cleared"].includes(stage)) throw new Error("Playback stage is invalid.");
-      return event({ id: stableId("liveevt", conversationId, turnId, `playback:${stage}:${outputKind}:${checkpointId || reason || "once"}`), conversationId, turnId, eventType: "assistant_output_playback", status: stage, metadata: { outputKind, checkpointId, endMs: Number.isFinite(Number(endMs)) ? Number(endMs) : null, cleared: cleared === true, reason: reason ? String(reason).slice(0, 120) : null } });
+      return event({ id: stableId("liveevt", conversationId, turnId, `playback:${stage}:${outputKind}:${checkpointId || reason || "once"}`), conversationId, turnId, eventType: "assistant_output_playback", status: stage, metadata: { outputKind, checkpointId, endMs: Number.isFinite(Number(endMs)) ? Number(endMs) : null, byteStart: Number.isFinite(Number(byteStart)) ? Number(byteStart) : null, byteEnd: Number.isFinite(Number(byteEnd)) ? Number(byteEnd) : null, durationStartMs: Number.isFinite(Number(durationStartMs)) ? Number(durationStartMs) : null, durationEndMs: Number.isFinite(Number(durationEndMs)) ? Number(durationEndMs) : null, textPrefix: String(textPrefix || "").slice(0, 8_000), sentAt: Number.isFinite(Number(sentAt)) ? Number(sentAt) : null, acknowledgedAt: Number.isFinite(Number(acknowledgedAt)) ? Number(acknowledgedAt) : null, cleared: cleared === true, reason: reason ? String(reason).slice(0, 120) : null } });
     },
 
     async restore({ conversationId, messageLimit = 64, eventLimit = 128 } = {}) {

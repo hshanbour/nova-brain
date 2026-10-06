@@ -18,12 +18,16 @@ function parsePhoneConfig(environment) {
     bridgeWebSocketUrl: environment.NOVA_PHONE_BRIDGE_WEBSOCKET_URL || null,
     publicBaseUrl: environment.NOVA_PHONE_PUBLIC_BASE_URL || null,
     sessionSigningKey: environment.NOVA_PHONE_SESSION_SIGNING_KEY || null,
+    ownerNumber: environment.NOVA_PHONE_OWNER_NUMBER || null,
+    deploymentEnvironment: environment.VERCEL_ENV || environment.NODE_ENV || "development",
   };
-  const supplied = Object.values(values).filter(Boolean).length;
-  if (supplied > 0 && supplied !== Object.keys(values).length) throw new Error("All seven Phone V1 environment variables must be configured together.");
+  const required = [values.accountSid, values.authToken, values.fromNumber, values.bridgeBaseUrl, values.bridgeWebSocketUrl, values.publicBaseUrl, values.sessionSigningKey];
+  const supplied = required.filter(Boolean).length;
+  if (supplied > 0 && supplied !== required.length) throw new Error("All seven Phone V1 environment variables must be configured together.");
   if (!supplied) return Object.freeze({ configured: false, ...values, bridgeReadinessAttempts: 8, bridgeReadinessDelayMs: 250 });
   if (!/^AC[a-fA-F0-9]{32}$/.test(values.accountSid)) throw new Error("TWILIO_ACCOUNT_SID is invalid.");
   if (!/^\+44[1-9]\d{8,9}$/.test(values.fromNumber)) throw new Error("NOVA_PHONE_NUMBER must be a UK E.164 number.");
+  if (values.ownerNumber && !/^\+44[1-9]\d{8,9}$/.test(values.ownerNumber)) throw new Error("NOVA_PHONE_OWNER_NUMBER must be a UK E.164 number.");
   for (const [name, value, protocol] of [["NOVA_PHONE_BRIDGE_URL", values.bridgeBaseUrl, "https:"], ["NOVA_PHONE_BRIDGE_WEBSOCKET_URL", values.bridgeWebSocketUrl, "wss:"], ["NOVA_PHONE_PUBLIC_BASE_URL", values.publicBaseUrl, "https:"]]) {
     let parsed; try { parsed = new URL(value); } catch { throw new Error(`${name} must be an absolute URL.`); }
     if (parsed.protocol !== protocol || parsed.username || parsed.password) throw new Error(`${name} must use ${protocol}`);

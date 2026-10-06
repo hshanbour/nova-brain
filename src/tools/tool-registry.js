@@ -61,11 +61,12 @@ export function createToolRegistry({ policy } = {}) {
       tools.set(tool.name, Object.freeze({ ...tool }));
     },
     list({ executableOnly = false } = {}) {
-      return [...tools.values()].filter((tool) => !executableOnly || tool.available !== false).map(({ execute: _execute, validate: _validate, validateApprovedLegacy: _validateApprovedLegacy, onApprovalRequired: _onApprovalRequired, onApprovalDecision: _onApprovalDecision, ...tool }) => ({
+      return [...tools.values()].filter((tool) => !executableOnly || tool.available !== false).map(({ execute: _execute, validate: _validate, validateApprovedLegacy: _validateApprovedLegacy, authorizeStandingPolicy: _authorizeStandingPolicy, onApprovalRequired: _onApprovalRequired, onApprovalDecision: _onApprovalDecision, ...tool }) => ({
         ...tool
       }));
     },
     async execute(name, input, context) {
+      context ||= {};
       const tool = tools.get(name);
 
       if (!tool) {
@@ -90,7 +91,7 @@ export function createToolRegistry({ policy } = {}) {
         }
       }
       if (policy) {
-        try { await policy.authorize(tool, input, context); }
+        try { const authorization = await policy.authorize(tool, input, context); if (authorization?.standingPolicy) context.standingPolicy = authorization.standingPolicy; }
         catch (error) {
           if (error?.approval && typeof tool.onApprovalRequired === "function") await tool.onApprovalRequired(input, error.approval, context);
           throw error;

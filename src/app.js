@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createAgent } from "./agent/agent.js";
 import { readConfig } from "./config/env.js";
 import { createApi } from "./http/api.js";
@@ -24,7 +25,7 @@ import { createSpeakerExtractor } from "./voice/speaker-extractor.js";
 import { createSpeakerAssertions } from "./voice/speaker-assertion.js";
 import { createFamiliarityConsent } from "./voice/familiarity-consent.js";
 import { createEcapaSpeakerEngine } from "./voice/ecapa-speaker-engine.js";
-import { createSpeakerEngineCoordinator } from "./voice/speaker-engine.js";
+import { createSpeakerEngineCoordinator, speakerFromAuthoritativeResult } from "./voice/speaker-engine.js";
 import { createWorkerRuntime } from "./autonomy/worker-runtime.js";
 import { registerWorkerTools } from "./autonomy/worker-tools.js";
 import { createTaskMigrationService } from "./autonomy/task-migration.js";
@@ -61,6 +62,7 @@ import { registerPhoneTools } from "./phone/phone-tools.js";
 import { createTwilioOutboundClient } from "./phone/twilio-client.js";
 import { createGptLiveRound2Service, createRound2Authorization } from "./phone/gpt-live-round2.js";
 import { createPhoneLiveIntentClassifier } from "./phone/live-intent-classifier.js";
+import { createOwnerContactPolicy } from "./phone/owner-contact-policy.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -133,7 +135,8 @@ export function createApp({
     publicBaseUrl: config.phone.publicBaseUrl,
     fetchImpl: phoneFetchImpl || globalThis.fetch,
   });
-  const phoneService = createPhoneService({ config, storage, ownerId: OWNER_ID, dialProvider: phoneProvider, sessionAuth: phoneSessionAuth, novaTurn: (input) => agent.run(input), fetchImpl: phoneFetchImpl || globalThis.fetch });
+  const ownerContactPolicy = createOwnerContactPolicy({ storage, ownerId: OWNER_ID, ownerNumber: config.phone.ownerNumber, deploymentEnvironment: config.phone.deploymentEnvironment });
+  const phoneService = createPhoneService({ config, storage, ownerId: OWNER_ID, dialProvider: phoneProvider, sessionAuth: phoneSessionAuth, novaTurn: (input) => agent.run(input), ownerContactPolicy, prewarmSpeaker: () => speakerEngines.readiness(), fetchImpl: phoneFetchImpl || globalThis.fetch });
   registerPhoneTools(toolRegistry, { service: phoneService });
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){
@@ -308,7 +311,15 @@ export function createApp({
     logger,
   });
   const phoneLiveIntentClassifier = createPhoneLiveIntentClassifier({ modelProvider });
-  const gptLiveRound2 = createGptLiveRound2Service({ storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), intentClassifier: phoneLiveIntentClassifier });
+  const gptLiveRound2 = createGptLiveRound2Service({ storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), intentClassifier: phoneLiveIntentClassifier, verifySpeakerAssertion: speakerAssertions.verify, recognizeSpeaker: async (input) => {
+    const calibration = await storage.getSpeakerChannelCalibration?.(OWNER_ID, "pstn_8khz_v1");
+    if (!calibration || calibration.status !== "ready" || !Number.isFinite(calibration.ownerMatchThreshold) || !Number.isFinite(calibration.ambiguityMargin)) return { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: config.speakerRecognition.modelVersion, match_status: "calibration_required", authenticated_identity: "none", assertion: null };
+    const report = await speakerEngines.recognize(input, { requestId: `pstn-${input.turnId || randomUUID()}`, transcriptPromise: Promise.resolve({ transcript: input.transcript || "" }), readyPromise: initialize(), speakerCalibration: { threshold: calibration.ownerMatchThreshold, ambiguityMargin: calibration.ambiguityMargin } });
+    let speaker = speakerFromAuthoritativeResult(report.authoritative, config.speakerRecognition.modelVersion);
+    speaker.assertion = speakerAssertions.issue(speaker) || null;
+    if (speaker.match_status === "confirmed" && !speaker.assertion) speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: speaker.extractor_version, match_status: "unknown", authenticated_identity: "none", assertion: null };
+    return speaker;
+  } });
   const benchmarkProviders = createBenchmarkProviders({
     config: config.voiceBenchmark,
   });
@@ -366,6 +377,7 @@ export function createApp({
     durableResearchTaskService,
     gmailService,
     phoneService,
+    ownerContactPolicy,
     gptLiveRound2,
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,

@@ -57,6 +57,8 @@ export function createGptLiveRound2OutputGate({
   let contextVersion = 0;
   let generation = 0;
   let current = null;
+  let callerLifecycle = Object.freeze({ phase: "idle", turnId: null });
+  let assistantLifecycle = Object.freeze({ phase: "idle", turnId: null, outputKind: null });
   const audit = [];
   const record = (type, fields = {}) => audit.push(Object.freeze({ type, atMs: Math.round(clock()), ...fields }));
   const ensure = () => {
@@ -86,22 +88,36 @@ export function createGptLiveRound2OutputGate({
     commentaryAppendToAcknowledgedMs: elapsed(turn.milestones.resultCommentaryAppendedAt, turn.milestones.resultCommentaryAcknowledgedAt),
     resultReadyToFirstAuthoritativeProviderAudioMs: elapsed(turn.milestones.novaRouteEndedAt, turn.milestones.firstAuthoritativeAudioAt),
     resultReadyToFirstAuthoritativeReleasedAudioMs: elapsed(turn.milestones.novaRouteEndedAt, turn.milestones.firstAuthoritativeReleasedAudioAt),
+    acknowledgementFirstMediaToConfirmedMs: elapsed(turn.milestones.firstAcknowledgementReleasedAt, turn.milestones.firstAcknowledgementConfirmedAt),
+    authoritativeFirstMediaToConfirmedMs: elapsed(turn.milestones.firstAuthoritativeReleasedAudioAt, turn.milestones.firstAuthoritativeConfirmedAt),
     speechEndToTerminalMs: elapsed(turn.milestones.callerSpeechEndedAt, turn.milestones.terminalAt),
     interruptionToClearMs: elapsed(turn.milestones.interruptionAt, turn.milestones.clearCompletedAt),
   });
+  const emptyMilestones = () => ({ callerSpeechEndedAt: null, callerSpeechStartedAt: null, endpointDecisionAt: null, classificationAt: null, firstProviderAudioAt: null, firstGateAcceptedAudioAt: null, firstReleasedAudioAt: null, firstAcknowledgementAudioAt: null, firstAcknowledgementReleasedAt: null, firstAcknowledgementConfirmedAt: null, novaRouteStartedAt: null, novaRouteEndedAt: null, resultCommentaryAppendedAt: null, resultCommentaryAcknowledgedAt: null, ackCommentaryAppendedAt: null, ackCommentaryAcknowledgedAt: null, firstAuthoritativeAudioAt: null, firstAuthoritativeReleasedAudioAt: null, firstAuthoritativeConfirmedAt: null, interruptionAt: null, clearCompletedAt: null, finalPlaybackAt: null, terminalAt: null });
 
   function clearOutput(turn, reason) {
     onClearAudio();
     if (turn && conversationId && typeof api.playback === "function") void api.playback({ conversationId, turnId: turn.turnId, stage: "cleared", outputKind: turn.phase === "ack_streaming" || turn.phase === "ack_waiting" || turn.phase === "backend_pending" ? "acknowledgement" : "final", cleared: true, reason }).catch(() => {});
     stamp(turn, "clearCompletedAt");
+    assistantLifecycle = Object.freeze({ phase: "cleared", turnId: turn.turnId, outputKind: assistantLifecycle.outputKind });
     record("output_cleared", { turnId: turn.turnId, reason });
   }
 
   function acceptAudio(turn, entry, kind) {
     const acceptedAt = clock();
     stamp(turn, "firstGateAcceptedAudioAt", acceptedAt);
-    onAudio(entry.audio, { turnId: turn.turnId, outputKind: kind === "acknowledgement" ? "acknowledgement" : "final", startMs: entry.startMs, endMs: entry.endMs });
     const outputKind = kind === "acknowledgement" ? "acknowledgement" : "final";
+    assistantLifecycle = Object.freeze({ phase: "playing", turnId: turn.turnId, outputKind });
+    const textPrefix = outputKind === "acknowledgement"
+      ? turn.acknowledgementGeneratedText
+      : turn.generatedText;
+    onAudio(entry.audio, {
+      turnId: turn.turnId,
+      outputKind,
+      startMs: entry.startMs,
+      endMs: entry.endMs,
+      textPrefix: String(textPrefix || "").slice(0, MAX_TRANSCRIPT),
+    });
     if (!turn.releasedKinds.has(outputKind)) { turn.releasedKinds.add(outputKind); if (typeof api.playback === "function") void api.playback({ conversationId, turnId: turn.turnId, stage: "released_to_playback", outputKind, endMs: entry.endMs }).catch(() => {}); }
     const releasedAt = clock();
     stamp(turn, "firstReleasedAudioAt", releasedAt);
@@ -149,9 +165,10 @@ export function createGptLiveRound2OutputGate({
         messageId: turn.messageId,
         intendedText: turn.intendedText,
         deliveredText: turn.confirmedText,
-        status: turn.confirmedText.trim() ? "interrupted" : "superseded",
+        status: turn.confirmedText.trim() ? "partially_delivered" : (turn.releasedKinds.size ? "cleared_unheard" : "superseded_before_generation"),
         outputKind: "final",
         checkpoints: turn.playbackCheckpoints,
+        timing: timing(turn),
       }).catch(() => {});
     }
     turn.result = Object.freeze({ status: "superseded", turnId: turn.turnId, timing: timing(turn) });
@@ -165,7 +182,7 @@ export function createGptLiveRound2OutputGate({
       turnId: turn.turnId,
       utterance: turn.transcript,
       decision: turn.decision,
-      speaker: { authenticatedIdentity: "none", contactProvenance: "pstn" },
+      speaker: turn.speaker,
       ...(turn.expectedContextVersion === null ? {} : { expectedContextVersion: turn.expectedContextVersion }),
     };
     if ([LIVE_AUTHORITY.LOCAL_CONVERSATION, LIVE_AUTHORITY.CLARIFICATION_REQUIRED].includes(turn.decision.authority)) {
@@ -224,9 +241,10 @@ export function createGptLiveRound2OutputGate({
         messageId: turn.messageId,
         intendedText: turn.intendedText,
         deliveredText: turn.confirmedText,
-        status: turn.confirmedText.trim() ? "truncated" : "not_delivered",
+        status: turn.confirmedText.trim() ? "partially_delivered" : (turn.releasedKinds.size ? "cleared_unheard" : "generated_not_released"),
         outputKind: "final",
         checkpoints: turn.playbackCheckpoints,
+        timing: timing(turn),
       }).catch(() => {});
     }
     turn.result = Object.freeze({
@@ -250,12 +268,14 @@ export function createGptLiveRound2OutputGate({
       messageId: turn.messageId,
       intendedText: turn.intendedText,
       deliveredText: delivered,
-      status: delivered && delivered === turn.intendedText.trim() ? "delivered" : delivered ? "partially_delivered" : "not_delivered",
+      status: delivered && delivered === turn.generatedText.trim() ? "delivered" : delivered ? "partially_delivered" : (turn.releasedKinds.size ? "cleared_unheard" : "generated_not_released"),
       outputKind: "final",
       checkpoints: turn.playbackCheckpoints,
+      timing: timing(turn),
     });
     turn.terminal = status;
     stamp(turn, "terminalAt");
+    assistantLifecycle = Object.freeze({ phase: "completed", turnId: turn.turnId, outputKind: "final" });
     turn.result = Object.freeze({
       status,
       turnId: turn.turnId,
@@ -284,9 +304,10 @@ export function createGptLiveRound2OutputGate({
       return started;
     },
 
-    async callerSpeechStarted() {
+    async callerSpeechStarted({ reason } = {}) {
       ensure();
-      const didSupersede = await supersede();
+      reason ||= assistantLifecycle.phase === "playing" ? "caller_barge_in" : current && !current.terminal ? "caller_supersedes_pending_turn" : "ordinary_next_turn";
+      const didSupersede = await supersede(reason);
       const turnId = idFactory();
       current = {
         turnId,
@@ -314,37 +335,38 @@ export function createGptLiveRound2OutputGate({
         terminal: null,
         abort: new AbortController(),
         expectedContextVersion: didSupersede ? null : contextVersion,
-        milestones: {
-          callerSpeechEndedAt: null,
-          endpointDecisionAt: null,
-          classificationAt: null,
-          firstProviderAudioAt: null,
-          firstGateAcceptedAudioAt: null,
-          firstReleasedAudioAt: null,
-          firstAcknowledgementAudioAt: null,
-          firstAcknowledgementReleasedAt: null,
-          novaRouteStartedAt: null,
-          novaRouteEndedAt: null,
-          resultCommentaryAppendedAt: null,
-          resultCommentaryAcknowledgedAt: null,
-          ackCommentaryAppendedAt: null,
-          ackCommentaryAcknowledgedAt: null,
-          firstAuthoritativeAudioAt: null,
-          firstAuthoritativeReleasedAudioAt: null,
-          interruptionAt: null,
-          clearCompletedAt: null,
-          terminalAt: null,
-        },
+        speaker: { authenticatedIdentity: "none", contactProvenance: "pstn", assertion: null },
+        milestones: { ...emptyMilestones(), callerSpeechStartedAt: clock() },
       };
       current.promise = new Promise((resolve) => {
         current.resolve = resolve;
       });
+      callerLifecycle = Object.freeze({ phase: "capturing", turnId });
       if (!didSupersede) {
         onClearAudio();
         record("output_cleared", { turnId: current.turnId, reason: "caller_speech_started" });
       }
       record("caller_speech_started", { turnId });
       return turnId;
+    },
+
+    async beginGreeting() {
+      ensure();
+      if (current && !current.terminal) return false;
+      const result = await api.greeting({ conversationId });
+      contextVersion = result.contextVersion ?? contextVersion;
+      current = {
+        turnId: result.turnId, generation: ++generation, transcript: "", speculativeTranscript: "", bufferedTranscript: [], bufferedAudio: [], bufferedBytes: 0,
+        generatedText: "", confirmedText: "", acknowledgementGeneratedText: "", acknowledgementConfirmedText: "", transcriptTimeline: { acknowledgement: [], final: [] }, playbackCheckpoints: [], releasedKinds: new Set(), acknowledgementRecorded: false,
+        intendedText: result.message, messageId: result.messageId, delegationId: null, acknowledgementEventId: null, resultCommentaryEventIds: new Set(),
+        decision: { authority: LIVE_AUTHORITY.LOCAL_CONVERSATION, reason: "outbound_call_greeting" }, phase: "verified_waiting_ack", terminal: null, abort: new AbortController(), expectedContextVersion: contextVersion, milestones: emptyMilestones(),
+      };
+      current.promise = new Promise((resolve) => { current.resolve = resolve; });
+      const eventId = idFactory(); current.resultCommentaryEventIds.add(eventId);
+      sendLive(Object.freeze({ type: "session.commentary.append", event_id: eventId, content: result.message }));
+      stamp(current, "resultCommentaryAppendedAt");
+      record("initial_greeting_appended", { turnId: current.turnId });
+      return current.turnId;
     },
 
     bindDelegation(delegationId) {
@@ -406,13 +428,19 @@ export function createGptLiveRound2OutputGate({
       return true;
     },
 
-    async callerSpeechEnded() {
+    async callerSpeechEnded({ speakerAudio = null } = {}) {
       ensure();
       const turn = current;
       if (!turn || turn.terminal || !turn.transcript.trim()) return false;
       stamp(turn, "callerSpeechEndedAt");
+      callerLifecycle = Object.freeze({ phase: "finalized", turnId: turn.turnId });
       stamp(turn, "endpointDecisionAt");
-      turn.decision = typeof api.classify === "function" ? await api.classify({ conversationId, utterance: turn.transcript, speaker: { authenticatedIdentity: "none", contactProvenance: "pstn" } }, { signal: turn.abort.signal }) : classifyLiveAuthority(turn.transcript);
+      const [decision, speaker] = await Promise.all([
+        typeof api.classify === "function" ? api.classify({ conversationId, utterance: turn.transcript, speaker: turn.speaker }, { signal: turn.abort.signal }) : classifyLiveAuthority(turn.transcript),
+        speakerAudio && typeof api.speaker === "function" ? api.speaker({ conversationId, turnId: turn.turnId, transcript: turn.transcript, ...speakerAudio }, { signal: turn.abort.signal }).catch(() => null) : Promise.resolve(null),
+      ]);
+      turn.decision = decision;
+      if (speaker?.assertion) turn.speaker = { authenticatedIdentity: speaker.authenticated_identity || "none", claimedIdentity: null, contactProvenance: "pstn", assertion: speaker.assertion, matchStatus: speaker.match_status || "unknown" };
       stamp(turn, "classificationAt");
       if (turn.decision.authority === LIVE_AUTHORITY.LOCAL_CONVERSATION) {
         turn.phase = "local_streaming";
@@ -489,25 +517,32 @@ export function createGptLiveRound2OutputGate({
     async playbackCompleted() {
       const turn = current;
       if (!turn || turn.terminal || turn.phase !== "playback_pending") return false;
-      if (!turn.confirmedText && turn.generatedText) { turn.confirmedText = turn.generatedText; turn.playbackCheckpoints.push({ id: null, outputKind: "final", endMs: null, final: true }); }
       return complete(turn, "delivered");
     },
 
-    async playbackCheckpoint({ turnId, outputKind = "final", endMs = null, final = false, cleared = false, checkpointId = null } = {}) {
+    async playbackCheckpoint({ turnId, outputKind = "final", endMs = null, final = false, cleared = false, checkpointId = null, textPrefix = "", byteStart = null, byteEnd = null, durationStartMs = null, durationEndMs = null, sentAt = null, acknowledgedAt = null } = {}) {
       const turn = current;
       if (!turn || turn.terminal || turn.turnId !== turnId || cleared) return false;
       const kind = outputKind === "acknowledgement" ? "acknowledgement" : "final";
       const entries = turn.transcriptTimeline[kind];
       const boundary = finite(endMs);
-      const confirmed = entries.filter((entry) => final || (boundary !== null && entry.endMs !== null && entry.endMs <= boundary)).map((entry) => entry.value).join("").slice(-MAX_TRANSCRIPT);
+      const timelineConfirmed = entries.filter((entry) => final || (boundary !== null && entry.endMs !== null && entry.endMs <= boundary)).map((entry) => entry.value).join("").slice(0, MAX_TRANSCRIPT);
+      const suppliedPrefix = String(textPrefix || "").slice(0, MAX_TRANSCRIPT);
+      const prior = kind === "acknowledgement" ? turn.acknowledgementConfirmedText : turn.confirmedText;
+      const candidate = suppliedPrefix.length >= timelineConfirmed.length ? suppliedPrefix : timelineConfirmed;
+      const confirmed = candidate.length >= prior.length ? candidate : prior;
       if (kind === "acknowledgement") turn.acknowledgementConfirmedText = confirmed;
       else turn.confirmedText = confirmed;
-      turn.playbackCheckpoints.push({ id: checkpointId || null, outputKind: kind, endMs: boundary, final: final === true });
-      if (typeof api.playback === "function") await api.playback({ conversationId, turnId, stage: "playback_checkpoint", outputKind: kind, checkpointId, endMs: boundary, cleared: false });
+      if (kind === "acknowledgement") stamp(turn, "firstAcknowledgementConfirmedAt");
+      else stamp(turn, "firstAuthoritativeConfirmedAt");
+      if (final) stamp(turn, "finalPlaybackAt");
+      const checkpoint = { id: checkpointId || null, outputKind: kind, endMs: boundary, final: final === true, byteStart: finite(byteStart), byteEnd: finite(byteEnd), durationStartMs: finite(durationStartMs), durationEndMs: finite(durationEndMs), textPrefix: confirmed, sentAt: finite(sentAt), acknowledgedAt: finite(acknowledgedAt), cleared: false };
+      turn.playbackCheckpoints.push(checkpoint);
+      if (typeof api.playback === "function") await api.playback({ conversationId, turnId, stage: "playback_checkpoint", outputKind: kind, checkpointId, endMs: boundary, cleared: false, ...checkpoint });
       record("playback_checkpoint_confirmed", { turnId, outputKind: kind, endMs: boundary, final: final === true });
-      if (kind === "acknowledgement" && final && !turn.acknowledgementRecorded && confirmed.trim()) {
-        turn.acknowledgementRecorded = true;
-        await api.delivery({ conversationId, turnId, messageId: `${turn.turnId}-ack`, intendedText: turn.acknowledgementGeneratedText || confirmed, deliveredText: confirmed, status: confirmed === (turn.acknowledgementGeneratedText || confirmed) ? "delivered" : "partially_delivered", outputKind: "acknowledgement", checkpoints: turn.playbackCheckpoints });
+      if (kind === "acknowledgement" && confirmed.trim()) {
+        await api.delivery({ conversationId, turnId, messageId: `${turn.turnId}-ack`, intendedText: turn.acknowledgementGeneratedText || confirmed, deliveredText: confirmed, status: confirmed === (turn.acknowledgementGeneratedText || confirmed) ? "delivered" : "partially_delivered", outputKind: "acknowledgement", checkpoints: turn.playbackCheckpoints, timing: timing(turn) });
+        if (final) turn.acknowledgementRecorded = true;
       }
       return true;
     },
@@ -525,6 +560,12 @@ export function createGptLiveRound2OutputGate({
 
     providerFailed,
     supersede,
+    resumeCallerSpeech() {
+      if (!current || current.terminal || current.phase !== "capturing") return false;
+      callerLifecycle = Object.freeze({ phase: "capturing", turnId: current.turnId });
+      record("caller_speech_resumed", { turnId: current.turnId });
+      return current.turnId;
+    },
     snapshot() {
       return Object.freeze({
         conversationId,
@@ -540,6 +581,8 @@ export function createGptLiveRound2OutputGate({
           timing: timing(current),
         } : null,
         rawAudioPersisted: false,
+        callerLifecycle,
+        assistantLifecycle,
         audit: Object.freeze([...audit]),
       });
     },

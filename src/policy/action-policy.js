@@ -21,6 +21,10 @@ export function createActionPolicy({ storage, ownerId, approvedBranch }) {
       if (tool.riskLevel === RISK_LEVELS.READ_ONLY) return { authorized: true };
       if (tool.branchBound && input.branch !== approvedBranch) { const error=new Error("Branch is not approved for development writes.");error.code="branch_not_allowed";throw error; }
       if (tool.riskLevel === RISK_LEVELS.LOW_RISK_WRITE && tool.autonomous && (!tool.branchBound || input.branch === approvedBranch)) return { authorized: true };
+      if (typeof tool.authorizeStandingPolicy === "function") {
+        const standingPolicy = await tool.authorizeStandingPolicy(input, context);
+        if (standingPolicy?.authorized === true) return { authorized: true, standingPolicy };
+      }
       if (context.approvalId) {
         const approval = await storage.getApproval(context.approvalId, ownerId);
         if (approval?.status === "approved" && approval.tool === tool.name && sameArguments(approval.arguments, redact(input)) && (!approval.runId || approval.runId === context.runId)) return { authorized: true, approval };

@@ -277,6 +277,8 @@ const gmailConnectionRow = (row) => row && ({ ownerId: row.owner_id, email: row.
 const gmailDraftRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, to: row.to_recipients, cc: row.cc_recipients, bcc: row.bcc_recipients, subject: row.subject, body: row.body, threadId: row.thread_id, inReplyTo: row.in_reply_to, references: row.references_header, intentHash: row.intent_hash, createdAt: date(row.created_at) });
 const gmailSendIntentRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, draftId: row.draft_id, intentHash: row.intent_hash, messageId: row.message_id, status: row.status, providerMessageId: row.provider_message_id, providerThreadId: row.provider_thread_id, errorCode: row.error_code, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
 const phoneCallRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, conversationId: row.conversation_id, preparedRunId: row.prepared_run_id, callConversationId: row.call_conversation_id, envelope: row.envelope, envelopeHash: row.envelope_hash, status: row.status, approvalId: row.approval_id, attemptCount: Number(row.attempt_count), submissionKey: row.submission_key, providerCallSid: row.provider_call_sid, providerStreamSid: row.provider_stream_sid, providerStatus: row.provider_status, sessionTokenHash: row.session_token_hash, sessionTokenExpiresAt: date(row.session_token_expires_at), sessionTokenUsedAt: date(row.session_token_used_at), outcome: row.outcome, summary: row.summary, errorCode: row.error_code, expiresAt: date(row.expires_at), startedAt: date(row.started_at), endedAt: date(row.ended_at), createdAt: date(row.created_at), updatedAt: date(row.updated_at), ...(row.assistant_message_id ? { assistantMessageId: row.assistant_message_id } : {}) });
+const ownerContactPolicyRow = (row) => row && ({ ownerId: row.owner_id, version: Number(row.version), enabled: row.enabled === true, allowedReasons: row.allowed_reasons, quietHours: row.quiet_hours, cooldownMinutes: Number(row.cooldown_minutes), dailyLimit: Number(row.daily_limit), maximumCalls: Number(row.maximum_calls), usedCalls: Number(row.used_calls), expiresAt: date(row.expires_at), pausedAt: date(row.paused_at), revokedAt: date(row.revoked_at), createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
+const speakerChannelCalibrationRow = (row) => row && ({ ownerId: row.owner_id, speakerProfileId: row.speaker_profile_id, channel: row.channel, status: row.status, representationVersion: row.representation_version, ownerMatchThreshold: row.owner_match_threshold === null ? null : Number(row.owner_match_threshold), ambiguityMargin: row.ambiguity_margin === null ? null : Number(row.ambiguity_margin), sampleCount: Number(row.sample_count), sessionCount: Number(row.session_count), conditions: row.conditions || [], consentAt: date(row.consent_at), createdAt: date(row.created_at), updatedAt: date(row.updated_at), revokedAt: date(row.revoked_at) });
 const phoneTurnRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, callIntentId: row.call_intent_id, inputHash: row.input_hash, callerText: row.caller_text, novaText: row.nova_text, control: row.control, runId: row.run_id, status: row.status, errorCode: row.error_code, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
 const phoneEventRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, callIntentId: row.call_intent_id, eventKey: row.event_key, type: row.event_type, providerCallSid: row.provider_call_sid, providerStreamSid: row.provider_stream_sid, metadata: row.metadata, createdAt: date(row.created_at) });
 
@@ -1274,6 +1276,12 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
     async getGmailDraft(id, ownerId) {
       return gmailDraftRow((await run("SELECT * FROM nova_gmail_drafts WHERE id=$1 AND owner_id=$2", [id, ownerId]))[0]);
     },
+    async getSpeakerChannelCalibration(ownerId, channel) {
+      return speakerChannelCalibrationRow((await run("SELECT * FROM nova_speaker_channel_calibrations WHERE owner_id=$1 AND channel=$2 AND status<>'revoked' ORDER BY updated_at DESC LIMIT 1", [ownerId, channel]))[0]);
+    },
+    async saveSpeakerChannelCalibration(input) {
+      return speakerChannelCalibrationRow((await run(`INSERT INTO nova_speaker_channel_calibrations (owner_id,speaker_profile_id,channel,status,representation_version,owner_match_threshold,ambiguity_margin,sample_count,session_count,conditions,consent_at,revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12) ON CONFLICT (owner_id,speaker_profile_id,channel) DO UPDATE SET status=EXCLUDED.status,representation_version=EXCLUDED.representation_version,owner_match_threshold=EXCLUDED.owner_match_threshold,ambiguity_margin=EXCLUDED.ambiguity_margin,sample_count=EXCLUDED.sample_count,session_count=EXCLUDED.session_count,conditions=EXCLUDED.conditions,consent_at=EXCLUDED.consent_at,revoked_at=EXCLUDED.revoked_at,updated_at=now() RETURNING *`, [input.ownerId,input.speakerProfileId,input.channel,input.status,input.representationVersion,input.ownerMatchThreshold??null,input.ambiguityMargin??null,input.sampleCount||0,input.sessionCount||0,json(input.conditions||[]),input.consentAt||null,input.revokedAt||null]))[0]);
+    },
     async listConversationGmailDrafts(ownerId, conversationId, { limit = 2 } = {}) {
       return (await run(
         `SELECT draft.* FROM nova_activity_events event
@@ -1320,6 +1328,24 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         [ownerId,conversationId,limit],
       )).map(phoneCallRow);
     },
+    async listPhoneCalls(ownerId, { limit = 50 } = {}) {
+      return (await run("SELECT * FROM nova_phone_call_intents WHERE owner_id=$1 ORDER BY created_at DESC,id ASC LIMIT $2", [ownerId, limit])).map(phoneCallRow);
+    },
+    async getOwnerContactPolicy(ownerId) { return ownerContactPolicyRow((await run("SELECT * FROM nova_owner_contact_policies WHERE owner_id=$1", [ownerId]))[0]); },
+    async saveOwnerContactPolicy(input) {
+      return ownerContactPolicyRow((await run(
+        `INSERT INTO nova_owner_contact_policies (owner_id,version,enabled,allowed_reasons,quiet_hours,cooldown_minutes,daily_limit,maximum_calls,used_calls,expires_at,paused_at,revoked_at)
+         VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7,$8,$9,$10,$11,$12)
+         ON CONFLICT (owner_id) DO UPDATE SET version=EXCLUDED.version,enabled=EXCLUDED.enabled,allowed_reasons=EXCLUDED.allowed_reasons,quiet_hours=EXCLUDED.quiet_hours,cooldown_minutes=EXCLUDED.cooldown_minutes,daily_limit=EXCLUDED.daily_limit,maximum_calls=EXCLUDED.maximum_calls,used_calls=EXCLUDED.used_calls,expires_at=EXCLUDED.expires_at,paused_at=EXCLUDED.paused_at,revoked_at=EXCLUDED.revoked_at,updated_at=now() RETURNING *`,
+        [input.ownerId,input.version,input.enabled,json(input.allowedReasons),json(input.quietHours),input.cooldownMinutes,input.dailyLimit,input.maximumCalls,input.usedCalls,input.expiresAt,input.pausedAt||null,input.revokedAt||null],
+      ))[0]);
+    },
+    async consumeOwnerContactPolicy(ownerId, version, consumedAt) {
+      return ownerContactPolicyRow((await run(
+        `UPDATE nova_owner_contact_policies SET used_calls=used_calls+1,updated_at=now() WHERE owner_id=$1 AND version=$2 AND enabled=true AND paused_at IS NULL AND revoked_at IS NULL AND expires_at>$3 AND used_calls<maximum_calls AND used_calls<daily_limit RETURNING *`,
+        [ownerId,version,consumedAt],
+      ))[0]);
+    },
     async bindPhoneCallApproval(id, ownerId, { approvalId, status }) {
       return phoneCallRow((await run(
         `UPDATE nova_phone_call_intents SET approval_id=$3,status=$4,updated_at=now()
@@ -1334,6 +1360,12 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         [id,ownerId,approvalId],
       ))[0]);
     },
+    async authorizePhoneCallByPolicy(id, ownerId, { policyVersion }) {
+      return phoneCallRow((await run(
+        `UPDATE nova_phone_call_intents SET status='approved',updated_at=now() WHERE id=$1 AND owner_id=$2 AND status='prepared' AND (envelope->>'ownerContactPolicyVersion')::integer=$3 RETURNING *`,
+        [id,ownerId,policyVersion],
+      ))[0]);
+    },
     async updatePhoneCallIntent(id, ownerId, patch) {
       return phoneCallRow((await run(
         `UPDATE nova_phone_call_intents SET status=COALESCE($3,status),provider_call_sid=COALESCE($4,provider_call_sid),provider_stream_sid=COALESCE($5,provider_stream_sid),provider_status=COALESCE($6,provider_status),outcome=COALESCE($7,outcome),summary=COALESCE($8,summary),error_code=COALESCE($9,error_code),started_at=COALESCE($10,started_at),ended_at=COALESCE($11,ended_at),updated_at=now() WHERE id=$1 AND owner_id=$2 RETURNING *`,
@@ -1346,17 +1378,17 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
     async savePhoneSessionToken(id, ownerId, { tokenHash, expiresAt }) {
       return phoneCallRow((await run("UPDATE nova_phone_call_intents SET session_token_hash=$3,session_token_expires_at=$4,updated_at=now() WHERE id=$1 AND owner_id=$2 AND session_token_used_at IS NULL RETURNING *",[id,ownerId,tokenHash,expiresAt]))[0]);
     },
-    async claimPhoneCallDial({ id, ownerId, approvalId, submissionKey, tokenHash, tokenExpiresAt }) {
+    async claimPhoneCallDial({ id, ownerId, approvalId, policyVersion, submissionKey, tokenHash, tokenExpiresAt }) {
       const rows=await run(
         `WITH claimed AS (
            UPDATE nova_phone_call_intents SET status='dialing',attempt_count=attempt_count+1,submission_key=$4,session_token_hash=$5,session_token_expires_at=$6,session_token_used_at=NULL,updated_at=now()
-           WHERE id=$1 AND owner_id=$2 AND approval_id=$3 AND status='approved' AND attempt_count<1
+           WHERE id=$1 AND owner_id=$2 AND ((approval_id IS NOT NULL AND approval_id=$3) OR (approval_id IS NULL AND $7::integer IS NOT NULL AND (envelope->>'ownerContactPolicyVersion')::integer=$7)) AND status='approved' AND attempt_count<1
              AND NOT EXISTS (SELECT 1 FROM nova_phone_call_intents active WHERE active.owner_id=$2 AND active.id<>$1 AND active.status IN ('dialing','in_progress'))
            RETURNING *,true AS claimed,NULL::text AS claim_reason
          ) SELECT * FROM claimed UNION ALL SELECT existing.*,false AS claimed,
              CASE WHEN EXISTS (SELECT 1 FROM nova_phone_call_intents active WHERE active.owner_id=$2 AND active.id<>$1 AND active.status IN ('dialing','in_progress')) THEN 'active_call' ELSE 'not_eligible' END AS claim_reason
            FROM nova_phone_call_intents existing WHERE existing.id=$1 AND existing.owner_id=$2 AND NOT EXISTS(SELECT 1 FROM claimed) LIMIT 1`,
-        [id,ownerId,approvalId,submissionKey,tokenHash,tokenExpiresAt],
+        [id,ownerId,approvalId,submissionKey,tokenHash,tokenExpiresAt,policyVersion||null],
       );
       return rows[0]?{claimed:rows[0].claimed===true,call:phoneCallRow(rows[0]),reason:rows[0].claim_reason||null}:null;
     },

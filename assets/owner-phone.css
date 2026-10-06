@@ -1,0 +1,9 @@
+.owner-contact-policy{max-width:1180px;margin:0 auto 18px;padding:18px;border:1px solid var(--line);border-radius:16px;background:rgba(18,21,28,.8);display:grid;grid-template-columns:1fr auto;gap:10px 20px;align-items:center}
+.owner-contact-policy[data-enabled="true"]{border-color:rgba(151,240,196,.3)}
+.owner-contact-policy h2{margin:0 0 6px;font-size:15px}
+.owner-contact-policy p:not(.eyebrow){margin:0;color:var(--muted);font-size:10px;line-height:1.5}
+.owner-contact-actions{display:flex;gap:8px}
+.owner-contact-actions .send-button{border:0}
+.owner-contact-policy>p:last-child{grid-column:1/-1}
+@media(max-width:800px){.owner-contact-policy{grid-template-columns:1fr}.owner-contact-actions{flex-wrap:wrap}.owner-contact-policy>p:last-child{grid-column:auto}}
+@media(max-width:800px){.mobile-nav{grid-template-columns:repeat(8,1fr)}}
