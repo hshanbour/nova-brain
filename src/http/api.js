@@ -292,6 +292,11 @@ export function createApi({
           sendJson(response, 200, { calibration: calibration ? { channel: "pstn_8khz_v1", status: calibration.status, ready: calibration.status === "ready", consentAt: calibration.consentAt || null, sampleCount: calibration.sampleCount || 0, sessionCount: calibration.sessionCount || 0, representationVersion: calibration.representationVersion } : { channel: "pstn_8khz_v1", status: "consent_required", ready: false, consentAt: null, sampleCount: 0, sessionCount: 0, representationVersion: null } });
           return;
         }
+        if (request.method === "POST" && pathname === "/api/phone/speaker-calibration/readiness") {
+          await ready();
+          sendJson(response, 200, { readiness: await pstnSpeakerEnrollment.evaluateCalibrationReadiness({ persist: true }) });
+          return;
+        }
         if(request.method==="GET"&&pathname==="/api/phone/speaker-enrollment/status"){
           await ready();sendJson(response,200,await pstnSpeakerEnrollment.status());return;
         }

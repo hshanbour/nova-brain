@@ -6,6 +6,8 @@ export const PSTN_ENROLLMENT_CHANNEL="pstn_8khz_v1";
 export const PSTN_ENROLLMENT_CONSENT_VERSION="pstn-owner-enrollment-v1";
 const OWNER_NAME="Mohammad";
 const EXPECTED_DESTINATION="+447960672981";
+const CALIBRATION_THRESHOLD=0.9;
+const CALIBRATION_AMBIGUITY_MARGIN=0.08;
 const PHRASES=Object.freeze({
   arabic:Object.freeze([
     "أنا محمد، وأستخدم نوفا لمساعدتي في تنظيم عملي ومشاريعي بأمان.",
@@ -29,6 +31,9 @@ const safeQuality=(result)=>Object.freeze({voicedDurationSeconds:Number(result.s
 const publicSession=session=>session&&({...session,phrasePlan:session.phrasePlan.map(({id,language,text})=>({id,language,text}))});
 const normalized=values=>{const magnitude=Math.sqrt(values.reduce((sum,value)=>sum+value*value,0));return values.map(value=>value/magnitude);};
 const centroid=values=>normalized(Array.from({length:values[0].length},(_,index)=>values.reduce((sum,value)=>sum+value[index],0)/values.length));
+const rounded=value=>Number.isFinite(value)?Math.round(value*10000)/10000:null;
+const scoreSummary=values=>Object.freeze({minimum:rounded(Math.min(...values)),maximum:rounded(Math.max(...values)),mean:rounded(values.reduce((sum,value)=>sum+value,0)/values.length)});
+const pairScores=(values,similarity)=>{const scores=[];for(let left=0;left<values.length;left+=1)for(let right=left+1;right<values.length;right+=1)scores.push(similarity(values[left],values[right]));return scores;};
 
 export function createPstnSpeakerEnrollment({storage,ownerId,phoneService,speakerExtractor,speakerIdentity,ownerNumber,clock=()=>new Date(),idFactory=randomUUID}={}){
   if(!storage||!ownerId||!phoneService||!speakerExtractor||!speakerIdentity)throw new Error("PSTN enrollment dependencies are required.");
@@ -74,6 +79,49 @@ export function createPstnSpeakerEnrollment({storage,ownerId,phoneService,speake
       return service.prepareSession({sessionNumber:2});
     },
     async status(){const consent=await storage.getActiveSpeakerEnrollmentConsent(ownerId,{purpose:PSTN_ENROLLMENT_PURPOSE,channel:PSTN_ENROLLMENT_CHANNEL}),sessions=await storage.listSpeakerEnrollmentSessions(ownerId,{limit:10});return{consent:consent?{id:consent.id,version:consent.consentVersion,status:consent.status,actor:consent.consentActor,consentedAt:consent.consentedAt,channel:consent.channel}:null,sessions:sessions.map(publicSession)};},
+    async evaluateCalibrationReadiness({persist=true}={}){
+      const consent=await ensureConsent();
+      const sessions=(await storage.listSpeakerEnrollmentSessions(ownerId,{limit:20})).filter(item=>item.consentId===consent.id&&item.status==="completed"&&[1,2].includes(item.sessionNumber)).sort((left,right)=>left.sessionNumber-right.sessionNumber);
+      const result={channel:PSTN_ENROLLMENT_CHANNEL,status:"not_ready",reason:"insufficient_sessions",sampleCount:0,sessionCount:sessions.length,conditions:sessions.map(item=>item.conditionLabel),representationVersion:null,thresholdCandidate:CALIBRATION_THRESHOLD,ambiguityMargin:CALIBRATION_AMBIGUITY_MARGIN,heldout:null,conditionsSummary:null,crossConditionScore:null,languageScores:null,outlier:null,calibrationCreated:false,ownerModeEnabled:false};
+      try{
+      if(sessions.length===2&&sessions[0].sessionNumber===1&&sessions[1].sessionNumber===2){
+        const sampleSets=await Promise.all(sessions.map(item=>storage.listSpeakerEnrollmentSamples(ownerId,item.id,{includeRepresentation:true})));
+        const samples=sampleSets.flatMap((items,index)=>items.filter(item=>item.status==="accepted").sort((left,right)=>left.ordinal-right.ordinal).map(item=>({...item,sessionNumber:sessions[index].sessionNumber})));
+        result.sampleCount=samples.length;
+        if(samples.length<6||sampleSets.some(items=>items.filter(item=>item.status==="accepted").length!==3))result.reason="insufficient_samples";
+        else if(samples.some(item=>item.quality?.accepted!==true))result.reason="quality_failed";
+        else {
+          const versions=new Set(samples.map(item=>item.representationVersion).filter(Boolean));result.representationVersion=versions.size===1?[...versions][0]:null;
+          if(versions.size!==1)result.reason="model_version_mismatch";
+          else {
+            let vectors;try{vectors=samples.map(item=>speakerIdentity.revealRepresentation(item.encryptedRepresentation));}catch{vectors=[];}
+            const dimension=vectors[0]?.length;
+            if(!dimension||vectors.some(value=>!Array.isArray(value)||value.length!==dimension||value.some(component=>!Number.isFinite(component))))result.reason="representation_invalid";
+            else {
+              const byKey=new Map(samples.map((item,index)=>[`${item.sessionNumber}:${item.ordinal}`,{item,vector:vectors[index]}]));
+              const templateKeys=["1:1","1:2","2:1","2:2"],heldoutKeys=["1:3","2:3"],template=templateKeys.map(key=>byKey.get(key)?.vector),heldout=heldoutKeys.map(key=>byKey.get(key));
+              if(template.some(value=>!value)||heldout.some(value=>!value))result.reason="representation_invalid";
+              else {
+                const center=centroid(template),heldoutScores=heldout.map(({vector})=>speakerIdentity.similarity(center,vector)),minimum=Math.min(...heldoutScores);
+                const sessionVectors=sessionNumber=>samples.map((item,index)=>item.sessionNumber===sessionNumber?vectors[index]:null).filter(Boolean);
+                const handset=sessionVectors(1),speakerphone=sessionVectors(2),languageScores={};
+                for(const language of["arabic","english","mixed"]){const entries=samples.map((item,index)=>item.language===language?vectors[index]:null).filter(Boolean);languageScores[language]=entries.length===2?rounded(speakerIdentity.similarity(entries[0],entries[1])):null;}
+                const outlierScores=samples.map((item,index)=>({sessionNumber:item.sessionNumber,ordinal:item.ordinal,language:item.language,condition:item.conditionLabel,score:rounded(speakerIdentity.similarity(centroid(vectors.filter((_,other)=>other!==index)),vectors[index]))})).sort((left,right)=>left.score-right.score);
+                result.heldout={scores:heldout.map(({item},index)=>({sessionNumber:item.sessionNumber,ordinal:item.ordinal,language:item.language,condition:item.conditionLabel,score:rounded(heldoutScores[index])})),...scoreSummary(heldoutScores)};
+                result.conditionsSummary={quietNormalHandset:scoreSummary(pairScores(handset,speakerIdentity.similarity)),speakerphone:scoreSummary(pairScores(speakerphone,speakerIdentity.similarity))};
+                result.crossConditionScore=rounded(speakerIdentity.similarity(centroid(handset),centroid(speakerphone)));
+                result.languageScores=languageScores;result.outlier=outlierScores[0];result.thresholdCandidate=rounded(Math.max(CALIBRATION_THRESHOLD,minimum-0.02));
+                result.status=minimum>=CALIBRATION_THRESHOLD?"ready":"not_ready";result.reason=result.status==="ready"?"ready":"heldout_score_below_threshold";
+              }
+            }
+          }
+        }
+      }
+      }catch{result.status="not_ready";result.reason="calibration_error";result.heldout=null;result.conditionsSummary=null;result.crossConditionScore=null;result.languageScores=null;result.outlier=null;}
+      const safe=Object.freeze({...result});
+      if(persist)await storage.appendActivity({ownerId,action:"pstn_speaker_calibration_readiness_evaluated",status:"completed",summary:"Evaluated PSTN speaker calibration readiness without creating a profile or calibration.",metadata:safe});
+      return safe;
+    },
     async submitSample({sessionId,submissionKey,ordinal,promptId,audioBase64,mimeType,durationSeconds},{signal}={}){
       const consent=await ensureConsent(),session=await load(sessionId);if(session.consentId!==consent.id||session.status!=="collecting")throw new PstnEnrollmentError("Enrollment session is not collecting samples.",{code:"pstn_enrollment_session_inactive",statusCode:409});
       if(!Number.isInteger(ordinal)||ordinal<1||ordinal>3||session.phrasePlan[ordinal-1]?.id!==promptId||!/^[A-Za-z0-9:_-]{8,160}$/.test(submissionKey||""))throw new PstnEnrollmentError("Enrollment sample binding is invalid.",{code:"pstn_enrollment_sample_invalid"});
@@ -81,7 +129,7 @@ export function createPstnSpeakerEnrollment({storage,ownerId,phoneService,speake
       let result;try{result=await speakerExtractor.extract({audioBase64,mimeType,durationSeconds},{signal,requestId:`enrollment-${sessionId}-${ordinal}`,enrollmentAttemptId:sessionId});}catch(error){result={sufficient:false,reason:error?.code||"extractor_rejected",extractorVersion:null};}
       const quality=safeQuality(result),poor=result.sufficient!==true||(Number.isFinite(result.clippingRatio)&&result.clippingRatio>0.02)||(Number.isFinite(result.peakToNoiseDb)&&result.peakToNoiseDb<8),status=poor?"retry":"accepted";
       const recorded=await storage.recordSpeakerEnrollmentSample({id:`speaker-sample-${idFactory()}`,ownerId,sessionId,ordinal,submissionKey,promptId,language:session.phrasePlan[ordinal-1].language,conditionLabel:session.conditionLabel,status,quality,encryptedRepresentation:status==="accepted"?speakerIdentity.protectRepresentation(result.representation):null,representationVersion:status==="accepted"?result.extractorVersion:null});
-      let updated=await load(sessionId);if(recorded.inserted&&status==="accepted"&&updated.acceptedCount===3){updated=await storage.updateSpeakerEnrollmentSession(sessionId,ownerId,{status:"completed",completedAt:clock().toISOString()});const sessions=await storage.listSpeakerEnrollmentSessions(ownerId,{limit:20}),completed=sessions.filter(item=>item.status==="completed"&&item.consentId===consent.id);if(completed.some(item=>item.sessionNumber===1)&&completed.some(item=>item.sessionNumber===2)){const ordered=completed.sort((a,b)=>a.sessionNumber-b.sessionNumber),sampleSets=await Promise.all(ordered.map(item=>storage.listSpeakerEnrollmentSamples(ownerId,item.id,{includeRepresentation:true}))),accepted=sampleSets.flat().filter(item=>item.status==="accepted"&&item.encryptedRepresentation),vectors=accepted.map(item=>speakerIdentity.revealRepresentation(item.encryptedRepresentation));if(vectors.length===6&&vectors.every(Boolean)){const template=[vectors[0],vectors[1],vectors[3],vectors[4]],heldout=[vectors[2],vectors[5]],center=centroid(template),scores=heldout.map(value=>speakerIdentity.similarity(center,value)),minimum=Math.min(...scores);if(minimum>=0.9){const profile=await speakerIdentity.enroll({displayName:OWNER_NAME,relation:"owner",scope:"private_owner",consent:true,consentActor:consent.consentActor,sampleRepresentations:template,representationVersion:accepted[0].representationVersion,enrollmentAttemptId:`pstn:${consent.id}`});await storage.saveSpeakerChannelCalibration({ownerId,speakerProfileId:profile.id,channel:PSTN_ENROLLMENT_CHANNEL,status:"ready",representationVersion:accepted[0].representationVersion,ownerMatchThreshold:Math.max(0.9,minimum-0.02),ambiguityMargin:0.08,sampleCount:6,sessionCount:2,conditions:ordered.map(item=>item.conditionLabel),consentAt:consent.consentedAt});await storage.purgeSpeakerEnrollmentSampleRepresentations(ownerId,ordered.map(item=>item.id));}}}await storage.appendActivity({ownerId,action:"pstn_speaker_enrollment_session_completed",status:"completed",summary:"Completed one three-sample PSTN enrollment session; calibration is ready only after two sessions and held-out validation.",metadata:{sessionId,sampleCount:3,totalRequired:6}});}return{sample:recorded.sample,acceptedCount:updated.acceptedCount,sessionStatus:updated.status,idempotent:!recorded.inserted,retry:status!=="accepted",rawAudioPersisted:false};
+      let updated=await load(sessionId);if(recorded.inserted&&status==="accepted"&&updated.acceptedCount===3){updated=await storage.updateSpeakerEnrollmentSession(sessionId,ownerId,{status:"completed",completedAt:clock().toISOString()});await storage.appendActivity({ownerId,action:"pstn_speaker_enrollment_session_completed",status:"completed",summary:"Completed one three-sample PSTN enrollment session; calibration remains a separate explicit owner-authorized operation.",metadata:{sessionId,sampleCount:3,totalRequired:6,calibrationCreated:false,ownerModeEnabled:false}});}return{sample:recorded.sample,acceptedCount:updated.acceptedCount,sessionStatus:updated.status,idempotent:!recorded.inserted,retry:status!=="accepted",rawAudioPersisted:false};
     },
   };return Object.freeze(service);
 }
