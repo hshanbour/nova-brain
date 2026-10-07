@@ -301,6 +301,9 @@ export function createApi({
         if(request.method==="POST"&&pathname==="/api/phone/speaker-enrollment/sessions"){
           await ready();sendJson(response,201,await pstnSpeakerEnrollment.prepareSession(await readJsonBody(request,config.maxBodyBytes)));return;
         }
+        if(request.method==="POST"&&pathname==="/api/phone/speaker-enrollment/sessions/replace"){
+          await ready();sendJson(response,201,await pstnSpeakerEnrollment.replacePendingSession(await readJsonBody(request,config.maxBodyBytes)));return;
+        }
         if(request.method==="POST"&&pathname==="/api/phone/speaker-enrollment/sample"){
           await ready();const input=await readJsonBody(request,config.voiceV2.maxBodyBytes),bridgeSessionToken=String(request.headers?.authorization||"").replace(/^Bearer\s+/i,"");
           await phoneService.authorizeEnrollmentSample({...input,bridgeSessionToken});sendJson(response,200,await pstnSpeakerEnrollment.submitSample(input));return;
