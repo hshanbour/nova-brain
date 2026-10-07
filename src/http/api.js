@@ -215,6 +215,7 @@ export function createApi({
   phoneService,
   ownerContactPolicy,
   pstnSpeakerEnrollment,
+  pstnSpeakerControls,
   gptLiveRound2,
   gptLiveRound2Authorization = () => false,
   logger = console,
@@ -312,6 +313,23 @@ export function createApi({
         if(request.method==="POST"&&pathname==="/api/phone/speaker-enrollment/sample"){
           await ready();const input=await readJsonBody(request,config.voiceV2.maxBodyBytes),bridgeSessionToken=String(request.headers?.authorization||"").replace(/^Bearer\s+/i,"");
           await phoneService.authorizeEnrollmentSample({...input,bridgeSessionToken});sendJson(response,200,await pstnSpeakerEnrollment.submitSample(input));return;
+        }
+        if(request.method==="GET"&&pathname==="/api/phone/speaker-controls/status"){
+          await ready();sendJson(response,200,await pstnSpeakerControls.status());return;
+        }
+        if(request.method==="POST"&&pathname==="/api/phone/speaker-controls/sessions"){
+          await ready();sendJson(response,201,await pstnSpeakerControls.prepareSession(await readJsonBody(request,config.maxBodyBytes)));return;
+        }
+        if(request.method==="POST"&&pathname==="/api/phone/speaker-controls/consent"){
+          await ready();const input=await readJsonBody(request,config.maxBodyBytes),bridgeSessionToken=String(request.headers?.authorization||"").replace(/^Bearer\s+/i,"");
+          await phoneService.authorizeControlAction({...input,bridgeSessionToken});sendJson(response,200,await pstnSpeakerControls.participantDecision(input));return;
+        }
+        if(request.method==="POST"&&pathname==="/api/phone/speaker-controls/sample"){
+          await ready();const input=await readJsonBody(request,config.voiceV2.maxBodyBytes),bridgeSessionToken=String(request.headers?.authorization||"").replace(/^Bearer\s+/i,"");
+          await phoneService.authorizeControlAction({...input,bridgeSessionToken});sendJson(response,200,await pstnSpeakerControls.submitSample(input));return;
+        }
+        if(request.method==="POST"&&pathname==="/api/phone/speaker-controls/diagnostics"){
+          await ready();sendJson(response,200,{diagnostics:await pstnSpeakerControls.diagnostics()});return;
         }
         if (request.method === "POST" && pathname === "/api/phone/owner-contact-policy") {
           await ready(); sendJson(response, 200, { policy: await ownerContactPolicy.configure(await readJsonBody(request, config.maxBodyBytes)) }); return;

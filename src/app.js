@@ -64,6 +64,7 @@ import { createGptLiveRound2Service, createRound2Authorization } from "./phone/g
 import { createPhoneLiveIntentClassifier } from "./phone/live-intent-classifier.js";
 import { createOwnerContactPolicy } from "./phone/owner-contact-policy.js";
 import { createPstnSpeakerEnrollment } from "./voice/pstn-speaker-enrollment.js";
+import { createPstnSpeakerControls } from "./voice/pstn-speaker-controls.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -347,6 +348,7 @@ export function createApp({
     logger,
   });
   const pstnSpeakerEnrollment=createPstnSpeakerEnrollment({storage,ownerId:OWNER_ID,phoneService,speakerExtractor,speakerIdentity,ownerNumber:config.phone.ownerNumber});
+  const pstnSpeakerControls=createPstnSpeakerControls({storage,ownerId:OWNER_ID,phoneService,speakerExtractor,speakerIdentity,enabled:environment.VERCEL_ENV==="preview"});
 
   const api = createApi({
     agent,
@@ -381,9 +383,10 @@ export function createApp({
     phoneService,
     ownerContactPolicy,
     pstnSpeakerEnrollment,
+    pstnSpeakerControls,
     gptLiveRound2,
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, pstnSpeakerEnrollment });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, pstnSpeakerEnrollment, pstnSpeakerControls });
 }

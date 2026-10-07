@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const PHONE_CALL_DURATIONS = Object.freeze([5, 10, 15, 30, 60]);
-export const PHONE_MEDIA_PROFILES = Object.freeze(["chained_v1", "gpt_live_round2_preview", "speaker_enrollment_v1"]);
+export const PHONE_MEDIA_PROFILES = Object.freeze(["chained_v1", "gpt_live_round2_preview", "speaker_enrollment_v1", "speaker_control_v1"]);
 export const GPT_LIVE_PHONE_VOICES = Object.freeze(["marin", "willow", "gleam"]);
 const MAX_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
@@ -67,6 +67,7 @@ export function normalizeCallEnvelope(input, { now = new Date() } = {}) {
     mediaProfile,
     liveVoice,
     enrollmentSessionId: mediaProfile === "speaker_enrollment_v1" ? text(input.enrollmentSessionId, "enrollmentSessionId", 160) : null,
+    controlSessionId: mediaProfile === "speaker_control_v1" ? text(input.controlSessionId, "controlSessionId", 160) : null,
     destination,
     expectedParty: text(input.expectedParty, "expectedParty", 200),
     callerDisclosure: text(input.callerDisclosure, "callerDisclosure", 500),

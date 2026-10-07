@@ -43,9 +43,11 @@ export function approvalViewModel(approval, { gmailAccountEmail } = {}) {
   if (approval.tool === "phone_call_start") {
     const envelope = approval.arguments?.envelope || {};
     const enrollment=envelope.mediaProfile==="speaker_enrollment_v1";
-    return { ...common, title:enrollment?"Approve owner voice enrollment call":common.title, kind: "phone", fields: [
+    const control=envelope.mediaProfile==="speaker_control_v1";
+    return { ...common, title:enrollment?"Approve owner voice enrollment call":control?"Approve consent-gated calibration control call":common.title, kind: "phone", fields: [
       ["Destination", String(envelope.destination || "")], ["Expected party", String(envelope.expectedParty || "")],
       ...(enrollment?[["Enrollment session",String(envelope.enrollmentSessionId||"")],["Expected samples","3"],["Condition","quiet normal handset"],["Languages","Arabic, English, mixed Arabic-English"],["Raw audio persistence","disabled"]]:[]),
+      ...(control?[["Anonymous control session",String(envelope.controlSessionId||"")],["Expected samples","4 after direct participant consent"],["Consent","Participant presses 1 after disclosure; 2 refuses and ends collection"],["Conditions","2 normal handset, 2 speakerphone"],["Permanent participant profile","none"],["Raw audio / control embedding persistence","disabled / ephemeral"]]:[]),
       ["Conversation path", String(envelope.mediaProfile || "chained_v1")], ["GPT-Live voice", String(envelope.liveVoice || "Not used")],
       ["Nova disclosure", String(envelope.callerDisclosure || "")], ["Objective", String(envelope.objective || "")],
       ["Approved context", String(envelope.approvedContext || "None")], ["Permitted questions", textList(envelope.permittedQuestions)],

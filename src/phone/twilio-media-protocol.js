@@ -24,6 +24,9 @@ export function parseTwilioMediaMessage(raw) {
   if (message.event === "media" && typeof message.media?.payload !== "string") {
     throw new TwilioMediaProtocolError("Twilio media message is missing audio.");
   }
+  if (message.event === "dtmf" && !/^[0-9*#]$/.test(String(message.dtmf?.digit || ""))) {
+    throw new TwilioMediaProtocolError("Twilio DTMF message is invalid.");
+  }
   return message;
 }
 

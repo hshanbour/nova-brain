@@ -27,6 +27,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const speakerEnrollmentConsents = new Map();
   const speakerEnrollmentSessions = new Map();
   const speakerEnrollmentSamples = new Map();
+  const speakerControlSessions = new Map();
+  const speakerControlSamples = new Map();
   const anonymousSpeakerProfiles = new Map();
   const voiceUtterances = new Map();
   const runs = new Map();
@@ -998,6 +1000,12 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async recordSpeakerEnrollmentSample(input) { const existing=[...speakerEnrollmentSamples.values()].find(item=>item.ownerId===input.ownerId&&item.sessionId===input.sessionId&&item.submissionKey===input.submissionKey);if(existing)return{inserted:false,sample:copy(existing)};const sample={...copy(input),createdAt:now(clock)};speakerEnrollmentSamples.set(sample.id,sample);if(sample.status==="accepted"){const session=speakerEnrollmentSessions.get(sample.sessionId);if(session&&session.ownerId===input.ownerId){session.acceptedCount=Math.min(3,session.acceptedCount+1);session.updatedAt=now(clock);}}return{inserted:true,sample:copy(sample)}; },
     async listSpeakerEnrollmentSamples(ownerId,sessionId,{includeRepresentation=false}={}) { return [...speakerEnrollmentSamples.values()].filter(item=>item.ownerId===ownerId&&item.sessionId===sessionId).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)).map(item=>{const value=copy(item);if(!includeRepresentation)delete value.encryptedRepresentation;return value;}); },
     async purgeSpeakerEnrollmentSampleRepresentations(ownerId,sessionIds) { let count=0;for(const sample of speakerEnrollmentSamples.values())if(sample.ownerId===ownerId&&sessionIds.includes(sample.sessionId)&&sample.encryptedRepresentation){sample.encryptedRepresentation=null;count++;}return count; },
+    async createSpeakerControlSession(input) { const timestamp=now(clock),record={...copy(input),consentStatus:"pending",status:input.status||"prepared",acceptedCount:0,callIntentId:null,approvalId:null,consentedAt:null,refusedAt:null,completedAt:null,createdAt:timestamp,updatedAt:timestamp};speakerControlSessions.set(record.id,record);return copy(record); },
+    async getSpeakerControlSession(id,ownerId) { const record=speakerControlSessions.get(id);return copy(record?.ownerId===ownerId?record:null); },
+    async listSpeakerControlSessions(ownerId,{limit=20}={}) { return [...speakerControlSessions.values()].filter(item=>item.ownerId===ownerId).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,limit).map(copy); },
+    async updateSpeakerControlSession(id,ownerId,patch) { const record=speakerControlSessions.get(id);if(!record||record.ownerId!==ownerId)return null;const updated={...record,...copy(patch),id:record.id,ownerId:record.ownerId,participantCode:record.participantCode,conversationId:record.conversationId,plan:record.plan,consentVersion:record.consentVersion,consentDisclosure:record.consentDisclosure,updatedAt:now(clock)};speakerControlSessions.set(id,updated);return copy(updated); },
+    async recordSpeakerControlSample(input) { const existing=[...speakerControlSamples.values()].find(item=>item.ownerId===input.ownerId&&item.sessionId===input.sessionId&&(item.submissionKey===input.submissionKey||(input.status==="accepted"&&item.status==="accepted"&&item.ordinal===input.ordinal)));if(existing)return{inserted:false,sample:copy(existing)};const sample={...copy(input),createdAt:now(clock)};speakerControlSamples.set(sample.id,sample);if(sample.status==="accepted"){const session=speakerControlSessions.get(sample.sessionId);if(session&&session.ownerId===input.ownerId){session.acceptedCount=Math.min(4,session.acceptedCount+1);session.updatedAt=now(clock);}}return{inserted:true,sample:copy(sample)}; },
+    async listSpeakerControlSamples(ownerId,sessionId) { return [...speakerControlSamples.values()].filter(item=>item.ownerId===ownerId&&item.sessionId===sessionId).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)).map(copy); },
     async listConversationGmailDrafts(ownerId, conversationId, { limit = 2 } = {}) {
       const seen = new Set();
       return activity

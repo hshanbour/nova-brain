@@ -69,6 +69,8 @@ export function createNovaPhoneBridgeClient({
     turn(input, token) { return post("/api/phone/bridge/turn", input, token); },
     event(input, token) { return post("/api/phone/bridge/event", input, token); },
     enrollmentSample(input,token){return post("/api/phone/speaker-enrollment/sample",input,token);},
+    controlConsent(input,token){return post("/api/phone/speaker-controls/consent",input,token);},
+    controlSample(input,token){return post("/api/phone/speaker-controls/sample",input,token);},
     forwardTwilioStatus,
   });
 }

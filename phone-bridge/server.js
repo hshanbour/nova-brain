@@ -10,6 +10,7 @@ import { createRuntimePhoneSession } from "./runtime-session.js";
 import { createGptLiveRound2Api } from "./gpt-live-round2-api.js";
 import { createGptLivePstnSession } from "./gpt-live-pstn-session.js";
 import { createSpeakerEnrollmentSession } from "./speaker-enrollment-session.js";
+import { createSpeakerControlSession } from "./speaker-control-session.js";
 
 const STATUS_BODY_LIMIT = 16 * 1024;
 const STATUS_ROUTE = /^\/api\/phone\/twilio\/status\/(phone_[a-f0-9]{32})$/;
@@ -66,7 +67,7 @@ function externalWebSocketUrl(publicUrl, requestUrl) {
   return url.toString();
 }
 
-export function createPhoneBridgeServer({ environment = process.env, fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, logger = console, novaClient: providedNovaClient, createTranscriber, createTts, createRuntime, createGptLiveRuntime, createEnrollmentRuntime } = {}) {
+export function createPhoneBridgeServer({ environment = process.env, fetchImpl = globalThis.fetch, WebSocketImpl = WebSocket, logger = console, novaClient: providedNovaClient, createTranscriber, createTts, createRuntime, createGptLiveRuntime, createEnrollmentRuntime, createControlRuntime } = {}) {
   const config = bridgeConfig(environment); const novaClient = providedNovaClient || createNovaPhoneBridgeClient({ baseUrl: config.novaBaseUrl, protectionBypassSecret: environment.VERCEL_AUTOMATION_BYPASS_SECRET, fetchImpl });
   const transcriberFactory = createTranscriber || (({ onError }) => createTranscriptionSessionRotator({ rotateAfterSeconds: 55 * 60, createSession: () => createOpenAiWebSocketTranscriber({ WebSocketImpl, apiKey: config.openAIApiKey, onError }) }));
   const ttsFactory = createTts || (() => createElevenLabsTelephonyTts({ config: config.voiceConfig, fetchImpl }));
@@ -74,6 +75,7 @@ export function createPhoneBridgeServer({ environment = process.env, fetchImpl =
   const round2Api = createGptLiveRound2Api({ baseUrl: config.novaBaseUrl, authorizationSecret: environment.VERCEL_AUTOMATION_BYPASS_SECRET, protectionBypassSecret: environment.VERCEL_AUTOMATION_BYPASS_SECRET, fetchImpl });
   const gptLiveRuntimeFactory = createGptLiveRuntime || ((input) => createGptLivePstnSession({ ...input, apiKey: config.openAIApiKey, round2Api }));
   const enrollmentRuntimeFactory=createEnrollmentRuntime||createSpeakerEnrollmentSession;
+  const controlRuntimeFactory=createControlRuntime||createSpeakerControlSession;
   const diagnostic = (event, metadata = {}) => logger.info?.("[nova-phone-bridge]", { event, ...metadata });
   const sessions = new Set();
   const server = http.createServer(async (request, response) => {
@@ -134,6 +136,7 @@ export function createPhoneBridgeServer({ environment = process.env, fetchImpl =
           const transcriber = transcriberFactory({ onError: (error) => { diagnostic("stt_failed", { category: safeCategory(error, "stt_provider_failure") }); closeSafely(1011, "transcription failure"); } });
           const commonRuntime = { sendTwilio: (value) => { if (ws.readyState === WebSocketImpl.OPEN) ws.send(JSON.stringify(value)); }, hangup:()=>closeSafely(1000,"safe hangup"), diagnostic, novaClient, authorization: authorized, callIntentId: authorized.callIntentId, maximumDurationSeconds: authorized.maximumDurationSeconds, callSid: message.start.callSid, streamSid: message.streamSid };
           if(authorized.mediaProfile==="speaker_enrollment_v1")runtime=enrollmentRuntimeFactory({...commonRuntime,tts:ttsFactory()});
+          else if(authorized.mediaProfile==="speaker_control_v1")runtime=controlRuntimeFactory({...commonRuntime,tts:ttsFactory()});
           else if (authorized.mediaProfile === "gpt_live_round2_preview") {
             if (!config.gptLivePreviewEnabled || authorized.liveVoice !== "gleam") throw Object.assign(new Error("The GPT-Live Preview route is disabled or not authorized for this voice."), { code: "gpt_live_phone_route_disabled" });
             runtime = gptLiveRuntimeFactory(commonRuntime);
@@ -143,7 +146,7 @@ export function createPhoneBridgeServer({ environment = process.env, fetchImpl =
         }
         if (message.event === "connected" || message.event === "start") throw Object.assign(new Error("Twilio lifecycle event was duplicated."), { code: "duplicate_lifecycle_event" });
         if (message.streamSid && message.streamSid !== boundStreamSid) throw Object.assign(new Error("Twilio stream identity changed."), { code: "stream_identity_mismatch" });
-        runtime.handle(message);
+        await runtime.handle(message);
         if (message.event === "stop") { phase = "stopped"; diagnostic("stream_stopped", { category: "provider_stop" }); }
       } catch (error) { diagnostic("stream_error", { category: safeCategory(error, "bridge_failure") }); await runtime?.stop("failed", "bridge_failure", { hangupSocket: false }).catch(() => {}); closeSafely(1008, "invalid phone session"); }
     };
