@@ -68,6 +68,9 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
     return{state:"confirmed",speakerProfileId:best.profile.id,displayName:best.profile.displayName,relation:best.profile.relation,scope:best.profile.scope,...decision};
   };
   return Object.freeze({
+    protectRepresentation(representation) { return protect(normalized(representation)); },
+    revealRepresentation(stored) { const value=reveal(stored);return value?normalized(value):null; },
+    similarity(left,right) { return cosine(left,right); },
     async enroll({ displayName, relation = "member", scope = "household", consent, consentActor, sampleRepresentations, representationVersion = "synthetic-v1", enrollmentAttemptId }) {
       if (consent !== true || typeof consentActor !== "string" || !consentActor.trim()) throw new Error("Explicit speaker consent is required.");
       if (typeof displayName !== "string" || !displayName.trim()) throw new Error("Speaker display name is required.");

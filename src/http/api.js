@@ -214,6 +214,7 @@ export function createApi({
   gmailService,
   phoneService,
   ownerContactPolicy,
+  pstnSpeakerEnrollment,
   gptLiveRound2,
   gptLiveRound2Authorization = () => false,
   logger = console,
@@ -290,6 +291,19 @@ export function createApi({
           const calibration = await storage.getSpeakerChannelCalibration?.(ownerId, "pstn_8khz_v1");
           sendJson(response, 200, { calibration: calibration ? { channel: "pstn_8khz_v1", status: calibration.status, ready: calibration.status === "ready", consentAt: calibration.consentAt || null, sampleCount: calibration.sampleCount || 0, sessionCount: calibration.sessionCount || 0, representationVersion: calibration.representationVersion } : { channel: "pstn_8khz_v1", status: "consent_required", ready: false, consentAt: null, sampleCount: 0, sessionCount: 0, representationVersion: null } });
           return;
+        }
+        if(request.method==="GET"&&pathname==="/api/phone/speaker-enrollment/status"){
+          await ready();sendJson(response,200,await pstnSpeakerEnrollment.status());return;
+        }
+        if(request.method==="POST"&&pathname==="/api/phone/speaker-enrollment/consent"){
+          await ready();sendJson(response,201,{consent:await pstnSpeakerEnrollment.recordConsent(await readJsonBody(request,config.maxBodyBytes))});return;
+        }
+        if(request.method==="POST"&&pathname==="/api/phone/speaker-enrollment/sessions"){
+          await ready();sendJson(response,201,await pstnSpeakerEnrollment.prepareSession(await readJsonBody(request,config.maxBodyBytes)));return;
+        }
+        if(request.method==="POST"&&pathname==="/api/phone/speaker-enrollment/sample"){
+          await ready();const input=await readJsonBody(request,config.voiceV2.maxBodyBytes),bridgeSessionToken=String(request.headers?.authorization||"").replace(/^Bearer\s+/i,"");
+          await phoneService.authorizeEnrollmentSample({...input,bridgeSessionToken});sendJson(response,200,await pstnSpeakerEnrollment.submitSample(input));return;
         }
         if (request.method === "POST" && pathname === "/api/phone/owner-contact-policy") {
           await ready(); sendJson(response, 200, { policy: await ownerContactPolicy.configure(await readJsonBody(request, config.maxBodyBytes)) }); return;

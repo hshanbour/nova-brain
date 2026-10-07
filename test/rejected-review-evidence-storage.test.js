@@ -98,7 +98,7 @@ test("Postgres diagnostic lookup requires exact id, owner and task with ownershi
 });
 
 test("schema eight stores private bounded JSON separately with ownership, cascade and unique execution constraints",()=>{
-  assert.equal(SCHEMA_VERSION,8);const statements=SCHEMA_STATEMENTS.filter(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_rejected_review_evidence"));assert.equal(statements.length,1);const table=statements[0];
+  assert.ok(SCHEMA_VERSION>=8);const statements=SCHEMA_STATEMENTS.filter(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_rejected_review_evidence"));assert.equal(statements.length,1);const table=statements[0];
   assert.match(table,/owner_id text NOT NULL REFERENCES nova_owners\(id\) ON DELETE CASCADE/);assert.match(table,/task_id text NOT NULL REFERENCES nova_autonomy_tasks\(id\) ON DELETE CASCADE/);assert.match(table,/attempt integer NOT NULL CHECK \(attempt > 0\)/);
   assert.match(table,new RegExp(`octet_length\\(envelope::text\\) <= ${REJECTED_REVIEW_EVIDENCE_BYTE_LIMIT}`));assert.match(table,/UNIQUE\(owner_id,task_id,execution_id,attempt,continuation_generation_id\)/);assert.ok(SCHEMA_STATEMENTS.some(statement=>/INSERT INTO nova_schema_migrations/.test(statement)&&/\(8\)/.test(statement)));
   assert.doesNotMatch(table,/nova_activity_events|ALTER TABLE nova_autonomy_tasks/);

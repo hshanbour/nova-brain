@@ -29,6 +29,10 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
     if (new Date(call.expiresAt) <= clock()) throw new PhoneError("Phone call authority has expired.", { code: "phone_call_expired", statusCode: 409 });
     const now=clock(),windowStart=new Date(call.envelope.callingWindow.startAt),windowEnd=new Date(call.envelope.callingWindow.endAt);
     if(now<windowStart||now>windowEnd)throw new PhoneError("The approved calling window is not currently open.",{code:"phone_calling_window_closed",statusCode:409});
+    if(call.envelope.mediaProfile==="speaker_enrollment_v1"){
+      const session=await storage.getSpeakerEnrollmentSession?.(call.envelope.enrollmentSessionId,ownerId),consent=session?await storage.getActiveSpeakerEnrollmentConsent?.(ownerId,{purpose:"pstn_speaker_recognition_owner_voice_enrollment",channel:"pstn_8khz_v1"}):null;
+      if(!session||session.callIntentId&&session.callIntentId!==call.id||!consent||session.consentId!==consent.id||!['prepared','waiting_for_approval','approved'].includes(session.status))throw new PhoneError("The consented enrollment session is not active.",{code:"pstn_enrollment_session_inactive",statusCode:409});
+    }
     return call;
   }
 
@@ -67,13 +71,16 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
     async authorizeStanding(input, context = {}) {
       if (!ownerContactPolicy) return { authorized: false };
       const call = await validatedStart(input, context);
+      if(call.envelope.mediaProfile==="speaker_enrollment_v1")return {authorized:false};
       if (!call.envelope.ownerContactPolicyVersion || !call.envelope.ownerContactReason) return { authorized: false };
       const grant = await ownerContactPolicy.authorize({ destination: call.envelope.destination, reason: call.envelope.ownerContactReason, sourceTaskId: call.envelope.sourceTaskId });
       return grant.authorized && grant.policyVersion === call.envelope.ownerContactPolicyVersion ? grant : { authorized: false };
     },
     async approvalRequired(input, approval, context = {}) {
       const call = await validatedStart(input, context);
-      return storage.bindPhoneCallApproval(call.id, ownerId, { approvalId: approval.id, status: "waiting_for_approval" });
+      const updated=await storage.bindPhoneCallApproval(call.id, ownerId, { approvalId: approval.id, status: "waiting_for_approval" });
+      if(updated?.envelope?.mediaProfile==="speaker_enrollment_v1")await storage.updateSpeakerEnrollmentSession(updated.envelope.enrollmentSessionId,ownerId,{status:"waiting_for_approval",callIntentId:updated.id,approvalId:approval.id});
+      return updated;
     },
     async approvalDecision(approval, decision) {
       if (approval?.tool !== "phone_call_start") return null;
@@ -82,6 +89,7 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
       if (decision !== "rejected") return call;
       if (call.status === "waiting_for_approval") {
         const updated = await storage.updatePhoneCallIntent(call.id, ownerId, { status: "failed", outcome: "owner_rejected", errorCode: "phone_owner_rejected", endedAt: clock().toISOString() });
+        if(call.envelope.mediaProfile==="speaker_enrollment_v1")await storage.updateSpeakerEnrollmentSession(call.envelope.enrollmentSessionId,ownerId,{status:"failed"});
         await storage.appendActivity({ ownerId, projectId: approval.projectId || null, runId: approval.runId || null, action: "phone_call_rejected", tool: "phone_call_start", status: "rejected", summary: "Owner rejected the prepared outbound call.", metadata: { callIntentId: call.id } });
         return updated;
       }
@@ -94,6 +102,7 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
       if (!context.approvalId && !standing) throw new PhoneError("Formal owner approval or an active bounded owner-contact policy is required.", { code: "phone_approval_required", statusCode: 403 });
       if (!standing) call = await storage.approvePhoneCallIntent(call.id, ownerId, { approvalId: context.approvalId });
       if (!call) throw new PhoneError("The approved call could not be bound safely.", { code: "phone_approval_binding_invalid", statusCode: 409 });
+      if(call.envelope.mediaProfile==="speaker_enrollment_v1"&&call.status==="approved")await storage.updateSpeakerEnrollmentSession(call.envelope.enrollmentSessionId,ownerId,{status:"approved"});
       if (["dialing", "in_progress", "completed"].includes(call.status)) return { callIntentId: call.id, status: call.status, idempotent: true, callSid: call.providerCallSid || null };
       if (["failed", "uncertain"].includes(call.status) || call.attemptCount >= call.envelope.maximumAttempts)
         throw new PhoneError("This call is terminal or has an uncertain outcome; Nova will not dial again automatically.", { code: "phone_call_not_retryable", statusCode: 409, category: "idempotency" });
@@ -145,11 +154,13 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
       if (claims.ownerId !== ownerId) throw new PhoneError("Phone session owner mismatch.", { code: "phone_owner_mismatch", statusCode: 403 });
       const call = await storage.consumePhoneSessionToken(claims.callIntentId, ownerId, { tokenHash: sessionAuth.tokenHash(sessionToken), callSid, streamSid, consumedAt: clock().toISOString() });
       if (!call || call.envelopeHash !== claims.envelopeHash) throw new PhoneError("Phone session token was replayed or did not match the call.", { code: "phone_session_replay", statusCode: 409 });
+      if(call.envelope.mediaProfile==="speaker_enrollment_v1")await storage.updateSpeakerEnrollmentSession(call.envelope.enrollmentSessionId,ownerId,{status:"collecting"});
       const ttlSeconds = Math.max(60, Math.min(call.envelope.maximumDurationMinutes * 60 + 120, 3_720));
       const bridgeSessionToken = sessionAuth.issueBridge({ ownerId, callIntentId: call.id, envelopeHash: call.envelopeHash, callSid, streamSid }, ttlSeconds);
       await storage.appendPhoneCallEvent({ id: `phone-event-${sha256(`${call.id}:${streamSid}:started`)}`, ownerId, callIntentId: call.id, eventKey: `stream:${streamSid}:started`, type: "stream_started", providerCallSid: callSid, providerStreamSid: streamSid, metadata: {} });
       await storage.appendActivity({ ownerId, projectId: null, runId: call.preparedRunId || null, action: "phone_call_started", tool: "phone_call_start", status: "in_progress", summary: "Approved outbound call media session started.", metadata: { callIntentId: call.id } });
-      return { bridgeSessionToken, callIntentId: call.id, callConversationId: call.callConversationId, objective: call.envelope.objective, permittedActions: [...call.envelope.permittedQuestions, ...call.envelope.permittedDisclosures], prohibitedActions: call.envelope.prohibitedActions, maximumDurationSeconds: call.envelope.maximumDurationMinutes * 60, languageStrategy: call.envelope.languageStrategy, mediaProfile: call.envelope.mediaProfile || "chained_v1", liveVoice: call.envelope.liveVoice || null };
+      const enrollment=call.envelope.mediaProfile==="speaker_enrollment_v1"?await storage.getSpeakerEnrollmentSession(call.envelope.enrollmentSessionId,ownerId):null;
+      return { bridgeSessionToken, callIntentId: call.id, callConversationId: call.callConversationId, objective: call.envelope.objective, permittedActions: [...call.envelope.permittedQuestions, ...call.envelope.permittedDisclosures], prohibitedActions: call.envelope.prohibitedActions, maximumDurationSeconds: call.envelope.maximumDurationMinutes * 60, languageStrategy: call.envelope.languageStrategy, mediaProfile: call.envelope.mediaProfile || "chained_v1", liveVoice: call.envelope.liveVoice || null, enrollment:enrollment?{sessionId:enrollment.id,phrasePlan:enrollment.phrasePlan,expectedSamples:enrollment.expectedSamples,conditionLabel:enrollment.conditionLabel}:null };
     },
     async processBridgeTurn({ bridgeSessionToken, callIntentId, callSid, streamSid, turnId, transcript }) {
       requireConfigured();
@@ -181,6 +192,11 @@ export function createPhoneService({ config, storage, ownerId, dialProvider, ses
         await storage.completePhoneCallTurn(turnId, ownerId, { status: "failed", errorCode: error?.code || "phone_nova_turn_failed" });
         throw error;
       }
+    },
+    async authorizeEnrollmentSample({bridgeSessionToken,callIntentId,callSid,streamSid,sessionId}){
+      requireConfigured();const claims=sessionAuth.verifyBridge(bridgeSessionToken);
+      if(claims.ownerId!==ownerId||claims.callIntentId!==callIntentId||claims.callSid!==callSid||claims.streamSid!==streamSid)throw new PhoneError("Enrollment sample identity does not match the authorized call.",{code:"phone_bridge_identity_mismatch",statusCode:403});
+      const call=await load(callIntentId);if(call.providerCallSid!==callSid||call.providerStreamSid!==streamSid||call.envelope.mediaProfile!=="speaker_enrollment_v1"||call.envelope.enrollmentSessionId!==sessionId||call.status!=="in_progress")throw new PhoneError("Enrollment sample is not bound to an active enrollment call.",{code:"pstn_enrollment_sample_unbound",statusCode:409});return true;
     },
     async recordBridgeEvent({ bridgeSessionToken, callIntentId, callSid, streamSid, eventId, type, providerStatus }) {
       requireConfigured();

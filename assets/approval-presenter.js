@@ -42,8 +42,10 @@ export function approvalViewModel(approval, { gmailAccountEmail } = {}) {
   }
   if (approval.tool === "phone_call_start") {
     const envelope = approval.arguments?.envelope || {};
-    return { ...common, kind: "phone", fields: [
+    const enrollment=envelope.mediaProfile==="speaker_enrollment_v1";
+    return { ...common, title:enrollment?"Approve owner voice enrollment call":common.title, kind: "phone", fields: [
       ["Destination", String(envelope.destination || "")], ["Expected party", String(envelope.expectedParty || "")],
+      ...(enrollment?[["Enrollment session",String(envelope.enrollmentSessionId||"")],["Expected samples","3"],["Condition","quiet normal handset"],["Languages","Arabic, English, mixed Arabic-English"],["Raw audio persistence","disabled"]]:[]),
       ["Conversation path", String(envelope.mediaProfile || "chained_v1")], ["GPT-Live voice", String(envelope.liveVoice || "Not used")],
       ["Nova disclosure", String(envelope.callerDisclosure || "")], ["Objective", String(envelope.objective || "")],
       ["Approved context", String(envelope.approvedContext || "None")], ["Permitted questions", textList(envelope.permittedQuestions)],

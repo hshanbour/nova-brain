@@ -24,6 +24,9 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const memories = new Map();
   const speakerProfiles = new Map();
   const speakerChannelCalibrations = new Map();
+  const speakerEnrollmentConsents = new Map();
+  const speakerEnrollmentSessions = new Map();
+  const speakerEnrollmentSamples = new Map();
   const anonymousSpeakerProfiles = new Map();
   const voiceUtterances = new Map();
   const runs = new Map();
@@ -981,6 +984,20 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const value = { ...copy(current || {}), ...copy(input), createdAt: current?.createdAt || timestamp, updatedAt: timestamp };
       speakerChannelCalibrations.set(key, value); return copy(value);
     },
+    async saveSpeakerEnrollmentConsent(input) {
+      const active=[...speakerEnrollmentConsents.values()].find(item=>item.ownerId===input.ownerId&&item.purpose===input.purpose&&item.channel===input.channel&&item.status==="active");
+      if(active)return copy(active);
+      const timestamp=now(clock),record={...copy(input),status:"active",createdAt:timestamp,updatedAt:timestamp,revokedAt:null};speakerEnrollmentConsents.set(record.id,record);return copy(record);
+    },
+    async getActiveSpeakerEnrollmentConsent(ownerId,{purpose,channel}) { return copy([...speakerEnrollmentConsents.values()].find(item=>item.ownerId===ownerId&&item.purpose===purpose&&item.channel===channel&&item.status==="active")||null); },
+    async revokeSpeakerEnrollmentConsent(id,ownerId,revokedAt) { const record=speakerEnrollmentConsents.get(id);if(!record||record.ownerId!==ownerId)return null;const updated={...record,status:"revoked",revokedAt,updatedAt:now(clock)};speakerEnrollmentConsents.set(id,updated);const ids=[];for(const session of speakerEnrollmentSessions.values())if(session.ownerId===ownerId&&session.consentId===id){ids.push(session.id);if(!['failed','revoked'].includes(session.status)){session.status='revoked';session.updatedAt=now(clock);}}for(const sample of speakerEnrollmentSamples.values())if(sample.ownerId===ownerId&&ids.includes(sample.sessionId))sample.encryptedRepresentation=null;return copy(updated); },
+    async createSpeakerEnrollmentSession(input) { const timestamp=now(clock),record={...copy(input),status:input.status||"prepared",acceptedCount:0,totalRequired:6,callIntentId:null,approvalId:null,completedAt:null,createdAt:timestamp,updatedAt:timestamp};speakerEnrollmentSessions.set(record.id,record);return copy(record); },
+    async getSpeakerEnrollmentSession(id,ownerId) { const record=speakerEnrollmentSessions.get(id);return copy(record?.ownerId===ownerId?record:null); },
+    async listSpeakerEnrollmentSessions(ownerId,{limit=20}={}) { return [...speakerEnrollmentSessions.values()].filter(item=>item.ownerId===ownerId).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,limit).map(copy); },
+    async updateSpeakerEnrollmentSession(id,ownerId,patch) { const record=speakerEnrollmentSessions.get(id);if(!record||record.ownerId!==ownerId)return null;const updated={...record,...copy(patch),id:record.id,ownerId:record.ownerId,consentId:record.consentId,conversationId:record.conversationId,phrasePlan:record.phrasePlan,updatedAt:now(clock)};speakerEnrollmentSessions.set(id,updated);return copy(updated); },
+    async recordSpeakerEnrollmentSample(input) { const existing=[...speakerEnrollmentSamples.values()].find(item=>item.ownerId===input.ownerId&&item.sessionId===input.sessionId&&item.submissionKey===input.submissionKey);if(existing)return{inserted:false,sample:copy(existing)};const sample={...copy(input),createdAt:now(clock)};speakerEnrollmentSamples.set(sample.id,sample);if(sample.status==="accepted"){const session=speakerEnrollmentSessions.get(sample.sessionId);if(session&&session.ownerId===input.ownerId){session.acceptedCount=Math.min(3,session.acceptedCount+1);session.updatedAt=now(clock);}}return{inserted:true,sample:copy(sample)}; },
+    async listSpeakerEnrollmentSamples(ownerId,sessionId,{includeRepresentation=false}={}) { return [...speakerEnrollmentSamples.values()].filter(item=>item.ownerId===ownerId&&item.sessionId===sessionId).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)).map(item=>{const value=copy(item);if(!includeRepresentation)delete value.encryptedRepresentation;return value;}); },
+    async purgeSpeakerEnrollmentSampleRepresentations(ownerId,sessionIds) { let count=0;for(const sample of speakerEnrollmentSamples.values())if(sample.ownerId===ownerId&&sessionIds.includes(sample.sessionId)&&sample.encryptedRepresentation){sample.encryptedRepresentation=null;count++;}return count; },
     async listConversationGmailDrafts(ownerId, conversationId, { limit = 2 } = {}) {
       const seen = new Set();
       return activity

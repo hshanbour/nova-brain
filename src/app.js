@@ -63,6 +63,7 @@ import { createTwilioOutboundClient } from "./phone/twilio-client.js";
 import { createGptLiveRound2Service, createRound2Authorization } from "./phone/gpt-live-round2.js";
 import { createPhoneLiveIntentClassifier } from "./phone/live-intent-classifier.js";
 import { createOwnerContactPolicy } from "./phone/owner-contact-policy.js";
+import { createPstnSpeakerEnrollment } from "./voice/pstn-speaker-enrollment.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -345,6 +346,7 @@ export function createApp({
     shadowEngines: [],
     logger,
   });
+  const pstnSpeakerEnrollment=createPstnSpeakerEnrollment({storage,ownerId:OWNER_ID,phoneService,speakerExtractor,speakerIdentity,ownerNumber:config.phone.ownerNumber});
 
   const api = createApi({
     agent,
@@ -378,9 +380,10 @@ export function createApp({
     gmailService,
     phoneService,
     ownerContactPolicy,
+    pstnSpeakerEnrollment,
     gptLiveRound2,
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, pstnSpeakerEnrollment });
 }
