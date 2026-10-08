@@ -31,6 +31,7 @@ import { registerWorkerTools } from "./autonomy/worker-tools.js";
 import { createTaskMigrationService } from "./autonomy/task-migration.js";
 import { createLocalWorkerHandoff } from "./autonomy/local-worker-handoff.js";
 import {createMemoryLearningService} from "./memory/learning-service.js";
+import {createProjectService} from "./projects/project-service.js";
 import { createGithubWriteAttestation } from "./autonomy/github-write-attestation.js";
 import { createPostAttestationRecovery } from "./autonomy/post-attestation-recovery.js";
 import { createSelfDevelopmentService, isDurableSelfDevelopmentRequest, parseExistingTaskControlRequest, SelfDevelopmentError, validateExistingTaskControlRequest } from "./autonomy/self-development.js";
@@ -112,6 +113,7 @@ export function createApp({
     approvedBranch: config.developmentBranch,
   });
   const toolRegistry = createToolRegistry({ policy });
+  const projectService=createProjectService({storage,ownerId:OWNER_ID});
   const executionTruth=createExecutionTruthService({storage,ownerId:OWNER_ID});
   registerDeveloperTools(toolRegistry, {
     environment,
@@ -119,7 +121,7 @@ export function createApp({
     ownerId: OWNER_ID,
     logger,
   });
-  registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID });
+  registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID, projectService });
   const gmailService = createGmailService({
     config,
     storage,
@@ -270,6 +272,7 @@ export function createApp({
     },
     durableResearchTaskService,
     learningService,
+    projectService,
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
       if(context?.voice===true)return null;
       const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message),workflowTurn=isConversationWorkflowTurn(message,{implementationSignal,codingSignal});

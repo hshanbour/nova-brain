@@ -421,6 +421,10 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         )
       ).map(projectRow);
     },
+    async createProject(input) {
+      const rows=await run("INSERT INTO nova_projects (id,owner_id,name,description) VALUES ($1,$2,$3,$4) RETURNING *",[input.id,input.ownerId,input.name,input.description||null]);
+      return projectRow(rows[0]);
+    },
     async ensureConversation({ id = randomUUID(), ownerId, title = null }) {
       const rows = await run(
         `INSERT INTO nova_conversations (id,owner_id,title) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET id=EXCLUDED.id WHERE nova_conversations.owner_id=EXCLUDED.owner_id RETURNING *`,
@@ -623,18 +627,20 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
       const rows=await run(`WITH candidate AS (
           SELECT * FROM nova_memory_candidates WHERE id=$1 AND owner_id=$2 AND status='pending'
           AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM nova_memories WHERE id=$5 AND owner_id=$2 AND status='active'))
+        ), target AS (
+          SELECT * FROM nova_memories WHERE id=$5 AND owner_id=$2 AND status='active'
         ), superseded AS (
           UPDATE nova_memories SET status='superseded',updated_at=now()
           WHERE id=$5 AND owner_id=$2 AND status='active' AND EXISTS (SELECT 1 FROM candidate) AND $4='accepted'
           RETURNING id
         ), inserted AS (
           INSERT INTO nova_memories (id,owner_id,category,content,provenance,privacy,sensitivity,scope,project_id,confidence,status)
-          SELECT $3,owner_id,CASE candidate_type WHEN 'preference' THEN 'preference' WHEN 'project_decision' THEN 'decision'
+          SELECT $3,candidate.owner_id,CASE WHEN candidate_type='correction' THEN target.category ELSE CASE candidate_type WHEN 'preference' THEN 'preference' WHEN 'project_decision' THEN 'decision'
             WHEN 'owner_claim' THEN 'identity' WHEN 'verified_fact' THEN 'identity' WHEN 'hypothesis' THEN 'project_context'
-            WHEN 'unresolved_question' THEN 'project_context' ELSE 'reusable_instruction' END,
-            content,'memory-candidate:'||source_kind||':'||id,privacy,'normal',scope,project_id,
+            WHEN 'unresolved_question' THEN 'project_context' ELSE 'reusable_instruction' END END,
+            candidate.content,'memory-candidate:'||candidate.source_kind||':'||candidate.id,candidate.privacy,'normal',CASE WHEN candidate_type='correction' THEN target.scope ELSE candidate.scope END,CASE WHEN candidate_type='correction' THEN target.project_id ELSE candidate.project_id END,
             CASE WHEN candidate_type='verified_fact' THEN 0.95 WHEN candidate_type IN ('owner_claim','preference','project_decision','correction') THEN 0.9 ELSE 0.8 END,'active'
-          FROM candidate WHERE $4='accepted' AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM superseded))
+          FROM candidate LEFT JOIN target ON true WHERE $4='accepted' AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM superseded))
           ON CONFLICT (id) DO UPDATE SET id=EXCLUDED.id RETURNING *
         ), updated AS (
           UPDATE nova_memory_candidates SET status=$4,accepted_memory_id=CASE WHEN $4='accepted' THEN $3 ELSE NULL END,

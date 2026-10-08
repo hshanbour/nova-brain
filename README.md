@@ -69,7 +69,7 @@ GET   /api/conversations
 GET   /api/conversations/:id/messages
 ```
 
-Memory records have an explicit category, provenance, privacy, sensitivity, and global/system/project scope. `DELETE` is a soft delete (“forget”) so inactive records cannot be retrieved by Nova. The API accepts only allowlisted fields and categories. Evidence extracted from typed owner turns or canonical terminal task outcomes is stored separately as a pending learning candidate. It remains non-authoritative and unavailable to retrieval until the owner accepts it in the Memory workspace; candidates can also be rejected or used to supersede an active memory, with every decision recorded in Activity.
+Memory records have an explicit category, provenance, privacy, sensitivity, and global/system/project scope. `DELETE` is a soft delete (“forget”) so inactive records cannot be retrieved by Nova. The API accepts only allowlisted fields and categories. Evidence extracted from typed owner turns or canonical terminal task outcomes is stored separately as a pending learning candidate. It remains non-authoritative and unavailable to retrieval until the owner accepts it in the Memory workspace; candidates can also be rejected or used to supersede an active same-scope memory, with every decision recorded in Activity. Project-bound durable research captures a small provenance-aware snapshot of accepted memory at task creation so the persistent worker can use the same verified context after interruption without searching another project or exposing private memory to public Web collection.
 
 ### Agent request
 

@@ -347,8 +347,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       let memory=null;
       if(decision==="accepted"){
         if(target)memories.set(target.id,{...target,status:"superseded",updatedAt:now(clock)});
-        const category={preference:"preference",project_decision:"decision",owner_claim:"identity",verified_fact:"identity",hypothesis:"project_context",unresolved_question:"project_context"}[current.candidateType]||"reusable_instruction";
-        const memoryId=`memory-candidate-${id}`,timestamp=now(clock);memory={id:memoryId,ownerId,category,content:current.content,provenance:`memory-candidate:${current.sourceKind}:${id}`,privacy:current.privacy,sensitivity:"normal",scope:current.scope,projectId:current.projectId||null,confidence:current.candidateType==="verified_fact"?.95:["owner_claim","preference","project_decision","correction"].includes(current.candidateType)?.9:.8,status:"active",createdAt:timestamp,updatedAt:timestamp,deletedAt:null};memories.set(memoryId,memory);
+        const category=current.candidateType==="correction"&&target?target.category:({preference:"preference",project_decision:"decision",owner_claim:"identity",verified_fact:"identity",hypothesis:"project_context",unresolved_question:"project_context"}[current.candidateType]||"reusable_instruction");
+        const memoryId=`memory-candidate-${id}`,timestamp=now(clock);memory={id:memoryId,ownerId,category,content:current.content,provenance:`memory-candidate:${current.sourceKind}:${id}`,privacy:current.privacy,sensitivity:"normal",scope:current.candidateType==="correction"&&target?target.scope:current.scope,projectId:current.candidateType==="correction"&&target?target.projectId:(current.projectId||null),confidence:current.candidateType==="verified_fact"?.95:["owner_claim","preference","project_decision","correction"].includes(current.candidateType)?.9:.8,status:"active",createdAt:timestamp,updatedAt:timestamp,deletedAt:null};memories.set(memoryId,memory);
       }
       const timestamp=now(clock),candidate={...current,status:decision,acceptedMemoryId:memory?.id||null,supersedesMemoryId:supersedesMemoryId||current.supersedesMemoryId||null,decisionReason:decisionReason||null,decidedAt:timestamp,updatedAt:timestamp};memoryCandidates.set(id,candidate);return{candidate:copy(candidate),memory:copy(memory),idempotent:false};
     },
@@ -1043,6 +1043,11 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         })
         .slice(0, limit)
         .map(copy);
+    },
+    async createProject(input) {
+      if(projects.has(input.id))throw Object.assign(new Error("Project already exists."),{code:"project_conflict"});
+      const timestamp=now(clock),project={id:input.id,ownerId:input.ownerId,name:input.name,description:input.description||null,createdAt:timestamp,updatedAt:timestamp};
+      projects.set(project.id,project);return copy(project);
     },
     async claimGmailSendIntent(input) {
       const existing = gmailSendIntents.get(input.id) || [...gmailSendIntents.values()].find((item) => item.ownerId === input.ownerId && item.draftId === input.draftId);

@@ -4,6 +4,8 @@ import { ApprovalRequiredError } from "../policy/action-policy.js";
 import {shouldUseDurableWebResearch} from "../web/durable-web-research.js";
 import {ANSWER_PRESENTATION_GUIDANCE,isConversationLocalTransform,retainConversationLinks} from "./answer-presentation.js";
 import {minimalTransformContext,retrieveConversationTransformSource} from "./conversation-transform-source.js";
+import {createTaskContextSnapshot} from "../memory/task-context-snapshot.js";
+import {projectClarification} from "../projects/project-service.js";
 
 export class AgentStepLimitError extends Error {}
 export class AgentToolCallLimitError extends Error {}
@@ -220,6 +222,7 @@ export function createAgent({
   routeDurableRequest = async () => null,
   durableResearchTaskService = null,
   learningService = null,
+  projectService = null,
   logger = { info() {}, error() {} }
 }) {
   if (!storage || !ownerId || !modelProvider || !toolRegistry) {
@@ -249,6 +252,9 @@ export function createAgent({
       const [conversation,profileValid,anonymousValid]=await Promise.all([conversationPromise,profileValidPromise,anonymousValidPromise]);
       executionSignal.throwIfAborted();
       if (!conversation) throw new Error("Conversation is unavailable.");
+      const projectResolution=projectService&&context?.voice!==true?await projectService.resolve({message,projectId:context.projectId||null}):{status:context.projectId?"resolved":"unresolved",project:context.projectId?{id:context.projectId}:null,source:context.projectId?"explicit_id":"none"};
+      const resolvedProjectId=projectResolution.status==="resolved"?projectResolution.project.id:null;
+      context={...context,projectId:resolvedProjectId};
       const contextRetrievalStartedAt=Date.now();
       if(verifiedSpeaker?.match_status==="confirmed"&&!profileValid)verifiedSpeaker=null;
       if(verifiedSpeaker?.anonymous_speaker_id&&!anonymousValid)verifiedSpeaker={...verifiedSpeaker,speaker_familiarity:"none",anonymous_speaker_id:null};
@@ -330,6 +336,13 @@ export function createAgent({
       };
 
       try {
+        if(projectResolution.status==="ambiguous"||projectResolution.status==="missing"){
+          const response={id:randomUUID(),conversationId,message:projectClarification(projectResolution),provider:"project_registry",toolCalls:[],steps:0,runId:run.id,runStatus:"clarification_required",projectResolution:{status:projectResolution.status,source:projectResolution.source,candidates:(projectResolution.projects||[]).map(project=>({id:project.id,name:project.name}))}};
+          await persistAssistantMessage(response);
+          await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:correlatedRunResult(response,{projectResolution:response.projectResolution}),completedAt:new Date().toISOString()});
+          await storage.appendActivity({ownerId,projectId:null,runId:run.id,action:"project_identity_clarification_required",status:"blocked",summary:"Nova requires one explicit project identity before continuing.",metadata:response.projectResolution});
+          return response;
+        }
         if(transformIntent&&!transformRetrieval?.source){
           const response={id:randomUUID(),conversationId,message:"I couldn't find a previous assistant report or response in this conversation to transform. No Web search or workflow was started.",provider:"conversation_storage",toolCalls:[],steps:0,runId:run.id,runStatus:"completed",timing:{contextRetrievalMs:contextRetrievalCompletedAt-contextRetrievalStartedAt,preModelMs:Date.now()-requestStartedAt,agentFirstResponseMs:0,agentCompleteMs:0,totalMs:Date.now()-requestStartedAt}};
           await persistAssistantMessage(response);
@@ -384,7 +397,8 @@ export function createAgent({
         }
         let allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
         if(durableWebResearch){
-          const prepared=await durableResearchTaskService.prepare({request:message,conversationId,runId:run.id,projectId:context.projectId||null,webAuthority});
+          const taskContextSnapshot=createTaskContextSnapshot({retrieved,projectId:context.projectId||null,request:message});
+          const prepared=await durableResearchTaskService.prepare({request:message,conversationId,runId:run.id,projectId:context.projectId||null,webAuthority,taskContextSnapshot});
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"public_web_research_handed_off",status:"completed",summary:"Long public Web research was durably owned before provider contact.",metadata:{taskId:prepared.task.id,idempotent:prepared.idempotent===true}});
           return completeDurableSelfDevelopment({task:prepared.task,idempotent:prepared.idempotent});
         }
@@ -507,7 +521,7 @@ export function createAgent({
             if(!allowedTaskTools&&ROUTED_CREATION_TOOLS.has(call.name))throw Object.assign(new Error("Durable creation requires the authoritative turn-routing path."),{code:"task_control_tool_forbidden"});
             if(webEvidenceActive&&!readOnlyToolNames.has(call.name))throw Object.assign(new Error("Untrusted web evidence cannot authorize a write-capable tool in the same run."),{code:"web_evidence_tool_forbidden"});
             if(liveReadOnly&&!readOnlyToolNames.has(call.name))throw Object.assign(new Error("GPT-Live information delegation cannot invoke a write-capable tool."),{code:"gpt_live_read_only_tool_forbidden"});
-            const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, conversationId, signal: executionSignal,delegationRequestFingerprint:durable?.requestFingerprint,webAuthority,webUsage });
+            const result = await toolRegistry.execute(call.name, call.arguments, { ...trustedContext, runId: run.id, conversationId, ownerMessage:message, signal: executionSignal,delegationRequestFingerprint:durable?.requestFingerprint,webAuthority,webUsage });
             executionSignal.throwIfAborted();
             execution.status = "completed";
             execution.result = result;

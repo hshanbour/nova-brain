@@ -74,6 +74,12 @@ test("owner review accepts, rejects, and supersedes through existing memory", as
   assert.ok(actions.includes("memory_candidate_rejected"));
 });
 
+test("a correction cannot be accepted without an explicit active supersession target", async () => {
+  const { learning } = await fixture();
+  const correction = await learning.observeConversationTurn({ message: "Correction: I prefer concise reports now.", conversationId: "conversation-learning", userMessageId: "correction-no-target" });
+  await assert.rejects(() => learning.reviewCandidate(correction.candidate.id, { decision: "accepted" }), (error) => error.code === "memory_correction_target_required");
+});
+
 test("candidate review remains owner isolated", async () => {
   const { storage, learning } = await fixture();
   const pending = await learning.observeConversationTurn({ message: "My business is a private owner-only fact.", conversationId: "conversation-learning", userMessageId: "private-user" });
