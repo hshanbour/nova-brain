@@ -22,6 +22,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const messages = new Map();
   const taskReportOutbox = new Map();
   const memories = new Map();
+  const memoryCandidates = new Map();
   const speakerProfiles = new Map();
   const speakerChannelCalibrations = new Map();
   const speakerEnrollmentConsents = new Map();
@@ -326,6 +327,30 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         deletedAt: now(clock),
       });
       return true;
+    },
+    async createMemoryCandidate(input) {
+      const existing=[...memoryCandidates.values()].find(item=>item.ownerId===input.ownerId&&item.fingerprint===input.fingerprint);
+      if(existing)return copy(existing);
+      const timestamp=now(clock),candidate={id:input.id||randomUUID(),ownerId:input.ownerId,projectId:input.projectId||null,conversationId:input.conversationId||null,sourceMessageId:input.sourceMessageId||null,sourceRunId:input.sourceRunId||null,sourceTaskId:input.sourceTaskId||null,sourceKind:input.sourceKind,candidateType:input.candidateType,content:input.content,evidence:copy(input.evidence||{}),provenance:input.provenance,privacy:input.privacy||"private",scope:input.scope||"global",status:"pending",fingerprint:input.fingerprint,supersedesMemoryId:input.supersedesMemoryId||null,acceptedMemoryId:null,decisionReason:null,createdAt:timestamp,updatedAt:timestamp,decidedAt:null};
+      memoryCandidates.set(candidate.id,candidate);return copy(candidate);
+    },
+    async getMemoryCandidate(id,ownerId){const item=memoryCandidates.get(id);return copy(item?.ownerId===ownerId?item:null);},
+    async listMemoryCandidates(ownerId,{status,projectId,sourceTaskId,limit=100}={}){
+      return [...memoryCandidates.values()].filter(item=>item.ownerId===ownerId&&(!status||item.status===status)&&(!projectId||item.projectId===projectId)&&(!sourceTaskId||item.sourceTaskId===sourceTaskId)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||a.id.localeCompare(b.id)).slice(0,limit).map(copy);
+    },
+    async decideMemoryCandidate(id,ownerId,{decision,supersedesMemoryId=null,decisionReason=null}={}){
+      const current=memoryCandidates.get(id);if(!current||current.ownerId!==ownerId)return null;
+      if(current.status===decision)return{candidate:copy(current),memory:current.acceptedMemoryId?copy(memories.get(current.acceptedMemoryId)):null,idempotent:true};
+      if(current.status!=="pending")return null;
+      const target=supersedesMemoryId?memories.get(supersedesMemoryId):null;
+      if(supersedesMemoryId&&(!target||target.ownerId!==ownerId||target.status!=="active"))return null;
+      let memory=null;
+      if(decision==="accepted"){
+        if(target)memories.set(target.id,{...target,status:"superseded",updatedAt:now(clock)});
+        const category={preference:"preference",project_decision:"decision",owner_claim:"identity",verified_fact:"identity",hypothesis:"project_context",unresolved_question:"project_context"}[current.candidateType]||"reusable_instruction";
+        const memoryId=`memory-candidate-${id}`,timestamp=now(clock);memory={id:memoryId,ownerId,category,content:current.content,provenance:`memory-candidate:${current.sourceKind}:${id}`,privacy:current.privacy,sensitivity:"normal",scope:current.scope,projectId:current.projectId||null,confidence:current.candidateType==="verified_fact"?.95:["owner_claim","preference","project_decision","correction"].includes(current.candidateType)?.9:.8,status:"active",createdAt:timestamp,updatedAt:timestamp,deletedAt:null};memories.set(memoryId,memory);
+      }
+      const timestamp=now(clock),candidate={...current,status:decision,acceptedMemoryId:memory?.id||null,supersedesMemoryId:supersedesMemoryId||current.supersedesMemoryId||null,decisionReason:decisionReason||null,decidedAt:timestamp,updatedAt:timestamp};memoryCandidates.set(id,candidate);return{candidate:copy(candidate),memory:copy(memory),idempotent:false};
     },
     async retrieveMemories(ownerId, query, { projectId, limit = 6 } = {}) {
       return rankRelevantMemories(

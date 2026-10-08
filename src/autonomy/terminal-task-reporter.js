@@ -110,7 +110,7 @@ export function renderTerminalTaskReport(task,steps=[]){
   return lines.join("\n").slice(0,12000);
 }
 
-export function createTerminalTaskReporter({storage,ownerId,ownerContactPolicy=null}={}){
+export function createTerminalTaskReporter({storage,ownerId,ownerContactPolicy=null,learningService=null}={}){
   if(!storage||!ownerId)throw new Error("Terminal task reporting requires storage and an owner.");
   const binding=(task)=>task?.metadata?.terminalReporting;
   const eligible=(task)=>{
@@ -122,6 +122,7 @@ export function createTerminalTaskReporter({storage,ownerId,ownerContactPolicy=n
   async function enqueue(task){
     if(!eligible(task))return null;
     const content=renderTerminalTaskReport(task,await storage.listAutonomySteps(task.id));
+    if(learningService?.observeTaskOutcome)await learningService.observeTaskOutcome(task,content).catch(()=>null);
     const reportKey=`${task.id}:${task.stateVersion}`,messageId=`task-report_${digest(`${task.id}:${task.stateVersion}:${task.status}`).slice(0,48)}`;
     return storage.enqueueTaskReport({reportKey,taskId:task.id,ownerId,conversationId:binding(task).conversationId,terminalStateVersion:task.stateVersion,terminalStatus:task.status,messageId,content});
   }

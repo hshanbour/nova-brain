@@ -18,6 +18,8 @@ export const ownerMemoryClient = Object.freeze({
   create: (memory) => request("/api/memories", { method: "POST", body: JSON.stringify(memory) }),
   update: (id, patch) => request(`/api/memories/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
   forget: (id) => request(`/api/memories/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  memoryCandidates: ({status="pending",limit=100}={}) => request(`/api/memory-candidates?status=${encodeURIComponent(status)}&limit=${limit}`),
+  decideMemoryCandidate: (id,input) => request(`/api/memory-candidates/${encodeURIComponent(id)}/decision`, { method: "POST", body: JSON.stringify(input) }),
   conversations: () => request("/api/conversations"),
   messages: (id, { offset = 0, limit = 100 } = {}) => request(`/api/conversations/${encodeURIComponent(id)}/messages?limit=${limit}&offset=${offset}`),
   projects: () => request("/api/projects"),

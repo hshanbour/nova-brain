@@ -416,12 +416,24 @@ function memoryCard(memory) {
   article.append(heading, content, meta); return article;
 }
 
+function memoryCandidateCard(candidate) {
+  const article=document.createElement("article");article.className="memory-card";article.dataset.candidateId=candidate.id;
+  const heading=document.createElement("div");heading.className="memory-card-heading";const tags=document.createElement("div");tags.className="memory-tags";
+  for(const label of[candidate.candidateType.replaceAll("_"," "),candidate.sourceKind.replaceAll("_"," "),candidate.projectId].filter(Boolean)){const tag=document.createElement("span");tag.textContent=label;tags.append(tag);}heading.append(tags);
+  const content=document.createElement("p");content.textContent=candidate.content;const meta=document.createElement("small");meta.textContent=`Pending owner review · ${candidate.provenance}`;
+  const controls=document.createElement("div");controls.className="candidate-controls";const select=document.createElement("select");select.className="candidate-supersede";select.setAttribute("aria-label","Memory to supersede (optional)");select.append(new Option("Accept as new memory",""));
+  for(const memory of memoryRecords.filter(item=>item.status==="active")){select.append(new Option(`Supersede: ${memory.content.slice(0,80)}`,memory.id));}
+  const accept=document.createElement("button");accept.type="button";accept.className="send-button";accept.textContent="Accept";const reject=document.createElement("button");reject.type="button";reject.className="secondary-button";reject.textContent="Reject";
+  const decide=async decision=>{accept.disabled=true;reject.disabled=true;select.disabled=true;try{await ownerMemoryClient.decideMemoryCandidate(candidate.id,{decision,...(decision==="accepted"&&select.value?{supersedesMemoryId:select.value}:{})});await loadMemoryWorkspace();}catch(cause){const error=document.querySelector("#memoryCandidateError");error.textContent=cause.message;error.hidden=false;accept.disabled=false;reject.disabled=false;select.disabled=false;}};
+  accept.addEventListener("click",()=>decide("accepted"));reject.addEventListener("click",()=>decide("rejected"));controls.append(select,accept,reject);article.append(heading,content,meta,controls);return article;
+}
+
 async function loadMemoryWorkspace() {
-  const list = document.querySelector("#memoryList"); const error = document.querySelector("#memoryError");
-  list.innerHTML = '<div class="memory-loading">Loading private memory…</div>'; error.hidden = true;
+  const list = document.querySelector("#memoryList"); const error = document.querySelector("#memoryError");const candidateList=document.querySelector("#memoryCandidateList"),candidateError=document.querySelector("#memoryCandidateError");
+  list.innerHTML = '<div class="memory-loading">Loading private memory…</div>';candidateList.innerHTML='<div class="memory-loading">Loading evidence candidates…</div>'; error.hidden = true;candidateError.hidden=true;
   try {
     const category = document.querySelector("#memoryFilter").value;
-    const [{ owner }, { memories: loaded }] = await Promise.all([ownerMemoryClient.profile(), ownerMemoryClient.list(category)]);
+    const [{ owner }, { memories: loaded },{candidates}] = await Promise.all([ownerMemoryClient.profile(), ownerMemoryClient.list(category),ownerMemoryClient.memoryCandidates()]);
     currentProfile = owner; memoryRecords = loaded;
     document.querySelector("#ownerProfileHeading").textContent = owner.fullName;
     document.querySelector(".arabic-name").textContent = owner.arabicName || "";
@@ -430,7 +442,9 @@ async function loadMemoryWorkspace() {
     form.elements.communication.value = owner.preferences?.communication || "";
     list.replaceChildren(...loaded.map(memoryCard));
     if (!loaded.length) list.innerHTML = '<div class="empty-memory">No memories in this category.</div>';
-  } catch (cause) { list.replaceChildren(); error.textContent = cause.message; error.hidden = false; }
+    candidateList.replaceChildren(...candidates.map(memoryCandidateCard));
+    if(!candidates.length)candidateList.innerHTML='<div class="empty-memory">No learning candidates need review.</div>';
+  } catch (cause) { list.replaceChildren();candidateList.replaceChildren();error.textContent = cause.message;error.hidden = false;candidateError.textContent=cause.message;candidateError.hidden=false; }
 }
 
 document.querySelector("#profileForm").addEventListener("submit", async (event) => {

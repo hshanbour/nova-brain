@@ -13,6 +13,7 @@ import {
   validateOwnerProfilePatch,
   validateMemoryCreate,
   validateMemoryPatch,
+  validateMemoryCandidateDecision,
   validateListLimit,
   validateListOffset,
   validateApprovalDecision,
@@ -211,6 +212,7 @@ export function createApi({
   executionTruth,
   browserTaskService,
   durableResearchTaskService,
+  learningService,
   gmailService,
   phoneService,
   ownerContactPolicy,
@@ -2165,6 +2167,22 @@ export function createApi({
           return;
         }
 
+        if(request.method==="GET"&&pathname==="/api/memory-candidates"){
+          await ready();
+          const status=url.searchParams.get("status")||"pending";
+          if(!["pending","accepted","rejected","superseded"].includes(status))throw new ValidationError("status is invalid.");
+          sendJson(response,200,{candidates:await storage.listMemoryCandidates(ownerId,{status,projectId:url.searchParams.get("projectId")||undefined,sourceTaskId:url.searchParams.get("sourceTaskId")||undefined,limit:validateListLimit(url.searchParams.get("limit"),100,200)})});
+          return;
+        }
+        const memoryCandidateDecisionMatch=pathname.match(/^\/api\/memory-candidates\/([^/]+)\/decision$/);
+        if(memoryCandidateDecisionMatch&&request.method==="POST"){
+          await ready();
+          const input=validateMemoryCandidateDecision(await readJsonBody(request,config.maxBodyBytes));
+          const result=await learningService?.reviewCandidate(decodeURIComponent(memoryCandidateDecisionMatch[1]),input);
+          sendJson(response,result?200:404,result||{error:"Pending memory candidate not found"});
+          return;
+        }
+
         if (request.method === "POST" && pathname === "/api/missed-call") {
           const lead = validateMissedCallRequest(
             await readJsonBody(request, config.maxBodyBytes),
@@ -2184,6 +2202,7 @@ export function createApi({
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "gmail_error" });
           return;
         }
+
         if (error instanceof PhoneError || error instanceof OwnerContactPolicyError || error?.code?.startsWith?.("phone_") || error?.code?.startsWith?.("owner_contact_")) {
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "phone_error", requestId });
           return;

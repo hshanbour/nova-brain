@@ -62,6 +62,31 @@ const memoryRow = (row) =>
     updatedAt: date(row.updated_at),
     deletedAt: date(row.deleted_at),
   };
+const memoryCandidateRow = (row) =>
+  row && {
+    id: row.id,
+    ownerId: row.owner_id,
+    projectId: row.project_id,
+    conversationId: row.conversation_id,
+    sourceMessageId: row.source_message_id,
+    sourceRunId: row.source_run_id,
+    sourceTaskId: row.source_task_id,
+    sourceKind: row.source_kind,
+    candidateType: row.candidate_type,
+    content: row.content,
+    evidence: row.evidence,
+    provenance: row.provenance,
+    privacy: row.privacy,
+    scope: row.scope,
+    status: row.status,
+    fingerprint: row.fingerprint,
+    supersedesMemoryId: row.supersedes_memory_id,
+    acceptedMemoryId: row.accepted_memory_id,
+    decisionReason: row.decision_reason,
+    createdAt: date(row.created_at),
+    updatedAt: date(row.updated_at),
+    decidedAt: date(row.decided_at),
+  };
 const speakerProfileRow = (row, includeRepresentation = false) =>
   row && {
     id: row.id,
@@ -575,6 +600,54 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
           )
         ).length > 0
       );
+    },
+    async createMemoryCandidate(input) {
+      const rows=await run(`INSERT INTO nova_memory_candidates
+        (id,owner_id,project_id,conversation_id,source_message_id,source_run_id,source_task_id,source_kind,candidate_type,content,evidence,provenance,privacy,scope,status,fingerprint,supersedes_memory_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,'pending',$15,$16)
+        ON CONFLICT (owner_id,fingerprint) DO UPDATE SET id=nova_memory_candidates.id RETURNING *`,[
+          input.id||randomUUID(),input.ownerId,input.projectId||null,input.conversationId||null,input.sourceMessageId||null,input.sourceRunId||null,input.sourceTaskId||null,input.sourceKind,input.candidateType,input.content,json(input.evidence),input.provenance,input.privacy||"private",input.scope||"global",input.fingerprint,input.supersedesMemoryId||null,
+        ]);
+      return memoryCandidateRow(rows[0]);
+    },
+    async getMemoryCandidate(id,ownerId){
+      return memoryCandidateRow((await run("SELECT * FROM nova_memory_candidates WHERE id=$1 AND owner_id=$2",[id,ownerId]))[0]);
+    },
+    async listMemoryCandidates(ownerId,{status,projectId,sourceTaskId,limit=100}={}){
+      return (await run(`SELECT * FROM nova_memory_candidates WHERE owner_id=$1
+        AND ($2::text IS NULL OR status=$2) AND ($3::text IS NULL OR project_id=$3) AND ($4::text IS NULL OR source_task_id=$4)
+        ORDER BY created_at DESC,id ASC LIMIT $5`,[ownerId,status||null,projectId||null,sourceTaskId||null,limit])).map(memoryCandidateRow);
+    },
+    async decideMemoryCandidate(id,ownerId,{decision,supersedesMemoryId=null,decisionReason=null}={}){
+      const memoryId=`memory-candidate-${id}`;
+      const rows=await run(`WITH candidate AS (
+          SELECT * FROM nova_memory_candidates WHERE id=$1 AND owner_id=$2 AND status='pending'
+          AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM nova_memories WHERE id=$5 AND owner_id=$2 AND status='active'))
+        ), superseded AS (
+          UPDATE nova_memories SET status='superseded',updated_at=now()
+          WHERE id=$5 AND owner_id=$2 AND status='active' AND EXISTS (SELECT 1 FROM candidate) AND $4='accepted'
+          RETURNING id
+        ), inserted AS (
+          INSERT INTO nova_memories (id,owner_id,category,content,provenance,privacy,sensitivity,scope,project_id,confidence,status)
+          SELECT $3,owner_id,CASE candidate_type WHEN 'preference' THEN 'preference' WHEN 'project_decision' THEN 'decision'
+            WHEN 'owner_claim' THEN 'identity' WHEN 'verified_fact' THEN 'identity' WHEN 'hypothesis' THEN 'project_context'
+            WHEN 'unresolved_question' THEN 'project_context' ELSE 'reusable_instruction' END,
+            content,'memory-candidate:'||source_kind||':'||id,privacy,'normal',scope,project_id,
+            CASE WHEN candidate_type='verified_fact' THEN 0.95 WHEN candidate_type IN ('owner_claim','preference','project_decision','correction') THEN 0.9 ELSE 0.8 END,'active'
+          FROM candidate WHERE $4='accepted' AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM superseded))
+          ON CONFLICT (id) DO UPDATE SET id=EXCLUDED.id RETURNING *
+        ), updated AS (
+          UPDATE nova_memory_candidates SET status=$4,accepted_memory_id=CASE WHEN $4='accepted' THEN $3 ELSE NULL END,
+            supersedes_memory_id=COALESCE($5,supersedes_memory_id),decision_reason=$6,decided_at=now(),updated_at=now()
+          WHERE id=$1 AND owner_id=$2 AND status='pending'
+            AND (($4='accepted' AND EXISTS (SELECT 1 FROM inserted)) OR $4='rejected')
+          RETURNING *
+        ) SELECT (SELECT row_to_json(updated) FROM updated) candidate,(SELECT row_to_json(inserted) FROM inserted) memory`,[id,ownerId,memoryId,decision,supersedesMemoryId,decisionReason]);
+      const result=rows[0]||{},candidate=memoryCandidateRow(result.candidate),memory=memoryRow(result.memory);
+      if(candidate)return{candidate,memory,idempotent:false};
+      const current=await this.getMemoryCandidate(id,ownerId);
+      if(current&&current.status===decision)return{candidate:current,memory:current.acceptedMemoryId?await this.getMemory(current.acceptedMemoryId,ownerId):null,idempotent:true};
+      return null;
     },
     async retrieveMemories(
       ownerId,

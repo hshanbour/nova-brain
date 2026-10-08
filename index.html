@@ -93,6 +93,12 @@
           </form>
         </section>
 
+        <section class="memory-section" aria-labelledby="memoryCandidatesHeading">
+          <div class="section-heading"><div><p class="eyebrow">Evidence review</p><h2 id="memoryCandidatesHeading">Learning candidates</h2><p class="section-note">Nothing here becomes long-term memory until you accept it.</p></div><span class="privacy-badge">Review required</span></div>
+          <div class="memory-error" id="memoryCandidateError" role="alert" hidden></div>
+          <div class="memory-list" id="memoryCandidateList"><div class="memory-loading">Loading evidence candidates…</div></div>
+        </section>
+
         <section class="memory-section" aria-labelledby="memoryHeading">
           <div class="section-heading"><div><p class="eyebrow">Long-term context</p><h2 id="memoryHeading">What Nova remembers</h2></div><label class="filter-label">Category<select id="memoryFilter"><option value="">All memories</option><option value="identity">Identity</option><option value="preference">Preferences</option><option value="goal">Goals</option><option value="decision">Decisions</option><option value="project_context">Project context</option><option value="relationship_context">Relationships</option><option value="reusable_instruction">Instructions</option></select></label></div>
           <div class="memory-error" id="memoryError" role="alert" hidden></div>

@@ -113,6 +113,15 @@ export function validateMemoryPatch(value) {
   return patch;
 }
 
+export function validateMemoryCandidateDecision(value) {
+  if (!isPlainObject(value)) throw new ValidationError("Request body must be a JSON object.");
+  const decision=requiredChoice(value.decision,"decision",new Set(["accepted","rejected"]));
+  const supersedesMemoryId=optionalString(value.supersedesMemoryId,"supersedesMemoryId",{maxLength:160});
+  const reason=optionalString(value.reason,"reason",{maxLength:500});
+  if(decision==="rejected"&&supersedesMemoryId)throw new ValidationError("supersedesMemoryId is only allowed when accepting a candidate.");
+  return{decision,...(supersedesMemoryId?{supersedesMemoryId}:{}),...(reason?{reason}:{})};
+}
+
 export function validateListLimit(value, fallback, max) {
   if (value === null || value === "") return fallback;
   const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) throw new ValidationError(`limit must be an integer between 1 and ${max}.`);

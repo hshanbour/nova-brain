@@ -219,6 +219,7 @@ export function createAgent({
   routeExistingTaskRequest = async () => null,
   routeDurableRequest = async () => null,
   durableResearchTaskService = null,
+  learningService = null,
   logger = { info() {}, error() {} }
 }) {
   if (!storage || !ownerId || !modelProvider || !toolRegistry) {
@@ -275,6 +276,7 @@ export function createAgent({
         response.requestId=requestId||null;
         response.userMessageId=userMessageId;
         if(!deferConversationPersistence)await storage.appendMessage({id:response.id,conversationId,ownerId,role:"assistant",content:response.message});
+        if(!deferConversationPersistence&&context?.voice!==true&&learningService?.observeConversationTurn)await learningService.observeConversationTurn({message,conversationId,userMessageId,assistantMessageId:response.id,runId:run.id,projectId:context.projectId||null}).catch(error=>logger.error("Nova memory candidate extraction failed",{requestId,code:error?.code||"memory_candidate_failed"}));
         return response;
       };
       const correlatedRunResult=(response,extra={})=>({message:response.message,requestId:requestId||null,userMessageId,assistantMessageId:response.id,...(response.approval?.id?{approvalId:response.approval.id}:{}),...extra});

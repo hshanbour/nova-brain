@@ -54,7 +54,7 @@ async function activate(f, prepared, decision = "consent") {
 }
 
 test("schema 19 adds bounded non-owner controls without raw audio, embeddings, or participant profiles", () => {
-  assert.equal(SCHEMA_VERSION, 19);
+  assert.ok(SCHEMA_VERSION >= 19);
   const schema = SCHEMA_STATEMENTS.filter((statement) => statement.includes("nova_speaker_control_")).join("\n");
   assert.match(schema, /participant_code/);
   assert.match(schema, /score numeric/);

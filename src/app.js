@@ -30,6 +30,7 @@ import { createWorkerRuntime } from "./autonomy/worker-runtime.js";
 import { registerWorkerTools } from "./autonomy/worker-tools.js";
 import { createTaskMigrationService } from "./autonomy/task-migration.js";
 import { createLocalWorkerHandoff } from "./autonomy/local-worker-handoff.js";
+import {createMemoryLearningService} from "./memory/learning-service.js";
 import { createGithubWriteAttestation } from "./autonomy/github-write-attestation.js";
 import { createPostAttestationRecovery } from "./autonomy/post-attestation-recovery.js";
 import { createSelfDevelopmentService, isDurableSelfDevelopmentRequest, parseExistingTaskControlRequest, SelfDevelopmentError, validateExistingTaskControlRequest } from "./autonomy/self-development.js";
@@ -180,7 +181,8 @@ export function createApp({
     deploymentEnvironment: environment.VERCEL_ENV || "local",
     executionTruth,
   });
-  const terminalReporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID,ownerContactPolicy});
+  const learningService=typeof storage?.createMemoryCandidate==="function"?createMemoryLearningService({storage,ownerId:OWNER_ID}):null;
+  const terminalReporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID,ownerContactPolicy,learningService});
   const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,terminalReporter,executionTruth});
   const codingExecutor=typeof storage?.getAutonomyTask==="function"?createCodingExecutorService({
     runtime:workerRuntime,
@@ -267,6 +269,7 @@ export function createApp({
       return validateExistingTaskControlRequest(request,await workerRuntime.get(request.taskId));
     },
     durableResearchTaskService,
+    learningService,
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
       if(context?.voice===true)return null;
       const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message),workflowTurn=isConversationWorkflowTurn(message,{implementationSignal,codingSignal});
@@ -379,6 +382,7 @@ export function createApp({
     executionTruth,
     browserTaskService,
     durableResearchTaskService,
+    learningService,
     gmailService,
     phoneService,
     ownerContactPolicy,
@@ -388,5 +392,5 @@ export function createApp({
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, pstnSpeakerEnrollment, pstnSpeakerControls });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, pstnSpeakerEnrollment, pstnSpeakerControls, learningService });
 }
