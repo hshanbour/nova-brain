@@ -18,10 +18,10 @@ import {
 const ownerId="owner-web";
 const publicDns=async()=>[{address:"93.184.216.34",family:4}];
 const input=(overrides={})=>({query:"Compare Acme pricing",purpose:"pricing",allowedDomains:[],freshnessDays:30,maxSources:8,depth:"quick",readMode:"auto",urls:[],...overrides});
-const payload=({url="https://example.com/pricing",title="Acme pricing",text="Acme costs ten pounds.",searchCalls=1,annotations=true,providerSources=[]}={})=>({
+const payload=({url="https://example.com/pricing",title="Acme pricing",text="Acme costs ten pounds.",searchCalls=1,actions,annotations=true,providerSources=[]}={})=>({
   id:"resp-web",service_tier:"default",usage:{input_tokens:100,output_tokens:20,total_tokens:120},
   output:[
-    ...Array.from({length:searchCalls},(_,index)=>({type:"web_search_call",id:`ws-${index}`,action:{type:"search",query:"Acme pricing",...(index===0&&providerSources.length?{sources:providerSources}:{})}})),
+    ...(actions||Array.from({length:searchCalls},()=>({type:"search",query:"Acme pricing"}))).map((action,index)=>({type:"web_search_call",id:`ws-${index}`,action:{...action,...(index===0&&providerSources.length?{sources:providerSources}:{})}})),
     {type:"message",content:[{type:"output_text",text,annotations:annotations?[{type:"url_citation",start_index:0,end_index:4,url,title}]:[]}]},
   ],
 });
@@ -53,6 +53,26 @@ test("hosted search prefers validated citation annotations over the provider sou
   const adapter=createOpenAIWebSearchAdapter({apiKey:"test-key",costController:controller,fetchImpl:async()=>new Response(JSON.stringify(payload({providerSources:[{title:"Fallback",url:"https://fallback.example/source"}]})),{status:200})});
   const result=await adapter.search(input(),{runId:"annotations-first"});
   assert.deepEqual(result.sources.map(source=>source.url),["https://example.com/pricing"]);
+});
+
+test("hosted search accepts every documented bounded web action and accounts for each call",async()=>{
+  const {controller}=await costFixture();
+  const adapter=createOpenAIWebSearchAdapter({apiKey:"test-key",costController:controller,fetchImpl:async()=>new Response(JSON.stringify(payload({actions:[{type:"open_page",url:"https://example.com/pricing"},{type:"find_in_page",url:"https://example.com/pricing",pattern:"price"}]})),{status:200})});
+  const result=await adapter.search(input(),{runId:"documented-actions"});
+  assert.deepEqual(result.actions.map(action=>action.type),["open_page","find_in_page"]);
+  assert.equal(result.searchCalls,2);
+  assert.equal(result.usage.fixedSearchCostUsd,0.02);
+});
+
+test("hosted search distinguishes missing, excessive, and unrecognized action responses",async()=>{
+  const run=async(value,expectedCode,expectedDiagnostics)=>{
+    const {controller}=await costFixture();
+    const adapter=createOpenAIWebSearchAdapter({apiKey:"test-key",costController:controller,fetchImpl:async()=>new Response(JSON.stringify(value),{status:200})});
+    await assert.rejects(()=>adapter.search(input(),{runId:expectedCode}),error=>{assert.equal(error.code,expectedCode);assert.deepEqual(error.safeDiagnostics,expectedDiagnostics);return true;});
+  };
+  await run(payload({searchCalls:0}),"web_search_action_missing",{stage:"hosted_search_action_validation",actionCount:0,maxActionCount:3,searchActionCount:0,openPageActionCount:0,findInPageActionCount:0,unrecognizedActionCount:0,classification:"missing"});
+  await run(payload({searchCalls:4}),"web_search_action_limit",{stage:"hosted_search_action_validation",actionCount:4,maxActionCount:3,searchActionCount:4,openPageActionCount:0,findInPageActionCount:0,unrecognizedActionCount:0,classification:"excessive"});
+  await run(payload({actions:[{type:"browse",url:"https://example.com/pricing"}]}),"web_search_action_unrecognized",{stage:"hosted_search_action_validation",actionCount:1,maxActionCount:3,searchActionCount:0,openPageActionCount:0,findInPageActionCount:0,unrecognizedActionCount:1,classification:"unrecognized"});
 });
 
 test("hosted search accepts validated provider sources only when citation annotations are absent",async()=>{
@@ -104,7 +124,7 @@ test("hosted-search retry is bounded and malformed or excessive citations fail s
 
   const excessiveFixture=await costFixture();
   const excessive=createOpenAIWebSearchAdapter({apiKey:"test-key",costController:excessiveFixture.controller,fetchImpl:async()=>new Response(JSON.stringify(payload({searchCalls:4})),{status:200})});
-  await assert.rejects(()=>excessive.search(input(),{runId:"excessive"}),error=>error.code==="web_search_action_limit");
+  await assert.rejects(()=>excessive.search(input(),{runId:"excessive"}),error=>error.code==="web_search_action_limit"&&error.safeDiagnostics.classification==="excessive");
 });
 
 test("public address classifier rejects private, metadata, documentation and link-local ranges",()=>{

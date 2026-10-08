@@ -23,6 +23,7 @@ const READ_MODES = new Set(["none", "auto", "required"]);
 const DEPTHS = new Set(["quick", "deep"]);
 const BROWSER_REASONS = new Set(["javascript_required", "rendered_content_missing", "navigation_required"]);
 const BLOCKED_REASONS = new Set(["authentication_required", "captcha_required", "paywall_detected", "robots_disallowed"]);
+const HOSTED_WEB_ACTION_TYPES = new Set(["search", "open_page", "find_in_page"]);
 
 export const PUBLIC_BROWSER_READ_CONTRACT = Object.freeze({
   name: "public_browser_read",
@@ -269,8 +270,24 @@ function validatedSearchSource(value, clock, invalidMessage) {
 function normalizeSearchPayload(payload, { maxSources, maxSearchActions, clock }) {
   const searchActionItems = (payload?.output || []).filter((item) => item?.type === "web_search_call");
   const actions = searchActionItems.map((item) => ({ type: bounded(item.action?.type, 40), query: bounded(item.action?.query || item.action?.queries?.[0], 300) || null }));
-  const searchCalls = actions.filter((item) => item.type === "search").length;
-  if (searchCalls < 1 || searchCalls > maxSearchActions) throw new WebGatewayError("web_search_action_limit", "The hosted search action count was outside the bounded contract.", { searchCalls });
+  const counts = actions.reduce((value, action) => {
+    if (HOSTED_WEB_ACTION_TYPES.has(action.type)) value[action.type] += 1;
+    else value.unrecognized += 1;
+    return value;
+  }, { search: 0, open_page: 0, find_in_page: 0, unrecognized: 0 });
+  const searchCalls = actions.length;
+  const diagnostics = {
+    stage: "hosted_search_action_validation",
+    actionCount: searchCalls,
+    maxActionCount: maxSearchActions,
+    searchActionCount: counts.search,
+    openPageActionCount: counts.open_page,
+    findInPageActionCount: counts.find_in_page,
+    unrecognizedActionCount: counts.unrecognized,
+  };
+  if (searchCalls === 0) throw new WebGatewayError("web_search_action_missing", "Hosted search returned no web-search action.", { ...diagnostics, classification: "missing" });
+  if (searchCalls > maxSearchActions) throw new WebGatewayError("web_search_action_limit", "The hosted search action count exceeded the bounded contract.", { ...diagnostics, classification: "excessive" });
+  if (counts.unrecognized > 0) throw new WebGatewayError("web_search_action_unrecognized", "Hosted search returned an unrecognized web-search action.", { ...diagnostics, classification: "unrecognized" });
   const messages = (payload?.output || []).filter((item) => item?.type === "message");
   const parts = messages.flatMap((item) => Array.isArray(item.content) ? item.content : []).filter((item) => item?.type === "output_text" && typeof item.text === "string");
   const summary = parts.map((item) => item.text).join("\n").trim();
