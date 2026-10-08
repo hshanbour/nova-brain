@@ -2,6 +2,7 @@ import {createHash} from "node:crypto";
 import {memoryTokens} from "./relevance.js";
 
 const SECRET=/\b(?:sk-[A-Za-z0-9_-]{10,}|github_pat_[A-Za-z0-9_]{10,}|(?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*\S+)/i;
+const GLOBAL_RELEVANCE_STOP=new Set(["about","accepted","also","and","current","existing","for","from","into","memory","owner","project","that","the","this","using","with"]);
 const clean=(value,max)=>String(value||"").replace(/[\u0000-\u001f\u007f]/g," ").replace(/\s+/g," ").trim().slice(0,max);
 const evidenceType=value=>{
   const provenance=String(value.provenance||"");
@@ -20,7 +21,7 @@ export function createTaskContextSnapshot({retrieved,projectId,request,clock=()=
   if(!retrieved||!projectId)return null;
   const project=(retrieved.projects||[]).find(item=>item.id===projectId);
   if(!project)return null;
-  const requestTokens=memoryTokens(request),globallyRelevant=item=>{let overlap=0;for(const token of memoryTokens(item.content))if(requestTokens.has(token))overlap+=1;return overlap>=2;};
+  const signalTokens=value=>[...memoryTokens(value)].filter(token=>token.length>3&&!GLOBAL_RELEVANCE_STOP.has(token)),requestTokens=new Set(signalTokens(request)),globallyRelevant=item=>{let overlap=0;for(const token of signalTokens(item.content))if(requestTokens.has(token))overlap+=1;return overlap>=2;};
   const eligible=(retrieved.memories||[]).filter(item=>item.status!=="deleted"&&(!item.projectId||item.projectId===projectId)&&!SECRET.test(item.content||"")&&(item.projectId===projectId||globallyRelevant(item))).map(memory),acceptedMemories=eligible.slice(0,6);
   for(const required of [eligible.find(item=>["reviewed_completed_task","reviewed_failed_task_lesson"].includes(item.evidenceType)),eligible.find(item=>["owner_preference","owner_decision"].includes(item.evidenceType))])if(required&&!acceptedMemories.some(item=>item.id===required.id)){if(acceptedMemories.length>=6)acceptedMemories.pop();acceptedMemories.push(required);}
   const applicableConstraints=acceptedMemories.filter(item=>["preference","decision","reusable_instruction"].includes(item.category)).map(item=>({memoryId:item.id,content:item.content,provenance:item.provenance,evidenceType:item.evidenceType})).slice(0,4);

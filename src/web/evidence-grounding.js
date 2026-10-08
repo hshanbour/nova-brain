@@ -21,8 +21,9 @@ export function parseGroundedAnswer(generated,{result,taskContextSnapshot}={}){
   const sourceIds=new Set((result?.sources||[]).map(item=>item.sourceId)),memories=new Map((taskContextSnapshot?.acceptedMemories||[]).map(item=>[item.id,item])),claims=[];
   for(const item of value.claims){
     if(!item||typeof item!=="object"||Array.isArray(item)||Object.keys(item).some(key=>!["text","classification","sourceIds","memoryIds"].includes(key))||!TYPES.has(item.classification)||!Array.isArray(item.sourceIds)||!Array.isArray(item.memoryIds))throw failure("claim_shape_invalid");
-    const text=clean(item.text,1_000),listedSources=[...new Set(item.sourceIds)],listedMemories=[...new Set(item.memoryIds)];
+    const text=clean(item.text,1_000);let listedSources=[...new Set(item.sourceIds)],listedMemories=[...new Set(item.memoryIds)];
     if(!text||lexicalTokens(text).length<3||!answerSegments(answer).some(segment=>relatedText(segment,text)))throw failure("claim_not_in_answer");
+    if(item.classification==="unknown"){if(!explicitUncertainty(text))throw failure("unknown_claim_invalid");listedSources=[];listedMemories=[];}
     if(listedSources.some(id=>!sourceIds.has(id)))throw failure("unknown_source_id");
     if(listedMemories.some(id=>!memories.has(id)))throw failure("unknown_memory_id");
     if(item.classification==="public_research"&&(!listedSources.length||listedMemories.length))throw failure("public_claim_unbound");
@@ -30,7 +31,7 @@ export function parseGroundedAnswer(generated,{result,taskContextSnapshot}={}){
     if(item.classification==="verified_memory"&&listedMemories.some(id=>["hypothesis","unresolved_question"].includes(memories.get(id)?.evidenceType)))throw failure("unverified_memory_claim");
     if(item.classification==="owner_claim"&&listedMemories.some(id=>!["owner_claim","owner_preference","owner_decision"].includes(memories.get(id)?.evidenceType)))throw failure("owner_claim_misclassified");
     if(["inference","estimate"].includes(item.classification)&&!listedSources.length&&!listedMemories.length)throw failure("derived_claim_unbound");
-    if(item.classification==="unknown"&&(listedSources.length||listedMemories.length||!explicitUncertainty(text)))throw failure("unknown_claim_invalid");
+    if(item.classification==="unknown"&&!explicitUncertainty(text))throw failure("unknown_claim_invalid");
     claims.push({text,classification:item.classification,sourceIds:listedSources,memoryIds:listedMemories});
   }
   for(const sentence of splitImportant(answer))if(!claims.some(claim=>relatedText(sentence,claim.text)))throw failure("important_claim_unmapped");
