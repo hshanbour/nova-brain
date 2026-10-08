@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -69,6 +69,7 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     scope text NOT NULL DEFAULT 'global',
     project_id text REFERENCES nova_projects(id) ON DELETE SET NULL,
     confidence numeric,
+    evidence jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (octet_length(evidence::text) <= 32768),
     status text NOT NULL DEFAULT 'active',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
@@ -76,6 +77,8 @@ export const SCHEMA_STATEMENTS = Object.freeze([
   )`,
   `CREATE INDEX IF NOT EXISTS nova_memories_owner_active_idx ON nova_memories (owner_id, status, updated_at DESC)`,
   `CREATE INDEX IF NOT EXISTS nova_memories_project_idx ON nova_memories (owner_id, project_id)`,
+  `ALTER TABLE nova_memories ADD COLUMN IF NOT EXISTS evidence jsonb NOT NULL DEFAULT '{}'::jsonb`,
+  `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='nova_memories_evidence_size') THEN ALTER TABLE nova_memories ADD CONSTRAINT nova_memories_evidence_size CHECK (octet_length(evidence::text) <= 32768); END IF; END $$`,
   `CREATE TABLE IF NOT EXISTS nova_memory_candidates (
     id text PRIMARY KEY,
     owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
@@ -492,5 +495,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     FOREIGN KEY(owner_id,budget_id) REFERENCES nova_model_cost_budgets(owner_id,budget_id) ON DELETE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS nova_model_cost_task_idx ON nova_model_cost_reservations (owner_id,budget_id,task_id,created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17), (18), (19), (20) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17), (18), (19), (20), (21) ON CONFLICT (version) DO NOTHING`
 ]);

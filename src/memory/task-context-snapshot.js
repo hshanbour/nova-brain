@@ -6,6 +6,7 @@ const GLOBAL_RELEVANCE_STOP=new Set(["about","accepted","also","and","current","
 const clean=(value,max)=>String(value||"").replace(/[\u0000-\u001f\u007f]/g," ").replace(/\s+/g," ").trim().slice(0,max);
 const evidenceType=value=>{
   const provenance=String(value.provenance||"");
+  if(/completed_task/i.test(provenance)&&value.evidence?.version>=3&&!['passed','not_required'].includes(value.evidence?.verificationStatus))return"unverified_task_outcome";
   if(/completed_task/i.test(provenance))return"reviewed_completed_task";
   if(/failed_task/i.test(provenance))return"reviewed_failed_task_lesson";
   if(value.category==="preference")return"owner_preference";
@@ -15,14 +16,14 @@ const evidenceType=value=>{
   if(/unresolved_question/i.test(provenance))return"unresolved_question";
   return"reviewed_memory";
 };
-const memory=value=>({id:clean(value.id,160),category:clean(value.category,64),content:clean(value.content,1600),scope:clean(value.scope,32),projectId:value.projectId?clean(value.projectId,128):null,provenance:clean(value.provenance,240),privacy:clean(value.privacy,32),sensitivity:clean(value.sensitivity,32),evidenceType:evidenceType(value)});
+const memory=value=>({id:clean(value.id,160),category:clean(value.category,64),content:clean(value.content,1600),scope:clean(value.scope,32),projectId:value.projectId?clean(value.projectId,128):null,provenance:clean(value.provenance,240),privacy:clean(value.privacy,32),sensitivity:clean(value.sensitivity,32),evidenceType:evidenceType(value),evidence:value.evidence?.version>=3?{version:value.evidence.version,verificationStatus:clean(value.evidence.verificationStatus,40),claimManifestVersion:value.evidence.claimManifestVersion||null,claimManifestHash:clean(value.evidence.claimManifestHash,64)||null,evidenceBundleHash:clean(value.evidence.evidenceBundleHash,64)||null}:null});
 
 export function createTaskContextSnapshot({retrieved,projectId,request,clock=()=>new Date()}={}){
   if(!retrieved||!projectId)return null;
   const project=(retrieved.projects||[]).find(item=>item.id===projectId);
   if(!project)return null;
   const signalTokens=value=>[...memoryTokens(value)].filter(token=>token.length>3&&!GLOBAL_RELEVANCE_STOP.has(token)),requestTokens=new Set(signalTokens(request)),globallyRelevant=item=>{let overlap=0;for(const token of signalTokens(item.content))if(requestTokens.has(token))overlap+=1;return overlap>=2;};
-  const eligible=(retrieved.memories||[]).filter(item=>item.status!=="deleted"&&(!item.projectId||item.projectId===projectId)&&!SECRET.test(item.content||"")&&(item.projectId===projectId||globallyRelevant(item))).map(memory),acceptedMemories=eligible.slice(0,6);
+  const eligible=(retrieved.memories||[]).filter(item=>item.status!=="deleted"&&(!item.projectId||item.projectId===projectId)&&!SECRET.test(item.content||"")&&(item.projectId===projectId||globallyRelevant(item))).map(memory).filter(item=>item.evidenceType!=="unverified_task_outcome"),acceptedMemories=eligible.slice(0,6);
   for(const required of [eligible.find(item=>["reviewed_completed_task","reviewed_failed_task_lesson"].includes(item.evidenceType)),eligible.find(item=>["owner_preference","owner_decision"].includes(item.evidenceType))])if(required&&!acceptedMemories.some(item=>item.id===required.id)){if(acceptedMemories.length>=6)acceptedMemories.pop();acceptedMemories.push(required);}
   const applicableConstraints=acceptedMemories.filter(item=>["preference","decision","reusable_instruction"].includes(item.category)).map(item=>({memoryId:item.id,content:item.content,provenance:item.provenance,evidenceType:item.evidenceType})).slice(0,4);
   const knownUnknowns=acceptedMemories.filter(item=>item.category==="project_context"&&/hypothesis|unresolved_question/.test(item.provenance)).map(item=>({memoryId:item.id,content:item.content,provenance:item.provenance})).slice(0,4);

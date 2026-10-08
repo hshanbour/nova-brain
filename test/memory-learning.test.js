@@ -21,8 +21,9 @@ async function fixture() {
   return { storage, learning: createMemoryLearningService({ storage, ownerId: OWNER }) };
 }
 
-test("schema twenty adds bounded durable memory candidates", () => {
-  assert.equal(SCHEMA_VERSION, 20);
+test("schema twenty-one preserves candidates and adds bounded memory evidence", () => {
+  assert.equal(SCHEMA_VERSION, 21);
+  assert.ok(SCHEMA_STATEMENTS.some((statement) => statement.includes("nova_memories_evidence_size")));
   const sql = SCHEMA_STATEMENTS.find((statement) => statement.includes("CREATE TABLE IF NOT EXISTS nova_memory_candidates"));
   assert.match(sql, /UNIQUE\(owner_id,fingerprint\)/);
   assert.match(sql, /octet_length\(content\) BETWEEN 1 AND 8192/);

@@ -57,6 +57,7 @@ const memoryRow = (row) =>
     scope: row.scope,
     projectId: row.project_id,
     confidence: row.confidence === null ? null : Number(row.confidence),
+    evidence: row.evidence || {},
     status: row.status,
     createdAt: date(row.created_at),
     updatedAt: date(row.updated_at),
@@ -351,8 +352,8 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
               );
             for (const memory of memories)
               await run(
-                `INSERT INTO nova_memories (id, owner_id, category, content, provenance, privacy, sensitivity, scope, project_id, confidence, status)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO UPDATE SET content=CASE WHEN EXCLUDED.provenance='system-generated-project-release' THEN EXCLUDED.content ELSE nova_memories.content END,updated_at=CASE WHEN EXCLUDED.provenance='system-generated-project-release' AND nova_memories.content<>EXCLUDED.content THEN now() ELSE nova_memories.updated_at END`,
+                `INSERT INTO nova_memories (id, owner_id, category, content, provenance, privacy, sensitivity, scope, project_id, confidence, status, evidence)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) ON CONFLICT (id) DO UPDATE SET content=CASE WHEN EXCLUDED.provenance='system-generated-project-release' THEN EXCLUDED.content ELSE nova_memories.content END,updated_at=CASE WHEN EXCLUDED.provenance='system-generated-project-release' AND nova_memories.content<>EXCLUDED.content THEN now() ELSE nova_memories.updated_at END`,
                 [
                   memory.id,
                   owner.id,
@@ -365,6 +366,7 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
                   memory.projectId || null,
                   memory.confidence ?? null,
                   memory.status || "active",
+                  json(memory.evidence),
                 ],
               );
           }
@@ -529,7 +531,7 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
     },
     async createMemory(input) {
       const rows = await run(
-        `INSERT INTO nova_memories (id,owner_id,category,content,provenance,privacy,sensitivity,scope,project_id,confidence,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+        `INSERT INTO nova_memories (id,owner_id,category,content,provenance,privacy,sensitivity,scope,project_id,confidence,status,evidence) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) RETURNING *`,
         [
           input.id || randomUUID(),
           input.ownerId,
@@ -542,6 +544,7 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
           input.projectId || null,
           input.confidence ?? null,
           input.status || "active",
+          json(input.evidence),
         ],
       );
       return memoryRow(rows[0]);
@@ -610,10 +613,10 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         UPDATE nova_memories SET status='superseded',updated_at=now()
         WHERE id=$1 AND owner_id=$2 AND status='active' RETURNING *
       ), inserted AS (
-        INSERT INTO nova_memories (id,owner_id,category,content,provenance,privacy,sensitivity,scope,project_id,confidence,status)
-        SELECT $3,$2,$4,$5,$6,$7,$8,$9,$10,$11,'active' FROM prior RETURNING *
+        INSERT INTO nova_memories (id,owner_id,category,content,provenance,privacy,sensitivity,scope,project_id,confidence,status,evidence)
+        SELECT $3,$2,$4,$5,$6,$7,$8,$9,$10,$11,'active',$12::jsonb FROM prior RETURNING *
       ) SELECT (SELECT row_to_json(inserted) FROM inserted) memory,(SELECT row_to_json(prior) FROM prior) superseded_memory`,[
-        id,ownerId,replacementId,replacement.category,replacement.content,replacement.provenance,replacement.privacy,replacement.sensitivity,replacement.scope,replacement.projectId||null,replacement.confidence??null,
+        id,ownerId,replacementId,replacement.category,replacement.content,replacement.provenance,replacement.privacy,replacement.sensitivity,replacement.scope,replacement.projectId||null,replacement.confidence??null,json(replacement.evidence),
       ]),result=rows[0]||{};
       if(!result.memory)return null;
       return{memory:memoryRow(result.memory),supersededMemory:memoryRow(result.superseded_memory)};
@@ -639,6 +642,7 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
       const memoryId=`memory-candidate-${id}`;
       const rows=await run(`WITH candidate AS (
           SELECT * FROM nova_memory_candidates WHERE id=$1 AND owner_id=$2 AND status='pending'
+          AND NOT ($4='accepted' AND source_kind='completed_task' AND COALESCE((evidence->>'version')::integer,0)>=3 AND COALESCE(evidence->>'verificationStatus','') NOT IN ('passed','not_required'))
           AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM nova_memories WHERE id=$5 AND owner_id=$2 AND status='active'))
         ), target AS (
           SELECT * FROM nova_memories WHERE id=$5 AND owner_id=$2 AND status='active'
@@ -647,12 +651,12 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
           WHERE id=$5 AND owner_id=$2 AND status='active' AND EXISTS (SELECT 1 FROM candidate) AND $4='accepted'
           RETURNING id
         ), inserted AS (
-          INSERT INTO nova_memories (id,owner_id,category,content,provenance,privacy,sensitivity,scope,project_id,confidence,status)
+          INSERT INTO nova_memories (id,owner_id,category,content,provenance,privacy,sensitivity,scope,project_id,confidence,status,evidence)
           SELECT $3,candidate.owner_id,CASE WHEN candidate_type='correction' THEN target.category ELSE CASE candidate_type WHEN 'preference' THEN 'preference' WHEN 'project_decision' THEN 'decision'
             WHEN 'owner_claim' THEN 'identity' WHEN 'verified_fact' THEN 'identity' WHEN 'hypothesis' THEN 'project_context'
             WHEN 'unresolved_question' THEN 'project_context' ELSE 'reusable_instruction' END END,
             candidate.content,'memory-candidate:'||candidate.source_kind||':'||candidate.id,candidate.privacy,'normal',CASE WHEN candidate_type='correction' THEN target.scope ELSE candidate.scope END,CASE WHEN candidate_type='correction' THEN target.project_id ELSE candidate.project_id END,
-            CASE WHEN candidate_type='verified_fact' THEN 0.95 WHEN candidate_type IN ('owner_claim','preference','project_decision','correction') THEN 0.9 ELSE 0.8 END,'active'
+            CASE WHEN candidate_type='verified_fact' THEN 0.95 WHEN candidate_type IN ('owner_claim','preference','project_decision','correction') THEN 0.9 ELSE 0.8 END,'active',candidate.evidence
           FROM candidate LEFT JOIN target ON true WHERE $4='accepted' AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM superseded))
           ON CONFLICT (id) DO UPDATE SET id=EXCLUDED.id RETURNING *
         ), updated AS (
