@@ -22,6 +22,14 @@ const sourceAuthority=domain=>/^(?:www\.)?(?:gov\.uk|legislation\.gov\.uk)$/i.te
 const sourceJurisdiction=domain=>sourceAuthority(domain)==="official_uk_public"?"UK":null;
 const validDate=value=>/^\d{4}-\d{2}-\d{2}(?:T[^\s]+)?$/.test(String(value||""))?String(value):null;
 const splitChunks=value=>{const parts=String(value||"").split(/\n{2,}|(?<=[.!?])\s+(?=[A-Z0-9])/).map(item=>clean(item,3_000)).filter(Boolean),out=[];for(const part of parts){if(part.length<=3_000)out.push(part);else for(let index=0;index<part.length;index+=2_800)out.push(part.slice(index,index+3_000));}return out.slice(0,24);};
+const citedUrls=value=>[...String(value||"").matchAll(/\[[^\]]+\]\((https:\/\/[^)\s]+)\)/g)].map(match=>{try{return new URL(match[1]).href;}catch{return null;}}).filter(Boolean);
+const beginsWithCitation=value=>/^[\s(*_]*\[[^\]]+\]\(https:\/\/[^)\s]+\)/u.test(String(value||""));
+const citationBoundSummary=(segments,index)=>{
+  const segment=String(segments[index]||"");if(!beginsWithCitation(segment)||index===0)return clean(segment,3_000);
+  const previous=String(segments[index-1]||"");if(!previous.trim()||citedUrls(previous).length)return clean(segment,3_000);
+  const citation=clean(segment,1_000),available=Math.max(0,3_000-citation.length-1),support=clean(previous,available);
+  return clean(`${support} ${citation}`,3_000);
+};
 
 export function buildEvidenceBundle(result){
   const pages=new Map((result?.pages||[]).map(page=>[page.url,page])),sources=[];
@@ -30,9 +38,9 @@ export function buildEvidenceBundle(result){
     for(const [index,text] of splitChunks(page?.text||"").entries())retained.push({evidenceId:`evidence_${hash(`${source.sourceId}:page:${index}:${text}`).slice(0,20)}`,sourceId:source.sourceId,origin:"direct_source",strength:"direct",text,contentHash:hash(text)});
     const summarySegments=String(result?.summary||"").split(/\n+|(?<=[.!?])\s+/u);
     for(const [index,segment] of summarySegments.entries()){
-      const urls=[...segment.matchAll(/\[[^\]]+\]\((https:\/\/[^)\s]+)\)/g)].map(match=>{try{return new URL(match[1]).href;}catch{return null;}}).filter(Boolean);
+      const urls=citedUrls(segment);
       let canonical;try{canonical=new URL(source.url).href;}catch{canonical=null;}
-      if(canonical&&urls.includes(canonical)){const text=clean(segment,3_000);if(text&&!retained.some(item=>normalized(item.text)===normalized(text)))retained.push({evidenceId:`evidence_${hash(`${source.sourceId}:summary:${index}:${text}`).slice(0,20)}`,sourceId:source.sourceId,origin:"provider_summary",strength:"secondary_summary",text,contentHash:hash(text)});}
+      if(canonical&&urls.includes(canonical)){const text=citationBoundSummary(summarySegments,index);if(text&&!retained.some(item=>normalized(item.text)===normalized(text)))retained.push({evidenceId:`evidence_${hash(`${source.sourceId}:summary:${index}:${text}`).slice(0,20)}`,sourceId:source.sourceId,origin:"provider_summary",strength:"secondary_summary",text,contentHash:hash(text)});}
     }
     sources.push({sourceId:source.sourceId,title:clean(source.title,200),url:source.url,domain:source.domain,retrievedAt:validDate(source.retrievedAt),publishedAt:validDate(source.publishedAt),updatedAt:validDate(source.updatedAt),authority:sourceAuthority(source.domain),jurisdiction:source.jurisdiction||sourceJurisdiction(source.domain),contentHash:source.contentHash||page?.contentHash||null,chunks:retained.slice(0,24)});
   }

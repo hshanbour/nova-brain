@@ -29,6 +29,24 @@ test("canonical chunks retain exact provenance and exclude an unretained dental-
   reason(()=>parse(result,[claim("A dental study found a 30% reduction in missed appointments.",{evidenceIds:[chunks[0].evidenceId]})]),"claim_evidence_semantic_mismatch");
 });
 
+test("a citation-leading provider segment retains its immediately preceding support as secondary evidence",()=>{
+  const url="https://www.gov.uk/bank-holidays?utm_source=openai",summary="**Yes.** The official GOV.UK bank holidays page has a section titled **“England and Wales”** and lists bank holidays for that region. ([gov.uk](https://www.gov.uk/bank-holidays?utm_source=openai)) **Recency:** The page was crawled recently, but its publication date was not verified.",result=resultFor({domain:"www.gov.uk",url,text:"",summary,publishedAt:null}),bundle=buildEvidenceBundle(result),chunks=bundle.sources[0].chunks;
+  assert.equal(chunks.length,1);assert.equal(chunks[0].origin,"provider_summary");assert.equal(chunks[0].strength,"secondary_summary");assert.match(chunks[0].text,/section titled \*\*“England and Wales”\*\*/);assert.match(chunks[0].text,/\[gov\.uk\]\(https:\/\/www\.gov\.uk\/bank-holidays\?utm_source=openai\)/);assert.equal(chunks[0].contentHash.length,64);assert.equal(bundle.sources[0].contentHash,"a".repeat(64));
+  const text="The official GOV.UK bank holidays page lists bank holidays for England and Wales.",grounded=parse(result,[claim(text,{evidenceIds:[chunks[0].evidenceId],jurisdiction:"UK"})],`${text} [GOV.UK](${url})`),verified=applySemanticVerification(grounded,{type:"final",message:JSON.stringify({assessments:[{claimId:"claim_1",verdict:"supported",evidenceIds:[chunks[0].evidenceId],reasonCode:"direct_support",requiredQualifier:""}]})});
+  assert.equal(verified.verification.status,"passed");assert.equal(verified.claims[0].verification.status,"supported");
+});
+
+test("citation adjacency does not retain an unrelated preceding claim or upgrade summary evidence to direct text",()=>{
+  const url="https://www.gov.uk/bank-holidays",summary=`A dental study reported a 30% reduction in missed appointments. The official GOV.UK page lists bank holidays for England and Wales. [GOV.UK](${url})`,result=resultFor({domain:"www.gov.uk",url,text:"",summary,publishedAt:null}),chunks=buildEvidenceBundle(result).sources[0].chunks;
+  assert.equal(chunks.length,1);assert.equal(chunks[0].origin,"provider_summary");assert.equal(chunks[0].strength,"secondary_summary");assert.doesNotMatch(chunks[0].text,/dental study/i);
+  reason(()=>parse(result,[claim("A dental study reported a 30% reduction in missed appointments.",{evidenceIds:[chunks[0].evidenceId]})]),"claim_evidence_semantic_mismatch");
+});
+
+test("citation-bound summary evidence cannot satisfy a regulatory primary-text requirement",()=>{
+  const url="https://www.gov.uk/example",summary=`Businesses must obtain a licence before regulated trading. ([GOV.UK](${url}))`,result=resultFor({url,text:"",summary,publishedAt:null}),id=buildEvidenceBundle(result).sources[0].chunks[0].evidenceId;
+  reason(()=>parse(result,[claim("Businesses must obtain a licence before regulated trading.",{evidenceIds:[id],jurisdiction:"UK"})]),"regulatory_primary_text_required");
+});
+
 test("an existing but unrelated source cannot validate a material business claim",()=>{
   const result=resultFor(),id=buildEvidenceBundle(result).sources[0].chunks[0].evidenceId;
   reason(()=>parse(result,[claim("Salon reminder messages reduce missed appointments.",{evidenceIds:[id]})]),"claim_evidence_semantic_mismatch");
