@@ -75,6 +75,17 @@ test("durable synthesis permits exactly one correction pass and then succeeds or
   const closed=await run({recover:false});assert.equal(closed.final.task.status,"failed");assert.equal(closed.final.task.errorCode,"web_research_grounding_invalid");assert.deepEqual([closed.synthesisCalls,closed.verifierCalls],[2,2]);assert.equal(closed.final.task.metadata.researchState.validationFailure.reasonCode,"semantic_support_failed");
 });
 
+test("the single correction pass also repairs a deterministic Claim Manifest validation failure",async()=>{
+  const storage=createInMemoryStorage();await storage.initialize({owner});const evidence=resultFor({domain:"example.com",url:"https://example.com/study",text:"Appointment reminders reduced missed appointments by 20% in the cited study.",publishedAt:"2026-09-01"}),evidenceId=buildEvidenceBundle(evidence).sources[0].chunks[0].evidenceId;let synthesisCalls=0,verifierCalls=0;
+  const provider={async generate(input){
+    if(input.responseFormat?.name==="nova_research_evidence_relevance"){const context=JSON.parse(input.message.slice(input.message.indexOf("\n")+1));return{type:"final",message:JSON.stringify({assessments:context.section.requirements.map(()=>({sourceIds:["source_1"]}))})};}
+    if(input.responseFormat?.name==="nova_research_claim_verification_v2"){verifierCalls+=1;return{type:"final",message:JSON.stringify({assessments:[{claimId:"claim_1",verdict:"supported",evidenceIds:[evidenceId],reasonCode:"direct_support",requiredQualifier:""}]})};}
+    synthesisCalls+=1;const answer="Appointment reminders reduced missed appointments by 20% in the cited study.",text=synthesisCalls===1?"A different unsupported claim appears only in the manifest.":answer;return generated(answer,[claim(text,{evidenceIds:[evidenceId]})]);
+  }};
+  const service=createDurableWebResearchService({storage,ownerId:OWNER,webGateway:{async research(){return structuredClone(evidence);}},modelProvider:provider,executionTruth:createExecutionTruthService({storage,ownerId:OWNER})});let task=(await service.prepare({request:"Research reminder evidence thoroughly and provide a sourced business report.",conversationId:"deterministic-correction",runId:"origin",webAuthority:{ownerDomains:[]}})).task;task=(await service.executeTask(task.id,{coordinatorId:"worker",expectedVersion:task.stateVersion})).task;const final=await service.executeTask(task.id,{coordinatorId:"worker",expectedVersion:task.stateVersion});
+  assert.equal(final.task.status,"completed");assert.deepEqual([synthesisCalls,verifierCalls],[2,1]);assert.equal(final.result.claimManifest.verification.status,"passed");
+});
+
 test("owner review cannot promote an unverified V2 research outcome, while passed provenance survives into future task context",async()=>{
   const storage=createInMemoryStorage();await storage.initialize({owner,projects:[{id:"project-a",name:"Project A"}]});const learning=createMemoryLearningService({storage,ownerId:OWNER});
   const queued=await storage.createAutonomyTask({id:`web_${"a".repeat(32)}`,ownerId:OWNER,projectId:"project-a",title:"Research",objective:"Research",taskType:"public_web_research",metadata:{researchFinalAnswer:"Unsupported conclusion.",researchClaimManifest:{version:2,evidenceBundleHash:"b".repeat(64),verification:{status:"failed"},claims:[]}}}),task={...queued,status:"completed"};

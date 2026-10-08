@@ -202,8 +202,17 @@ export function createDurableWebResearchService({storage,ownerId,webGateway,mode
     const usages=[];
     const synthesize=async feedback=>{const generated=await modelProvider.generate({message:job.request,conversationHistory:[],context:{},tools:[],responseFormat:{name:"nova_research_grounded_answer_v2",schema:groundedAnswerSchema,strict:true},systemContext:`${systemBase}${feedback?`\n\nONE BOUNDED CORRECTION IS REQUIRED. Remove unsupported claims or qualify them as unknown. Do not preserve a claim merely because it has a source ID. VERIFIER FEEDBACK JSON:\n${JSON.stringify(feedback)}`:""}`,signal,stage:"chat",costContext:{taskId:task.id,runId:task.id}});if(generated?.providerUsage)usages.push(generated.providerUsage);return generated;};
     const verify=async grounded=>{const context=semanticVerificationContext(grounded);if(!context.claims.length)return applySemanticVerification(grounded,null);const generated=await modelProvider.generate({message:JSON.stringify(context),conversationHistory:[],context:{},tools:[],responseFormat:{name:"nova_research_claim_verification_v2",schema:semanticVerificationSchema(context.claims.length),strict:true},systemContext:"Independently verify each material claim using only its exact supplied evidence chunks. Do not use outside knowledge or the research summary. A topical source is insufficient. Check meaning, quantities, dates, jurisdiction, scope, and qualifiers. Return supported only when the cited chunks directly justify the precise claim.",signal,stage:"intake",costContext:{taskId:task.id,runId:task.id}});if(generated?.providerUsage)usages.push(generated.providerUsage);return applySemanticVerification(grounded,generated);};
-    let synthesisCalls=0,verificationCalls=0,grounded,verified;
-    for(let pass=0;pass<2;pass+=1){const generated=await synthesize(pass?verified.verification:null);synthesisCalls+=1;grounded=parseGroundedAnswer(generated,{result,taskContextSnapshot:job.taskContextSnapshot,evidenceBundle});verified=await verify(grounded);if(semanticVerificationContext(grounded).claims.length)verificationCalls+=1;if(verified.verification.status!=="failed")break;}
+    let synthesisCalls=0,verificationCalls=0,grounded,verified,feedback=null;
+    for(let pass=0;pass<2;pass+=1){
+      const generated=await synthesize(feedback);synthesisCalls+=1;
+      try{grounded=parseGroundedAnswer(generated,{result,taskContextSnapshot:job.taskContextSnapshot,evidenceBundle});}
+      catch(error){
+        if(pass===0&&error?.code==="web_research_grounding_invalid"){feedback={version:1,status:"failed",stage:error.safeDiagnostics?.stage||"final_claim_validation",reasonCode:error.safeDiagnostics?.reasonCode||"grounding_invalid"};continue;}
+        throw error;
+      }
+      verified=await verify(grounded);if(semanticVerificationContext(grounded).claims.length)verificationCalls+=1;if(verified.verification.status!=="failed")break;feedback=verified.verification;
+    }
+    if(!verified)throw evidenceGroundingFailure(feedback?.reasonCode||"grounding_invalid");
     if(verified.verification.status==="failed")throw evidenceGroundingFailure("semantic_support_failed");
     const finalAnswer=bindCitations(verified.answer,result),completedStep=stepOrdinal+1,manifest={version:2,claims:verified.claims,verification:verified.verification,evidenceBundleHash:evidenceBundle.bundleHash,validatedAt:verified.validatedAt||clock().toISOString()};
     await storage.updateAutonomyStep(task.id,stepId,{status:"completed",completedAt:clock().toISOString(),result:{status:"completed",sourceCount:result.sources.length,coverage,claimCount:verified.claims.length,groundingVersion:2,verificationStatus:verified.verification.status,synthesisCalls,verificationCalls,providerUsage:usages,taskContextSnapshotHash:job.taskContextSnapshot?.snapshotHash||null,evidenceBundleHash:evidenceBundle.bundleHash}});
