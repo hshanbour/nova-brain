@@ -605,6 +605,19 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         ).length > 0
       );
     },
+    async supersedeMemory(id, ownerId, replacement) {
+      const replacementId=replacement.id||randomUUID(),rows=await run(`WITH prior AS (
+        UPDATE nova_memories SET status='superseded',updated_at=now()
+        WHERE id=$1 AND owner_id=$2 AND status='active' RETURNING *
+      ), inserted AS (
+        INSERT INTO nova_memories (id,owner_id,category,content,provenance,privacy,sensitivity,scope,project_id,confidence,status)
+        SELECT $3,$2,$4,$5,$6,$7,$8,$9,$10,$11,'active' FROM prior RETURNING *
+      ) SELECT (SELECT row_to_json(inserted) FROM inserted) memory,(SELECT row_to_json(prior) FROM prior) superseded_memory`,[
+        id,ownerId,replacementId,replacement.category,replacement.content,replacement.provenance,replacement.privacy,replacement.sensitivity,replacement.scope,replacement.projectId||null,replacement.confidence??null,
+      ]),result=rows[0]||{};
+      if(!result.memory)return null;
+      return{memory:memoryRow(result.memory),supersededMemory:memoryRow(result.superseded_memory)};
+    },
     async createMemoryCandidate(input) {
       const rows=await run(`INSERT INTO nova_memory_candidates
         (id,owner_id,project_id,conversation_id,source_message_id,source_run_id,source_task_id,source_kind,candidate_type,content,evidence,provenance,privacy,scope,status,fingerprint,supersedes_memory_id)

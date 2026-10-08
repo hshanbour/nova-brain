@@ -336,7 +336,7 @@ export function createAgent({
       };
 
       try {
-        if(projectResolution.status==="ambiguous"||projectResolution.status==="missing"){
+        if(["ambiguous","multiple","missing"].includes(projectResolution.status)){
           const response={id:randomUUID(),conversationId,message:projectClarification(projectResolution),provider:"project_registry",toolCalls:[],steps:0,runId:run.id,runStatus:"clarification_required",projectResolution:{status:projectResolution.status,source:projectResolution.source,candidates:(projectResolution.projects||[]).map(project=>({id:project.id,name:project.name}))}};
           await persistAssistantMessage(response);
           await storage.updateRun(run.id,ownerId,{status:"completed",currentStep:0,result:correlatedRunResult(response,{projectResolution:response.projectResolution}),completedAt:new Date().toISOString()});
@@ -397,7 +397,8 @@ export function createAgent({
         }
         let allowedTaskTools=existingTaskRoute?taskControlTools(existingTaskRoute):null;
         if(durableWebResearch){
-          const taskContextSnapshot=createTaskContextSnapshot({retrieved,projectId:context.projectId||null,request:message});
+          const taskRetrieved=context.projectId?await retrieveAgentContext({storage,ownerId,message,projectId:context.projectId,memoryLimit:Math.max(memoryLimit,12)}):retrieved;
+          const taskContextSnapshot=createTaskContextSnapshot({retrieved:taskRetrieved,projectId:context.projectId||null,request:message});
           const prepared=await durableResearchTaskService.prepare({request:message,conversationId,runId:run.id,projectId:context.projectId||null,webAuthority,taskContextSnapshot});
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"public_web_research_handed_off",status:"completed",summary:"Long public Web research was durably owned before provider contact.",metadata:{taskId:prepared.task.id,idempotent:prepared.idempotent===true}});
           return completeDurableSelfDevelopment({task:prepared.task,idempotent:prepared.idempotent});

@@ -317,6 +317,14 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       memories.set(id, updated);
       return copy(updated);
     },
+    async supersedeMemory(id, ownerId, replacement) {
+      const current=memories.get(id);
+      if(!current||current.ownerId!==ownerId||current.status!=="active")return null;
+      const timestamp=now(clock),next={id:replacement.id||randomUUID(),...copy(replacement),ownerId,status:"active",createdAt:timestamp,updatedAt:timestamp};
+      memories.set(current.id,{...current,status:"superseded",updatedAt:timestamp});
+      memories.set(next.id,next);
+      return{memory:copy(next),supersededMemory:copy(memories.get(current.id))};
+    },
     async deleteMemory(id, ownerId) {
       const current = memories.get(id);
       if (!current || current.ownerId !== ownerId) return false;
