@@ -487,10 +487,21 @@ function dashboardCard(title, subtitle, body, badges = []) {
   const heading=document.createElement("div");heading.className="dashboard-card-heading";const copy=document.createElement("div");const name=document.createElement("h2");name.textContent=title;const detail=document.createElement("small");detail.textContent=subtitle||"";copy.append(name,detail);const tags=document.createElement("div");tags.className="dashboard-tags";for(const badge of badges.filter(Boolean)){const tag=document.createElement("span");tag.textContent=badge;tags.append(tag);}heading.append(copy,tags);const content=document.createElement("p");content.textContent=body||"";article.append(heading,content);return article;
 }
 
+async function loadProjectSources(projectId) {
+  const host=document.querySelector("#projectSourceList");
+  if(!projectId){host.innerHTML='<p class="dashboard-state">Choose a project to review its sources.</p>';return;}
+  host.innerHTML='<p class="dashboard-state">Loading project sources…</p>';
+  try{
+    const {sources}=await ownerMemoryClient.projectOnboarding(projectId);
+    if(!sources.length){host.innerHTML='<p class="dashboard-state">No project sources registered yet.</p>';return;}
+    host.replaceChildren(...sources.map(source=>{const card=document.createElement("div"),text=document.createElement("span"),button=document.createElement("button");card.className="project-source-row";text.textContent=`${source.label} · ${source.sourceType} · ${source.status}`;card.append(text);if(source.status!=="revoked"){button.type="button";button.className="secondary-button";button.textContent="Revoke";button.addEventListener("click",async()=>{button.disabled=true;try{await ownerMemoryClient.revokeProjectSource(source.id);await loadProjectSources(projectId);}catch(cause){button.disabled=false;button.textContent=cause.message;}});card.append(button);}return card;}));
+  }catch(cause){host.innerHTML="";const error=document.createElement("p");error.className="dashboard-state error";error.textContent=cause.message;host.append(error);}
+}
+
 async function loadDashboard(section) {
   const list=document.querySelector(`#${section}List`);list.innerHTML=`<p class="dashboard-state">Loading ${section}…</p>`;
   try {
-    if(section==="projects") { const {projects}=await ownerMemoryClient.projects(); list.replaceChildren(...projects.map((project)=>dashboardCard(project.name,project.id,project.description,[`${project.memories.length} memories`,`${project.runs.length} runs`]))); }
+    if(section==="projects") { const [{projects},budget]=await Promise.all([ownerMemoryClient.projects(),ownerMemoryClient.modelBudget()]); const select=document.querySelector('#projectKnowledgeForm [name="projectId"]'),selected=select.value;select.replaceChildren(...projects.map(project=>new Option(project.name,project.id)));if(projects.some(project=>project.id===selected))select.value=selected;list.replaceChildren(...projects.map((project)=>dashboardCard(project.name,project.id,project.description,[`${project.memories.length} memories`,`${project.runs.length} runs`])));const node=document.querySelector('#modelBudgetStatus span'),value=budget.budget;node.textContent=budget.enabled?`$${value.spentUsd.toFixed(6)} accounted · $${value.remainingUsd.toFixed(6)} remaining of $${value.authorizedUsd.toFixed(2)}`:'Internal model ledger disabled';await loadProjectSources(select.value); }
     if(section==="activity") { const {activity}=await ownerMemoryClient.activity(); list.replaceChildren(...activity.map((event)=>dashboardCard(event.action,event.createdAt,event.summary,[event.status,event.tool,event.projectId]))); }
     if(section==="calls") {
       const [{calls},{policy}]=await Promise.all([ownerMemoryClient.phoneCalls(),ownerMemoryClient.ownerContactPolicy()]);
@@ -503,6 +514,10 @@ async function loadDashboard(section) {
     if(!list.children.length)list.innerHTML=`<p class="dashboard-state">No ${section} yet.</p>`;
   } catch(cause) { list.innerHTML=`<p class="dashboard-state error">${cause.message}</p>`; }
 }
+
+document.querySelector('#projectCreateForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget,status=document.querySelector('#projectCreateStatus');status.textContent='Creating…';try{const input={name:form.elements.name.value.trim(),description:form.elements.description.value.trim(),...(form.elements.id.value.trim()?{id:form.elements.id.value.trim()}: {})};const result=await ownerMemoryClient.createProject(input);status.textContent=result.created?'Project created.':'Project already exists.';form.reset();await loadDashboard('projects');}catch(cause){status.textContent=cause.message;}});
+document.querySelector('#projectKnowledgeForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget,status=document.querySelector('#projectKnowledgeStatus'),sourceType=form.elements.sourceType.value,sourceUrl=form.elements.sourceUrl.value.trim();status.textContent='Staging…';try{await ownerMemoryClient.proposeProjectKnowledge(form.elements.projectId.value,{content:form.elements.content.value.trim(),candidateType:form.elements.candidateType.value,sourceType,sourceLabel:form.elements.sourceLabel.value.trim(),...(sourceUrl?{sourceUrl}:{})});status.textContent='Staged for owner review in Memory.';form.elements.content.value='';}catch(cause){status.textContent=cause.message;}});
+document.querySelector('#projectKnowledgeForm [name="projectId"]').addEventListener('change',event=>loadProjectSources(event.currentTarget.value));
 
 function renderOwnerContactPolicy(policy){const host=document.querySelector("#ownerContactPolicy"),status=document.querySelector("#ownerContactPolicyStatus");host.dataset.enabled=policy.enabled===true?"true":"false";host.querySelector("h2").textContent=policy.enabled?"Active bounded Preview grant":"Disabled by default";status.textContent=!policy.configured?"The verified owner contact is not configured server-side.":policy.enabled?`Active until ${new Date(policy.expiresAt).toLocaleString()} · ${policy.remainingCalls} call(s) remain.`:"No standing call authority is active.";document.querySelector("#enableOwnerTestGrant").disabled=!policy.configured||!policy.preview||policy.enabled;document.querySelector("#disableOwnerTestGrant").disabled=!policy.enabled;}
 

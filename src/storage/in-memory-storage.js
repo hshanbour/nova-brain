@@ -18,6 +18,7 @@ const sameJson = (left, right) => JSON.stringify(stableJson(left)) === JSON.stri
 export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const owners = new Map();
   const projects = new Map();
+  const projectSources = new Map();
   const conversations = new Map();
   const messages = new Map();
   const taskReportOutbox = new Map();
@@ -1055,6 +1056,15 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         .slice(0, limit)
         .map(copy);
     },
+    async createProjectSource(input){
+      const existing=[...projectSources.values()].find(item=>item.ownerId===input.ownerId&&item.projectId===input.projectId&&item.sourceType===input.sourceType&&item.contentHash===input.contentHash);
+      if(existing)return copy(existing);
+      const timestamp=now(clock),record={id:input.id||randomUUID(),ownerId:input.ownerId,projectId:input.projectId,sourceType:input.sourceType,label:input.label,locator:input.locator||null,contentHash:input.contentHash||null,accessMode:input.accessMode||"reference_only",status:input.status||"active",permissions:copy(input.permissions||{}),createdAt:timestamp,updatedAt:timestamp,revokedAt:null};
+      projectSources.set(record.id,record);return copy(record);
+    },
+    async getProjectSource(id,ownerId){const item=projectSources.get(id);return copy(item?.ownerId===ownerId?item:null);},
+    async listProjectSources(ownerId,{projectId,status,limit=100}={}){return [...projectSources.values()].filter(item=>item.ownerId===ownerId&&(!projectId||item.projectId===projectId)&&(!status||item.status===status)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||a.id.localeCompare(b.id)).slice(0,limit).map(copy);},
+    async revokeProjectSource(id,ownerId){const current=projectSources.get(id);if(!current||current.ownerId!==ownerId)return null;if(current.status==="revoked")return copy(current);const timestamp=now(clock),updated={...current,status:"revoked",revokedAt:timestamp,updatedAt:timestamp};projectSources.set(id,updated);return copy(updated);},
     async claimWhatsAppInbound(input) {
       const existing = whatsappInboundMessages.get(input.messageSid);
       if (existing) return { claimed: false, message: copy(existing) };

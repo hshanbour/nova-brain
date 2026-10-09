@@ -1,7 +1,8 @@
 param(
   [Parameter(Mandatory=$true)][ValidateSet('install','uninstall','status')][string]$Action,
   [string]$PreviewUrl,
-  [string]$RepositoryRoot
+  [string]$RepositoryRoot,
+  [string]$RepositoryBranch
 )
 $ErrorActionPreference='Stop'
 $name='NovaBrain Persistent Local Worker'
@@ -24,6 +25,10 @@ if($codexAuthProbe.ExitCode -ne 0){throw 'Codex authentication is unavailable to
 $sourceRoot=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if([string]::IsNullOrWhiteSpace($RepositoryRoot)){$RepositoryRoot=$sourceRoot}
 $root=(Resolve-Path -LiteralPath $RepositoryRoot).Path
+if([string]::IsNullOrWhiteSpace($RepositoryBranch) -or $RepositoryBranch -in @('main','master')){throw 'An explicit non-production repository branch is required.'}
+$branchProbe=Invoke-NovaNativeProbe -FilePath $git -ArgumentValues @('-C',$root,'branch','--show-current')
+$actualBranch=($branchProbe.Stdout -join "`n").Trim()
+if($branchProbe.ExitCode -ne 0 -or $actualBranch -ne $RepositoryBranch){throw 'The task checkout does not match the explicit repository branch.'}
 $runtimeVersionProbe=Invoke-NovaNativeProbe -FilePath $git -ArgumentValues @('-C',$sourceRoot,'rev-parse','HEAD')
 $runtimeVersion=($runtimeVersionProbe.Stdout -join "`n").Trim()
 if($runtimeVersionProbe.ExitCode -ne 0 -or $runtimeVersion -notmatch '^[0-9a-f]{40}$'){throw 'The trusted worker runtime source commit could not be resolved.'}
@@ -72,20 +77,20 @@ try {
     Expand-Archive -LiteralPath $stagedArchive -DestinationPath $stagedRuntime
     Assert-RuntimeContent $stagedRuntime
     $stagedScript=Join-Path $stagedRuntime 'scripts\persistent-local-worker.js'
-    $verificationProbe=Invoke-NovaNativeProbe -FilePath $node -ArgumentValues @($stagedScript,'--verify-runtime','--runtime-version',$runtimeVersion,'--repository-root',$root,'--git-executable',$git,'--codex-executable',$codex)
+    $verificationProbe=Invoke-NovaNativeProbe -FilePath $node -ArgumentValues @($stagedScript,'--verify-runtime','--runtime-version',$runtimeVersion,'--repository-root',$root,'--repository-branch',$RepositoryBranch,'--git-executable',$git,'--codex-executable',$codex)
     if($verificationProbe.ExitCode -ne 0){throw 'The staged worker runtime failed its bounded validation.'}
     $verified=($verificationProbe.Stdout -join "`n") | ConvertFrom-Json
-    if(-not $verified.ok -or $verified.runtimeVersion -ne $runtimeVersion -or $verified.repositoryRoot -ne $root -or $verified.gitExecutable -ne $git -or $verified.codexExecutable -ne $codex){throw 'The staged worker runtime binding could not be verified.'}
+    if(-not $verified.ok -or $verified.runtimeVersion -ne $runtimeVersion -or $verified.repositoryRoot -ne $root -or $verified.repositoryBranch -ne $RepositoryBranch -or $verified.gitExecutable -ne $git -or $verified.codexExecutable -ne $codex){throw 'The staged worker runtime binding could not be verified.'}
     Move-Item -LiteralPath $stagedRuntime -Destination $finalRuntime
   }
   $script=Join-Path $finalRuntime 'scripts\persistent-local-worker.js'
   Assert-RuntimeContent $finalRuntime
-  $verificationProbe=Invoke-NovaNativeProbe -FilePath $node -ArgumentValues @($script,'--verify-runtime','--runtime-version',$runtimeVersion,'--repository-root',$root,'--git-executable',$git,'--codex-executable',$codex)
+  $verificationProbe=Invoke-NovaNativeProbe -FilePath $node -ArgumentValues @($script,'--verify-runtime','--runtime-version',$runtimeVersion,'--repository-root',$root,'--repository-branch',$RepositoryBranch,'--git-executable',$git,'--codex-executable',$codex)
   if($verificationProbe.ExitCode -ne 0){throw 'The installed worker runtime failed its bounded validation.'}
   $verified=($verificationProbe.Stdout -join "`n") | ConvertFrom-Json
-  if(-not $verified.ok -or $verified.runtimeVersion -ne $runtimeVersion -or $verified.repositoryRoot -ne $root -or $verified.gitExecutable -ne $git -or $verified.codexExecutable -ne $codex){throw 'The installed worker runtime binding could not be verified.'}
+  if(-not $verified.ok -or $verified.runtimeVersion -ne $runtimeVersion -or $verified.repositoryRoot -ne $root -or $verified.repositoryBranch -ne $RepositoryBranch -or $verified.gitExecutable -ne $git -or $verified.codexExecutable -ne $codex){throw 'The installed worker runtime binding could not be verified.'}
 
-  $arguments='"'+$script+'" --preview-url "'+$PreviewUrl.TrimEnd('/')+'" --repository-root "'+$root+'" --runtime-version "'+$runtimeVersion+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'
+  $arguments='"'+$script+'" --preview-url "'+$PreviewUrl.TrimEnd('/')+'" --repository-root "'+$root+'" --repository-branch "'+$RepositoryBranch+'" --runtime-version "'+$runtimeVersion+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'
   $taskAction=New-ScheduledTaskAction -Execute $node -Argument $arguments -WorkingDirectory $root
   $logonTrigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
   $watchdogTrigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650)
@@ -136,7 +141,7 @@ try {
     $currentScript=if($currentRuntimeValid){Join-Path (Join-Path $versions $statusRuntime) 'scripts\persistent-local-worker.js'}else{''}
     $currentArguments=if($currentRuntimeValid -and $currentPreviewValid){'"'+$currentScript+'" --preview-url "'+$statusPreview+'" --repository-root "'+$root+'" --runtime-version "'+$statusRuntime+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'}else{''}
     $currentActionMatches=$null -ne $taskActionCurrent -and $taskActionCurrent.Execute -eq $node -and $taskActionCurrent.Arguments -eq $currentArguments -and $taskActionCurrent.WorkingDirectory -eq $root
-    $repositoryMatches=$null -ne $proof -and [string]$proof.root -eq $root -and [string]$proof.repository -eq 'hshanbour/nova-brain' -and [string]$proof.branch -eq 'feat/nova-brain-mvp-foundation' -and [string]$proof.head -match '^[0-9a-f]{40}$'
+    $repositoryMatches=$null -ne $proof -and [string]$proof.root -eq $root -and [string]$proof.repository -eq 'hshanbour/nova-brain' -and [string]$proof.branch -eq $RepositoryBranch -and [string]$proof.head -match '^[0-9a-f]{40}$'
     $healthy=$owned -and $idle -and (Test-RecentTimestamp $heartbeat) -and (Test-RecentTimestamp $lastPoll)
     $safeToReplace=($null -eq $process -and $lockPid -eq 0) -or ($null -ne $task -and $healthy)
     $converged=$healthy -and $actionMatches -and $runtimeMatches -and $previewMatches -and $taskRunning

@@ -43,6 +43,10 @@ export function createMemoryLearningService({storage,ownerId}={}){
     const manifest=task.metadata?.researchClaimManifest,verificationStatus=failed?"failed_task":manifest?.verification?.status||(task.taskType==="public_web_research"?"unverified":"not_required");
     return create({candidateType:failed?"failed_task_lesson":"completed_task_outcome",content,projectId:task.projectId||null,conversationId:task.metadata?.terminalReporting?.conversationId||null,sourceMessageId:null,sourceRunId:null,sourceTaskId:task.id,sourceKind:failed?"failed_task":"completed_task",provenance:"canonical durable task terminal state",evidence:{version:3,taskId:task.id,taskType:task.taskType,status:task.status,stateVersion:task.stateVersion,errorCode:task.errorCode||null,reportHash:fingerprint([report||""]),taskContextSnapshotHash:snapshot?.snapshotHash||null,sourceMemoryIds:(snapshot?.acceptedMemories||[]).map(item=>item.id).slice(0,6),claimManifestVersion:manifest?.version||null,claimManifestHash:manifest?fingerprint([JSON.stringify(manifest)]):null,evidenceBundleHash:manifest?.evidenceBundleHash||null,verificationStatus,claims:(manifest?.claims||[]).slice(0,24).map(claim=>({claimId:claim.claimId,classification:claim.classification,materiality:claim.materiality,sourceIds:(claim.sourceIds||[]).slice(0,12),evidenceIds:(claim.evidenceIds||[]).slice(0,24),memoryIds:(claim.memoryIds||[]).slice(0,8),verificationStatus:claim.verification?.status||null})),extraction:"deterministic_v2",authoritative:false}});
   }
+  async function proposeProjectKnowledge({projectId,content,candidateType,conversationId=null,sourceMessageId=null,sourceRunId=null,sourceId,sourceType,sourceHash}={}){
+    if(!projectId||!sourceId||!sourceHash||!["verified_fact","owner_claim","project_decision","hypothesis","unresolved_question","correction"].includes(candidateType))throw Object.assign(new Error("Project knowledge evidence is invalid."),{code:"project_knowledge_evidence_invalid",statusCode:400});
+    return create({candidateType,content,projectId,conversationId,sourceMessageId,sourceRunId,sourceTaskId:null,sourceKind:"typed_conversation",provenance:`owner-controlled project onboarding source:${sourceId}`,evidence:{version:2,sourceId,sourceType,sourceHash,extraction:"owner_submitted_v1",authoritative:false,requiresOwnerReview:true,externalAccess:false}});
+  }
   async function reviewCandidate(id,{decision,supersedesMemoryId=null,reason=null}={}){
     if(!["accepted","rejected"].includes(decision))throw Object.assign(new Error("Memory candidate decision is invalid."),{code:"memory_candidate_decision_invalid",statusCode:400});
     const candidate=await storage.getMemoryCandidate(id,ownerId);
@@ -55,5 +59,5 @@ export function createMemoryLearningService({storage,ownerId}={}){
     if(!result.idempotent)await storage.appendActivity({ownerId,projectId:result.candidate.projectId||null,runId:result.candidate.sourceRunId||null,action:`memory_candidate_${decision}`,status:decision,summary:decision==="accepted"?"Owner accepted reviewed evidence into Nova's existing memory.":"Owner rejected a memory candidate; no memory was created.",metadata:{candidateId:id,acceptedMemoryId:result.memory?.id||null,supersedesMemoryId:result.candidate.supersedesMemoryId||null,sourceTaskId:result.candidate.sourceTaskId||null}});
     return result;
   }
-  return Object.freeze({observeConversationTurn,observeTaskOutcome,reviewCandidate});
+  return Object.freeze({observeConversationTurn,observeTaskOutcome,proposeProjectKnowledge,reviewCandidate});
 }

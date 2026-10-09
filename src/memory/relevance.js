@@ -12,7 +12,7 @@ export function memoryRelevance(memory, queryTokens, projectId) {
 export function rankRelevantMemories(memories, query, { projectId, limit = 6 } = {}) {
   const queryTokens = memoryTokens(query);
   return memories
-    .filter((memory) => memory.status === "active")
+    .filter((memory) => memory.status === "active"&&(!projectId||memory.projectId===projectId||memory.projectId==null||["global","system"].includes(memory.scope)))
     .map((memory) => ({ memory, score: memoryRelevance(memory, queryTokens, projectId) }))
     .filter(({ score }) => score > 0)
     .sort((a, b) => b.score - a.score || b.memory.updatedAt.localeCompare(a.memory.updatedAt) || a.memory.id.localeCompare(b.memory.id))

@@ -214,6 +214,8 @@ export function createApi({
   browserTaskService,
   durableResearchTaskService,
   learningService,
+  projectService,
+  projectOnboarding,
   gmailService,
   phoneService,
   whatsappService,
@@ -2170,6 +2172,28 @@ export function createApi({
           if(!["pending","accepted","rejected","superseded"].includes(status))throw new ValidationError("status is invalid.");
           sendJson(response,200,{candidates:await storage.listMemoryCandidates(ownerId,{status,projectId:url.searchParams.get("projectId")||undefined,sourceTaskId:url.searchParams.get("sourceTaskId")||undefined,limit:validateListLimit(url.searchParams.get("limit"),100,200)})});
           return;
+        }
+        if(request.method==="POST"&&pathname==="/api/projects"){
+          await ready();if(!projectService)throw new ValidationError("Project creation is unavailable.");
+          const input=await readJsonBody(request,config.maxBodyBytes);
+          if(typeof input.name!=="string"||!input.name.trim()||input.name.length>120||input.id!==undefined&&(typeof input.id!=="string"||input.id.length>80)||input.description!==undefined&&(typeof input.description!=="string"||input.description.length>1000))throw new ValidationError("Project input is invalid.");
+          sendJson(response,201,await projectService.create(input));return;
+        }
+        const projectOnboardingMatch=pathname.match(/^\/api\/projects\/([^/]+)\/onboarding$/);
+        if(projectOnboardingMatch&&request.method==="GET"){
+          await ready();const result=await projectOnboarding?.summary(decodeURIComponent(projectOnboardingMatch[1]));sendJson(response,result?200:404,result||{error:"Project not found"});return;
+        }
+        const projectKnowledgeMatch=pathname.match(/^\/api\/projects\/([^/]+)\/knowledge-candidates$/);
+        if(projectKnowledgeMatch&&request.method==="POST"){
+          await ready();const input=await readJsonBody(request,config.maxBodyBytes),result=await projectOnboarding?.proposeKnowledge({...input,projectId:decodeURIComponent(projectKnowledgeMatch[1])});sendJson(response,result?201:404,result||{error:"Project onboarding is unavailable"});return;
+        }
+        const projectSourcesMatch=pathname.match(/^\/api\/projects\/([^/]+)\/sources$/);
+        if(projectSourcesMatch&&request.method==="POST"){
+          await ready();const input=await readJsonBody(request,config.maxBodyBytes),result=await projectOnboarding?.registerSource({...input,projectId:decodeURIComponent(projectSourcesMatch[1])});sendJson(response,result?201:404,result||{error:"Project onboarding is unavailable"});return;
+        }
+        const projectSourceRevokeMatch=pathname.match(/^\/api\/project-sources\/([^/]+)\/revoke$/);
+        if(projectSourceRevokeMatch&&request.method==="POST"){
+          await ready();const source=await projectOnboarding?.revokeSource(decodeURIComponent(projectSourceRevokeMatch[1]));sendJson(response,source?200:404,source?{source}:{error:"Project source not found"});return;
         }
         if (request.method === "GET" && pathname === "/api/integrations/whatsapp/status") {
           await ready();

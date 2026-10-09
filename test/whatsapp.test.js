@@ -148,7 +148,7 @@ test("HMAC contact identities isolate durable conversations without persisting r
 });
 
 test("persistent worker polls the durable WhatsApp channel only after normal task dispatch is idle", async () => {
-  const paths=[];const worker=createPersistentLocalWorker({registry:{},client:Object.freeze({async request(path){paths.push(path);if(path==="/api/admin/worker/auto-dispatch/next")return{dispatched:false,channelPolling:["whatsapp"]};if(path==="/api/admin/worker/whatsapp/tick")return{worked:true,status:"replied",messageSid:INBOUND_SID};throw new Error("unexpected");}})});
+  const paths=[];const worker=createPersistentLocalWorker({registry:{},branch:"codex/combined-nova-preview-d5b5-c5bd",client:Object.freeze({async request(path){paths.push(path);if(path==="/api/admin/worker/auto-dispatch/next")return{dispatched:false,channelPolling:["whatsapp"]};if(path==="/api/admin/worker/whatsapp/tick")return{worked:true,status:"replied",messageSid:INBOUND_SID};throw new Error("unexpected");}})});
   const result=await worker.runOnce();assert.equal(result.stepType,"whatsapp_inbound");assert.deepEqual(paths,["/api/admin/worker/auto-dispatch/next","/api/admin/worker/whatsapp/tick"]);
 });
 

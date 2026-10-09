@@ -32,6 +32,7 @@ import { createTaskMigrationService } from "./autonomy/task-migration.js";
 import { createLocalWorkerHandoff } from "./autonomy/local-worker-handoff.js";
 import {createMemoryLearningService} from "./memory/learning-service.js";
 import {createProjectService} from "./projects/project-service.js";
+import {createProjectOnboardingService} from "./projects/project-onboarding.js";
 import { createGithubWriteAttestation } from "./autonomy/github-write-attestation.js";
 import { createPostAttestationRecovery } from "./autonomy/post-attestation-recovery.js";
 import { createSelfDevelopmentService, isDurableSelfDevelopmentRequest, parseExistingTaskControlRequest, SelfDevelopmentError, validateExistingTaskControlRequest } from "./autonomy/self-development.js";
@@ -68,6 +69,7 @@ import { createOwnerContactPolicy } from "./phone/owner-contact-policy.js";
 import { createPstnSpeakerEnrollment } from "./voice/pstn-speaker-enrollment.js";
 import { createPstnSpeakerControls } from "./voice/pstn-speaker-controls.js";
 import { createWhatsAppService } from "./whatsapp/whatsapp-service.js";
+import {createApprovalReconciliation} from "./autonomy/approval-reconciliation.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -103,12 +105,15 @@ export function createApp({
   const developerWorkspaceHandoff = storage.saveDeveloperSession && storage.getDeveloperSession
     ? createDeveloperWorkspaceHandoff({ environment, storage, ownerId: OWNER_ID })
     : null;
-  const initialize = () =>
-    storage.initialize({
+  let approvalReconciliation=null,approvalReconciliationComplete=false;
+  const initialize = async () => {
+    await storage.initialize({
       owner: INITIAL_OWNER_PROFILE,
       projects: INITIAL_PROJECTS,
       memories: INITIAL_MEMORIES,
     });
+    if(!approvalReconciliationComplete){if(!approvalReconciliation)approvalReconciliation=createApprovalReconciliation({storage,ownerId:OWNER_ID});await approvalReconciliation.reconcile();approvalReconciliationComplete=true;}
+  };
   const policy = createActionPolicy({
     storage,
     ownerId: OWNER_ID,
@@ -116,6 +121,8 @@ export function createApp({
   });
   const toolRegistry = createToolRegistry({ policy });
   const projectService=createProjectService({storage,ownerId:OWNER_ID});
+  const learningService=typeof storage?.createMemoryCandidate==="function"?createMemoryLearningService({storage,ownerId:OWNER_ID}):null;
+  const projectOnboarding=learningService&&typeof storage?.createProjectSource==="function"?createProjectOnboardingService({storage,ownerId:OWNER_ID,learningService}):null;
   const executionTruth=createExecutionTruthService({storage,ownerId:OWNER_ID});
   registerDeveloperTools(toolRegistry, {
     environment,
@@ -123,7 +130,7 @@ export function createApp({
     ownerId: OWNER_ID,
     logger,
   });
-  registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID, projectService });
+  registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID, projectService, projectOnboarding });
   const gmailService = createGmailService({
     config,
     storage,
@@ -186,7 +193,6 @@ export function createApp({
     deploymentEnvironment: environment.VERCEL_ENV || "local",
     executionTruth,
   });
-  const learningService=typeof storage?.createMemoryCandidate==="function"?createMemoryLearningService({storage,ownerId:OWNER_ID}):null;
   const terminalReporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID,ownerContactPolicy,learningService});
   const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,terminalReporter,executionTruth});
   const codingExecutor=typeof storage?.getAutonomyTask==="function"?createCodingExecutorService({
@@ -276,6 +282,7 @@ export function createApp({
     durableResearchTaskService,
     learningService,
     projectService,
+    projectOnboarding,
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
       if(context?.voice===true)return null;
       const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message),workflowTurn=isConversationWorkflowTurn(message,{implementationSignal,codingSignal});
@@ -399,5 +406,5 @@ export function createApp({
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, pstnSpeakerEnrollment, pstnSpeakerControls, learningService });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding });
 }

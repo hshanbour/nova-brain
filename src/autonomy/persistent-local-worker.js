@@ -35,8 +35,9 @@ function exactReviewRemediationScope(task,job,{repository,branch,root,runtimeVer
   const steps=new Map([...(scope.readStepIds||[]).map(id=>[id,["read_files","repo_read_task_owned_local"]]),[scope.validateStepId,["validate_patch","repo_validate_patch"]],[scope.applyStepId,["apply_patch","repo_apply_patch"]],[scope.focusedStepId,["run_focused_tests","test_run"]],[scope.fullTestStepId,["run_full_tests","test_run_full"]]]),expected=steps.get(job.stepId);
   return Boolean(task.reviewRemediationScopeRequired===true&&!job.executionScope&&!job.fullTestScope&&!job.approvedDelivery&&scope.taskId===task.id&&scope.repository===repository&&scope.branch===branch&&scope.currentCommit===task.expectedCommit&&scope.runtimeVersion===runtimeVersion&&scope.workerId===workerId&&canonical(scope.workspaceRoot)===canonical(root)&&scope.continuationGenerationId===task.continuationGenerationId&&expected&&expected[0]===job.stepType&&expected[1]===job.tool);
 }
-export function createPersistentLocalWorker({client:sourceClient,root,branch="feat/nova-brain-mvp-foundation",repository="hshanbour/nova-brain",runtimeVersion,gitExecutable, codexExecutable,environment=process.env,workerId=`persistent-local-${randomUUID()}`,registry}={}){
+export function createPersistentLocalWorker({client:sourceClient,root,branch,repository="hshanbour/nova-brain",runtimeVersion,gitExecutable, codexExecutable,environment=process.env,workerId=`persistent-local-${randomUUID()}`,registry}={}){
   if(!sourceClient)throw new Error("Protected local Worker client is required.");
+  if(!branch||["main","master"].includes(branch))throw Object.assign(new Error("An explicit non-production worker branch is required."),{code:"worker_repository_branch_required"});
   let prefetchedDispatch=null;
   const client={request(path,input,options){if(path==="/api/admin/worker/auto-dispatch/next"&&prefetchedDispatch){const value=prefetchedDispatch;prefetchedDispatch=null;return Promise.resolve(value);}return sourceClient.request(path,input,options);}};
   if(!root&&!registry)throw Object.assign(new Error("An explicit controlled repository root is required."),{code:"repository_context_unproven"});

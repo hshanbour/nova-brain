@@ -88,6 +88,7 @@ const memoryCandidateRow = (row) =>
     updatedAt: date(row.updated_at),
     decidedAt: date(row.decided_at),
   };
+const projectSourceRow=(row)=>row&&({id:row.id,ownerId:row.owner_id,projectId:row.project_id,sourceType:row.source_type,label:row.label,locator:row.locator,contentHash:row.content_hash,accessMode:row.access_mode,status:row.status,permissions:row.permissions||{},createdAt:date(row.created_at),updatedAt:date(row.updated_at),revokedAt:date(row.revoked_at)});
 const speakerProfileRow = (row, includeRepresentation = false) =>
   row && {
     id: row.id,
@@ -429,6 +430,15 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
       const rows=await run("INSERT INTO nova_projects (id,owner_id,name,description) VALUES ($1,$2,$3,$4) RETURNING *",[input.id,input.ownerId,input.name,input.description||null]);
       return projectRow(rows[0]);
     },
+    async createProjectSource(input){
+      const rows=await run(`INSERT INTO nova_project_sources (id,owner_id,project_id,source_type,label,locator,content_hash,access_mode,status,permissions)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+        ON CONFLICT (owner_id,project_id,source_type,content_hash) DO UPDATE SET id=nova_project_sources.id RETURNING *`,[input.id||randomUUID(),input.ownerId,input.projectId,input.sourceType,input.label,input.locator||null,input.contentHash||null,input.accessMode||"reference_only",input.status||"active",json(input.permissions)]);
+      return projectSourceRow(rows[0]);
+    },
+    async getProjectSource(id,ownerId){return projectSourceRow((await run("SELECT * FROM nova_project_sources WHERE id=$1 AND owner_id=$2",[id,ownerId]))[0]);},
+    async listProjectSources(ownerId,{projectId,status,limit=100}={}){return (await run(`SELECT * FROM nova_project_sources WHERE owner_id=$1 AND ($2::text IS NULL OR project_id=$2) AND ($3::text IS NULL OR status=$3) ORDER BY created_at DESC,id ASC LIMIT $4`,[ownerId,projectId||null,status||null,limit])).map(projectSourceRow);},
+    async revokeProjectSource(id,ownerId){return projectSourceRow((await run("UPDATE nova_project_sources SET status='revoked',revoked_at=COALESCE(revoked_at,now()),updated_at=now() WHERE id=$1 AND owner_id=$2 RETURNING *",[id,ownerId]))[0]);},
     async ensureConversation({ id = randomUUID(), ownerId, title = null }) {
       const rows = await run(
         `INSERT INTO nova_conversations (id,owner_id,title) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET id=EXCLUDED.id WHERE nova_conversations.owner_id=EXCLUDED.owner_id RETURNING *`,
