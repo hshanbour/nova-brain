@@ -1,5 +1,14 @@
 Set-StrictMode -Version Latest
 
+function ConvertFrom-NovaIsoTimestamp {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  return [DateTimeOffset]::Parse(
+    $Value,
+    [System.Globalization.CultureInfo]::InvariantCulture,
+    [System.Globalization.DateTimeStyles]::RoundtripKind
+  )
+}
+
 function Wait-NovaExistingWorkerSafeIdle {
   param(
     [Parameter(Mandatory = $true)][scriptblock]$GetSnapshot,
@@ -38,8 +47,8 @@ function Wait-NovaExistingWorkerSafeIdle {
           $confirmationDeadline=$now.AddSeconds($ConfirmationTimeoutSeconds)
         } else {
           try {
-            $heartbeatAdvanced=[DateTimeOffset]::Parse([string]$sample.LastHeartbeat) -gt [DateTimeOffset]::Parse([string]$first.LastHeartbeat)
-            $pollAdvanced=[DateTimeOffset]::Parse([string]$sample.LastSuccessfulPoll) -gt [DateTimeOffset]::Parse([string]$first.LastSuccessfulPoll)
+            $heartbeatAdvanced=(ConvertFrom-NovaIsoTimestamp ([string]$sample.LastHeartbeat)) -gt (ConvertFrom-NovaIsoTimestamp ([string]$first.LastHeartbeat))
+            $pollAdvanced=(ConvertFrom-NovaIsoTimestamp ([string]$sample.LastSuccessfulPoll)) -gt (ConvertFrom-NovaIsoTimestamp ([string]$first.LastSuccessfulPoll))
           } catch {
             $heartbeatAdvanced=$false
             $pollAdvanced=$false
@@ -92,8 +101,8 @@ function Wait-NovaWorkerConvergence {
           $pollDeadline=$now.AddSeconds($PollAdvanceTimeoutSeconds)
         } else {
           try {
-            $heartbeatAdvanced=[DateTimeOffset]::Parse([string]$sample.LastHeartbeat) -gt [DateTimeOffset]::Parse([string]$first.LastHeartbeat)
-            $pollAdvanced=[DateTimeOffset]::Parse([string]$sample.LastSuccessfulPoll) -gt [DateTimeOffset]::Parse([string]$first.LastSuccessfulPoll)
+            $heartbeatAdvanced=(ConvertFrom-NovaIsoTimestamp ([string]$sample.LastHeartbeat)) -gt (ConvertFrom-NovaIsoTimestamp ([string]$first.LastHeartbeat))
+            $pollAdvanced=(ConvertFrom-NovaIsoTimestamp ([string]$sample.LastSuccessfulPoll)) -gt (ConvertFrom-NovaIsoTimestamp ([string]$first.LastSuccessfulPoll))
           } catch {
             $heartbeatAdvanced=$false
             $pollAdvanced=$false
