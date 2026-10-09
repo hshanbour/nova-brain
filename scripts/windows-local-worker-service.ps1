@@ -139,9 +139,12 @@ try {
     $currentRuntimeValid=$statusRuntime -match '^[0-9a-f]{40}$'
     $currentPreviewValid=$statusPreview -match '^https://[a-z0-9.-]+\.vercel\.app$'
     $currentScript=if($currentRuntimeValid){Join-Path (Join-Path $versions $statusRuntime) 'scripts\persistent-local-worker.js'}else{''}
-    $currentArguments=if($currentRuntimeValid -and $currentPreviewValid){'"'+$currentScript+'" --preview-url "'+$statusPreview+'" --repository-root "'+$root+'" --runtime-version "'+$statusRuntime+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'}else{''}
-    $currentActionMatches=$null -ne $taskActionCurrent -and $taskActionCurrent.Execute -eq $node -and $taskActionCurrent.Arguments -eq $currentArguments -and $taskActionCurrent.WorkingDirectory -eq $root
-    $repositoryMatches=$null -ne $proof -and [string]$proof.root -eq $root -and [string]$proof.repository -eq 'hshanbour/nova-brain' -and [string]$proof.branch -eq $RepositoryBranch -and [string]$proof.head -match '^[0-9a-f]{40}$'
+    $currentRoot=if($null -ne $proof){[string]$proof.root}else{''}
+    $currentBranch=if($null -ne $proof){[string]$proof.branch}else{''}
+    $currentArgumentsLegacy=if($currentRuntimeValid -and $currentPreviewValid -and -not [string]::IsNullOrWhiteSpace($currentRoot)){'"'+$currentScript+'" --preview-url "'+$statusPreview+'" --repository-root "'+$currentRoot+'" --runtime-version "'+$statusRuntime+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'}else{''}
+    $currentArgumentsBound=if(-not [string]::IsNullOrWhiteSpace($currentArgumentsLegacy) -and -not [string]::IsNullOrWhiteSpace($currentBranch)){'"'+$currentScript+'" --preview-url "'+$statusPreview+'" --repository-root "'+$currentRoot+'" --repository-branch "'+$currentBranch+'" --runtime-version "'+$statusRuntime+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'}else{''}
+    $currentActionMatches=$null -ne $taskActionCurrent -and $taskActionCurrent.Execute -eq $node -and $taskActionCurrent.Arguments -in @($currentArgumentsLegacy,$currentArgumentsBound) -and $taskActionCurrent.WorkingDirectory -eq $currentRoot
+    $repositoryMatches=$null -ne $proof -and -not [string]::IsNullOrWhiteSpace($currentRoot) -and (Test-Path -LiteralPath $currentRoot -PathType Container) -and [string]$proof.repository -eq 'hshanbour/nova-brain' -and $currentBranch -notin @('','main','master') -and [string]$proof.head -match '^[0-9a-f]{40}$'
     $healthy=$owned -and $idle -and (Test-RecentTimestamp $heartbeat) -and (Test-RecentTimestamp $lastPoll)
     $safeToReplace=($null -eq $process -and $lockPid -eq 0) -or ($null -ne $task -and $healthy)
     $converged=$healthy -and $actionMatches -and $runtimeMatches -and $previewMatches -and $taskRunning
