@@ -126,8 +126,8 @@ try {
     $actionMatches=$null -ne $taskActionCurrent -and $taskActionCurrent.Execute -eq $node -and $taskActionCurrent.Arguments -eq $arguments -and $taskActionCurrent.WorkingDirectory -eq $root
     $taskId=if($null -ne $status -and $null -ne $status.PSObject.Properties['taskId']){[string]$status.taskId}else{''}
     $state=if($null -ne $status -and $null -ne $status.PSObject.Properties['state']){[string]$status.state}else{''}
-    $heartbeat=if($null -ne $status -and $null -ne $status.PSObject.Properties['lastHeartbeat']){[string]$status.lastHeartbeat}else{''}
-    $lastPoll=if($null -ne $status -and $null -ne $status.PSObject.Properties['lastSuccessfulPoll']){[string]$status.lastSuccessfulPoll}else{''}
+    $heartbeat=if($null -ne $status -and $null -ne $status.PSObject.Properties['lastHeartbeat']){$status.lastHeartbeat}else{''}
+    $lastPoll=if($null -ne $status -and $null -ne $status.PSObject.Properties['lastSuccessfulPoll']){$status.lastSuccessfulPoll}else{''}
     $statusRuntime=if($null -ne $status -and $null -ne $status.PSObject.Properties['runtimeVersion']){[string]$status.runtimeVersion}else{''}
     $statusPreview=if($null -ne $status -and $null -ne $status.PSObject.Properties['previewUrl']){[string]$status.previewUrl}else{''}
     $proof=if($null -ne $status -and $null -ne $status.PSObject.Properties['repositoryProof']){$status.repositoryProof}else{$null}
