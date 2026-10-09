@@ -396,6 +396,8 @@ export function createApp({
     browserTaskService,
     durableResearchTaskService,
     learningService,
+    projectService,
+    projectOnboarding,
     gmailService,
     phoneService,
     whatsappService,

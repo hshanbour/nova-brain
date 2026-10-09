@@ -93,6 +93,8 @@ test("health endpoint returns an online response with defensive headers", async 
   });
 });
 
+test("application wiring exposes native project creation and onboarding routes",async()=>{const app=createApp({environment:{}}),created=response();await app.handle(request({method:"POST",url:"/api/projects",headers:{"content-type":"application/json"},body:JSON.stringify({id:"synthetic-api-project",name:"Synthetic API Project"})}),created);assert.equal(created.statusCode,201,created.body);assert.equal(JSON.parse(created.body).project.id,"synthetic-api-project");const summary=response();await app.handle(request({method:"GET",url:"/api/projects/synthetic-api-project/onboarding"}),summary);assert.equal(summary.statusCode,200,summary.body);assert.equal(JSON.parse(summary.body).project.id,"synthetic-api-project");});
+
 test("authenticated POST probe is non-mutating and returns a request id", async () => {
   const app = createApp({ environment: {} });
   const res = response();
