@@ -111,7 +111,7 @@ try {
   function Test-RecentTimestamp($value) {
     if([string]::IsNullOrWhiteSpace([string]$value)){return $false}
     try {
-      $age=([DateTimeOffset]::UtcNow-(ConvertFrom-NovaIsoTimestamp ([string]$value)).ToUniversalTime()).TotalSeconds
+      $age=([DateTimeOffset]::UtcNow-(ConvertFrom-NovaIsoTimestamp $value).ToUniversalTime()).TotalSeconds
       return $age -ge -5 -and $age -le 45
     } catch { return $false }
   }

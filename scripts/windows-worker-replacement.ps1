@@ -1,9 +1,11 @@
 Set-StrictMode -Version Latest
 
 function ConvertFrom-NovaIsoTimestamp {
-  param([Parameter(Mandatory = $true)][string]$Value)
+  param([Parameter(Mandatory = $true)]$Value)
+  if($Value -is [DateTimeOffset]){return $Value}
+  if($Value -is [DateTime]){return [DateTimeOffset]::new($Value.ToUniversalTime())}
   return [DateTimeOffset]::Parse(
-    $Value,
+    [string]$Value,
     [System.Globalization.CultureInfo]::InvariantCulture,
     [System.Globalization.DateTimeStyles]::RoundtripKind
   )
@@ -47,8 +49,8 @@ function Wait-NovaExistingWorkerSafeIdle {
           $confirmationDeadline=$now.AddSeconds($ConfirmationTimeoutSeconds)
         } else {
           try {
-            $heartbeatAdvanced=(ConvertFrom-NovaIsoTimestamp ([string]$sample.LastHeartbeat)) -gt (ConvertFrom-NovaIsoTimestamp ([string]$first.LastHeartbeat))
-            $pollAdvanced=(ConvertFrom-NovaIsoTimestamp ([string]$sample.LastSuccessfulPoll)) -gt (ConvertFrom-NovaIsoTimestamp ([string]$first.LastSuccessfulPoll))
+            $heartbeatAdvanced=(ConvertFrom-NovaIsoTimestamp $sample.LastHeartbeat) -gt (ConvertFrom-NovaIsoTimestamp $first.LastHeartbeat)
+            $pollAdvanced=(ConvertFrom-NovaIsoTimestamp $sample.LastSuccessfulPoll) -gt (ConvertFrom-NovaIsoTimestamp $first.LastSuccessfulPoll)
           } catch {
             $heartbeatAdvanced=$false
             $pollAdvanced=$false
@@ -101,8 +103,8 @@ function Wait-NovaWorkerConvergence {
           $pollDeadline=$now.AddSeconds($PollAdvanceTimeoutSeconds)
         } else {
           try {
-            $heartbeatAdvanced=(ConvertFrom-NovaIsoTimestamp ([string]$sample.LastHeartbeat)) -gt (ConvertFrom-NovaIsoTimestamp ([string]$first.LastHeartbeat))
-            $pollAdvanced=(ConvertFrom-NovaIsoTimestamp ([string]$sample.LastSuccessfulPoll)) -gt (ConvertFrom-NovaIsoTimestamp ([string]$first.LastSuccessfulPoll))
+            $heartbeatAdvanced=(ConvertFrom-NovaIsoTimestamp $sample.LastHeartbeat) -gt (ConvertFrom-NovaIsoTimestamp $first.LastHeartbeat)
+            $pollAdvanced=(ConvertFrom-NovaIsoTimestamp $sample.LastSuccessfulPoll) -gt (ConvertFrom-NovaIsoTimestamp $first.LastSuccessfulPoll)
           } catch {
             $heartbeatAdvanced=$false
             $pollAdvanced=$false
