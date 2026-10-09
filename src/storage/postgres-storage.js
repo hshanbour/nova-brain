@@ -302,6 +302,8 @@ const gmailOAuthStateRow = (row) => row && ({ stateHash: row.state_hash, ownerId
 const gmailConnectionRow = (row) => row && ({ ownerId: row.owner_id, email: row.email, scopes: row.scopes, encryptedAccessToken: row.encrypted_access_token, accessTokenExpiresAt: date(row.access_token_expires_at), encryptedRefreshToken: row.encrypted_refresh_token, connectedAt: date(row.connected_at), updatedAt: date(row.updated_at) });
 const gmailDraftRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, to: row.to_recipients, cc: row.cc_recipients, bcc: row.bcc_recipients, subject: row.subject, body: row.body, threadId: row.thread_id, inReplyTo: row.in_reply_to, references: row.references_header, intentHash: row.intent_hash, createdAt: date(row.created_at) });
 const gmailSendIntentRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, draftId: row.draft_id, intentHash: row.intent_hash, messageId: row.message_id, status: row.status, providerMessageId: row.provider_message_id, providerThreadId: row.provider_thread_id, errorCode: row.error_code, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
+const whatsappInboundRow = (row) => row && ({ messageSid: row.message_sid, ownerId: row.owner_id, conversationId: row.conversation_id, contactId: row.contact_id, contactCiphertext: row.contact_ciphertext, bodyHash: row.body_hash, status: row.status, attemptCount: Number(row.attempt_count), nextAttemptAt: date(row.next_attempt_at), leaseOwner: row.lease_owner, leaseToken: row.lease_token, leaseExpiresAt: date(row.lease_expires_at), runId: row.run_id, assistantMessageId: row.assistant_message_id, errorCode: row.error_code, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
+const whatsappOutboundRow = (row) => row && ({ inboundSid: row.inbound_sid, ownerId: row.owner_id, bodyHash: row.body_hash, status: row.status, providerMessageSid: row.provider_message_sid, errorCode: row.error_code, createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
 const phoneCallRow = (row) => row && ({ id: row.id, ownerId: row.owner_id, conversationId: row.conversation_id, preparedRunId: row.prepared_run_id, callConversationId: row.call_conversation_id, envelope: row.envelope, envelopeHash: row.envelope_hash, status: row.status, approvalId: row.approval_id, attemptCount: Number(row.attempt_count), submissionKey: row.submission_key, providerCallSid: row.provider_call_sid, providerStreamSid: row.provider_stream_sid, providerStatus: row.provider_status, sessionTokenHash: row.session_token_hash, sessionTokenExpiresAt: date(row.session_token_expires_at), sessionTokenUsedAt: date(row.session_token_used_at), outcome: row.outcome, summary: row.summary, errorCode: row.error_code, expiresAt: date(row.expires_at), startedAt: date(row.started_at), endedAt: date(row.ended_at), createdAt: date(row.created_at), updatedAt: date(row.updated_at), ...(row.assistant_message_id ? { assistantMessageId: row.assistant_message_id } : {}) });
 const ownerContactPolicyRow = (row) => row && ({ ownerId: row.owner_id, version: Number(row.version), enabled: row.enabled === true, allowedReasons: row.allowed_reasons, quietHours: row.quiet_hours, cooldownMinutes: Number(row.cooldown_minutes), dailyLimit: Number(row.daily_limit), maximumCalls: Number(row.maximum_calls), usedCalls: Number(row.used_calls), expiresAt: date(row.expires_at), pausedAt: date(row.paused_at), revokedAt: date(row.revoked_at), createdAt: date(row.created_at), updatedAt: date(row.updated_at) });
 const ownerCallbackEligibilityRow = (row) => row && ({ ownerId: row.owner_id, taskId: row.task_id, terminalStateVersion: Number(row.terminal_state_version), conversationId: row.conversation_id, reason: row.reason, status: row.status, decisionCode: row.decision_code, policyVersion: row.policy_version === null ? null : Number(row.policy_version), createdAt: date(row.created_at) });
@@ -1413,6 +1415,95 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         [ownerId, conversationId, limit],
       )).map(gmailDraftRow);
     },
+    async claimWhatsAppInbound(input) {
+      const rows = await run(
+        `WITH inserted AS (
+           INSERT INTO nova_whatsapp_inbound_messages (message_sid,owner_id,conversation_id,contact_id,contact_ciphertext,body_hash,status)
+           VALUES ($1,$2,$3,$4,$5,$6,'queued') ON CONFLICT DO NOTHING RETURNING *,true AS claimed
+         ) SELECT * FROM inserted UNION ALL
+         SELECT existing.*,false AS claimed FROM nova_whatsapp_inbound_messages existing
+         WHERE existing.message_sid=$1 AND existing.owner_id=$2 AND NOT EXISTS(SELECT 1 FROM inserted) LIMIT 1`,
+        [input.messageSid,input.ownerId,input.conversationId,input.contactId,input.contactCiphertext,input.bodyHash],
+      );
+      return rows[0] ? { claimed: rows[0].claimed === true, message: whatsappInboundRow(rows[0]) } : null;
+    },
+    async updateWhatsAppInbound(messageSid, ownerId, patch) {
+      return whatsappInboundRow((await run(
+        `UPDATE nova_whatsapp_inbound_messages SET status=COALESCE($3,status),run_id=COALESCE($4,run_id),assistant_message_id=COALESCE($5,assistant_message_id),error_code=$6,updated_at=now() WHERE message_sid=$1 AND owner_id=$2 RETURNING *`,
+        [messageSid,ownerId,patch.status||null,patch.runId||null,patch.assistantMessageId||null,patch.errorCode??null],
+      ))[0]);
+    },
+    async claimNextWhatsAppInbound({ ownerId, workerId, leaseMs }) {
+      const token=randomUUID();
+      return whatsappInboundRow((await run(
+        `WITH expired AS (
+           UPDATE nova_whatsapp_inbound_messages SET status='queued',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=now()
+           WHERE owner_id=$1 AND status='processing' AND lease_expires_at<=now()
+         ), candidate AS (
+           SELECT message_sid FROM nova_whatsapp_inbound_messages
+           WHERE owner_id=$1 AND status='queued' AND COALESCE(next_attempt_at,now())<=now()
+           ORDER BY created_at,message_sid FOR UPDATE SKIP LOCKED LIMIT 1
+         ) UPDATE nova_whatsapp_inbound_messages message SET status='processing',attempt_count=attempt_count+1,lease_owner=$2,lease_token=$3,lease_expires_at=now()+($4::int*interval '1 millisecond'),updated_at=now()
+         FROM candidate WHERE message.message_sid=candidate.message_sid RETURNING message.*`,
+        [ownerId,workerId,token,leaseMs],
+      ))[0]);
+    },
+    async renewWhatsAppInboundLease(input) {
+      return whatsappInboundRow((await run(
+        `UPDATE nova_whatsapp_inbound_messages SET lease_expires_at=now()+($5::int*interval '1 millisecond'),updated_at=now()
+         WHERE message_sid=$1 AND owner_id=$2 AND lease_owner=$3 AND lease_token=$4 AND status='processing' AND lease_expires_at>now() RETURNING *`,
+        [input.messageSid,input.ownerId,input.workerId,input.leaseToken,input.leaseMs],
+      ))[0]);
+    },
+    async checkpointWhatsAppInbound(input) {
+      return whatsappInboundRow((await run(
+        `UPDATE nova_whatsapp_inbound_messages SET run_id=$5,assistant_message_id=$6,updated_at=now()
+         WHERE message_sid=$1 AND owner_id=$2 AND lease_owner=$3 AND lease_token=$4 AND status='processing' AND lease_expires_at>now() RETURNING *`,
+        [input.messageSid,input.ownerId,input.workerId,input.leaseToken,input.runId||null,input.assistantMessageId],
+      ))[0]);
+    },
+    async finishWhatsAppInbound(input) {
+      return whatsappInboundRow((await run(
+        `UPDATE nova_whatsapp_inbound_messages SET status=$5,run_id=COALESCE($6,run_id),assistant_message_id=COALESCE($7,assistant_message_id),error_code=$8,next_attempt_at=$9,lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=now()
+         WHERE message_sid=$1 AND owner_id=$2 AND lease_owner=$3 AND lease_token=$4 AND status='processing' AND lease_expires_at>now() RETURNING *`,
+        [input.messageSid,input.ownerId,input.workerId,input.leaseToken,input.status,input.runId||null,input.assistantMessageId||null,input.errorCode??null,input.nextAttemptAt||null],
+      ))[0]);
+    },
+    async claimWhatsAppOutbound(input) {
+      const rows = await run(
+        `WITH inserted AS (
+           INSERT INTO nova_whatsapp_outbound_messages (inbound_sid,owner_id,body_hash,status)
+           VALUES ($1,$2,$3,'sending') ON CONFLICT DO NOTHING RETURNING *,true AS claimed
+         ) SELECT * FROM inserted UNION ALL
+         SELECT existing.*,false AS claimed FROM nova_whatsapp_outbound_messages existing
+         WHERE existing.inbound_sid=$1 AND existing.owner_id=$2 AND NOT EXISTS(SELECT 1 FROM inserted) LIMIT 1`,
+        [input.inboundSid,input.ownerId,input.bodyHash],
+      );
+      return rows[0] ? { claimed: rows[0].claimed === true, message: whatsappOutboundRow(rows[0]) } : null;
+    },
+    async updateWhatsAppOutbound(inboundSid, ownerId, patch) {
+      return whatsappOutboundRow((await run(
+        `UPDATE nova_whatsapp_outbound_messages SET status=COALESCE($3,status),provider_message_sid=COALESCE($4,provider_message_sid),error_code=$5,updated_at=now() WHERE inbound_sid=$1 AND owner_id=$2 RETURNING *`,
+        [inboundSid,ownerId,patch.status||null,patch.providerMessageSid||null,patch.errorCode??null],
+      ))[0]);
+    },
+    async updateWhatsAppOutboundByProviderSid(providerMessageSid, ownerId, patch) {
+      return whatsappOutboundRow((await run(
+        `WITH updated AS (
+           UPDATE nova_whatsapp_outbound_messages SET status=$3,error_code=$4,updated_at=now()
+           WHERE provider_message_sid=$1 AND owner_id=$2 AND status NOT IN ('failed','undelivered') AND (
+             $3 IN ('failed','undelivered','read') OR
+             ($3='delivered' AND status IN ('submitted','queued','sent','delivered')) OR
+             ($3='sent' AND status IN ('submitted','queued','sent')) OR
+             ($3='queued' AND status IN ('submitted','queued'))
+           ) RETURNING *
+         ) SELECT * FROM updated UNION ALL SELECT existing.* FROM nova_whatsapp_outbound_messages existing
+         WHERE existing.provider_message_sid=$1 AND existing.owner_id=$2 AND NOT EXISTS(SELECT 1 FROM updated) LIMIT 1`,
+        [providerMessageSid,ownerId,patch.status,patch.errorCode??null],
+      ))[0]);
+    },
+    async getWhatsAppInbound(messageSid, ownerId) { return whatsappInboundRow((await run("SELECT * FROM nova_whatsapp_inbound_messages WHERE message_sid=$1 AND owner_id=$2",[messageSid,ownerId]))[0]); },
+    async getWhatsAppOutbound(inboundSid, ownerId) { return whatsappOutboundRow((await run("SELECT * FROM nova_whatsapp_outbound_messages WHERE inbound_sid=$1 AND owner_id=$2",[inboundSid,ownerId]))[0]); },
     async claimGmailSendIntent(input) {
       const rows = await run(
         `WITH inserted AS (

@@ -71,7 +71,7 @@ Retrieval currently uses explainable token overlap plus small project/core-memor
 
 ### Integrations layer
 
-No integrations are configured today. Future adapters should own credentials, vendor payloads, retries, idempotency, and webhook verification. The agent should call their tools, not vendor SDKs directly.
+Gmail, Phone, and the gated WhatsApp adapter reuse the same agent, storage, conversation, approval, Activity, and Persistent Worker domains. Each adapter owns vendor credentials, payload validation, idempotency, and webhook verification. WhatsApp authenticates and durably queues inbound messages before acknowledging Twilio; the existing worker then leases and processes them outside the provider webhook timeout. It maps each HMAC-pseudonymous external contact to one durable conversation, encrypts the reply address at rest, and deliberately supplies no owner memory, project context, tools, workflows, or automatic-learning authority. Its live switch remains off until the sender is unrestricted and the deployment/webhook boundary is separately authorized.
 
 ### Configuration/environment handling
 
@@ -113,7 +113,7 @@ Web, native mobile, voice, phone, WhatsApp, SMS, and email adapters should authe
 
 - Durable state requires a configured PostgreSQL/Neon connection; otherwise health explicitly reports the non-durable memory adapter.
 - No application-level authentication or authorization is implemented; Vercel Authentication protects Preview only.
-- No external tools or business integrations are registered.
+- WhatsApp remains Preview-only, text-only, and live-disabled pending Meta/Twilio business verification and a separately approved deployment/webhook configuration.
 - OpenAI is the only production provider adapter.
 - Tool calls are sequential, even if a provider can generate parallel calls.
 - Agent text responses do not stream yet, and voice usage accounting and durable execution traces are not implemented.

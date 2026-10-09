@@ -67,6 +67,7 @@ import { createPhoneLiveIntentClassifier } from "./phone/live-intent-classifier.
 import { createOwnerContactPolicy } from "./phone/owner-contact-policy.js";
 import { createPstnSpeakerEnrollment } from "./voice/pstn-speaker-enrollment.js";
 import { createPstnSpeakerControls } from "./voice/pstn-speaker-controls.js";
+import { createWhatsAppService } from "./whatsapp/whatsapp-service.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -88,6 +89,7 @@ export function createApp({
   gmailFetchImpl,
   phoneFetchImpl,
   phoneDialProvider,
+  whatsappFetchImpl,
 } = {}) {
   const config = readConfig(environment);
   const storage = storageOverride || createStorage(config);
@@ -143,6 +145,7 @@ export function createApp({
   const ownerContactPolicy = createOwnerContactPolicy({ storage, ownerId: OWNER_ID, ownerNumber: config.phone.ownerNumber, deploymentEnvironment: config.phone.deploymentEnvironment });
   const phoneService = createPhoneService({ config, storage, ownerId: OWNER_ID, dialProvider: phoneProvider, sessionAuth: phoneSessionAuth, novaTurn: (input) => agent.run(input), ownerContactPolicy, prewarmSpeaker: () => speakerEngines.readiness(), fetchImpl: phoneFetchImpl || globalThis.fetch });
   registerPhoneTools(toolRegistry, { service: phoneService });
+  const whatsappService = createWhatsAppService({ config, storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), fetchImpl: whatsappFetchImpl || globalThis.fetch, logger });
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){
     const webRoute=config.openAI.routes.web;
@@ -388,6 +391,7 @@ export function createApp({
     learningService,
     gmailService,
     phoneService,
+    whatsappService,
     ownerContactPolicy,
     pstnSpeakerEnrollment,
     pstnSpeakerControls,
@@ -395,5 +399,5 @@ export function createApp({
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, pstnSpeakerEnrollment, pstnSpeakerControls, learningService });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, pstnSpeakerEnrollment, pstnSpeakerControls, learningService });
 }

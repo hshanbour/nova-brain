@@ -252,7 +252,8 @@ export function createAgent({
       const [conversation,profileValid,anonymousValid]=await Promise.all([conversationPromise,profileValidPromise,anonymousValidPromise]);
       executionSignal.throwIfAborted();
       if (!conversation) throw new Error("Conversation is unavailable.");
-      const projectResolution=projectService&&context?.voice!==true?await projectService.resolve({message,projectId:context.projectId||null}):{status:context.projectId?"resolved":"unresolved",project:context.projectId?{id:context.projectId}:null,source:context.projectId?"explicit_id":"none"};
+      const externalChannel=context?.channel==="whatsapp";
+      const projectResolution=projectService&&context?.voice!==true&&!externalChannel?await projectService.resolve({message,projectId:context.projectId||null}):{status:context.projectId&&!externalChannel?"resolved":"unresolved",project:context.projectId&&!externalChannel?{id:context.projectId}:null,source:context.projectId&&!externalChannel?"explicit_id":"none"};
       const resolvedProjectId=projectResolution.status==="resolved"?projectResolution.project.id:null;
       context={...context,projectId:resolvedProjectId};
       const contextRetrievalStartedAt=Date.now();
@@ -263,11 +264,11 @@ export function createAgent({
       const liveReadOnly = context?.gptLiveRound2?.authority === "read_only";
       const trustedContext=context?.voice===true?{...context,speaker:verifiedSpeaker?.match_status==="confirmed"?{speaker_profile_id:verifiedSpeaker.speaker_profile_id,speaker_label:verifiedSpeaker.speaker_label,match_status:"confirmed",authenticated_identity:verifiedSpeaker.speaker_label==="owner"?"owner":"known_member",speaker_familiarity:"none",anonymous_speaker_id:null}:{speaker_profile_id:null,speaker_label:"unknown",match_status:verifiedSpeaker?.match_status||"unknown",authenticated_identity:"none",speaker_familiarity:verifiedSpeaker?.speaker_familiarity||"none",anonymous_speaker_id:verifiedSpeaker?.anonymous_speaker_id||null}}:context;
       if(context?.voice===true)logger.info("Nova speaker context verified",{requestId,assertionVerified:Boolean(verifiedSpeaker),matchStatus:trustedContext.speaker.match_status,speakerCategory:trustedContext.speaker.speaker_label,recognizedProfileId:trustedContext.speaker.speaker_profile_id,ownerPrivateContext:!speakerRestricted});
-      const transformIntent=!speakerRestricted&&!phoneCallProfile&&isConversationLocalTransform(message);
+      const transformIntent=!externalChannel&&!speakerRestricted&&!phoneCallProfile&&isConversationLocalTransform(message);
       const [run,conversationHistory,retrieved,transformRetrieval] = await Promise.all([
         storage.createRun({ ownerId, projectId: context.projectId || null, conversationId, goal: message, status: "planning" }),
         (speakerRestricted&&!context?.gptLiveRound2)||phoneCallProfile ? Promise.resolve([]) : storage.listMessages(conversationId, ownerId, { limit: historyLimit }),
-        speakerRestricted||phoneCallProfile||transformIntent ? Promise.resolve(null) : retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit }),
+        externalChannel||speakerRestricted||phoneCallProfile||transformIntent ? Promise.resolve(null) : retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit }),
         transformIntent?retrieveConversationTransformSource({storage,ownerId,conversationId,request:message,signal:executionSignal}):Promise.resolve(null),
       ]);
       const contextRetrievalCompletedAt=Date.now();
@@ -282,11 +283,11 @@ export function createAgent({
         response.requestId=requestId||null;
         response.userMessageId=userMessageId;
         if(!deferConversationPersistence)await storage.appendMessage({id:response.id,conversationId,ownerId,role:"assistant",content:response.message});
-        if(!deferConversationPersistence&&context?.voice!==true&&learningService?.observeConversationTurn)await learningService.observeConversationTurn({message,conversationId,userMessageId,assistantMessageId:response.id,runId:run.id,projectId:context.projectId||null}).catch(error=>logger.error("Nova memory candidate extraction failed",{requestId,code:error?.code||"memory_candidate_failed"}));
+        if(!deferConversationPersistence&&!externalChannel&&context?.voice!==true&&learningService?.observeConversationTurn)await learningService.observeConversationTurn({message,conversationId,userMessageId,assistantMessageId:response.id,runId:run.id,projectId:context.projectId||null}).catch(error=>logger.error("Nova memory candidate extraction failed",{requestId,code:error?.code||"memory_candidate_failed"}));
         return response;
       };
       const correlatedRunResult=(response,extra={})=>({message:response.message,requestId:requestId||null,userMessageId,assistantMessageId:response.id,...(response.approval?.id?{approvalId:response.approval.id}:{}),...extra});
-      const baseSystemContext = phoneCallProfile ? buildPhoneCallSystemContext(context.phoneCall.envelope) : speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker) : buildSystemContext(retrieved);
+      const baseSystemContext = externalChannel ? "You are Nova speaking with an external WhatsApp contact. Use only this contact's messages in this conversation. Never disclose owner memory, projects, private data, tools, internal metadata, or infer that the contact is the owner. Do not take actions or make commitments. Reply naturally and concisely in the contact's language." : phoneCallProfile ? buildPhoneCallSystemContext(context.phoneCall.envelope) : speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker) : buildSystemContext(retrieved);
       let systemContext = `${context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext}\n\n${ANSWER_PRESENTATION_GUIDANCE}`;
       if(context?.gptLiveRound2)systemContext+=`\n\nGPT-LIVE TRUSTED SERVER CONTEXT: This is an active phone session. ${trustedContext?.speaker?.authenticated_identity==="owner"?"The current turn carries a valid server-signed owner speaker assertion; normal owner-private retrieval policy may apply to this turn.":"The current speaker is not authenticated as the owner. Do not disclose private owner memory or infer identity from the destination."} Same-call canonical messages may be used for conversational continuity. The following bounded prior Nova results are server-recorded and remain authoritative unless a newer successful authoritative result supersedes them: ${JSON.stringify(context.gptLiveRound2.trustedResults||[])}. An unrelated failure does not invalidate an earlier successful result. This information route remains read-only; no write or external-action tools are available.`;
       const toolExecutions = [];
@@ -362,8 +363,8 @@ export function createAgent({
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"conversation_transform_completed",status:"completed",summary:"Transformed an exact persisted same-conversation assistant source without tools or durable workflow routing.",metadata:{historyMessages:transformHistory.length,sourceMessageId:transformSource.id||null,sourceKind:transformRetrieval.reason,pagesScanned:transformRetrieval.pages,messagesScanned:transformRetrieval.messages}});
           return response;
         }
-        const durableWebResearch=!speakerRestricted&&!phoneCallProfile&&!liveReadOnly&&durableResearchTaskService&&shouldUseDurableWebResearch(message,webAuthority);
-        const existingTaskRoute=speakerRestricted||phoneCallProfile||liveReadOnly||durableWebResearch?null:await routeExistingTaskRequest({message,conversationId,context:trustedContext,requestId,signal:executionSignal});
+        const durableWebResearch=!externalChannel&&!speakerRestricted&&!phoneCallProfile&&!liveReadOnly&&durableResearchTaskService&&shouldUseDurableWebResearch(message,webAuthority);
+        const existingTaskRoute=externalChannel||speakerRestricted||phoneCallProfile||liveReadOnly||durableWebResearch?null:await routeExistingTaskRequest({message,conversationId,context:trustedContext,requestId,signal:executionSignal});
         if(existingTaskRoute){
           const task=existingTaskRoute.task;
           if(existingTaskRoute.action==="report"){
@@ -403,7 +404,7 @@ export function createAgent({
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"public_web_research_handed_off",status:"completed",summary:"Long public Web research was durably owned before provider contact.",metadata:{taskId:prepared.task.id,idempotent:prepared.idempotent===true}});
           return completeDurableSelfDevelopment({task:prepared.task,idempotent:prepared.idempotent});
         }
-        const durable = speakerRestricted||phoneCallProfile||liveReadOnly||existingTaskRoute||webAuthority.explicitBrowser||webAuthority.explicitResearch ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, conversationId, signal: executionSignal});
+        const durable = externalChannel||speakerRestricted||phoneCallProfile||liveReadOnly||existingTaskRoute||webAuthority.explicitBrowser||webAuthority.explicitResearch ? null : await routeDurableRequest({message, context: trustedContext, requestId, runId:run.id, conversationId, signal: executionSignal});
         executionSignal.throwIfAborted();
         if(durable?.providerUsage)providerUsage.push(durable.providerUsage);
         const routingDiagnostics=safeRoutingDiagnostics(durable?.routingDiagnostics);
@@ -425,19 +426,19 @@ export function createAgent({
           allowedTaskTools=new Set(["coding_job_prepare","coding_job_create","coding_job_get"]);
           systemContext=`${systemContext}\n\nCHAT-NATIVE CODEX DELEGATION: This request explicitly asks Nova to orchestrate Codex. Do not use self-development. First call coding_job_prepare with the bounded objective, acceptance criteria, constraints, and verification. Then call coding_job_create using only the exact compact creationRequest returned by preparation. Never reconstruct or retransmit the full coding specification. coding_job_create must stop at the owner approval boundary. Never request push or deployment.`;
         }
-        if(!phoneCallProfile&&webAuthority.explicitBrowser){
+        if(!externalChannel&&!phoneCallProfile&&webAuthority.explicitBrowser){
           allowedTaskTools=new Set(["web_research"]);
           systemContext=`${systemContext}\n\nEXPLICIT PUBLIC BROWSER: The owner explicitly requested the isolated public browser. Call web_research exactly once so the server can create the bounded browser task. Use only the exact owner-supplied URL and domain authority already bound by the server. Do not substitute hosted Search or hardened Page Read, invent a URL, broaden domains, authenticate, submit forms, upload, download, or perform writes.`;
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"public_browser_turn_routed",status:"completed",summary:"Explicit public-browser intent bypassed unrelated durable workflow candidates.",metadata:{urlCount:webAuthority.ownerUrls.length,domainCount:webAuthority.ownerDomains.length,navigationType:webAuthority.navigation?.type||null}});
         }
-        if(!phoneCallProfile&&webAuthority.explicitResearch&&!webAuthority.explicitBrowser){
+        if(!externalChannel&&!phoneCallProfile&&webAuthority.explicitResearch&&!webAuthority.explicitBrowser){
           allowedTaskTools=new Set(["web_research"]);
           await storage.appendActivity({ownerId,projectId:context.projectId||null,runId:run.id,action:"public_web_turn_routed",status:"completed",summary:"Explicit public Web research bypassed unrelated durable workflow candidates.",metadata:{domainCount:webAuthority.ownerDomains.length,autonomousDeep:webAuthority.autonomousDeep===true}});
         }
-        if(!phoneCallProfile&&!allowedTaskTools&&readOnlyToolNames.has("web_research"))systemContext=`${systemContext}\n\nAUTONOMOUS PUBLIC WEB RESEARCH: Public read-only Search, Page Read, Browser, and deep research are already authorized within their existing server-enforced cost ceilings. Choose the cheapest sufficient depth, but use one deep web_research call for a broad multi-source comparison instead of retrying weaker calls. Never ask for approval merely because research is deep. Call web_research at most once, use no more than 8 sources, and let the server fail closed if the existing $0.50 deep-research operation cap or any global/task budget cannot cover the reservation. This authority never permits login, private data access, forms, messaging, purchases, or any external write.`;
-        if(!phoneCallProfile&&!allowedTaskTools&&readOnlyToolNames.has("gmail_draft_current"))systemContext=`${systemContext}\n\nGMAIL DRAFT CONTINUATION: When the owner refers to an already-prepared email with language such as send it, send this, send this email, or send the draft, first call gmail_draft_current with no arguments. Use only its exact immutable result for gmail_send. Do not use gmail_search, do not call gmail_draft_prepare again, and do not reconstruct the email from conversation text. The chat request may request the sensitive action but never counts as the formal approval decision; gmail_send must stop at the existing owner Approval boundary.`;
-        if(!phoneCallProfile&&!allowedTaskTools&&executableToolNames.has("gmail_reply_draft_prepare"))systemContext=`${systemContext}\n\nGMAIL SAME-THREAD REPLIES: When the owner asks to prepare a reply in an existing Gmail thread, first use gmail_search and gmail_thread_read as needed, then call gmail_reply_draft_prepare with the exact Gmail API threadId and messages[].id sourceMessageId returned by gmail_thread_read plus only the natural reply body. Never parse From or Reply-To and never construct To, Subject, In-Reply-To, or References yourself. Reply preparation creates only an internal draft and never counts as permission to send.`;
-        if(!phoneCallProfile&&!allowedTaskTools&&executableToolNames.has("phone_call_prepare"))systemContext=`${systemContext}\n\nPHONE V1: A phone call must first be prepared as an immutable UK outbound-call envelope. Use phone_call_prepare for the bounded objective and safety fields, then use only the exact callIntentId, envelopeHash, and envelope returned by the tool if phone_call_start is requested. phone_call_start must stop at the generic formal Approval boundary. Chat text such as “I approve” is never the formal decision. Never infer permission to redial.`;
+        if(!externalChannel&&!phoneCallProfile&&!allowedTaskTools&&readOnlyToolNames.has("web_research"))systemContext=`${systemContext}\n\nAUTONOMOUS PUBLIC WEB RESEARCH: Public read-only Search, Page Read, Browser, and deep research are already authorized within their existing server-enforced cost ceilings. Choose the cheapest sufficient depth, but use one deep web_research call for a broad multi-source comparison instead of retrying weaker calls. Never ask for approval merely because research is deep. Call web_research at most once, use no more than 8 sources, and let the server fail closed if the existing $0.50 deep-research operation cap or any global/task budget cannot cover the reservation. This authority never permits login, private data access, forms, messaging, purchases, or any external write.`;
+        if(!externalChannel&&!phoneCallProfile&&!allowedTaskTools&&readOnlyToolNames.has("gmail_draft_current"))systemContext=`${systemContext}\n\nGMAIL DRAFT CONTINUATION: When the owner refers to an already-prepared email with language such as send it, send this, send this email, or send the draft, first call gmail_draft_current with no arguments. Use only its exact immutable result for gmail_send. Do not use gmail_search, do not call gmail_draft_prepare again, and do not reconstruct the email from conversation text. The chat request may request the sensitive action but never counts as the formal approval decision; gmail_send must stop at the existing owner Approval boundary.`;
+        if(!externalChannel&&!phoneCallProfile&&!allowedTaskTools&&executableToolNames.has("gmail_reply_draft_prepare"))systemContext=`${systemContext}\n\nGMAIL SAME-THREAD REPLIES: When the owner asks to prepare a reply in an existing Gmail thread, first use gmail_search and gmail_thread_read as needed, then call gmail_reply_draft_prepare with the exact Gmail API threadId and messages[].id sourceMessageId returned by gmail_thread_read plus only the natural reply body. Never parse From or Reply-To and never construct To, Subject, In-Reply-To, or References yourself. Reply preparation creates only an internal draft and never counts as permission to send.`;
+        if(!externalChannel&&!phoneCallProfile&&!allowedTaskTools&&executableToolNames.has("phone_call_prepare"))systemContext=`${systemContext}\n\nPHONE V1: A phone call must first be prepared as an immutable UK outbound-call envelope. Use phone_call_prepare for the bounded objective and safety fields, then use only the exact callIntentId, envelopeHash, and envelope returned by the tool if phone_call_start is requested. phone_call_start must stop at the generic formal Approval boundary. Chat text such as “I approve” is never the formal decision. Never infer permission to redial.`;
         if (durable?.task) {
           return completeDurableSelfDevelopment({ task: durable.task, idempotent: durable.idempotent, workflowContinued: durable.workflowContinued===true });
         }
@@ -451,7 +452,7 @@ export function createAgent({
           context:trustedContext,
           systemContext,
           conversationHistory,
-          tools: phoneCallProfile ? [] : speakerRestricted ? (context?.gptLiveRound2 ? toolRegistry.list({ executableOnly: true }).filter((tool) => tool.name === "project_list" && tool.riskLevel === "READ_ONLY") : []) : toolRegistry.list({ executableOnly: true }).filter(tool=>(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
+          tools: externalChannel||phoneCallProfile ? [] : speakerRestricted ? (context?.gptLiveRound2 ? toolRegistry.list({ executableOnly: true }).filter((tool) => tool.name === "project_list" && tool.riskLevel === "READ_ONLY") : []) : toolRegistry.list({ executableOnly: true }).filter(tool=>(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
           toolResults,
           continuationToken,
           signal: executionSignal,
@@ -465,6 +466,7 @@ export function createAgent({
         executionSignal.throwIfAborted();
         validateModelOutput(generated);
         if(speakerRestricted&&generated.type==="tool_calls"&&!context?.gptLiveRound2)generated={type:"final",message:"I can help with general conversation, but this voice turn is not authorized to use tools or access private owner information."};
+        if(externalChannel&&generated.type==="tool_calls")generated={type:"final",message:"I can't take that action in WhatsApp. I can help with general information here."};
         if(phoneCallProfile&&generated.type==="tool_calls")generated={type:"final",message:"I can't take that action during this call. I need the owner's confirmation outside the call."};
         const agentGenerationCompletedAt=Date.now();
 

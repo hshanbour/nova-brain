@@ -66,6 +66,43 @@ function parseGmailConfig(environment) {
   return Object.freeze({ configured: true, ...values });
 }
 
+function parseWhatsAppConfig(environment, phone) {
+  const values = {
+    number: environment.NOVA_WHATSAPP_NUMBER || null,
+    publicBaseUrl: environment.NOVA_WHATSAPP_PUBLIC_BASE_URL || null,
+    identityKey: environment.NOVA_WHATSAPP_IDENTITY_KEY || null,
+  };
+  const supplied = Object.values(values).filter(Boolean).length;
+  if (supplied > 0 && supplied !== Object.keys(values).length)
+    throw new Error("All three WhatsApp environment variables must be configured together.");
+  if (!supplied) return Object.freeze({ configured: false, liveEnabled: false, ...values });
+  if (!phone.configured)
+    throw new Error("Nova WhatsApp requires the existing Twilio Phone credentials to be configured.");
+  if (!/^\+44[1-9]\d{8,9}$/.test(values.number))
+    throw new Error("NOVA_WHATSAPP_NUMBER must be a UK E.164 number.");
+  if (values.number !== phone.fromNumber)
+    throw new Error("NOVA_WHATSAPP_NUMBER must use Nova's existing Twilio Voice number.");
+  let baseUrl;
+  try { baseUrl = new URL(values.publicBaseUrl); }
+  catch { throw new Error("NOVA_WHATSAPP_PUBLIC_BASE_URL must be an absolute URL."); }
+  if (baseUrl.protocol !== "https:" || baseUrl.username || baseUrl.password || baseUrl.pathname !== "/")
+    throw new Error("NOVA_WHATSAPP_PUBLIC_BASE_URL must be an HTTPS origin without a path.");
+  const key = /^[a-f0-9]{64}$/i.test(values.identityKey)
+    ? Buffer.from(values.identityKey, "hex")
+    : Buffer.from(values.identityKey, "base64");
+  if (key.length !== 32)
+    throw new Error("NOVA_WHATSAPP_IDENTITY_KEY must decode to exactly 32 bytes.");
+  return Object.freeze({
+    configured: true,
+    liveEnabled: environment.NOVA_WHATSAPP_LIVE_ENABLED === "true",
+    ...values,
+    publicBaseUrl: `${baseUrl.origin}/`,
+    identityKeyBytes: key,
+    accountSid: phone.accountSid,
+    authToken: phone.authToken,
+  });
+}
+
 function parseOptionalReasoningEffort(value, name) {
   if (value === undefined || value === "") return null;
   if (!SUPPORTED_REASONING_EFFORTS.has(value)) {
@@ -96,6 +133,7 @@ export function readConfig(environment = process.env) {
   const modelProvider = environment.NOVA_BRAIN_MODEL_PROVIDER || "mock";
   const gmail = parseGmailConfig(environment);
   const phone = parsePhoneConfig(environment);
+  const whatsapp = parseWhatsAppConfig(environment, phone);
 
   if (!SUPPORTED_MODEL_PROVIDERS.has(modelProvider)) {
     throw new Error(`Unsupported NOVA_BRAIN_MODEL_PROVIDER: ${modelProvider}`);
@@ -258,6 +296,7 @@ export function readConfig(environment = process.env) {
     }),
     gmail,
     phone,
+    whatsapp,
     allowedOrigins: parseOrigins(environment.CORS_ALLOWED_ORIGINS),
     maxBodyBytes: 64 * 1024,
     developerWorkspaceHandoffMaxBodyBytes: 3 * 1024 * 1024,

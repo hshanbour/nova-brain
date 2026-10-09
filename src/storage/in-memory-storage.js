@@ -43,6 +43,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const gmailConnections = new Map();
   const gmailDrafts = new Map();
   const gmailSendIntents = new Map();
+  const whatsappInboundMessages = new Map();
+  const whatsappOutboundMessages = new Map();
   const phoneCallIntents = new Map();
   const phoneCallEvents = new Map();
   const phoneCallTurns = new Map();
@@ -1053,6 +1055,61 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         .slice(0, limit)
         .map(copy);
     },
+    async claimWhatsAppInbound(input) {
+      const existing = whatsappInboundMessages.get(input.messageSid);
+      if (existing) return { claimed: false, message: copy(existing) };
+      const timestamp = now(clock), message = { ...copy(input), status: "queued", attemptCount: 0, nextAttemptAt: null, leaseOwner: null, leaseToken: null, leaseExpiresAt: null, runId: null, assistantMessageId: null, errorCode: null, createdAt: timestamp, updatedAt: timestamp };
+      whatsappInboundMessages.set(message.messageSid, message);
+      return { claimed: true, message: copy(message) };
+    },
+    async updateWhatsAppInbound(messageSid, ownerId, patch) {
+      const current = whatsappInboundMessages.get(messageSid);
+      if (!current || current.ownerId !== ownerId) return null;
+      const updated = { ...current, ...copy(patch), messageSid: current.messageSid, ownerId: current.ownerId, conversationId: current.conversationId, contactId: current.contactId, bodyHash: current.bodyHash, updatedAt: now(clock) };
+      whatsappInboundMessages.set(messageSid, updated); return copy(updated);
+    },
+    async claimNextWhatsAppInbound({ ownerId, workerId, leaseMs }) {
+      const timestamp=clock();
+      for(const message of whatsappInboundMessages.values())if(message.ownerId===ownerId&&message.status==="processing"&&new Date(message.leaseExpiresAt)<=timestamp){message.status="queued";message.leaseOwner=null;message.leaseToken=null;message.leaseExpiresAt=null;}
+      const message=[...whatsappInboundMessages.values()].filter(item=>item.ownerId===ownerId&&item.status==="queued"&&(!item.nextAttemptAt||new Date(item.nextAttemptAt)<=timestamp)).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.messageSid.localeCompare(b.messageSid))[0];
+      if(!message)return null;message.status="processing";message.attemptCount+=1;message.leaseOwner=workerId;message.leaseToken=randomUUID();message.leaseExpiresAt=new Date(timestamp.getTime()+leaseMs).toISOString();message.updatedAt=now(clock);return copy(message);
+    },
+    async renewWhatsAppInboundLease(input) {
+      const current=whatsappInboundMessages.get(input.messageSid),timestamp=clock();
+      if(!current||current.ownerId!==input.ownerId||current.status!=="processing"||current.leaseOwner!==input.workerId||current.leaseToken!==input.leaseToken||new Date(current.leaseExpiresAt)<=timestamp)return null;
+      current.leaseExpiresAt=new Date(timestamp.getTime()+input.leaseMs).toISOString();current.updatedAt=now(clock);return copy(current);
+    },
+    async checkpointWhatsAppInbound(input) {
+      const current=whatsappInboundMessages.get(input.messageSid),timestamp=clock();
+      if(!current||current.ownerId!==input.ownerId||current.status!=="processing"||current.leaseOwner!==input.workerId||current.leaseToken!==input.leaseToken||new Date(current.leaseExpiresAt)<=timestamp)return null;
+      current.runId=input.runId||null;current.assistantMessageId=input.assistantMessageId;current.updatedAt=now(clock);return copy(current);
+    },
+    async finishWhatsAppInbound(input) {
+      const current=whatsappInboundMessages.get(input.messageSid),timestamp=clock();
+      if(!current||current.ownerId!==input.ownerId||current.status!=="processing"||current.leaseOwner!==input.workerId||current.leaseToken!==input.leaseToken||new Date(current.leaseExpiresAt)<=timestamp)return null;
+      const updated={...current,status:input.status,runId:input.runId??current.runId,assistantMessageId:input.assistantMessageId??current.assistantMessageId,errorCode:input.errorCode??null,nextAttemptAt:input.nextAttemptAt||null,leaseOwner:null,leaseToken:null,leaseExpiresAt:null,updatedAt:now(clock)};whatsappInboundMessages.set(input.messageSid,updated);return copy(updated);
+    },
+    async claimWhatsAppOutbound(input) {
+      const existing = whatsappOutboundMessages.get(input.inboundSid);
+      if (existing) return { claimed: false, message: copy(existing) };
+      const timestamp = now(clock), message = { ...copy(input), status: "sending", providerMessageSid: null, errorCode: null, createdAt: timestamp, updatedAt: timestamp };
+      whatsappOutboundMessages.set(message.inboundSid, message);
+      return { claimed: true, message: copy(message) };
+    },
+    async updateWhatsAppOutbound(inboundSid, ownerId, patch) {
+      const current = whatsappOutboundMessages.get(inboundSid);
+      if (!current || current.ownerId !== ownerId) return null;
+      const updated = { ...current, ...copy(patch), inboundSid: current.inboundSid, ownerId: current.ownerId, bodyHash: current.bodyHash, updatedAt: now(clock) };
+      whatsappOutboundMessages.set(inboundSid, updated); return copy(updated);
+    },
+    async updateWhatsAppOutboundByProviderSid(providerMessageSid, ownerId, patch) {
+      const current = [...whatsappOutboundMessages.values()].find((item) => item.ownerId === ownerId && item.providerMessageSid === providerMessageSid);
+      if(!current)return null;const rank={submitted:0,queued:0,sent:1,delivered:2,read:3},terminal=new Set(["failed","undelivered"]),next=patch.status;
+      if(terminal.has(current.status)||(!terminal.has(next)&&(rank[next]??-1)<(rank[current.status]??-1)))return copy(current);
+      return this.updateWhatsAppOutbound(current.inboundSid, ownerId, patch);
+    },
+    async getWhatsAppInbound(messageSid, ownerId) { const value = whatsappInboundMessages.get(messageSid); return copy(value?.ownerId === ownerId ? value : null); },
+    async getWhatsAppOutbound(inboundSid, ownerId) { const value = whatsappOutboundMessages.get(inboundSid); return copy(value?.ownerId === ownerId ? value : null); },
     async createProject(input) {
       if(projects.has(input.id))throw Object.assign(new Error("Project already exists."),{code:"project_conflict"});
       const timestamp=now(clock),project={id:input.id,ownerId:input.ownerId,name:input.name,description:input.description||null,createdAt:timestamp,updatedAt:timestamp};

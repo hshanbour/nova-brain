@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -440,6 +440,38 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     created_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS nova_activity_owner_recent_idx ON nova_activity_events (owner_id, sequence DESC)`,
+  `CREATE TABLE IF NOT EXISTS nova_whatsapp_inbound_messages (
+    message_sid text PRIMARY KEY,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    conversation_id text NOT NULL,
+    contact_id text NOT NULL,
+    contact_ciphertext text NOT NULL,
+    body_hash text NOT NULL,
+    status text NOT NULL CHECK (status IN ('queued','processing','replied','failed')),
+    attempt_count integer NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz,
+    lease_owner text,
+    lease_token text,
+    lease_expires_at timestamptz,
+    run_id text,
+    assistant_message_id text,
+    error_code text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_whatsapp_inbound_owner_contact_idx ON nova_whatsapp_inbound_messages (owner_id,contact_id,created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS nova_whatsapp_inbound_queue_idx ON nova_whatsapp_inbound_messages (owner_id,status,next_attempt_at,created_at)`,
+  `CREATE TABLE IF NOT EXISTS nova_whatsapp_outbound_messages (
+    inbound_sid text PRIMARY KEY REFERENCES nova_whatsapp_inbound_messages(message_sid) ON DELETE CASCADE,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    body_hash text NOT NULL,
+    status text NOT NULL CHECK (status IN ('sending','submitted','queued','sent','delivered','read','undelivered','failed','uncertain')),
+    provider_message_sid text UNIQUE,
+    error_code text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_whatsapp_outbound_owner_status_idx ON nova_whatsapp_outbound_messages (owner_id,status,updated_at DESC)`,
   `CREATE TABLE IF NOT EXISTS nova_developer_sessions (
     id text PRIMARY KEY,
     owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
@@ -495,5 +527,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     FOREIGN KEY(owner_id,budget_id) REFERENCES nova_model_cost_budgets(owner_id,budget_id) ON DELETE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS nova_model_cost_task_idx ON nova_model_cost_reservations (owner_id,budget_id,task_id,created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17), (18), (19), (20), (21) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17), (18), (19), (20), (21), (22) ON CONFLICT (version) DO NOTHING`
 ]);

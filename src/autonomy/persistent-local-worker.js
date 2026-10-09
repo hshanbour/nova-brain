@@ -35,8 +35,10 @@ function exactReviewRemediationScope(task,job,{repository,branch,root,runtimeVer
   const steps=new Map([...(scope.readStepIds||[]).map(id=>[id,["read_files","repo_read_task_owned_local"]]),[scope.validateStepId,["validate_patch","repo_validate_patch"]],[scope.applyStepId,["apply_patch","repo_apply_patch"]],[scope.focusedStepId,["run_focused_tests","test_run"]],[scope.fullTestStepId,["run_full_tests","test_run_full"]]]),expected=steps.get(job.stepId);
   return Boolean(task.reviewRemediationScopeRequired===true&&!job.executionScope&&!job.fullTestScope&&!job.approvedDelivery&&scope.taskId===task.id&&scope.repository===repository&&scope.branch===branch&&scope.currentCommit===task.expectedCommit&&scope.runtimeVersion===runtimeVersion&&scope.workerId===workerId&&canonical(scope.workspaceRoot)===canonical(root)&&scope.continuationGenerationId===task.continuationGenerationId&&expected&&expected[0]===job.stepType&&expected[1]===job.tool);
 }
-export function createPersistentLocalWorker({client,root,branch="feat/nova-brain-mvp-foundation",repository="hshanbour/nova-brain",runtimeVersion,gitExecutable, codexExecutable,environment=process.env,workerId=`persistent-local-${randomUUID()}`,registry}={}){
-  if(!client)throw new Error("Protected local Worker client is required.");
+export function createPersistentLocalWorker({client:sourceClient,root,branch="feat/nova-brain-mvp-foundation",repository="hshanbour/nova-brain",runtimeVersion,gitExecutable, codexExecutable,environment=process.env,workerId=`persistent-local-${randomUUID()}`,registry}={}){
+  if(!sourceClient)throw new Error("Protected local Worker client is required.");
+  let prefetchedDispatch=null;
+  const client={request(path,input,options){if(path==="/api/admin/worker/auto-dispatch/next"&&prefetchedDispatch){const value=prefetchedDispatch;prefetchedDispatch=null;return Promise.resolve(value);}return sourceClient.request(path,input,options);}};
   if(!root&&!registry)throw Object.assign(new Error("An explicit controlled repository root is required."),{code:"repository_context_unproven"});
   const controlledRoot=root||"injected-registry";
   const repositoryContext=Object.freeze({version:1,source:"persistent_worker_startup",repository,root:controlledRoot,branch});
@@ -71,7 +73,8 @@ export function createPersistentLocalWorker({client,root,branch="feat/nova-brain
     const replanned=await client.request(`/api/admin/self-development/tasks/${encodeURIComponent(task.id)}/replan-discovery-only`,{expectedVersion:result.task.stateVersion});
     return{worked:true,taskId:task.id,status:replanned.task.status,stepType:"automatic_discovery_replan"};
   }return{worked:true,taskId:task.id,status:result.status,stepType:result.stepType};}
-  return Object.freeze({workerId,runOnce});
+  const runOnceWithChannels=async()=>{const found=await sourceClient.request("/api/admin/worker/auto-dispatch/next",{workerId,branch});if(found.dispatched){prefetchedDispatch=found;return runOnce();}if(!found.channelPolling?.includes("whatsapp"))return{worked:false};const channel=await sourceClient.request("/api/admin/worker/whatsapp/tick",{workerId});return channel?.worked?{...channel,stepType:"whatsapp_inbound"}:{worked:false};};
+  return Object.freeze({workerId,runOnce:runOnceWithChannels});
 }
 
 export async function runPersistentWorkerLoop({worker,intervalMs=5000,delay=ms=>new Promise(resolve=>setTimeout(resolve,ms)),shouldStop=()=>false,onState=()=>{},maxIterations=Infinity}={}){

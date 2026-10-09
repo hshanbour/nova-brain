@@ -15,6 +15,7 @@ The repository provides a small, serverless-compatible agent runtime:
 - The Memory workspace exposes controlled owner-profile editing and explicit long-term-memory create, edit, filter, and forget operations.
 - Conversation messages and long-term memory are separate data types; only a bounded relevant memory subset enters each model request.
 - Nova Email V1 can connect the single approved Gmail mailbox through server-side OAuth, search/read mail, prepare internal drafts, and send only an immutable owner-approved draft.
+- Nova WhatsApp V1 has a Preview-ready Twilio channel adapter with signed webhooks, durable deduplication/delivery state, contact-isolated conversations, and an explicit live-enable gate. It remains disabled while Meta business verification restricts the WABA.
 
 The mock provider remains the credential-free default. An OpenAI Responses API provider is available when explicitly configured. PostgreSQL (including Neon) is supported for durable private state, with in-memory storage retained for tests and local fallback. Gmail is the only owner-mail integration; no telephony, SMS, Gmail mutation/settings capability, or application-level authentication is connected.
 
@@ -134,6 +135,18 @@ NOVA_GMAIL_ACCOUNT_EMAIL=
 `NOVA_GMAIL_TOKEN_ENCRYPTION_KEY` must be a cryptographically random 32-byte value encoded as Base64 (or 64 hexadecimal characters). Never expose these variables to browser code. OAuth state is single-use, expires after ten minutes, is bound to an HttpOnly same-site callback cookie, and stores only hashes plus an encrypted PKCE verifier. Access and refresh tokens are encrypted at rest with AES-256-GCM and are never returned by the API.
 
 The model-visible tools are `gmail_search`, `gmail_thread_read`, `gmail_draft_prepare`, and `gmail_send`. Search and thread reads are `READ_ONLY`; draft preparation only writes Nova's internal PostgreSQL draft. `gmail_send` is `SENSITIVE` and uses Nova's existing approval and Activity systems. The approval arguments contain the exact To, CC, BCC, Subject, and Body and are cryptographically bound to the stored draft. A durable send-intent ledger prevents automatic retries after an in-progress or ambiguous provider outcome. Nova does not use the Gmail Draft, delete, modify/label, or settings APIs.
+
+### Nova WhatsApp V1 preparation
+
+```http
+GET  /api/integrations/whatsapp/status
+POST /api/integrations/whatsapp/webhook
+POST /api/integrations/whatsapp/status-callback
+```
+
+The adapter reuses Nova's existing Twilio account and exact Voice number. It verifies Twilio signatures against the stable public callback URL, rejects media in this bounded text-only release, hashes the external contact identity with a server-only key, and stores no raw provider payload or plaintext contact phone number in its transport ledger. The destination needed for an eventual reply is AES-256-GCM encrypted with a domain-separated key. The same contact maps deterministically to one ordinary Nova conversation, so it appears in Console recents and retains only that contact's channel history. External WhatsApp turns receive no owner memory, project context, tools, workflows, or automatic learning authority.
+
+Inbound and outbound provider message IDs are claimed durably. The webhook persists the authenticated inbound message and returns immediately; the existing fenced Persistent Worker leases queued turns, recovers expired leases, and performs bounded pre-send retries. Deterministic message IDs prevent duplicate generation after interruption. Duplicate inbound webhooks cannot create duplicate turns or sends, and an ambiguous outbound result is never automatically retried. Delivery callbacks update the canonical outbound record. Live provider processing remains fail-closed unless all configuration is present and `NOVA_WHATSAPP_LIVE_ENABLED=true`; do not enable it until Meta/Twilio reports the sender unrestricted and the webhook deployment is separately approved.
 
 ## Architecture
 
