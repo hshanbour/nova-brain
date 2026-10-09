@@ -23,6 +23,9 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
+    "busboy": "1.6.0",
+    "fflate": "0.8.3",
+    "pdfjs-dist": "6.4.299",
     "playwright-core": "1.63.0",
     "ws": "^8.21.0"
   }

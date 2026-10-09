@@ -88,7 +88,7 @@ const memoryCandidateRow = (row) =>
     updatedAt: date(row.updated_at),
     decidedAt: date(row.decided_at),
   };
-const projectSourceRow=(row)=>row&&({id:row.id,ownerId:row.owner_id,projectId:row.project_id,sourceType:row.source_type,label:row.label,locator:row.locator,contentHash:row.content_hash,accessMode:row.access_mode,status:row.status,permissions:row.permissions||{},createdAt:date(row.created_at),updatedAt:date(row.updated_at),revokedAt:date(row.revoked_at)});
+const projectSourceRow=(row)=>row&&({id:row.id,ownerId:row.owner_id,projectId:row.project_id,sourceType:row.source_type,label:row.label,locator:row.locator,contentHash:row.content_hash,accessMode:row.access_mode,status:row.status,permissions:row.permissions||{},extractionStatus:row.extraction_status||"not_required",extractedText:row.extracted_text||null,extractionMetadata:row.extraction_metadata||{},retrievedAt:date(row.retrieved_at),createdAt:date(row.created_at),updatedAt:date(row.updated_at),revokedAt:date(row.revoked_at)});
 const speakerProfileRow = (row, includeRepresentation = false) =>
   row && {
     id: row.id,
@@ -431,9 +431,9 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
       return projectRow(rows[0]);
     },
     async createProjectSource(input){
-      const rows=await run(`INSERT INTO nova_project_sources (id,owner_id,project_id,source_type,label,locator,content_hash,access_mode,status,permissions)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
-        ON CONFLICT (owner_id,project_id,source_type,content_hash) DO UPDATE SET id=nova_project_sources.id RETURNING *`,[input.id||randomUUID(),input.ownerId,input.projectId,input.sourceType,input.label,input.locator||null,input.contentHash||null,input.accessMode||"reference_only",input.status||"active",json(input.permissions)]);
+      const rows=await run(`INSERT INTO nova_project_sources (id,owner_id,project_id,source_type,label,locator,content_hash,access_mode,status,permissions,extraction_status,extracted_text,extraction_metadata,retrieved_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13::jsonb,$14)
+        ON CONFLICT (owner_id,project_id,source_type,content_hash) DO UPDATE SET id=nova_project_sources.id RETURNING *`,[input.id||randomUUID(),input.ownerId,input.projectId,input.sourceType,input.label,input.locator||null,input.contentHash||null,input.accessMode||"reference_only",input.status||"active",json(input.permissions),input.extractionStatus||"not_required",input.extractedText||null,json(input.extractionMetadata),input.retrievedAt||null]);
       return projectSourceRow(rows[0]);
     },
     async getProjectSource(id,ownerId){return projectSourceRow((await run("SELECT * FROM nova_project_sources WHERE id=$1 AND owner_id=$2",[id,ownerId]))[0]);},

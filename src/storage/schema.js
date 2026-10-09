@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -60,11 +60,19 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     access_mode text NOT NULL DEFAULT 'reference_only' CHECK (access_mode IN ('reference_only','read_only')),
     status text NOT NULL DEFAULT 'active' CHECK (status IN ('proposed','active','revoked')),
     permissions jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (octet_length(permissions::text) <= 8192),
+    extraction_status text NOT NULL DEFAULT 'not_required' CHECK (extraction_status IN ('not_required','completed','failed')),
+    extracted_text text CHECK (extracted_text IS NULL OR octet_length(extracted_text) <= 131072),
+    extraction_metadata jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (octet_length(extraction_metadata::text) <= 16384),
+    retrieved_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     revoked_at timestamptz,
     UNIQUE(owner_id,project_id,source_type,content_hash)
   )`,
+  `ALTER TABLE nova_project_sources ADD COLUMN IF NOT EXISTS extraction_status text NOT NULL DEFAULT 'not_required' CHECK (extraction_status IN ('not_required','completed','failed'))`,
+  `ALTER TABLE nova_project_sources ADD COLUMN IF NOT EXISTS extracted_text text CHECK (extracted_text IS NULL OR octet_length(extracted_text) <= 131072)`,
+  `ALTER TABLE nova_project_sources ADD COLUMN IF NOT EXISTS extraction_metadata jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (octet_length(extraction_metadata::text) <= 16384)`,
+  `ALTER TABLE nova_project_sources ADD COLUMN IF NOT EXISTS retrieved_at timestamptz`,
   `CREATE INDEX IF NOT EXISTS nova_project_sources_scope_idx ON nova_project_sources (owner_id,project_id,status,created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS nova_conversation_events (
     sequence bigserial PRIMARY KEY, id text UNIQUE NOT NULL,
@@ -544,5 +552,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     FOREIGN KEY(owner_id,budget_id) REFERENCES nova_model_cost_budgets(owner_id,budget_id) ON DELETE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS nova_model_cost_task_idx ON nova_model_cost_reservations (owner_id,budget_id,task_id,created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17), (18), (19), (20), (21), (22) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17), (18), (19), (20), (21), (22), (23), (24) ON CONFLICT (version) DO NOTHING`
 ]);

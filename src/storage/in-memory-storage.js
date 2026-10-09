@@ -1059,7 +1059,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async createProjectSource(input){
       const existing=[...projectSources.values()].find(item=>item.ownerId===input.ownerId&&item.projectId===input.projectId&&item.sourceType===input.sourceType&&item.contentHash===input.contentHash);
       if(existing)return copy(existing);
-      const timestamp=now(clock),record={id:input.id||randomUUID(),ownerId:input.ownerId,projectId:input.projectId,sourceType:input.sourceType,label:input.label,locator:input.locator||null,contentHash:input.contentHash||null,accessMode:input.accessMode||"reference_only",status:input.status||"active",permissions:copy(input.permissions||{}),createdAt:timestamp,updatedAt:timestamp,revokedAt:null};
+      const timestamp=now(clock),record={id:input.id||randomUUID(),ownerId:input.ownerId,projectId:input.projectId,sourceType:input.sourceType,label:input.label,locator:input.locator||null,contentHash:input.contentHash||null,accessMode:input.accessMode||"reference_only",status:input.status||"active",permissions:copy(input.permissions||{}),extractionStatus:input.extractionStatus||"not_required",extractedText:input.extractedText||null,extractionMetadata:copy(input.extractionMetadata||{}),retrievedAt:input.retrievedAt||null,createdAt:timestamp,updatedAt:timestamp,revokedAt:null};
       projectSources.set(record.id,record);return copy(record);
     },
     async getProjectSource(id,ownerId){const item=projectSources.get(id);return copy(item?.ownerId===ownerId?item:null);},

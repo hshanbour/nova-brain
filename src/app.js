@@ -122,7 +122,8 @@ export function createApp({
   const toolRegistry = createToolRegistry({ policy });
   const projectService=createProjectService({storage,ownerId:OWNER_ID});
   const learningService=typeof storage?.createMemoryCandidate==="function"?createMemoryLearningService({storage,ownerId:OWNER_ID}):null;
-  const projectOnboarding=learningService&&typeof storage?.createProjectSource==="function"?createProjectOnboardingService({storage,ownerId:OWNER_ID,learningService}):null;
+  const pageReader=createPublicPageReader({fetchImpl:webFetchImpl||globalThis.fetch,...(webResolveHost?{resolveHost:webResolveHost}:{})});
+  const projectOnboarding=learningService&&typeof storage?.createProjectSource==="function"?createProjectOnboardingService({storage,ownerId:OWNER_ID,learningService,pageReader}):null;
   const executionTruth=createExecutionTruthService({storage,ownerId:OWNER_ID});
   registerDeveloperTools(toolRegistry, {
     environment,
@@ -157,7 +158,6 @@ export function createApp({
   if(config.modelProvider === "openai"){
     const webRoute=config.openAI.routes.web;
     const webSearch=createOpenAIWebSearchAdapter({apiKey:config.openAI.apiKey,model:webRoute.model,serviceTier:config.openAI.serviceTier,costController:modelCostController,fetchImpl:webFetchImpl||globalThis.fetch,maxOutputTokens:webRoute.maxOutputTokens||4096});
-    const pageReader=createPublicPageReader({fetchImpl:webFetchImpl||globalThis.fetch,...(webResolveHost?{resolveHost:webResolveHost}:{})});
     browserTaskService=config.browserRun.configured?createDurableBrowserTaskService({storage,ownerId:OWNER_ID,model:webRoute.model,modelCostController,executionTruth,providerBudget:createBrowserProviderBudget({storage,ownerId:OWNER_ID,...config.browserRun}),browserAdapter:createCloudflareBrowserRunAdapter({accountId:config.browserRun.accountId,apiToken:config.browserRun.apiToken,fetchImpl:webFetchImpl||globalThis.fetch,...(webResolveHost?{resolveHost:webResolveHost}:{}),...(browserConnectOverCDP?{connectOverCDP:browserConnectOverCDP}:{})})}):null;
     const webGateway=createWebGateway({searchAdapter:webSearch,pageReader,browserTaskService,storage,ownerId:OWNER_ID});
     registerWebResearchTool(toolRegistry,{gateway:webGateway});

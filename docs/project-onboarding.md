@@ -1,8 +1,12 @@
 # Owner-controlled project onboarding
 
-Nova Console can create a durable project and stage owner-supplied knowledge for review. A staged fact is a `pending` memory candidate with an exact project ID, source record, content hash, provenance, and `authoritative: false`. It becomes active memory only after the owner accepts it in Owner & Memory. Corrections must identify the active same-project memory they supersede; the old record remains in history.
+Nova Console can create a durable project, upload a PDF/DOCX/TXT/Markdown document, ingest one explicitly submitted public HTTPS page, and stage extracted knowledge for review. A staged statement is a `pending` memory candidate with an exact project ID, source record, content hash, evidence excerpt, provenance, and `authoritative: false`. It becomes project memory only after the owner accepts it in Projects or Owner & Memory. Corrections must identify the active same-project memory they supersede; the old record remains in history.
 
-Supported source records are owner statements, document excerpts, public HTTPS references, and future GitHub, Vercel, Neon, or Stripe connection proposals. Source registration never fetches a URL and never grants provider access. Revocation disables the source authorization but does not rewrite already reviewed memory history.
+Document uploads are capped at 4 MB; PDFs at 40 pages; retained extracted text at 100,000 characters. Extraction runs in memory, rejects extension/MIME/signature mismatches, macros and embedded DOCX objects, invalid UTF-8, corrupt files, and credential-shaped content. Raw uploaded bytes are discarded. Only bounded extracted text, hashes, source metadata, and review evidence are durable.
+
+Public URL ingestion reuses Nova's credential-free public page reader. It permits only HTTPS on standard ports, resolves and validates every host and redirect, rejects private/reserved/metadata addresses and DNS rebinding, respects robots.txt, and applies timeout, redirect, content-type, and response-size limits. It does not bypass authentication, CAPTCHA, paywalls, or access restrictions and does not crawl the domain. Retrieved page text is marked untrusted; instruction-shaped page content is excluded from candidates and cannot change Nova's authority.
+
+Supported source records are owner statements, extracted owner documents, retained public pages, and future GitHub, Vercel, Neon, or Stripe connection proposals. Connector source registration never grants provider access. Revocation disables the source authorization but does not rewrite already reviewed memory history. A changed document or page creates a new content-hash version rather than silently overwriting earlier evidence.
 
 Future provider connections are deliberately proposals only:
 

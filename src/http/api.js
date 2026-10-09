@@ -1,4 +1,5 @@
-import { readFormBody, readJsonBody } from "./body.js";
+import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
+import {PROJECT_DOCUMENT_LIMITS,ProjectSourceError} from "../projects/document-extractor.js";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -2187,6 +2188,14 @@ export function createApi({
         if(projectKnowledgeMatch&&request.method==="POST"){
           await ready();const input=await readJsonBody(request,config.maxBodyBytes),result=await projectOnboarding?.proposeKnowledge({...input,projectId:decodeURIComponent(projectKnowledgeMatch[1])});sendJson(response,result?201:404,result||{error:"Project onboarding is unavailable"});return;
         }
+        const projectDocumentMatch=pathname.match(/^\/api\/projects\/([^/]+)\/documents$/);
+        if(projectDocumentMatch&&request.method==="POST"){
+          await ready();const upload=await readMultipartUpload(request,{maxFileBytes:PROJECT_DOCUMENT_LIMITS.maxFileBytes});const result=await projectOnboarding?.ingestDocument({projectId:decodeURIComponent(projectDocumentMatch[1]),file:upload.file});sendJson(response,result?201:404,result||{error:"Project onboarding is unavailable"});return;
+        }
+        const projectUrlMatch=pathname.match(/^\/api\/projects\/([^/]+)\/url-ingestions$/);
+        if(projectUrlMatch&&request.method==="POST"){
+          await ready();const input=await readJsonBody(request,config.maxBodyBytes),result=await projectOnboarding?.ingestUrl({projectId:decodeURIComponent(projectUrlMatch[1]),url:input.url,label:input.label});sendJson(response,result?201:404,result||{error:"Project onboarding is unavailable"});return;
+        }
         const projectSourcesMatch=pathname.match(/^\/api\/projects\/([^/]+)\/sources$/);
         if(projectSourcesMatch&&request.method==="POST"){
           await ready();const input=await readJsonBody(request,config.maxBodyBytes),result=await projectOnboarding?.registerSource({...input,projectId:decodeURIComponent(projectSourcesMatch[1])});sendJson(response,result?201:404,result||{error:"Project onboarding is unavailable"});return;
@@ -2428,6 +2437,7 @@ export function createApi({
           return;
         }
 
+        if(error instanceof ProjectSourceError){sendJson(response,error.statusCode||400,{error:error.message,code:error.code,diagnostics:error.safeDiagnostics});return;}
         if (error instanceof AgentDeadlineError) {
           sendJson(response, 504, { error: error.message,requestId,...(error.runId?{runId:error.runId}:{}),...(error.userMessageId?{userMessageId:error.userMessageId}:{}),...(error.conversationId?{conversationId:error.conversationId}:{}) });
           return;

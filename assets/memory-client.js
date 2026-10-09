@@ -2,7 +2,7 @@ import { NovaApiError } from "./api-client.js";
 
 async function request(path, options = {}) {
   let response;
-  try { response = await fetch(path, { ...options, headers: { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) } }); }
+  try { response = await fetch(path, { ...options, headers: { ...(options.body && !(options.body instanceof FormData) ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) } }); }
   catch { throw new NovaApiError("Nova's private memory could not be reached."); }
   let result;
   try { result = await response.json(); }
@@ -26,6 +26,8 @@ export const ownerMemoryClient = Object.freeze({
   createProject: (input) => request("/api/projects", { method: "POST", body: JSON.stringify(input) }),
   projectOnboarding: (id) => request(`/api/projects/${encodeURIComponent(id)}/onboarding`),
   proposeProjectKnowledge: (id,input) => request(`/api/projects/${encodeURIComponent(id)}/knowledge-candidates`, { method: "POST", body: JSON.stringify(input) }),
+  uploadProjectDocument: (id,file) => { const body=new FormData();body.append("document",file);return request(`/api/projects/${encodeURIComponent(id)}/documents`,{method:"POST",body}); },
+  ingestProjectUrl: (id,input) => request(`/api/projects/${encodeURIComponent(id)}/url-ingestions`,{method:"POST",body:JSON.stringify(input)}),
   revokeProjectSource: (id) => request(`/api/project-sources/${encodeURIComponent(id)}/revoke`, { method: "POST", body: "{}" }),
   modelBudget: () => request("/api/model-budget"),
   activity: () => request("/api/activity"),

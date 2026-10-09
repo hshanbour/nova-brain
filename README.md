@@ -190,7 +190,7 @@ Nova Web keeps `web_research` as its only model-visible web tool. Optional rende
 
 Storage selection defaults to `auto`: Nova uses PostgreSQL when one of `DATABASE_URL`, `POSTGRES_URL`, or `POSTGRES_URL_NON_POOLING` exists, otherwise it uses process-local memory. To require a specific adapter, set `NOVA_BRAIN_STORAGE_PROVIDER=postgres` or `memory`. Explicit `postgres` configuration fails closed if no connection string is present.
 
-Schema initialization and approved seed data are idempotent and run before storage-backed requests. Nova Email V1 adds the reproducible `migrations/004_gmail_v1.sql` schema for OAuth state, encrypted connections, internal drafts, and send intents. For an explicit migration check, run this with a server-side database URL in your shell:
+Schema initialization and approved seed data are idempotent and run before storage-backed requests. Nova Email V1 adds the reproducible `migrations/004_gmail_v1.sql` schema for OAuth state, encrypted connections, internal drafts, and send intents. Project source ingestion uses the idempotent `migrations/024_project_source_ingestion.sql` migration for bounded extracted evidence and safe extraction status; raw uploaded files are not stored. For an explicit migration check, run this with a server-side database URL in your shell:
 
 ```bash
 npm run db:migrate
