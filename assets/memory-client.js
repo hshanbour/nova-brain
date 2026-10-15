@@ -35,6 +35,7 @@ export const ownerMemoryClient = Object.freeze({
   taskActivity: (id) => request(`/api/activity?runId=${encodeURIComponent(id)}&limit=100`),
   cancelTask: (id) => request(`/api/autonomy/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   tools: () => request("/api/tools"),
+  socialDashboard: (projectId = "") => request(`/api/social/dashboard${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
   approvals: ({ status, conversationId, limit } = {}) => {
     const query = new URLSearchParams();
     if (status) query.set("status", status);

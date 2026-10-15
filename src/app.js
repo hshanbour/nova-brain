@@ -70,6 +70,8 @@ import { createPstnSpeakerEnrollment } from "./voice/pstn-speaker-enrollment.js"
 import { createPstnSpeakerControls } from "./voice/pstn-speaker-controls.js";
 import { createWhatsAppService } from "./whatsapp/whatsapp-service.js";
 import {createApprovalReconciliation} from "./autonomy/approval-reconciliation.js";
+import {createSocialService} from "./social/social-service.js";
+import {registerSocialTools} from "./social/social-tools.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -154,6 +156,8 @@ export function createApp({
   const phoneService = createPhoneService({ config, storage, ownerId: OWNER_ID, dialProvider: phoneProvider, sessionAuth: phoneSessionAuth, novaTurn: (input) => agent.run(input), ownerContactPolicy, prewarmSpeaker: () => speakerEngines.readiness(), fetchImpl: phoneFetchImpl || globalThis.fetch });
   registerPhoneTools(toolRegistry, { service: phoneService });
   const whatsappService = createWhatsAppService({ config, storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), fetchImpl: whatsappFetchImpl || globalThis.fetch, logger });
+  const socialService=createSocialService({config,storage,ownerId:OWNER_ID});
+  registerSocialTools(toolRegistry,{service:socialService});
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){
     const webRoute=config.openAI.routes.web;
@@ -401,6 +405,7 @@ export function createApp({
     gmailService,
     phoneService,
     whatsappService,
+    socialService,
     ownerContactPolicy,
     pstnSpeakerEnrollment,
     pstnSpeakerControls,
@@ -408,5 +413,5 @@ export function createApp({
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding });
 }

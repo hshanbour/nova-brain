@@ -74,7 +74,7 @@ export function createPersistentLocalWorker({client:sourceClient,root,branch,rep
     const replanned=await client.request(`/api/admin/self-development/tasks/${encodeURIComponent(task.id)}/replan-discovery-only`,{expectedVersion:result.task.stateVersion});
     return{worked:true,taskId:task.id,status:replanned.task.status,stepType:"automatic_discovery_replan"};
   }return{worked:true,taskId:task.id,status:result.status,stepType:result.stepType};}
-  const runOnceWithChannels=async()=>{const found=await sourceClient.request("/api/admin/worker/auto-dispatch/next",{workerId,branch});if(found.dispatched){prefetchedDispatch=found;return runOnce();}if(!found.channelPolling?.includes("whatsapp"))return{worked:false};const channel=await sourceClient.request("/api/admin/worker/whatsapp/tick",{workerId});return channel?.worked?{...channel,stepType:"whatsapp_inbound"}:{worked:false};};
+  const runOnceWithChannels=async()=>{const found=await sourceClient.request("/api/admin/worker/auto-dispatch/next",{workerId,branch});if(found.dispatched){prefetchedDispatch=found;return runOnce();}for(const channel of found.channelPolling||[]){if(!["whatsapp","social"].includes(channel))continue;const result=await sourceClient.request(`/api/admin/worker/${channel}/tick`,{workerId});if(result?.worked)return{...result,stepType:channel==="whatsapp"?"whatsapp_inbound":"social_publish"};}return{worked:false};};
   return Object.freeze({workerId,runOnce:runOnceWithChannels});
 }
 

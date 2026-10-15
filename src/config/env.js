@@ -103,6 +103,21 @@ function parseWhatsAppConfig(environment, phone) {
   });
 }
 
+function parseSocialConfig(environment) {
+  const values={
+    graphVersion:environment.NOVA_META_GRAPH_API_VERSION||null,
+    pageId:environment.NOVA_META_FACEBOOK_PAGE_ID||null,
+    instagramAccountId:environment.NOVA_META_INSTAGRAM_ACCOUNT_ID||null,
+    accessToken:environment.NOVA_META_PAGE_ACCESS_TOKEN||null,
+  };
+  const supplied=Object.values(values).filter(Boolean).length;
+  if(supplied>0&&supplied!==Object.keys(values).length)throw new Error("All four Nova Social Meta environment variables must be configured together.");
+  if(!supplied)return Object.freeze({configured:false,liveEnabled:false,...values});
+  if(!/^v\d+\.\d+$/.test(values.graphVersion))throw new Error("NOVA_META_GRAPH_API_VERSION is invalid.");
+  if(!/^\d{5,30}$/.test(values.pageId)||!/^\d{5,30}$/.test(values.instagramAccountId))throw new Error("Nova Social Meta asset IDs are invalid.");
+  return Object.freeze({configured:true,liveEnabled:environment.NOVA_SOCIAL_LIVE_ENABLED==="true",...values});
+}
+
 function parseOptionalReasoningEffort(value, name) {
   if (value === undefined || value === "") return null;
   if (!SUPPORTED_REASONING_EFFORTS.has(value)) {
@@ -134,6 +149,7 @@ export function readConfig(environment = process.env) {
   const gmail = parseGmailConfig(environment);
   const phone = parsePhoneConfig(environment);
   const whatsapp = parseWhatsAppConfig(environment, phone);
+  const social = parseSocialConfig(environment);
 
   if (!SUPPORTED_MODEL_PROVIDERS.has(modelProvider)) {
     throw new Error(`Unsupported NOVA_BRAIN_MODEL_PROVIDER: ${modelProvider}`);
@@ -297,6 +313,7 @@ export function readConfig(environment = process.env) {
     gmail,
     phone,
     whatsapp,
+    social,
     allowedOrigins: parseOrigins(environment.CORS_ALLOWED_ORIGINS),
     maxBodyBytes: 64 * 1024,
     developerWorkspaceHandoffMaxBodyBytes: 3 * 1024 * 1024,

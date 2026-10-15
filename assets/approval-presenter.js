@@ -19,7 +19,7 @@ export function approvalViewModel(approval, { gmailAccountEmail } = {}) {
   const common = {
     id: approval.id,
     tool: approval.tool,
-    title: approval.tool === "gmail_send" ? "Approve email send" : approval.tool === "phone_call_start" ? "Approve outbound call" : "Approval required",
+    title: approval.tool === "gmail_send" ? "Approve email send" : approval.tool === "phone_call_start" ? "Approve outbound call" : approval.tool === "social_schedule_publish" ? "Approve social publication" : "Approval required",
     reason: String(approval.reason || `Nova requested ${approval.tool}.`),
     status,
     pending: status === "pending",
@@ -58,6 +58,10 @@ export function approvalViewModel(approval, { gmailAccountEmail } = {}) {
       ["Voicemail", String(envelope.voicemailPolicy || "do_not_leave")], ["Recording", String(envelope.recordingPolicy || "disabled")],
       ["Transcript retention", String(envelope.transcriptRetentionPolicy || "")], ["Expiry", String(envelope.expiresAt || "")],
     ] };
+  }
+  if(approval.tool==="social_schedule_publish"){
+    const args=approval.arguments||{};
+    return{...common,kind:"social",fields:[["Platforms",textList(args.platforms)],["Publish at",String(args.publishAt||"")],["Caption",String(args.caption||"")],["Media",(args.media||[]).map(item=>`${item.type}: ${item.url}`).join("\n")||"None"],["Immutable content hash",String(args.contentHash||"")]]};
   }
   const safeArguments = safeValue(approval.arguments || {});
   return { ...common, kind: "generic", fields: [["Exact action", JSON.stringify(safeArguments)]] };

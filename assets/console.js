@@ -389,11 +389,12 @@ function showSection(name) {
   stopVoiceActivity();
   const selected = selectWorkspace({ workspaces: document.querySelectorAll("main.workspace"), links: document.querySelectorAll("[data-section]"), name });
   if (selected === "memory") loadMemoryWorkspace();
-  if (["projects","activity","tools","approvals","calls"].includes(selected)) loadDashboard(selected);
+  if (["projects","activity","tools","approvals","calls","social"].includes(selected)) loadDashboard(selected);
   if (selected === "voice-benchmark") voiceBenchmark.refresh().catch(() => {});
 }
 
 document.querySelectorAll("[data-section]").forEach((link) => link.addEventListener("click", (event) => { event.preventDefault(); const name = link.dataset.section; history.replaceState(null, "", `#${name}`); showSection(name); }));
+showSection(["#projects","#activity","#social","#calls","#memory","#tools","#approvals","#voice-benchmark"].includes(location.hash)?location.hash.slice(1):"chat");
 
 async function restoreConversation() {
   try {
@@ -512,6 +513,15 @@ async function loadDashboard(section) {
   try {
     if(section==="projects") { const [{projects},budget]=await Promise.all([ownerMemoryClient.projects(),ownerMemoryClient.modelBudget()]); const selects=[...document.querySelectorAll('#projects select[name="projectId"]')],selected=selects[0]?.value;for(const select of selects){select.replaceChildren(...projects.map(project=>new Option(project.name,project.id)));if(projects.some(project=>project.id===selected))select.value=selected;}list.replaceChildren(...projects.map((project)=>dashboardCard(project.name,project.id,project.description,[`${project.memories.length} memories`,`${project.runs.length} runs`])));const node=document.querySelector('#modelBudgetStatus span'),value=budget.budget;node.textContent=budget.enabled?`$${value.spentUsd.toFixed(6)} accounted · $${value.remainingUsd.toFixed(6)} remaining of $${value.authorizedUsd.toFixed(2)}`:'Internal model ledger disabled';await loadProjectSources(selects[0]?.value); }
     if(section==="activity") { const {activity}=await ownerMemoryClient.activity(); list.replaceChildren(...activity.map((event)=>dashboardCard(event.action,event.createdAt,event.summary,[event.status,event.tool,event.projectId]))); }
+    if(section==="social") {
+      const result=await ownerMemoryClient.socialDashboard(),{status,summary,content,publications}=result,summaryHost=document.querySelector("#socialSummary");
+      document.querySelector("#socialStatusHeading").textContent=status.configured?status.liveEnabled?"Meta publishing is configured":"Meta is configured; live publishing remains locked":"Meta publishing credentials are not configured";
+      document.querySelector("#socialStatusText").textContent=status.liveEnabled?"Approved scheduled publications are processed by Nova's durable worker.":"Drafting, evidence checks, approval previews and simulated processing are available without external publishing.";
+      document.querySelector("#socialSafetyState").textContent=`Approval required · Live publishing ${status.liveEnabled?"on":"off"}`;
+      summaryHost.replaceChildren(...Object.entries(summary).map(([label,value])=>dashboardCard(label.replace(/([A-Z])/g," $1"),"Current queue",String(value),[])));
+      const publicationByContent=new Map(publications.map(item=>[item.contentId,item]));
+      list.replaceChildren(...content.map(item=>{const publication=publicationByContent.get(item.id),body=[item.caption,item.media.length?`${item.media.length} rights-declared media asset(s)`:"Text-only",item.sourceRefs.length?`${item.sourceRefs.length} cited source(s)`:"No external factual sources"].join(" · ");return dashboardCard(item.title,publication?`Scheduled ${new Date(publication.publishAt).toLocaleString()}`:`Created ${new Date(item.createdAt).toLocaleString()}`,body,[item.kind,item.status,item.projectId,...item.platforms]);}));
+    }
     if(section==="calls") {
       const [{calls},{policy}]=await Promise.all([ownerMemoryClient.phoneCalls(),ownerMemoryClient.ownerContactPolicy()]);
       renderOwnerContactPolicy(policy);
@@ -529,6 +539,7 @@ document.querySelector('#projectKnowledgeForm').addEventListener('submit',async 
 for(const select of document.querySelectorAll('#projects select[name="projectId"]'))select.addEventListener('change',event=>{for(const peer of document.querySelectorAll('#projects select[name="projectId"]'))peer.value=event.currentTarget.value;loadProjectSources(event.currentTarget.value);});
 document.querySelector('#projectDocumentForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget,status=document.querySelector('#projectDocumentStatus'),file=form.elements.document.files[0];status.textContent='Extracting safely…';try{const result=await ownerMemoryClient.uploadProjectDocument(form.elements.projectId.value,file);status.textContent=`Extracted ${result.source.extractedCharacters} characters; ${result.candidates.length} candidates await review.`;form.elements.document.value='';await loadProjectSources(form.elements.projectId.value);}catch(cause){status.textContent=cause.message;}});
 document.querySelector('#projectUrlForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.currentTarget,status=document.querySelector('#projectUrlStatus');status.textContent='Reading public page safely…';try{const result=await ownerMemoryClient.ingestProjectUrl(form.elements.projectId.value,{url:form.elements.url.value.trim(),label:form.elements.label.value.trim()});status.textContent=`Retained ${result.source.extractedCharacters} characters; ${result.candidates.length} candidates await review.`;form.elements.url.value='';await loadProjectSources(form.elements.projectId.value);}catch(cause){status.textContent=cause.message;}});
+document.querySelector('#refreshSocialButton').addEventListener('click',()=>loadDashboard('social'));
 
 function renderOwnerContactPolicy(policy){const host=document.querySelector("#ownerContactPolicy"),status=document.querySelector("#ownerContactPolicyStatus");host.dataset.enabled=policy.enabled===true?"true":"false";host.querySelector("h2").textContent=policy.enabled?"Active bounded Preview grant":"Disabled by default";status.textContent=!policy.configured?"The verified owner contact is not configured server-side.":policy.enabled?`Active until ${new Date(policy.expiresAt).toLocaleString()} · ${policy.remainingCalls} call(s) remain.`:"No standing call authority is active.";document.querySelector("#enableOwnerTestGrant").disabled=!policy.configured||!policy.preview||policy.enabled;document.querySelector("#disableOwnerTestGrant").disabled=!policy.enabled;}
 
@@ -582,6 +593,5 @@ await restoreConversation();
 const queuedConversationId=conversationBinding.finish(client.conversationId);setPending(false);
 if(queuedConversationId)await selectConversation(queuedConversationId);
 await refreshRecents();
-showSection(["#projects","#activity","#calls","#memory","#tools","#approvals","#voice-benchmark"].includes(location.hash)?location.hash.slice(1):"chat");
 
 export { voiceControl };

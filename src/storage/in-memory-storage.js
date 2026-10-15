@@ -46,6 +46,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const gmailSendIntents = new Map();
   const whatsappInboundMessages = new Map();
   const whatsappOutboundMessages = new Map();
+  const socialContent = new Map();
+  const socialPublications = new Map();
   const phoneCallIntents = new Map();
   const phoneCallEvents = new Map();
   const phoneCallTurns = new Map();
@@ -1120,6 +1122,15 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     },
     async getWhatsAppInbound(messageSid, ownerId) { const value = whatsappInboundMessages.get(messageSid); return copy(value?.ownerId === ownerId ? value : null); },
     async getWhatsAppOutbound(inboundSid, ownerId) { const value = whatsappOutboundMessages.get(inboundSid); return copy(value?.ownerId === ownerId ? value : null); },
+    async createSocialContent(input){if(socialContent.has(input.id))throw Object.assign(new Error("Social content already exists."),{code:"23505"});const timestamp=now(clock),record={...copy(input),approvedHash:null,createdAt:timestamp,updatedAt:timestamp};socialContent.set(record.id,record);return copy(record);},
+    async getSocialContent(id,ownerId){const item=socialContent.get(id);return copy(item?.ownerId===ownerId?item:null);},
+    async listSocialContent(ownerId,{projectId,status,limit=100}={}){return [...socialContent.values()].filter(item=>item.ownerId===ownerId&&(!projectId||item.projectId===projectId)&&(!status||item.status===status)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||a.id.localeCompare(b.id)).slice(0,limit).map(copy);},
+    async updateSocialContent(id,ownerId,patch){const item=socialContent.get(id);if(!item||item.ownerId!==ownerId)return null;const updated={...item,...copy(patch),id:item.id,ownerId:item.ownerId,projectId:item.projectId,contentHash:item.contentHash,updatedAt:now(clock)};socialContent.set(id,updated);return copy(updated);},
+    async createSocialPublication(input){const existing=socialPublications.get(input.id)||[...socialPublications.values()].find(item=>item.ownerId===input.ownerId&&item.intentHash===input.intentHash);if(existing)return copy(existing);const timestamp=now(clock),record={...copy(input),attemptCount:0,leaseOwner:null,leaseToken:null,leaseExpiresAt:null,providerResults:{},errorCode:null,createdAt:timestamp,updatedAt:timestamp};socialPublications.set(record.id,record);return copy(record);},
+    async listSocialPublications(ownerId,{projectId,status,limit=100}={}){return [...socialPublications.values()].filter(item=>item.ownerId===ownerId&&(!projectId||item.projectId===projectId)&&(!status||item.status===status)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||a.id.localeCompare(b.id)).slice(0,limit).map(copy);},
+    async claimNextSocialPublication({ownerId,workerId,leaseMs}){const timestamp=clock();for(const item of socialPublications.values())if(item.ownerId===ownerId&&item.status==="publishing"&&new Date(item.leaseExpiresAt)<=timestamp){item.status="uncertain";item.errorCode="lease_expired_after_claim";item.leaseOwner=null;item.leaseToken=null;item.leaseExpiresAt=null;}const item=[...socialPublications.values()].filter(value=>value.ownerId===ownerId&&value.status==="scheduled"&&new Date(value.publishAt)<=timestamp).sort((a,b)=>a.publishAt.localeCompare(b.publishAt)||a.id.localeCompare(b.id))[0];if(!item)return null;item.status="publishing";item.attemptCount+=1;item.leaseOwner=workerId;item.leaseToken=randomUUID();item.leaseExpiresAt=new Date(timestamp.getTime()+leaseMs).toISOString();item.updatedAt=now(clock);return copy(item);},
+    async checkpointSocialPublication(input){const item=socialPublications.get(input.id),timestamp=clock();if(!item||item.ownerId!==input.ownerId||item.status!=="publishing"||item.leaseOwner!==input.leaseOwner||item.leaseToken!==input.leaseToken||new Date(item.leaseExpiresAt)<=timestamp)return null;item.providerResults=copy(input.providerResults||{});item.updatedAt=now(clock);return copy(item);},
+    async finishSocialPublication(input){const item=socialPublications.get(input.id),timestamp=clock();if(!item||item.ownerId!==input.ownerId||item.status!=="publishing"||item.leaseOwner!==input.leaseOwner||item.leaseToken!==input.leaseToken||new Date(item.leaseExpiresAt)<=timestamp)return null;const updated={...item,status:input.status,providerResults:copy(input.providerResults||item.providerResults),errorCode:input.errorCode||null,leaseOwner:null,leaseToken:null,leaseExpiresAt:null,updatedAt:now(clock)};socialPublications.set(item.id,updated);return copy(updated);},
     async createProject(input) {
       if(projects.has(input.id))throw Object.assign(new Error("Project already exists."),{code:"project_conflict"});
       const timestamp=now(clock),project={id:input.id,ownerId:input.ownerId,name:input.name,description:input.description||null,createdAt:timestamp,updatedAt:timestamp};

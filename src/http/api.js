@@ -62,6 +62,7 @@ import { PhoneError } from "../phone/phone-service.js";
 import { OwnerContactPolicyError } from "../phone/owner-contact-policy.js";
 import { assertTwilioSignature } from "../phone/twilio-signature.js";
 import { WhatsAppError } from "../whatsapp/whatsapp-service.js";
+import {SocialError} from "../social/social-service.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -220,6 +221,7 @@ export function createApi({
   gmailService,
   phoneService,
   whatsappService,
+  socialService,
   ownerContactPolicy,
   pstnSpeakerEnrollment,
   pstnSpeakerControls,
@@ -1883,7 +1885,7 @@ export function createApi({
           await ready();
           authorizeLocalWorker(request, config.localWorkerToken);
           const dispatch=await autoDispatch.next(await readJsonBody(request,config.maxBodyBytes));
-          sendJson(response,200,{...dispatch,channelPolling:["whatsapp"]});
+          sendJson(response,200,{...dispatch,channelPolling:["whatsapp","social"]});
           return;
         }
         const handoffMatch = pathname.match(
@@ -2209,6 +2211,10 @@ export function createApi({
           sendJson(response, 200, await whatsappService.status());
           return;
         }
+        if(request.method==="GET"&&pathname==="/api/social/status"){await ready();sendJson(response,200,await socialService.status());return;}
+        if(request.method==="GET"&&pathname==="/api/social/dashboard"){await ready();sendJson(response,200,await socialService.dashboard(url.searchParams.get("projectId")||undefined));return;}
+        if(request.method==="GET"&&pathname==="/api/social/content"){await ready();sendJson(response,200,await socialService.list({projectId:url.searchParams.get("projectId")||undefined,status:url.searchParams.get("status")||undefined,limit:validateListLimit(url.searchParams.get("limit"),100,200)}));return;}
+        if(request.method==="POST"&&pathname==="/api/admin/worker/social/tick"){await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);if(typeof input.workerId!=="string"||!input.workerId.trim()||input.workerId.length>200)throw new ValidationError("workerId is invalid.");sendJson(response,200,await socialService.processNext({workerId:input.workerId.trim()}));return;}
         if (request.method === "POST" && pathname === "/api/admin/worker/whatsapp/tick") {
           await ready();
           authorizeLocalWorker(request, config.localWorkerToken);
@@ -2265,6 +2271,7 @@ export function createApi({
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "whatsapp_error", requestId });
           return;
         }
+        if(error instanceof SocialError||error?.code?.startsWith?.("social_")){logger.error("Nova Social request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"social_error",requestId});return;}
         if (error instanceof PhoneError || error instanceof OwnerContactPolicyError || error?.code?.startsWith?.("phone_") || error?.code?.startsWith?.("owner_contact_")) {
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "phone_error", requestId });
           return;
