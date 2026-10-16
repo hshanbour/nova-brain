@@ -45,4 +45,14 @@ The existing persistent worker polls `/api/admin/worker/social/tick` only after 
 5. After owner approval, store one idempotent scheduled publication.
 6. The durable worker submits the exact content and records completion or safe failure in Activity.
 
-The Social Command Centre shows content and publication state. Provider insights, follower history, external notifications, a reusable asset upload store, Facebook Reels, and an always-on scheduler are intentionally not claimed as complete in this foundation.
+The Social Command Centre now filters by project and shows content state, pending formal publication approvals, and social Activity history in one place. It also exposes an explicit verified-metrics readiness state; it never substitutes estimates for platform data.
+
+## Organic audience-growth operating plan
+
+Nova Digital Services UK's primary sequence is Reels-first: practical AI demonstrations, small-business automation before/after examples, and concise technology explainers. Each idea becomes a sourced script, an original hook/storyboard, rights-cleared media, caption variants, and a review-ready immutable draft. The owner approves the exact publication; publishing remains disabled until the exact Meta Page and connected Instagram professional account are verified.
+
+The repository currently contains only `assets/nova-mark.svg`; it contains no reusable footage, voice-over, music, or finished short-form video. The logo is reusable as a light end-card/brand element, but it is not enough to manufacture an engaging Reel. The lowest-cost dependable production path is owner-recorded screen captures or phone footage, edited with reusable subtitle/end-card templates. Optional AI stills or narration are generated only for an approved draft and against a per-item budget. No video-generation subscription is assumed.
+
+Verified growth reporting will retain platform snapshots for followers, reach, Reel/video views, engagements, and published-content identifiers only after official read permissions and exact asset identity are confirmed. TikTok remains a future Content Posting API integration (an unaudited client is private-only); YouTube Shorts remains a future OAuth `youtube.upload` integration. Neither is represented as available today.
+
+Cloud scheduling is not complete in Preview: the protected tick endpoint and PostgreSQL leases are cloud-safe, but the current poller is the owner's persistent Windows worker. Vercel Cron targets the production deployment, so enabling it would cross the explicit Production boundary. The two honest next choices are a later owner-authorized Production Vercel Cron or a small always-on/scheduled cloud worker with an approved recurring cost. Until then, the dashboard must show `cloudScheduler: false` and cannot claim laptop-independent publication.

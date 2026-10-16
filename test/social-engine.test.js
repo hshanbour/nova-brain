@@ -80,5 +80,14 @@ test("Instagram adapter waits for a finished media container before publishing",
 
 test("Console exposes a Social Command Centre while approval copy shows exact publication data",async()=>{
   const [html,consoleJs,presenter]=await Promise.all([readFile(new URL("../index.html",import.meta.url),"utf8"),readFile(new URL("../assets/console.js",import.meta.url),"utf8"),readFile(new URL("../assets/approval-presenter.js",import.meta.url),"utf8")]);
-  assert.match(html,/Social Command Centre/);assert.match(html,/data-section="social"/);assert.match(consoleJs,/socialDashboard/);assert.match(presenter,/Approve social publication/);assert.match(presenter,/Immutable content hash/);
+  assert.match(html,/Social Command Centre/);assert.match(html,/Organic audience growth/);assert.match(html,/socialProjectFilter/);assert.match(html,/Verified growth measurement/);assert.match(html,/data-section="social"/);assert.match(consoleJs,/socialDashboard/);assert.match(consoleJs,/socialApprovalList/);assert.match(consoleJs,/socialActivityList/);assert.match(presenter,/Approve social publication/);assert.match(presenter,/Immutable content hash/);
+});
+
+test("dashboard isolates projects and returns only social approvals and activity",async()=>{
+  const {service,storage}=await fixture();const {content}=await service.createDraft(draftInput());
+  await storage.createApproval({id:"social-approval",ownerId:OWNER_ID,projectId:content.projectId,tool:"social_schedule_publish",riskLevel:"sensitive",status:"pending",reason:"Review exact publication",arguments:{contentId:content.id}});
+  await storage.createApproval({id:"email-approval",ownerId:OWNER_ID,projectId:content.projectId,tool:"gmail_send",riskLevel:"sensitive",status:"pending",reason:"Email",arguments:{}});
+  await storage.appendActivity({ownerId:OWNER_ID,projectId:content.projectId,action:"unrelated",tool:"gmail_send",status:"completed",summary:"Not social"});
+  const dashboard=await service.dashboard(content.projectId);assert.equal(dashboard.content.length,1);assert.equal(dashboard.approvals.length,1);assert.equal(dashboard.approvals[0].id,"social-approval");assert.equal(dashboard.activity.length,1);assert.equal(dashboard.activity[0].tool,"social_content_draft");assert.equal(dashboard.summary.pendingApprovals,1);
+  const isolated=await service.dashboard("independent-project");assert.equal(isolated.content.length,0);assert.equal(isolated.approvals.length,0);assert.equal(isolated.activity.length,0);
 });
