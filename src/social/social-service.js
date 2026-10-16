@@ -21,6 +21,7 @@ export function createMetaPublishingAdapter({config,instagramAccessToken,fetchIm
   return Object.freeze({
     async publish({platform,content}){
       if(platform==="facebook"){
+        if(!settings.facebookConfigured)throw new SocialError("Facebook publishing is not configured.",{code:"social_facebook_not_configured",statusCode:409,category:"configuration"});
         const first=content.media[0];
         if(first?.type==="image")return request(`${settings.pageId}/photos`,{body:{url:first.url,caption:content.caption}});
         if(first)throw new SocialError("This Facebook media format is not enabled in Social V1.",{code:"social_format_unsupported"});
@@ -34,11 +35,11 @@ export function createMetaPublishingAdapter({config,instagramAccessToken,fetchIm
     },
     async readMetrics(){
       const [facebook,instagram]=await Promise.all([
-        request(`${settings.pageId}?fields=followers_count,fan_count`,{method:"GET",requireId:false}),
+        settings.facebookConfigured?request(`${settings.pageId}?fields=followers_count,fan_count`,{method:"GET",requireId:false}):Promise.resolve(null),
         request(`${settings.instagramAccountId}?fields=followers_count,media_count`,{method:"GET",requireId:false,instagram:true}),
       ]);
       const number=value=>Number.isFinite(Number(value))?Number(value):null;
-      return{facebook:{followers:number(facebook.followers_count),pageLikes:number(facebook.fan_count)},instagram:{followers:number(instagram.followers_count),mediaCount:number(instagram.media_count)}};
+      return{facebook:facebook?{followers:number(facebook.followers_count),pageLikes:number(facebook.fan_count)}:null,instagram:{followers:number(instagram.followers_count),mediaCount:number(instagram.media_count)}};
     }
   });
 }
@@ -54,7 +55,7 @@ export function createSocialService({config,storage,ownerId,publisher,instagramO
   const pendingApprovalsFor=async contentId=>(await storage.listApprovals(ownerId,{status:"pending",limit:100})).filter(approval=>approval.tool==="social_schedule_publish"&&approval.arguments?.contentId===contentId);
   const rejectPendingApprovals=async contentId=>{const approvals=await pendingApprovalsFor(contentId);for(const approval of approvals)await storage.decideApproval(approval.id,ownerId,"rejected");return approvals.map(approval=>approval.id);};
   const latestMetrics=async projectId=>(await storage.listSocialMetricSnapshots(ownerId,{projectId,limit:1}))[0]||null;
-  const status=async(projectId)=>{const latest=await latestMetrics(projectId),connection=await instagramOAuth?.status?.();return{configured:settings.configured,liveEnabled:settings.liveEnabled,provider:"meta_graph_api",projectScoped:true,approvalRequired:true,workerProcessing:"persistent_worker",cloudScheduler:false,metricsVerified:Boolean(latest),metricsCapturedAt:latest?.capturedAt||null,facebook:{configured:Boolean(settings.pageId),permissions:["pages_manage_posts","pages_read_engagement","read_insights"]},instagram:{configured:Boolean(settings.instagramAccountId),connected:Boolean(connection?.connected||settings.instagramLoginAccessToken),username:connection?.username||null,connectionMode:connection?.connected||settings.instagramLoginAccessToken?"instagram_login":"facebook_login",permissions:connection?.scopes||["instagram_business_basic","instagram_business_content_publish","instagram_business_manage_insights"]},expansion:{tiktok:"official_authorization_required",youtube:"official_authorization_required"}};};
+  const status=async(projectId)=>{const latest=await latestMetrics(projectId),connection=await instagramOAuth?.status?.();return{configured:settings.configured,liveEnabled:settings.liveEnabled,provider:"meta_graph_api",projectScoped:true,approvalRequired:true,workerProcessing:"persistent_worker",cloudScheduler:false,metricsVerified:Boolean(latest),metricsCapturedAt:latest?.capturedAt||null,facebook:{configured:settings.facebookConfigured,permissions:settings.facebookConfigured?["pages_manage_posts","pages_read_engagement","read_insights"]:[]},instagram:{configured:Boolean(settings.instagramAccountId),connected:Boolean(connection?.connected||settings.instagramLoginAccessToken),username:connection?.username||null,connectionMode:connection?.connected||settings.instagramLoginAccessToken?"instagram_login":"facebook_login",permissions:connection?.scopes||["instagram_business_basic","instagram_business_content_publish","instagram_business_manage_insights"]},expansion:{tiktok:"official_authorization_required",youtube:"official_authorization_required"}};};
   return Object.freeze({
     status,
     async createDraft(input){

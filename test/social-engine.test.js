@@ -27,8 +27,20 @@ const draftInput=(overrides={})=>({projectId:"nova-digital-services-uk",kind:"po
 
 test("Social configuration is server-only, complete, and live-disabled by default",()=>{
   assert.equal(readConfig({}).social.configured,false);
-  assert.throws(()=>readConfig({NOVA_META_GRAPH_API_VERSION:"v24.0"}),/all four/i);
+  assert.throws(()=>readConfig({NOVA_META_GRAPH_API_VERSION:"v24.0"}),/GRAPH_API_VERSION.*INSTAGRAM_ACCOUNT_ID/i);
   const config=readConfig(ENV);assert.equal(config.social.configured,true);assert.equal(config.social.liveEnabled,false);assert.equal(config.social.accessToken,"server-only-token");
+});
+
+test("Instagram OAuth is independently configurable without inventing a Facebook Page token",()=>{
+  const environment={NOVA_META_GRAPH_API_VERSION:"v24.0",NOVA_META_INSTAGRAM_ACCOUNT_ID:"17841421559881769",NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"server-only-secret",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32,7).toString("base64")};
+  const config=readConfig(environment);assert.equal(config.social.configured,true);assert.equal(config.social.facebookConfigured,false);assert.equal(config.social.oauth.configured,true);assert.equal(config.social.liveEnabled,false);
+});
+
+test("Instagram-only metrics do not call Facebook and Facebook publishing fails closed",async()=>{
+  const environment={NOVA_META_GRAPH_API_VERSION:"v24.0",NOVA_META_INSTAGRAM_ACCOUNT_ID:"17841421559881769",NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"server-only-secret",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32,7).toString("base64")};
+  const requests=[],adapter=createMetaPublishingAdapter({config:readConfig(environment),instagramAccessToken:async()=>"instagram-private",fetchImpl:async url=>{requests.push(String(url));return{ok:true,async json(){return{followers_count:7,media_count:3};}};}});
+  assert.deepEqual(await adapter.readMetrics(),{facebook:null,instagram:{followers:7,mediaCount:3}});assert.equal(requests.length,1);assert.match(requests[0],/^https:\/\/graph\.instagram\.com\//);
+  await assert.rejects(adapter.publish({platform:"facebook",content:{caption:"Safe",media:[]}}),error=>error.code==="social_facebook_not_configured");
 });
 
 test("schema 27 contains project-scoped social data and encrypted Instagram OAuth storage",()=>{
