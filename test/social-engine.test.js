@@ -81,6 +81,26 @@ test("scheduling requires formal approval and binds the exact immutable caption,
   await assert.rejects(service.schedule({...input,caption:"changed"}),error=>error.code==="social_content_changed");
 });
 
+test("editing a draft creates a new hash, invalidates pending approval, and requires renewed review",async()=>{
+  const {service,storage}=await fixture();const {content}=await service.createDraft(draftInput());
+  await storage.createApproval({id:"social-edit-approval",ownerId:OWNER_ID,projectId:content.projectId,tool:"social_schedule_publish",riskLevel:"sensitive",status:"pending",reason:"Review exact publication",arguments:{contentId:content.id,contentHash:content.contentHash}});
+  const result=await service.revise(content.id,{caption:"A materially revised owner caption."});
+  assert.equal(result.content.status,"draft");assert.notEqual(result.content.contentHash,content.contentHash);assert.equal(result.content.approvedHash,null);assert.deepEqual(result.invalidatedApprovalIds,["social-edit-approval"]);assert.equal((await storage.getApproval("social-edit-approval",OWNER_ID)).status,"rejected");
+  await assert.rejects(service.schedule({contentId:result.content.id,contentHash:result.content.contentHash,caption:result.content.caption,media:result.content.media,platforms:result.content.platforms,publishAt:"2026-10-15T11:00:00.000Z"}),error=>error.code==="social_content_not_ready");
+});
+
+test("review submission is production-gated and a requested revision returns content to draft",async()=>{
+  const {service}=await fixture();const {content}=await service.createDraft(draftInput({kind:"reel",platforms:["instagram"],media:[],plan:{pillar:"ai_experiments",language:"english",hook:"Test",shotPlan:["Demo"],assetStatus:"planned",estimatedVariableCostUsd:0}}));
+  await assert.rejects(service.submitReview(content.id),error=>error.code==="social_checks_incomplete");
+  const revised=await service.revise(content.id,{media:[{type:"video",url:"https://cdn.example/owned.mp4",rightsStatus:"owned"}],plan:{...content.plan,assetStatus:"ready"}}),reviewed=await service.submitReview(revised.content.id);assert.equal(reviewed.content.status,"review_ready");
+  const requested=await service.requestRevision(content.id,{reason:"Tighten the opening hook."});assert.equal(requested.content.status,"draft");assert.equal(requested.content.approvedHash,null);
+});
+
+test("only an unclaimed schedule can be cancelled and rescheduling needs a fresh approval",async()=>{
+  const {service,storage}=await fixture();const {content}=await service.createDraft(draftInput()),input={contentId:content.id,contentHash:content.contentHash,caption:content.caption,media:content.media,platforms:content.platforms,publishAt:"2026-10-15T11:00:00.000Z"},scheduled=await service.schedule(input,{approvalId:"approval-1"});
+  const result=await service.cancelPublication(scheduled.publication.id);assert.equal(result.publication.status,"cancelled");assert.equal((await storage.getSocialContent(content.id,OWNER_ID)).status,"review_ready");await assert.rejects(service.cancelPublication(scheduled.publication.id),error=>error.code==="social_cancel_not_allowed");
+});
+
 test("live-off worker performs no provider action",async()=>{
   const {service,calls}=await fixture({live:false});const {content}=await service.createDraft(draftInput());await service.schedule({contentId:content.id,contentHash:content.contentHash,caption:content.caption,media:content.media,platforms:content.platforms,publishAt:"2026-10-15T10:00:00.000Z"});
   assert.deepEqual(await service.processNext({workerId:"worker"}),{worked:false,reason:"not_enabled"});assert.equal(calls.length,0);
@@ -106,7 +126,7 @@ test("Instagram adapter waits for a finished media container before publishing",
 
 test("Console exposes a Social Command Centre while approval copy shows exact publication data",async()=>{
   const [html,consoleJs,presenter]=await Promise.all([readFile(new URL("../index.html",import.meta.url),"utf8"),readFile(new URL("../assets/console.js",import.meta.url),"utf8"),readFile(new URL("../assets/approval-presenter.js",import.meta.url),"utf8")]);
-  assert.match(html,/Social Command Centre/);assert.match(html,/Organic audience growth/);assert.match(html,/socialProjectFilter/);assert.match(html,/Verified growth measurement/);assert.match(html,/data-section="social"/);assert.match(consoleJs,/socialDashboard/);assert.match(consoleJs,/socialApprovalList/);assert.match(consoleJs,/socialActivityList/);assert.match(presenter,/Approve social publication/);assert.match(presenter,/Immutable content hash/);
+  assert.match(html,/Social Command Centre/);assert.match(html,/Organic audience growth/);assert.match(html,/socialProjectFilter/);assert.match(html,/Verified growth measurement/);assert.match(html,/socialDetailDialog/);assert.match(html,/socialActivityFilter/);assert.match(html,/data-section="social"/);assert.match(consoleJs,/socialDashboard/);assert.match(consoleJs,/openSocialContentDetail/);assert.match(consoleJs,/requestSocialRevision/);assert.match(consoleJs,/cancelSocialPublication/);assert.match(consoleJs,/socialApprovalList/);assert.match(consoleJs,/socialActivityLabels/);assert.match(presenter,/Approve social publication/);assert.match(presenter,/Immutable content hash/);
 });
 
 test("dashboard isolates projects and returns only social approvals and activity",async()=>{

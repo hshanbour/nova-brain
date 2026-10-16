@@ -36,6 +36,11 @@ export const ownerMemoryClient = Object.freeze({
   cancelTask: (id) => request(`/api/autonomy/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   tools: () => request("/api/tools"),
   socialDashboard: (projectId = "") => request(`/api/social/dashboard${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  socialContent: (id) => request(`/api/social/content/${encodeURIComponent(id)}`),
+  reviseSocialContent: (id,input) => request(`/api/social/content/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
+  submitSocialReview: (id) => request(`/api/social/content/${encodeURIComponent(id)}/submit-review`, { method: "POST", body: "{}" }),
+  requestSocialRevision: (id,input={}) => request(`/api/social/content/${encodeURIComponent(id)}/request-revision`, { method: "POST", body: JSON.stringify(input) }),
+  cancelSocialPublication: (id) => request(`/api/social/publications/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
   createSocialLaunchBatch: (projectId) => request("/api/social/launch-batch", { method: "POST", body: JSON.stringify({ projectId }) }),
   refreshSocialMetrics: (projectId) => request("/api/social/metrics/refresh", { method: "POST", body: JSON.stringify({ projectId }) }),
   approvals: ({ status, conversationId, limit } = {}) => {
