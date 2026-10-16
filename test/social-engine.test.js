@@ -30,11 +30,37 @@ test("Social configuration is server-only, complete, and live-disabled by defaul
   const config=readConfig(ENV);assert.equal(config.social.configured,true);assert.equal(config.social.liveEnabled,false);assert.equal(config.social.accessToken,"server-only-token");
 });
 
-test("schema 25 contains project-scoped content and durable exactly-once publication records",()=>{
-  assert.equal(SCHEMA_VERSION,25);
+test("schema 26 contains project-scoped content, production plans, metrics, and durable exactly-once publication records",()=>{
+  assert.equal(SCHEMA_VERSION,26);
   for(const table of["nova_social_content","nova_social_publications"])assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes(`CREATE TABLE IF NOT EXISTS ${table}`)));
+  assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_social_metric_snapshots")));
+  assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("ADD COLUMN IF NOT EXISTS plan")));
   const publication=SCHEMA_STATEMENTS.find(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_social_publications"));
   assert.match(publication,/UNIQUE\(owner_id,intent_hash\)/);assert.match(publication,/lease_token/);assert.match(publication,/approval_id/);
+});
+
+test("the five-concept launch batch is idempotent, English-first, project-scoped, and follows the 40/40/20 pillars",async()=>{
+  const {service}=await fixture();const first=await service.createLaunchBatch("nova-digital-services-uk"),second=await service.createLaunchBatch("nova-digital-services-uk");
+  assert.equal(first.created,5);assert.equal(second.created,0);assert.equal(first.content.length,5);
+  assert.deepEqual(first.content.reduce((counts,item)=>(counts[item.plan.pillar]=(counts[item.plan.pillar]||0)+1,counts),{}),{ai_technology:2,ai_experiments:2,nova_projects_services:1});
+  for(const item of first.content){assert.equal(item.projectId,"nova-digital-services-uk");assert.equal(item.plan.language,"english");assert.equal(item.plan.assetStatus,"planned");assert.equal(item.status,"draft");assert.equal(item.kind,"reel");assert.equal(item.media.length,0);assert.match(item.script,/HOOK/);}
+});
+
+test("Reels cannot become review-ready or scheduled until a rights-declared video exists",async()=>{
+  const {service}=await fixture();const {content}=await service.createDraft(draftInput({kind:"reel",platforms:["instagram"],media:[],plan:{pillar:"ai_experiments",language:"english",hook:"Test",shotPlan:["Demo"],assetStatus:"planned",estimatedVariableCostUsd:0}}));assert.equal(content.status,"draft");
+  await assert.rejects(service.schedule({contentId:content.id,contentHash:content.contentHash,caption:content.caption,media:content.media,platforms:content.platforms,publishAt:"2026-10-15T11:00:00.000Z"}),error=>error.code==="social_content_not_ready");
+});
+
+test("official Meta metric reads are retained as project-scoped snapshots without asset identifiers",async()=>{
+  let reads=0;const {service,storage}=await fixture({publisher:{async publish(){throw new Error("not used");},async readMetrics(){reads+=1;return{facebook:{followers:12,pageLikes:9},instagram:{followers:34,mediaCount:5}};}}});
+  const {snapshot,cached}=await service.refreshMetrics("nova-digital-services-uk"),second=await service.refreshMetrics("nova-digital-services-uk");assert.deepEqual(snapshot.metrics.instagram,{followers:34,mediaCount:5});assert.equal(cached,false);assert.equal(second.cached,true);assert.equal(reads,1);
+  assert.equal((await storage.listSocialMetricSnapshots(OWNER_ID,{projectId:"independent-project"})).length,0);assert.equal((await service.dashboard("nova-digital-services-uk")).status.metricsVerified,true);
+});
+
+test("Instagram Login uses the official Instagram host and separate server-only token",async()=>{
+  const requests=[],responses=[{id:"container-2"},{status_code:"FINISHED"},{id:"media-2"}];const config=readConfig({...ENV,NOVA_META_INSTAGRAM_LOGIN_ACCESS_TOKEN:"instagram-server-only",NOVA_SOCIAL_LIVE_ENABLED:"true"});
+  const adapter=createMetaPublishingAdapter({config,sleep:async()=>{},fetchImpl:async(url,options)=>{requests.push({url:String(url),authorization:options.headers.authorization});return{ok:true,async json(){return responses.shift();}};}});await adapter.publish({platform:"instagram",content:{kind:"reel",caption:"Original",media:[{type:"video",url:"https://cdn.example/reel.mp4",rightsStatus:"owned"}]}});
+  assert.ok(requests.every(item=>item.url.startsWith("https://graph.instagram.com/")));assert.ok(requests.every(item=>item.authorization==="Bearer instagram-server-only"));
 });
 
 test("drafts are project isolated, evidence gated, original, rights declared, and content-addressed",async()=>{
@@ -61,7 +87,7 @@ test("live-off worker performs no provider action",async()=>{
 });
 
 test("durable publisher submits each approved platform once and does not duplicate an idempotent schedule",async()=>{
-  const {service,calls}=await fixture();const {content}=await service.createDraft(draftInput({platforms:["facebook","instagram"],kind:"reel",media:[{type:"video",url:"https://cdn.example/reel.mp4",rightsStatus:"owned"}]}));const input={contentId:content.id,contentHash:content.contentHash,caption:content.caption,media:content.media,platforms:content.platforms,publishAt:"2026-10-15T10:00:00.000Z"};
+  const {service,calls}=await fixture();const {content}=await service.createDraft(draftInput({platforms:["facebook","instagram"],kind:"post",media:[{type:"image",url:"https://cdn.example/post.jpg",rightsStatus:"owned"}]}));const input={contentId:content.id,contentHash:content.contentHash,caption:content.caption,media:content.media,platforms:content.platforms,publishAt:"2026-10-15T10:00:00.000Z"};
   const first=await service.schedule(input,{approvalId:"approval-1"}),second=await service.schedule(input,{approvalId:"approval-1"});assert.equal(first.publication.id,second.publication.id);
   const result=await service.processNext({workerId:"worker"});assert.equal(result.status,"published");assert.deepEqual(calls.map(call=>call.platform),["facebook","instagram"]);assert.equal((await service.processNext({workerId:"worker"})).worked,false);
 });

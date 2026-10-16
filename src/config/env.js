@@ -112,10 +112,11 @@ function parseSocialConfig(environment) {
   };
   const supplied=Object.values(values).filter(Boolean).length;
   if(supplied>0&&supplied!==Object.keys(values).length)throw new Error("All four Nova Social Meta environment variables must be configured together.");
-  if(!supplied)return Object.freeze({configured:false,liveEnabled:false,...values});
+  const instagramLoginAccessToken=environment.NOVA_META_INSTAGRAM_LOGIN_ACCESS_TOKEN||null;
+  if(!supplied){if(instagramLoginAccessToken)throw new Error("NOVA_META_INSTAGRAM_LOGIN_ACCESS_TOKEN requires the four base Nova Social Meta variables.");return Object.freeze({configured:false,liveEnabled:false,instagramLoginAccessToken:null,...values});}
   if(!/^v\d+\.\d+$/.test(values.graphVersion))throw new Error("NOVA_META_GRAPH_API_VERSION is invalid.");
   if(!/^\d{5,30}$/.test(values.pageId)||!/^\d{5,30}$/.test(values.instagramAccountId))throw new Error("Nova Social Meta asset IDs are invalid.");
-  return Object.freeze({configured:true,liveEnabled:environment.NOVA_SOCIAL_LIVE_ENABLED==="true",...values});
+  return Object.freeze({configured:true,liveEnabled:environment.NOVA_SOCIAL_LIVE_ENABLED==="true",instagramLoginAccessToken,...values});
 }
 
 function parseOptionalReasoningEffort(value, name) {

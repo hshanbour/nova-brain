@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920" role="img" aria-labelledby="title desc">
+  <title id="title">Nova Digital Services UK vertical Reel production template</title>
+  <desc id="desc">A reusable dark vertical layout with safe areas for a hook, demonstration footage, captions and call to action.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07111f"/><stop offset="1" stop-color="#163f49"/></linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#56e2c8"/><stop offset="1" stop-color="#7aa8ff"/></linearGradient>
+  </defs>
+  <rect width="1080" height="1920" fill="url(#bg)"/>
+  <rect x="72" y="96" width="936" height="208" rx="38" fill="#0d2033" stroke="#56e2c8" stroke-width="3"/>
+  <text x="112" y="164" fill="#56e2c8" font-family="Arial, sans-serif" font-size="28" font-weight="700" letter-spacing="3">HOOK · 0–3 SECONDS</text>
+  <text x="112" y="235" fill="#ffffff" font-family="Arial, sans-serif" font-size="48" font-weight="700">Replace with one clear promise</text>
+  <rect x="72" y="354" width="936" height="1030" rx="48" fill="#091725" stroke="#24465d" stroke-width="3"/>
+  <text x="540" y="820" text-anchor="middle" fill="#91a8b8" font-family="Arial, sans-serif" font-size="42">ORIGINAL SCREEN RECORDING</text>
+  <text x="540" y="878" text-anchor="middle" fill="#627d90" font-family="Arial, sans-serif" font-size="28">or owner-recorded demonstration footage</text>
+  <rect x="112" y="1180" width="856" height="140" rx="28" fill="#111f2b" opacity=".96"/>
+  <text x="540" y="1266" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="42" font-weight="700">CAPTIONS STAY INSIDE THIS SAFE AREA</text>
+  <rect x="72" y="1438" width="936" height="254" rx="38" fill="url(#accent)"/>
+  <text x="112" y="1510" fill="#07111f" font-family="Arial, sans-serif" font-size="27" font-weight="700" letter-spacing="3">CTA · FINAL 3–5 SECONDS</text>
+  <text x="112" y="1590" fill="#07111f" font-family="Arial, sans-serif" font-size="47" font-weight="700">Replace with one useful next step</text>
+  <text x="72" y="1810" fill="#ffffff" font-family="Arial, sans-serif" font-size="34" font-weight="700">NOVA DIGITAL SERVICES UK</text>
+  <text x="1008" y="1810" text-anchor="end" fill="#91a8b8" font-family="Arial, sans-serif" font-size="27">1080 × 1920 · 9:16</text>
+</svg>

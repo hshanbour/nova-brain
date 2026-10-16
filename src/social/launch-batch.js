@@ -1,0 +1,72 @@
+export const NOVA_SOCIAL_LAUNCH_BATCH = Object.freeze([
+  {
+    id: "social_nova_launch_ai_assist_not_decide",
+    pillar: "ai_technology",
+    title: "Three jobs AI should assist with — not decide",
+    hook: "AI is useful when it removes friction, not responsibility.",
+    caption: "Three sensible uses of AI in a small business: summarise repetitive information, draft a first version, and organise the next steps. Keep a person responsible for prices, promises and final decisions. Save this checklist for the next time a task feels repetitive. #PracticalAI #SmallBusinessTech #NovaDigitalServicesUK",
+    script: "HOOK (0–3s): AI should remove friction, not responsibility.\nSCENE 1 (3–8s): Show a long note becoming a short summary. Voiceover: Let AI summarise repetitive information.\nSCENE 2 (8–14s): Show a blank page becoming a labelled first draft. Voiceover: Let it draft the first version.\nSCENE 3 (14–20s): Show tasks moving into a simple checklist. Voiceover: Let it organise next steps.\nGUARDRAIL (20–25s): Human review screen. Voiceover: Keep people responsible for prices, promises and decisions.\nCTA (25–30s): Save this checklist for your next repetitive task.",
+    shotPlan: ["Screen recording: note to summary", "Screen recording: first-draft transformation", "Animated three-item checklist", "Human review end card"],
+  },
+  {
+    id: "social_nova_launch_ai_answer_path",
+    pillar: "ai_technology",
+    title: "What happens after you ask an AI a question?",
+    hook: "A useful AI answer is a process, not magic.",
+    caption: "A reliable AI workflow has four visible stages: understand the request, retrieve the right context, produce a bounded answer, and check the result. The useful part is not mystery — it is designing each stage so errors are visible. #AIExplained #Automation #Technology #NovaDigitalServicesUK",
+    script: "HOOK (0–3s): A useful AI answer is a process, not magic.\nSCENE 1 (3–8s): Request card enters a four-step pipeline.\nSCENE 2 (8–14s): Highlight Understand, then Context.\nSCENE 3 (14–20s): Highlight Answer, then Check.\nPAYOFF (20–26s): Show an error caught at the Check stage. Voiceover: Reliability comes from making every stage visible.\nCTA (26–30s): Follow for practical AI systems without the hype.",
+    shotPlan: ["Animated request card", "Four-stage pipeline", "Validation warning animation", "Branded follow end card"],
+  },
+  {
+    id: "social_nova_launch_experiment_inbox",
+    pillar: "ai_experiments",
+    title: "Experiment: turn a messy inbox into a five-minute plan",
+    hook: "Can AI turn ten fictional enquiries into one clear action list?",
+    caption: "Original Nova experiment: give an AI ten fictional enquiries, ask it to extract the request, urgency and next action, then manually check every row. The goal is not autonomous decisions; it is a faster, reviewable starting point. No customer data is used in this demonstration. #AIExperiment #BusinessAutomation #BuildInPublic #NovaDigitalServicesUK",
+    script: "HOOK (0–3s): Ten fictional enquiries. One five-minute plan.\nSETUP (3–8s): Show ten clearly labelled fictional messages.\nRUN (8–15s): Screen-record the structured extraction: request, urgency, next action.\nCHECK (15–22s): Reveal two deliberately ambiguous messages and manual corrections.\nRESULT (22–27s): Show the final reviewable list; do not claim a performance result until timed footage exists.\nCTA (27–30s): Which admin task should we test next?",
+    shotPlan: ["Synthetic inbox fixture", "Live extraction screen capture", "Manual correction close-up", "Final table and question card"],
+  },
+  {
+    id: "social_nova_launch_experiment_voice_note",
+    pillar: "ai_experiments",
+    title: "Experiment: one voice note to a structured follow-up",
+    hook: "Can a rambling voice note become a useful follow-up without losing the details?",
+    caption: "Original Nova experiment: record a fictional mixed English/Arabic business voice note, transcribe it, separate facts from tasks, and compare the output with the original. The test should show corrections as well as successes. No real customer conversation is used. #VoiceAI #AIExperiment #AutomationDemo #NovaDigitalServicesUK",
+    script: "HOOK (0–4s): Can this mixed-language voice note become a useful follow-up?\nINPUT (4–10s): Play a newly recorded fictional voice note with waveform only.\nTRANSFORM (10–18s): Show transcript, facts and tasks appearing in separate panels.\nVERIFY (18–25s): Compare names, dates and English technical terms with the original; visibly correct any miss.\nCTA (25–30s): Follow to see the measured result.",
+    shotPlan: ["Original fictional voice-note waveform", "Transcript capture", "Facts-versus-tasks layout", "Verification checklist"],
+  },
+  {
+    id: "social_nova_launch_service_build",
+    pillar: "nova_projects_services",
+    title: "What Nova Digital Services actually builds",
+    hook: "We build small digital systems around a real business bottleneck.",
+    caption: "Nova Digital Services UK designs websites, software and AI-assisted automations around a defined business problem. A sensible project starts with the bottleneck, maps the human decision points, builds the smallest useful workflow, and measures what happens next. No invented client results — just transparent work. #DigitalServices #BusinessAutomation #WebDevelopment #NovaDigitalServicesUK",
+    script: "HOOK (0–3s): Start with the bottleneck — not the tool.\nSCENE 1 (3–9s): A simple bottleneck card: missed enquiry, repetitive admin, or unclear handoff.\nSCENE 2 (9–16s): Map the human decisions that must remain explicit.\nSCENE 3 (16–23s): Show a small website or automation workflow taking shape.\nSCENE 4 (23–27s): Add one measurable outcome card without claiming an unmeasured result.\nCTA (27–30s): Tell us the bottleneck you would remove first.",
+    shotPlan: ["Problem card animation", "Decision-point map", "Original UI or website screen recording", "Measurement and CTA end card"],
+  },
+]);
+
+export function launchBatchInputs(projectId) {
+  return NOVA_SOCIAL_LAUNCH_BATCH.map((item) => ({
+    id: item.id,
+    projectId,
+    kind: "reel",
+    title: item.title,
+    caption: item.caption,
+    script: item.script,
+    platforms: ["instagram"],
+    media: [],
+    sourceRefs: [],
+    evidenceStatus: "not_applicable",
+    originalityStatus: "passed",
+    plan: {
+      pillar: item.pillar,
+      language: "english",
+      hook: item.hook,
+      shotPlan: item.shotPlan,
+      assetStatus: "planned",
+      estimatedVariableCostUsd: 0,
+      templateUrl: "/assets/social/reel-production-template.svg",
+    },
+  }));
+}

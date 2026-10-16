@@ -30,7 +30,11 @@ All four Meta values must be configured together:
 - `NOVA_META_INSTAGRAM_ACCOUNT_ID`
 - `NOVA_META_PAGE_ACCESS_TOKEN`
 
+When Meta's Page-linking workflow is unavailable, `NOVA_META_INSTAGRAM_LOGIN_ACCESS_TOKEN` may hold a separate server-only Instagram User token. Nova then keeps Facebook Page publishing on `graph.facebook.com` while using Meta's officially supported Instagram Login path on `graph.instagram.com`; the Instagram account does not need to be linked to the Page. Tokens are never returned to the browser or Activity.
+
 Keep `NOVA_SOCIAL_LIVE_ENABLED=false` until the owner has verified the exact Page, Instagram professional account, token permissions, media rights, and one controlled publish/reconciliation test.
+
+The minimum requested scopes are deliberately narrow. Facebook Page publishing/measurement uses `pages_manage_posts`, `pages_read_engagement`, and `read_insights`. Instagram Login uses `instagram_business_basic` and `instagram_business_content_publish`; the fallback Page-linked path uses `instagram_basic`, `instagram_content_publish`, `instagram_manage_insights`, `pages_show_list`, and `pages_read_engagement`. Nova does not request advertising, messaging, comment moderation, or public-content discovery permissions for Social V1.
 
 ## Scheduling model
 
@@ -46,6 +50,10 @@ The existing persistent worker polls `/api/admin/worker/social/tick` only after 
 6. The durable worker submits the exact content and records completion or safe failure in Activity.
 
 The Social Command Centre now filters by project and shows content state, pending formal publication approvals, and social Activity history in one place. It also exposes an explicit verified-metrics readiness state; it never substitutes estimates for platform data.
+
+The launch-batch control creates five idempotent English Instagram Reel plans for the `nova-digital-services-uk` project: two AI/technology explainers, two original AI/automation experiments, and one Nova project/service concept. Every plan contains a hook, complete 30-second script, shot list, caption, zero-cost production estimate, and reusable 9:16 template. They remain `draft` until a rights-declared video is attached; a script or static placeholder cannot accidentally become review-ready for Reel publication. Facebook derivatives stay a separate later step because Social V1 currently supports Facebook text/image publishing but not the Page Reels upload protocol.
+
+An explicit metrics refresh reads follower and media totals from the official Meta API and persists a project-scoped timestamped snapshot. The dashboard labels values as verified only after a successful provider read. It never estimates missing values.
 
 ## Organic audience-growth operating plan
 

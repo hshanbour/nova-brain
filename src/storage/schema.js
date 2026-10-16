@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -519,6 +519,15 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_id,intent_hash)
   )`,
   `CREATE INDEX IF NOT EXISTS nova_social_publication_queue_idx ON nova_social_publications (owner_id,status,publish_at)`,
+  `ALTER TABLE nova_social_content ADD COLUMN IF NOT EXISTS plan jsonb NOT NULL DEFAULT '{}'::jsonb`,
+  `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='nova_social_content_plan_size') THEN ALTER TABLE nova_social_content ADD CONSTRAINT nova_social_content_plan_size CHECK (octet_length(plan::text) <= 32768); END IF; END $$`,
+  `CREATE TABLE IF NOT EXISTS nova_social_metric_snapshots (
+    id text PRIMARY KEY, owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    project_id text NOT NULL REFERENCES nova_projects(id) ON DELETE CASCADE,
+    provider text NOT NULL, metrics jsonb NOT NULL CHECK (octet_length(metrics::text) <= 32768),
+    captured_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_social_metric_snapshots_scope_idx ON nova_social_metric_snapshots (owner_id,project_id,captured_at DESC)`,
   `CREATE TABLE IF NOT EXISTS nova_developer_sessions (
     id text PRIMARY KEY,
     owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
@@ -574,5 +583,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     FOREIGN KEY(owner_id,budget_id) REFERENCES nova_model_cost_budgets(owner_id,budget_id) ON DELETE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS nova_model_cost_task_idx ON nova_model_cost_reservations (owner_id,budget_id,task_id,created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17), (18), (19), (20), (21), (22), (23), (24), (25) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17), (18), (19), (20), (21), (22), (23), (24), (25), (26) ON CONFLICT (version) DO NOTHING`
 ]);

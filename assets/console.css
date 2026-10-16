@@ -43,6 +43,7 @@
 .project-onboarding-form label{display:grid;gap:6px;font-size:.84rem;color:var(--muted)}
 .project-onboarding-form .wide{grid-column:1/-1}
 .project-onboarding-form input,.project-onboarding-form textarea,.project-onboarding-form select{width:100%;box-sizing:border-box}
+.social-command-actions{display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;margin:1rem 0}.social-command-actions [role="status"]{color:var(--muted);font-size:.86rem}
 .budget-status{display:grid;gap:4px;margin-top:18px;padding:14px;border-radius:12px;background:var(--surface-subtle)}
 .project-source-list{display:grid;gap:8px;margin-top:18px}.project-source-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:12px}.project-source-row span{overflow-wrap:anywhere;color:var(--muted);font-size:.82rem}
 @media(max-width:700px){.project-onboarding-form{grid-template-columns:1fr}.project-onboarding-form .wide{grid-column:auto}}

@@ -48,6 +48,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const whatsappOutboundMessages = new Map();
   const socialContent = new Map();
   const socialPublications = new Map();
+  const socialMetricSnapshots = new Map();
   const phoneCallIntents = new Map();
   const phoneCallEvents = new Map();
   const phoneCallTurns = new Map();
@@ -1131,6 +1132,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async claimNextSocialPublication({ownerId,workerId,leaseMs}){const timestamp=clock();for(const item of socialPublications.values())if(item.ownerId===ownerId&&item.status==="publishing"&&new Date(item.leaseExpiresAt)<=timestamp){item.status="uncertain";item.errorCode="lease_expired_after_claim";item.leaseOwner=null;item.leaseToken=null;item.leaseExpiresAt=null;}const item=[...socialPublications.values()].filter(value=>value.ownerId===ownerId&&value.status==="scheduled"&&new Date(value.publishAt)<=timestamp).sort((a,b)=>a.publishAt.localeCompare(b.publishAt)||a.id.localeCompare(b.id))[0];if(!item)return null;item.status="publishing";item.attemptCount+=1;item.leaseOwner=workerId;item.leaseToken=randomUUID();item.leaseExpiresAt=new Date(timestamp.getTime()+leaseMs).toISOString();item.updatedAt=now(clock);return copy(item);},
     async checkpointSocialPublication(input){const item=socialPublications.get(input.id),timestamp=clock();if(!item||item.ownerId!==input.ownerId||item.status!=="publishing"||item.leaseOwner!==input.leaseOwner||item.leaseToken!==input.leaseToken||new Date(item.leaseExpiresAt)<=timestamp)return null;item.providerResults=copy(input.providerResults||{});item.updatedAt=now(clock);return copy(item);},
     async finishSocialPublication(input){const item=socialPublications.get(input.id),timestamp=clock();if(!item||item.ownerId!==input.ownerId||item.status!=="publishing"||item.leaseOwner!==input.leaseOwner||item.leaseToken!==input.leaseToken||new Date(item.leaseExpiresAt)<=timestamp)return null;const updated={...item,status:input.status,providerResults:copy(input.providerResults||item.providerResults),errorCode:input.errorCode||null,leaseOwner:null,leaseToken:null,leaseExpiresAt:null,updatedAt:now(clock)};socialPublications.set(item.id,updated);return copy(updated);},
+    async createSocialMetricSnapshot(input){if(socialMetricSnapshots.has(input.id))return copy(socialMetricSnapshots.get(input.id));const record={...copy(input),createdAt:now(clock)};socialMetricSnapshots.set(record.id,record);return copy(record);},
+    async listSocialMetricSnapshots(ownerId,{projectId,limit=30}={}){return[...socialMetricSnapshots.values()].filter(item=>item.ownerId===ownerId&&(!projectId||item.projectId===projectId)).sort((a,b)=>b.capturedAt.localeCompare(a.capturedAt)||a.id.localeCompare(b.id)).slice(0,limit).map(copy);},
     async createProject(input) {
       if(projects.has(input.id))throw Object.assign(new Error("Project already exists."),{code:"project_conflict"});
       const timestamp=now(clock),project={id:input.id,ownerId:input.ownerId,name:input.name,description:input.description||null,createdAt:timestamp,updatedAt:timestamp};
