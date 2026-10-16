@@ -57,25 +57,36 @@ test("schema 27 contains project-scoped social data and encrypted Instagram OAut
 test("Instagram OAuth is single-use, exact-scope, owner-bound, encrypted, and verifies Nova's account",async()=>{
   const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[]});
   const environment={...ENV,NOVA_META_INSTAGRAM_ACCOUNT_ID:"17841421559881769",NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"server-only-secret",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32,7).toString("base64")};
-  const replies=[{access_token:"short-private",user_id:"17841421559881769"},{access_token:"long-private",expires_in:5184000},{id:"17841421559881769",user_id:"17841421559881769",username:"novadigitalservicesuk",account_type:"BUSINESS"},{data:INSTAGRAM_SCOPES.map(permission=>({permission,status:"granted"}))}];
-  const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,9),fetchImpl:async()=>({ok:true,async json(){return replies.shift();}})}),started=await service.start(),url=new URL(started.authorizationUrl);
+  const replies=[{data:[{access_token:"short-private",user_id:"17841421559881769",permissions:INSTAGRAM_SCOPES.join(",")}]},{access_token:"long-private",expires_in:5184000},{id:"17841421559881769",user_id:"17841421559881769",username:"novadigitalservicesuk",account_type:"BUSINESS"}],requests=[];
+  const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,9),fetchImpl:async(url,options={})=>{requests.push({url:String(url),method:options.method||"GET"});return{ok:true,async json(){return replies.shift();}};}}),started=await service.start(),url=new URL(started.authorizationUrl);
   assert.deepEqual(url.searchParams.get("scope").split(","),INSTAGRAM_SCOPES);assert.doesNotMatch(started.authorizationUrl,/messages|comments|advertising/);
   const state=url.searchParams.get("state"),completed=await service.complete({code:"provider-code",state,session:started.session});assert.equal(completed.username,"novadigitalservicesuk");
+  assert.equal(requests.some(item=>item.method==="GET"&&item.url.includes("/me/permissions")),false);
   const stored=await storage.getInstagramConnection(OWNER_ID);assert.notEqual(stored.encryptedAccessToken.ciphertext,"long-private");assert.equal(JSON.stringify(stored).includes("long-private"),false);
   await assert.rejects(service.complete({code:"provider-code",state,session:started.session}),error=>error.code==="instagram_oauth_state_rejected");
 });
 
-test("Instagram OAuth rejects and revokes a wrong account or incomplete exact scope grant",async()=>{
+test("Instagram OAuth normalizes observed token responses and rejects missing, unexpected, or malformed permission grants",async()=>{
   const environment={...ENV,NOVA_META_INSTAGRAM_ACCOUNT_ID:"17841421559881769",NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"server-only-secret",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32,7).toString("base64")};
   const attempt=async({profile,permissions,expectedCode})=>{
     const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[]});
-    const replies=[{access_token:"short-private"},{access_token:"long-private",expires_in:5184000},profile,...(permissions?[{data:permissions.map(permission=>({permission,status:"granted"}))}]:[])],requests=[];
-    const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,5),fetchImpl:async(url,options={})=>{requests.push({url:String(url),method:options.method||"GET"});return{ok:true,async json(){return replies.shift()||{};}};}}),started=await service.start();
+    const requests=[];
+    const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,5),fetchImpl:async(url,options={})=>{const href=String(url),method=options.method||"GET";requests.push({url:href,method});let body={};if(href.startsWith("https://api.instagram.com/oauth/access_token"))body={access_token:"short-private",permissions};else if(href.startsWith("https://graph.instagram.com/access_token"))body={access_token:"long-private",expires_in:5184000};else if(method==="GET"&&href.startsWith("https://graph.instagram.com/me?"))body=profile;return{ok:true,async json(){return body;}};}}),started=await service.start();
     await assert.rejects(service.complete({code:"provider-code",state:new URL(started.authorizationUrl).searchParams.get("state"),session:started.session}),error=>error.code===expectedCode);
     assert.equal(requests.at(-1).method,"DELETE");assert.equal(await storage.getInstagramConnection(OWNER_ID),null);
   };
-  await attempt({profile:{id:"not-nova",username:"someone_else"},expectedCode:"instagram_wrong_account"});
-  await attempt({profile:{id:"17841421559881769",username:"novadigitalservicesuk"},permissions:INSTAGRAM_SCOPES.slice(0,2),expectedCode:"instagram_scope_missing"});
+  await attempt({profile:{id:"not-nova",username:"someone_else"},permissions:INSTAGRAM_SCOPES,expectedCode:"instagram_wrong_account"});
+  await attempt({permissions:INSTAGRAM_SCOPES.slice(0,2),expectedCode:"instagram_scope_missing"});
+  await attempt({permissions:[...INSTAGRAM_SCOPES,"instagram_business_manage_messages"],expectedCode:"instagram_scope_unexpected"});
+  await attempt({permissions:{invalid:true},expectedCode:"instagram_scope_response_invalid"});
+});
+
+test("Instagram OAuth revokes an acquired token after any later provider failure without persisting it",async()=>{
+  const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[]});
+  const environment={...ENV,NOVA_META_INSTAGRAM_ACCOUNT_ID:"17841421559881769",NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"server-only-secret",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32,7).toString("base64")},requests=[];
+  const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,4),fetchImpl:async(url,options={})=>{const href=String(url),method=options.method||"GET";requests.push({href,method});if(href.startsWith("https://api.instagram.com/oauth/access_token"))return{ok:true,async json(){return{data:[{access_token:"short-private",permissions:INSTAGRAM_SCOPES.join(",")}]};}};if(method==="DELETE")return{ok:true,async json(){return{};}};return{ok:false,async json(){return{error:{code:190}};}};}}),started=await service.start();
+  await assert.rejects(service.complete({code:"provider-code",state:new URL(started.authorizationUrl).searchParams.get("state"),session:started.session}),error=>error.code==="instagram_provider_rejected"&&!error.message.includes("short-private"));
+  assert.equal(requests.at(-1).method,"DELETE");assert.equal(await storage.getInstagramConnection(OWNER_ID),null);
 });
 
 test("Instagram OAuth configuration fails closed for incomplete settings, unsafe callbacks, and invalid encryption keys",()=>{
