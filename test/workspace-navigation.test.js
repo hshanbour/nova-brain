@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { selectWorkspace } from "../assets/workspace-navigation.js";
+import { createStaticFileHandler } from "../src/http/static-files.js";
 
 function link(section) {
   const classes = new Set(); const attributes = new Map();
@@ -29,4 +30,22 @@ test("unknown or default workspace selection safely falls back to Chat", () => {
 test("generic hidden CSS wins over workspace display declarations", async () => {
   const css = await readFile(new URL("../assets/console.css", import.meta.url), "utf8");
   assert.match(css, /\.workspace\[hidden\]\{display:none\}/);
+});
+
+test("the local Console server exposes every module in the navigation startup import graph", async () => {
+  const [consoleSource, voiceV2Source] = await Promise.all([
+    readFile(new URL("../assets/console.js", import.meta.url), "utf8"),
+    readFile(new URL("../assets/voice-v2.js", import.meta.url), "utf8"),
+  ]);
+  const importedAssets = [...`${consoleSource}\n${voiceV2Source}`.matchAll(/from\s+["']\.\/(.+?\.js)["']/g)]
+    .map((match) => `/assets/${match[1]}`);
+  const serveStatic = createStaticFileHandler();
+
+  for (const asset of new Set(importedAssets)) {
+    const response = { headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(body) { this.body = body; } };
+    assert.equal(await serveStatic({ method: "GET", url: asset }, response), true, `${asset} must be served`);
+    assert.equal(response.statusCode, 200);
+    assert.match(response.headers["Content-Type"], /^text\/javascript/);
+    assert.ok(response.body.length > 0);
+  }
 });
