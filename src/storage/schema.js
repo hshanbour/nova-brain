@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -273,6 +273,25 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     encrypted_access_token jsonb,
     access_token_expires_at timestamptz,
     encrypted_refresh_token jsonb NOT NULL,
+    connected_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS nova_instagram_oauth_states (
+    state_hash text PRIMARY KEY,
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    session_hash text NOT NULL,
+    expires_at timestamptz NOT NULL,
+    consumed_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_instagram_oauth_states_owner_expiry_idx ON nova_instagram_oauth_states (owner_id, expires_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS nova_instagram_connections (
+    owner_id text PRIMARY KEY REFERENCES nova_owners(id) ON DELETE CASCADE,
+    account_id text NOT NULL,
+    username text NOT NULL,
+    scopes jsonb NOT NULL,
+    encrypted_access_token jsonb NOT NULL,
+    expires_at timestamptz NOT NULL,
     connected_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
   )`,
@@ -583,5 +602,5 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     FOREIGN KEY(owner_id,budget_id) REFERENCES nova_model_cost_budgets(owner_id,budget_id) ON DELETE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS nova_model_cost_task_idx ON nova_model_cost_reservations (owner_id,budget_id,task_id,created_at)`,
-  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17), (18), (19), (20), (21), (22), (23), (24), (25), (26) ON CONFLICT (version) DO NOTHING`
+  `INSERT INTO nova_schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16), (17), (18), (19), (20), (21), (22), (23), (24), (25), (26), (27) ON CONFLICT (version) DO NOTHING`
 ]);

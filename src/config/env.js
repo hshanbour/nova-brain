@@ -113,10 +113,25 @@ function parseSocialConfig(environment) {
   const supplied=Object.values(values).filter(Boolean).length;
   if(supplied>0&&supplied!==Object.keys(values).length)throw new Error("All four Nova Social Meta environment variables must be configured together.");
   const instagramLoginAccessToken=environment.NOVA_META_INSTAGRAM_LOGIN_ACCESS_TOKEN||null;
-  if(!supplied){if(instagramLoginAccessToken)throw new Error("NOVA_META_INSTAGRAM_LOGIN_ACCESS_TOKEN requires the four base Nova Social Meta variables.");return Object.freeze({configured:false,liveEnabled:false,instagramLoginAccessToken:null,...values});}
+  const oauthValues={
+    appId:environment.NOVA_META_INSTAGRAM_APP_ID||null,
+    appSecret:environment.NOVA_META_INSTAGRAM_APP_SECRET||null,
+    redirectUri:environment.NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI||null,
+    tokenEncryptionKey:environment.NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY||null,
+  };
+  const oauthSupplied=Object.values(oauthValues).filter(Boolean).length;
+  if(oauthSupplied>0&&oauthSupplied!==Object.keys(oauthValues).length)throw new Error("All four Instagram OAuth environment variables must be configured together.");
+  if(oauthSupplied){
+    if(!/^\d{5,30}$/.test(oauthValues.appId))throw new Error("NOVA_META_INSTAGRAM_APP_ID is invalid.");
+    let redirect;try{redirect=new URL(oauthValues.redirectUri);}catch{throw new Error("NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI must be an absolute URL.");}
+    if(redirect.protocol!=="https:"||redirect.pathname!=="/api/integrations/instagram/oauth/callback")throw new Error("NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI must be Nova's HTTPS Instagram callback route.");
+    const key=/^[a-f0-9]{64}$/i.test(oauthValues.tokenEncryptionKey)?Buffer.from(oauthValues.tokenEncryptionKey,"hex"):Buffer.from(oauthValues.tokenEncryptionKey,"base64");
+    if(key.length!==32)throw new Error("NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");
+  }
+  if(!supplied){if(instagramLoginAccessToken||oauthSupplied)throw new Error("Instagram credentials require the four base Nova Social Meta variables.");return Object.freeze({configured:false,liveEnabled:false,instagramLoginAccessToken:null,oauth:Object.freeze({configured:false,...oauthValues}),...values});}
   if(!/^v\d+\.\d+$/.test(values.graphVersion))throw new Error("NOVA_META_GRAPH_API_VERSION is invalid.");
   if(!/^\d{5,30}$/.test(values.pageId)||!/^\d{5,30}$/.test(values.instagramAccountId))throw new Error("Nova Social Meta asset IDs are invalid.");
-  return Object.freeze({configured:true,liveEnabled:environment.NOVA_SOCIAL_LIVE_ENABLED==="true",instagramLoginAccessToken,...values});
+  return Object.freeze({configured:true,liveEnabled:environment.NOVA_SOCIAL_LIVE_ENABLED==="true",instagramLoginAccessToken,oauth:Object.freeze({configured:oauthSupplied===4,...oauthValues}),...values});
 }
 
 function parseOptionalReasoningEffort(value, name) {

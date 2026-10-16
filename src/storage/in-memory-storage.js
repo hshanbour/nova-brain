@@ -42,6 +42,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const approvals = new Map();
   const gmailOAuthStates = new Map();
   const gmailConnections = new Map();
+  const instagramOAuthStates = new Map();
+  const instagramConnections = new Map();
   const gmailDrafts = new Map();
   const gmailSendIntents = new Map();
   const whatsappInboundMessages = new Map();
@@ -1009,6 +1011,17 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       gmailConnections.delete(ownerId);
       return copy(current);
     },
+    async saveInstagramOAuthState(input) {
+      for (const [key,state] of instagramOAuthStates) if(state.consumedAt||new Date(state.expiresAt)<=clock()) instagramOAuthStates.delete(key);
+      const record={...copy(input),consumedAt:null,createdAt:now(clock)};instagramOAuthStates.set(record.stateHash,record);return copy(record);
+    },
+    async consumeInstagramOAuthState({stateHash,ownerId,sessionHash,consumedAt}) {
+      const current=instagramOAuthStates.get(stateHash);if(!current||current.ownerId!==ownerId||current.sessionHash!==sessionHash||current.consumedAt||new Date(current.expiresAt)<=new Date(consumedAt))return null;
+      const updated={...current,consumedAt};instagramOAuthStates.set(stateHash,updated);return copy(updated);
+    },
+    async saveInstagramConnection(input) { const current=instagramConnections.get(input.ownerId),timestamp=now(clock),saved={...copy(input),connectedAt:current?.connectedAt||timestamp,updatedAt:timestamp};instagramConnections.set(input.ownerId,saved);return copy(saved); },
+    async getInstagramConnection(ownerId) { return copy(instagramConnections.get(ownerId)||null); },
+    async deleteInstagramConnection(ownerId) { const current=instagramConnections.get(ownerId);if(!current)return null;instagramConnections.delete(ownerId);return copy(current); },
     async createGmailDraft(input) {
       const saved = { ...copy(input), createdAt: now(clock) };
       gmailDrafts.set(saved.id, saved);

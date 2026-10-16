@@ -5,6 +5,7 @@ import { readConfig } from "../src/config/env.js";
 import { OWNER_ID } from "../src/identity/initial-context.js";
 import { createActionPolicy, ApprovalRequiredError } from "../src/policy/action-policy.js";
 import { createMetaPublishingAdapter, createSocialService } from "../src/social/social-service.js";
+import { createInstagramOAuthService, INSTAGRAM_SCOPES } from "../src/social/instagram-oauth.js";
 import { registerSocialTools } from "../src/social/social-tools.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { SCHEMA_STATEMENTS, SCHEMA_VERSION } from "../src/storage/schema.js";
@@ -30,13 +31,45 @@ test("Social configuration is server-only, complete, and live-disabled by defaul
   const config=readConfig(ENV);assert.equal(config.social.configured,true);assert.equal(config.social.liveEnabled,false);assert.equal(config.social.accessToken,"server-only-token");
 });
 
-test("schema 26 contains project-scoped content, production plans, metrics, and durable exactly-once publication records",()=>{
-  assert.equal(SCHEMA_VERSION,26);
+test("schema 27 contains project-scoped social data and encrypted Instagram OAuth storage",()=>{
+  assert.equal(SCHEMA_VERSION,27);
   for(const table of["nova_social_content","nova_social_publications"])assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes(`CREATE TABLE IF NOT EXISTS ${table}`)));
   assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_social_metric_snapshots")));
   assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("ADD COLUMN IF NOT EXISTS plan")));
+  assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_instagram_oauth_states")));
+  assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_instagram_connections")));
   const publication=SCHEMA_STATEMENTS.find(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_social_publications"));
   assert.match(publication,/UNIQUE\(owner_id,intent_hash\)/);assert.match(publication,/lease_token/);assert.match(publication,/approval_id/);
+});
+
+test("Instagram OAuth is single-use, exact-scope, owner-bound, encrypted, and verifies Nova's account",async()=>{
+  const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[]});
+  const environment={...ENV,NOVA_META_INSTAGRAM_ACCOUNT_ID:"17841421559881769",NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"server-only-secret",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32,7).toString("base64")};
+  const replies=[{access_token:"short-private",user_id:"17841421559881769"},{access_token:"long-private",expires_in:5184000},{id:"17841421559881769",user_id:"17841421559881769",username:"novadigitalservicesuk",account_type:"BUSINESS"},{data:INSTAGRAM_SCOPES.map(permission=>({permission,status:"granted"}))}];
+  const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,9),fetchImpl:async()=>({ok:true,async json(){return replies.shift();}})}),started=await service.start(),url=new URL(started.authorizationUrl);
+  assert.deepEqual(url.searchParams.get("scope").split(","),INSTAGRAM_SCOPES);assert.doesNotMatch(started.authorizationUrl,/messages|comments|advertising/);
+  const state=url.searchParams.get("state"),completed=await service.complete({code:"provider-code",state,session:started.session});assert.equal(completed.username,"novadigitalservicesuk");
+  const stored=await storage.getInstagramConnection(OWNER_ID);assert.notEqual(stored.encryptedAccessToken.ciphertext,"long-private");assert.equal(JSON.stringify(stored).includes("long-private"),false);
+  await assert.rejects(service.complete({code:"provider-code",state,session:started.session}),error=>error.code==="instagram_oauth_state_rejected");
+});
+
+test("Instagram OAuth rejects and revokes a wrong account or incomplete exact scope grant",async()=>{
+  const environment={...ENV,NOVA_META_INSTAGRAM_ACCOUNT_ID:"17841421559881769",NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"server-only-secret",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32,7).toString("base64")};
+  const attempt=async({profile,permissions,expectedCode})=>{
+    const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[]});
+    const replies=[{access_token:"short-private"},{access_token:"long-private",expires_in:5184000},profile,...(permissions?[{data:permissions.map(permission=>({permission,status:"granted"}))}]:[])],requests=[];
+    const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,5),fetchImpl:async(url,options={})=>{requests.push({url:String(url),method:options.method||"GET"});return{ok:true,async json(){return replies.shift()||{};}};}}),started=await service.start();
+    await assert.rejects(service.complete({code:"provider-code",state:new URL(started.authorizationUrl).searchParams.get("state"),session:started.session}),error=>error.code===expectedCode);
+    assert.equal(requests.at(-1).method,"DELETE");assert.equal(await storage.getInstagramConnection(OWNER_ID),null);
+  };
+  await attempt({profile:{id:"not-nova",username:"someone_else"},expectedCode:"instagram_wrong_account"});
+  await attempt({profile:{id:"17841421559881769",username:"novadigitalservicesuk"},permissions:INSTAGRAM_SCOPES.slice(0,2),expectedCode:"instagram_scope_missing"});
+});
+
+test("Instagram OAuth configuration fails closed for incomplete settings, unsafe callbacks, and invalid encryption keys",()=>{
+  assert.throws(()=>readConfig({...ENV,NOVA_META_INSTAGRAM_APP_ID:"1601026398491282"}),/all four Instagram OAuth/i);
+  assert.throws(()=>readConfig({...ENV,NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"private",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"http://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32).toString("base64")}),/HTTPS Instagram callback/i);
+  assert.throws(()=>readConfig({...ENV,NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"private",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:"too-short"}),/exactly 32 bytes/i);
 });
 
 test("the five-concept launch batch is idempotent, English-first, project-scoped, and follows the 40/40/20 pillars",async()=>{

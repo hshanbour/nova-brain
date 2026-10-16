@@ -58,6 +58,7 @@ import { DeveloperWorkspaceHandoffError } from "../autonomy/developer-workspace-
 import { OpenAIProviderError } from "../providers/openai-model-provider.js";
 import { ModelCostBudgetError } from "../providers/model-cost-budget.js";
 import { GmailError, GMAIL_OAUTH_COOKIE } from "../email/gmail-service.js";
+import { InstagramOAuthError, INSTAGRAM_OAUTH_COOKIE } from "../social/instagram-oauth.js";
 import { PhoneError } from "../phone/phone-service.js";
 import { OwnerContactPolicyError } from "../phone/owner-contact-policy.js";
 import { assertTwilioSignature } from "../phone/twilio-signature.js";
@@ -186,6 +187,8 @@ function gmailOAuthCookie(value, { secure, clear = false } = {}) {
   return `${GMAIL_OAUTH_COOKIE}=${clear ? "" : encodeURIComponent(value)}; Path=/api/integrations/gmail/oauth/callback; HttpOnly; SameSite=Lax; ${secure ? "Secure; " : ""}Max-Age=${clear ? 0 : 600}`;
 }
 
+function instagramOAuthCookie(value,{secure,clear=false}={}){return `${INSTAGRAM_OAUTH_COOKIE}=${clear?"":encodeURIComponent(value)}; Path=/api/integrations/instagram/oauth/callback; HttpOnly; SameSite=Lax; ${secure?"Secure; ":""}Max-Age=${clear?0:600}`;}
+
 export function createApi({
   agent,
   config,
@@ -222,6 +225,7 @@ export function createApi({
   phoneService,
   whatsappService,
   socialService,
+  instagramOAuth,
   ownerContactPolicy,
   pstnSpeakerEnrollment,
   pstnSpeakerControls,
@@ -2212,6 +2216,10 @@ export function createApi({
           return;
         }
         if(request.method==="GET"&&pathname==="/api/social/status"){await ready();sendJson(response,200,await socialService.status());return;}
+        if(request.method==="GET"&&pathname==="/api/integrations/instagram/status"){await ready();sendJson(response,200,await instagramOAuth.status());return;}
+        if(request.method==="POST"&&pathname==="/api/integrations/instagram/oauth/start"){await ready();const started=await instagramOAuth.start(),secure=new URL(config.social.oauth.redirectUri).protocol==="https:";response.setHeader("Set-Cookie",instagramOAuthCookie(started.session,{secure}));sendJson(response,200,{authorizationUrl:started.authorizationUrl,expiresAt:started.expiresAt});return;}
+        if(request.method==="GET"&&pathname==="/api/integrations/instagram/oauth/callback"){await ready();if(url.searchParams.get("error"))throw new InstagramOAuthError("Instagram authorization was not completed.",{code:"instagram_oauth_denied",statusCode:400,category:"authorization"});await instagramOAuth.complete({code:url.searchParams.get("code"),state:url.searchParams.get("state"),session:cookieValue(request,INSTAGRAM_OAUTH_COOKIE)});try{await socialService.refreshMetrics("nova-digital-services-uk");}catch(error){logger.error("Nova Instagram connected but the initial metrics refresh failed",{requestId,code:error?.code||"social_metrics_refresh_failed"});}const secure=new URL(config.social.oauth.redirectUri).protocol==="https:";response.statusCode=302;response.setHeader("Location","/#social");response.setHeader("Set-Cookie",instagramOAuthCookie("",{secure,clear:true}));response.setHeader("Cache-Control","no-store");response.setHeader("Referrer-Policy","no-referrer");response.end();return;}
+        if(request.method==="POST"&&pathname==="/api/integrations/instagram/disconnect"){await ready();sendJson(response,200,await instagramOAuth.disconnect());return;}
         if(request.method==="GET"&&pathname==="/api/social/dashboard"){await ready();sendJson(response,200,await socialService.dashboard(url.searchParams.get("projectId")||undefined));return;}
         if(request.method==="GET"&&pathname==="/api/social/content"){await ready();sendJson(response,200,await socialService.list({projectId:url.searchParams.get("projectId")||undefined,status:url.searchParams.get("status")||undefined,limit:validateListLimit(url.searchParams.get("limit"),100,200)}));return;}
         if(request.method==="POST"&&pathname==="/api/social/content"){await ready();sendJson(response,201,await socialService.createDraft(await readJsonBody(request,config.maxBodyBytes)));return;}
@@ -2279,6 +2287,7 @@ export function createApi({
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "whatsapp_error", requestId });
           return;
         }
+        if(error instanceof InstagramOAuthError||error?.code?.startsWith?.("instagram_")){logger.error("Nova Instagram OAuth request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"instagram_oauth_error",requestId});return;}
         if(error instanceof SocialError||error?.code?.startsWith?.("social_")){logger.error("Nova Social request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"social_error",requestId});return;}
         if (error instanceof PhoneError || error instanceof OwnerContactPolicyError || error?.code?.startsWith?.("phone_") || error?.code?.startsWith?.("owner_contact_")) {
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "phone_error", requestId });
