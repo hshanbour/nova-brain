@@ -22,7 +22,9 @@ const ASSETS = Object.freeze({
   "/assets/voice-benchmark.js": { file: "../../assets/voice-benchmark.js", type: "text/javascript; charset=utf-8" },
   "/assets/workspace-navigation.js": { file: "../../assets/workspace-navigation.js", type: "text/javascript; charset=utf-8" },
   "/assets/web-citations.js": { file: "../../assets/web-citations.js", type: "text/javascript; charset=utf-8" },
-  "/assets/nova-mark.svg": { file: "../../assets/nova-mark.svg", type: "image/svg+xml" }
+  "/assets/nova-mark.svg": { file: "../../assets/nova-mark.svg", type: "image/svg+xml" },
+  "/assets/social/reels/three-jobs-ai-should-assist-v1.mp4": { file: "../../assets/social/reels/three-jobs-ai-should-assist-v1.mp4", type: "video/mp4" },
+  "/assets/social/reels/three-jobs-ai-should-assist-v1-poster.jpg": { file: "../../assets/social/reels/three-jobs-ai-should-assist-v1-poster.jpg", type: "image/jpeg" }
 });
 
 export function createStaticFileHandler({ loadFile = readFile } = {}) {

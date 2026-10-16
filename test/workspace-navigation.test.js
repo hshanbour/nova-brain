@@ -49,3 +49,24 @@ test("the local Console server exposes every module in the navigation startup im
     assert.ok(response.body.length > 0);
   }
 });
+
+test("the local Console server exposes the owned first-Reel media with safe MIME types", async () => {
+  const requests = [];
+  const serveStatic = createStaticFileHandler({
+    async loadFile(url) {
+      requests.push(String(url));
+      return Buffer.from("owned-media");
+    }
+  });
+  for (const [url, expectedType] of [
+    ["/assets/social/reels/three-jobs-ai-should-assist-v1.mp4", "video/mp4"],
+    ["/assets/social/reels/three-jobs-ai-should-assist-v1-poster.jpg", "image/jpeg"]
+  ]) {
+    const response = { headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(body) { this.body = body; } };
+    assert.equal(await serveStatic({ method: "GET", url }, response), true);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers["Content-Type"], expectedType);
+    assert.equal(response.headers["X-Content-Type-Options"], "nosniff");
+  }
+  assert.equal(requests.length, 2);
+});
