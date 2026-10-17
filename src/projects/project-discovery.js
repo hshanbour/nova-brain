@@ -57,16 +57,51 @@ function githubClient({token,fetchImpl}){
   });
 }
 
-function neonClient({apiKey,fetchImpl}){
-  const configured=Boolean(apiKey);
-  return Object.freeze({configured,async list(){if(!configured)return[];const data=await jsonRequest(fetchImpl,"https://console.neon.tech/api/v2/projects?limit=100",{token:apiKey});return(data.projects||[]).map(project=>({provider:"neon",id:clean(project.id,120),name:clean(project.name,160),region:clean(project.region_id||project.region,80)||null,updatedAt:project.updated_at||null})).filter(item=>item.id&&item.name);}});
+const NEON_ID=/^[a-z0-9-]{1,60}$/;
+const NEON_READ_ROUTES=Object.freeze([
+  Object.freeze({pathname:/^\/api\/v2\/projects$/,query:new Set(["limit","cursor","org_id"]),required:["limit","org_id"]}),
+  Object.freeze({pathname:/^\/api\/v2\/projects\/[a-z0-9-]{1,60}\/branches$/,query:new Set(["limit","cursor","sort_by","sort_order"]),required:["limit"]}),
+  Object.freeze({pathname:/^\/api\/v2\/projects\/[a-z0-9-]{1,60}\/branches\/[a-z0-9-]{1,60}\/databases$/,query:new Set(),required:[]}),
+  Object.freeze({pathname:/^\/api\/v2\/projects\/[a-z0-9-]{1,60}\/branches\/[a-z0-9-]{1,60}\/schema$/,query:new Set(["db_name","format"]),required:["db_name","format"]}),
+]);
+
+export function assertNeonDiscoveryGetUrl(value,{method="GET"}={}){
+  let url;try{url=new URL(value);}catch{throw new ProjectDiscoveryError("neon_discovery_request_forbidden","Nova blocked an invalid Neon discovery request.",403);}
+  const route=NEON_READ_ROUTES.find(item=>item.pathname.test(url.pathname)),queryKeys=[...url.searchParams.keys()];
+  const invalidSchema=url.pathname.endsWith("/schema")&&url.searchParams.get("format")!=="json";
+  if(method!=="GET"||url.origin!=="https://console.neon.tech"||url.username||url.password||url.hash||!route||invalidSchema||queryKeys.some(key=>!route.query.has(key))||[...route.query].some(key=>url.searchParams.getAll(key).length>1)||route.required.some(key=>!url.searchParams.get(key)))throw new ProjectDiscoveryError("neon_discovery_request_forbidden","Nova permits only bounded Neon project, branch, database, and schema metadata reads.",403);
+  return url.toString();
+}
+
+async function neonReadRequest(fetchImpl,url,{token}={}){
+  const allowed=assertNeonDiscoveryGetUrl(url),response=await fetchImpl(allowed,{method:"GET",headers:{Accept:"application/json",Authorization:`Bearer ${token}`},redirect:"error",signal:AbortSignal.timeout(12_000)});
+  if(!response.ok)throw new ProjectDiscoveryError("project_provider_unavailable","The authorised Neon project provider could not be read.",503,{provider:"console.neon.tech",status:response.status});
+  const length=Number(response.headers.get("content-length")||0);if(length>2*1024*1024)throw new ProjectDiscoveryError("neon_discovery_response_too_large","Neon metadata exceeded Nova's bounded discovery limit.",502);
+  const text=await response.text();if(Buffer.byteLength(text,"utf8")>2*1024*1024)throw new ProjectDiscoveryError("neon_discovery_response_too_large","Neon metadata exceeded Nova's bounded discovery limit.",502);
+  try{return JSON.parse(text);}catch{throw new ProjectDiscoveryError("neon_discovery_response_invalid","Neon returned invalid metadata.",502);}
+}
+
+function safeSchemaSummary(value,{database}={}){
+  const serialized=JSON.stringify(value),tables=new Set(),schemas=new Set();
+  const visit=(node,key="")=>{if(!node||typeof node!=="object")return;if(Array.isArray(node)){for(const item of node)visit(item,key);return;}for(const [name,item] of Object.entries(node)){const lowered=name.toLowerCase();if(typeof item==="string"){if(["table","table_name","tablename"].includes(lowered)&&/^[A-Za-z_][A-Za-z0-9_$.-]{0,127}$/.test(item))tables.add(clean(item,128));if(["schema","schema_name","schemaname"].includes(lowered)&&/^[A-Za-z_][A-Za-z0-9_$.-]{0,127}$/.test(item))schemas.add(clean(item,128));}visit(item,name);}};
+  visit(value);
+  return Object.freeze({database:clean(database,120),contentHash:hash(serialized),tableCount:tables.size,tables:[...tables].sort().slice(0,250),schemaCount:schemas.size,schemas:[...schemas].sort().slice(0,50),rowsRead:false,connectionStringRead:false,rawSchemaRetained:false});
+}
+
+function neonClient({apiKey,orgId,fetchImpl}){
+  const configured=Boolean(apiKey&&orgId),get=url=>neonReadRequest(fetchImpl,url,{token:apiKey});
+  async function list(){if(!configured)return[];const projects=[];let cursor=null;for(let page=0;page<20;page++){const query=new URLSearchParams({limit:"100",org_id:orgId,...(cursor?{cursor}:{})}),data=await get(`https://console.neon.tech/api/v2/projects?${query}`);projects.push(...(data.projects||[]));cursor=data.pagination?.next||null;if(!cursor)break;}return projects.map(project=>({provider:"neon",id:clean(project.id,120),name:clean(project.name,160),region:clean(project.region_id||project.region,80)||null,updatedAt:project.updated_at||null,creationSource:clean(project.creation_source,80)||null})).filter(item=>NEON_ID.test(item.id)&&item.name);}
+  async function inspect(projectId){if(!configured||!NEON_ID.test(projectId))throw new ProjectDiscoveryError("neon_discovery_target_invalid","Choose one authorised Neon project.",400);const query=new URLSearchParams({limit:"100",sort_by:"updated_at",sort_order:"desc"}),data=await get(`https://console.neon.tech/api/v2/projects/${projectId}/branches?${query}`),branches=data.branches||[],selected=[...branches.filter(branch=>branch.default===true||branch.primary===true),...branches].filter((branch,index,array)=>array.findIndex(item=>item.id===branch.id)===index).slice(0,5),safeBranches=[];for(const branch of selected){const branchId=clean(branch.id,120);if(!NEON_ID.test(branchId))continue;const databaseData=await get(`https://console.neon.tech/api/v2/projects/${projectId}/branches/${branchId}/databases`),databases=[];for(const database of (databaseData.databases||[]).slice(0,20)){const name=clean(database.name,120);if(!name)continue;let schema=null;try{const schemaQuery=new URLSearchParams({db_name:name,format:"json"}),schemaData=await get(`https://console.neon.tech/api/v2/projects/${projectId}/branches/${branchId}/schema?${schemaQuery}`);schema=safeSchemaSummary(schemaData,{database:name});}catch(error){schema={database:name,available:false,errorCode:error.code||"neon_schema_unavailable",rowsRead:false,connectionStringRead:false};}databases.push({name,owner:clean(database.owner_name,120)||null,schema});}safeBranches.push({id:branchId,name:clean(branch.name,160),default:branch.default===true||branch.primary===true,parentId:NEON_ID.test(String(branch.parent_id||""))?branch.parent_id:null,updatedAt:branch.updated_at||null,databases});}
+    return{provider:"neon",id:projectId,branches:safeBranches,permissions:{providerCredential:"organisation-bound API key",applicationOperations:["GET projects","GET branches","GET databases","GET schema"],executionGranted:false,rowsRead:false,connectionStringsRead:false}};
+  }
+  return Object.freeze({configured,list,inspect});
 }
 
 export function createProjectDiscoveryProviders({config,vercelAccountIntegration,fetchImpl=globalThis.fetch}={}){
   return Object.freeze({
     vercel:vercelClient({token:config?.vercelToken,teamId:config?.vercelTeamId,credentialProvider:vercelAccountIntegration?()=>vercelAccountIntegration.credential():null,fetchImpl}),
     github:githubClient({token:config?.githubToken,fetchImpl}),
-    neon:neonClient({apiKey:config?.neonApiKey,fetchImpl}),
+    neon:neonClient({apiKey:config?.neonApiKey,orgId:config?.neonOrgId,fetchImpl}),
   });
 }
 
@@ -81,13 +116,13 @@ export function createProjectDiscoveryService({providers,projectService,projectO
     const vercel=await providers.vercel.inspect(clean(assetId,120)),deployment=vercel.latestDeployment,repository=deployment?.git?.repository||null;
     let github=null;if(repository&&providers.github?.configured)try{github=await providers.github.inspect(repository,deployment.git.commitSha||deployment.git.branch);}catch{/* represented below as missing */}
     let website=null;const websiteUrl=vercel.domains[0]||deployment?.url;if(websiteUrl&&pageReader)try{const value=await pageReader.read(websiteUrl);website=value.status==="completed"?{status:"completed",url:value.url,title:clean(value.title,300)||null,contentHash:value.contentHash,retrievedAt:value.retrievedAt,excerpt:clean(value.text,1800)}:{status:value.status,limitation:clean(value.limitation,200)};}catch{website={status:"unavailable"};}
-    let neon=[];if(providers.neon?.configured)try{neon=(await providers.neon.list()).filter(item=>similarity(item.name,vercel.name)>=0.5).map(item=>({...item,relationship:"possible_name_match",confirmed:false}));}catch{/* provider status remains visible in catalog */}
+    let neon=[];if(providers.neon?.configured)try{const candidates=(await providers.neon.list()).filter(item=>similarity(item.name,vercel.name)>=0.5);for(const item of candidates){let metadata=null;try{metadata=await providers.neon.inspect(item.id);}catch{/* candidate remains reviewable without schema metadata */}const branchCount=metadata?.branches?.length||0,databaseCount=metadata?.branches?.reduce((total,branch)=>total+branch.databases.length,0)||0,tableNames=[...new Set((metadata?.branches||[]).flatMap(branch=>branch.databases.flatMap(database=>database.schema?.tables||[])))].slice(0,250);neon.push({...item,relationship:"possible_metadata_match",confirmed:false,evidence:{nameSimilarity:Number(similarity(item.name,vercel.name).toFixed(3)),branchCount,databaseCount,tableCount:tableNames.length,tables:tableNames,rowsRead:false,connectionStringRead:false},metadata});}}catch{/* provider status remains visible in catalog */}
     const existing=(await storage.listProjects(ownerId)).filter(item=>similarity(item.name,vercel.name)>=0.5).map(item=>({id:item.id,name:item.name,match:item.id===slug(vercel.name)?"exact_identity":"similar_name_only"}));
     const snapshot={version:1,inspectedAt:clock().toISOString(),vercel,github,website,neon};const facts=projectFacts(snapshot),questions=[];
     if(!github)questions.push(repository?"Confirm that Nova's GitHub authorization includes the linked repository.":"Confirm which GitHub repository, if any, is authoritative for this Vercel project.");
-    if(neon.length)questions.push(`Confirm whether ${neon.map(item=>item.name).join(", ")} is the database for this project; name similarity alone is not proof.`);else questions.push("Confirm whether this project uses a database and, if so, which authorised database is authoritative.");
+    if(neon.length)questions.push(`Confirm whether ${neon.map(item=>item.name).join(", ")} is the database for this project; project names and schema metadata narrow the candidates but do not prove the deployment credential binding.`);else questions.push("Confirm whether this project uses a database and, if so, which authorised database is authoritative.");
     questions.push("Confirm the business purpose, current operational status, and any private integrations that cannot be proven from read-only provider metadata.");
-    return{snapshotId:`inspection-${hash(JSON.stringify(snapshot)).slice(0,32)}`,suggestedProject:{id:slug(vercel.name),name:vercel.name.split("-").map(word=>word&&word[0].toUpperCase()+word.slice(1)).join(" "),description:`Imported read-only from authorised Vercel project ${vercel.name}.`},facts,connections:{vercel:{status:"confirmed",id:vercel.id,name:vercel.name},github:github?{status:"confirmed",repository:github.id,ref:github.ref}:{status:"missing_or_unavailable"},neon:neon.map(item=>({status:"possible",id:item.id,name:item.name,reason:"name_match_only"}))},missingInformation:questions,existingProjects:existing,snapshot};
+    return{snapshotId:`inspection-${hash(JSON.stringify(snapshot)).slice(0,32)}`,suggestedProject:{id:slug(vercel.name),name:vercel.name.split("-").map(word=>word&&word[0].toUpperCase()+word.slice(1)).join(" "),description:`Imported read-only from authorised Vercel project ${vercel.name}.`},facts,connections:{vercel:{status:"confirmed",id:vercel.id,name:vercel.name},github:github?{status:"confirmed",repository:github.id,ref:github.ref}:{status:"missing_or_unavailable"},neon:neon.map(item=>({status:"possible",id:item.id,name:item.name,reason:"metadata_match_requires_owner_confirmation",evidence:item.evidence}))},missingInformation:questions,existingProjects:existing,snapshot};
   }
   async function importProject({provider="vercel",assetId,projectId,projectName}={}){
     const result=await inspect({provider,assetId}),expectedId=slug(result.snapshot.vercel.name),chosenId=clean(projectId||expectedId,80).toLowerCase();

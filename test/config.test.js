@@ -130,3 +130,12 @@ test("project discovery requires its own paired team token and never reuses depl
   assert.equal(configured.projectDiscovery.vercelTeamId,"team_owner");
   assert.equal(configured.projectDiscovery.vercelIntegration.teamToken,"dedicated-discovery");
 });
+
+test("Neon discovery requires a dedicated organization-bound credential pair",()=>{
+  assert.throws(()=>readConfig({NOVA_PROJECT_DISCOVERY_NEON_API_KEY:"discovery-only"}),/must be configured together/);
+  assert.throws(()=>readConfig({NOVA_PROJECT_DISCOVERY_NEON_ORG_ID:"org-owner"}),/must be configured together/);
+  assert.throws(()=>readConfig({NOVA_PROJECT_DISCOVERY_NEON_API_KEY:"dedicated-neon",NOVA_PROJECT_DISCOVERY_NEON_ORG_ID:"wrong"}),/NEON_ORG_ID is invalid/);
+  const configured=readConfig({NOVA_PROJECT_DISCOVERY_NEON_API_KEY:"dedicated-neon",NOVA_PROJECT_DISCOVERY_NEON_ORG_ID:"org-owner"});
+  assert.equal(configured.projectDiscovery.neonApiKey,"dedicated-neon");
+  assert.equal(configured.projectDiscovery.neonOrgId,"org-owner");
+});

@@ -144,6 +144,9 @@ function parseVercelIntegrationConfig(environment){
   if(supplied){let redirect;try{redirect=new URL(values.redirectUri);}catch{throw new Error("NOVA_VERCEL_INTEGRATION_REDIRECT_URI must be an absolute URL.");}if(redirect.protocol!=="https:"||redirect.pathname!=="/api/integrations/vercel/oauth/callback")throw new Error("NOVA_VERCEL_INTEGRATION_REDIRECT_URI must be Nova's HTTPS Vercel callback route.");if(!/^[a-z0-9][a-z0-9-]{1,31}$/.test(values.integrationSlug))throw new Error("NOVA_VERCEL_INTEGRATION_SLUG is invalid.");const key=/^[a-f0-9]{64}$/i.test(values.tokenEncryptionKey)?Buffer.from(values.tokenEncryptionKey,"hex"):Buffer.from(values.tokenEncryptionKey,"base64");if(key.length!==32)throw new Error("NOVA_VERCEL_INTEGRATION_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");}
   const teamToken=environment.NOVA_PROJECT_DISCOVERY_VERCEL_TOKEN||null,teamId=environment.NOVA_PROJECT_DISCOVERY_VERCEL_TEAM_ID||null;
   if(Boolean(teamToken)!==Boolean(teamId))throw new Error("NOVA_PROJECT_DISCOVERY_VERCEL_TOKEN and NOVA_PROJECT_DISCOVERY_VERCEL_TEAM_ID must be configured together.");
+  const neonApiKey=environment.NOVA_PROJECT_DISCOVERY_NEON_API_KEY||null,neonOrgId=environment.NOVA_PROJECT_DISCOVERY_NEON_ORG_ID||null;
+  if(Boolean(neonApiKey)!==Boolean(neonOrgId))throw new Error("NOVA_PROJECT_DISCOVERY_NEON_API_KEY and NOVA_PROJECT_DISCOVERY_NEON_ORG_ID must be configured together.");
+  if(neonOrgId&&!/^org-[a-z0-9-]{1,56}$/.test(neonOrgId))throw new Error("NOVA_PROJECT_DISCOVERY_NEON_ORG_ID is invalid.");
   return Object.freeze({configured:supplied===Object.keys(values).length,...values,teamToken,teamId});
 }
 
@@ -344,6 +347,7 @@ export function readConfig(environment = process.env) {
       vercelTeamId: environment.NOVA_PROJECT_DISCOVERY_VERCEL_TEAM_ID || null,
       githubToken: environment.NOVA_BRAIN_GITHUB_TOKEN || null,
       neonApiKey: environment.NOVA_PROJECT_DISCOVERY_NEON_API_KEY || null,
+      neonOrgId: environment.NOVA_PROJECT_DISCOVERY_NEON_ORG_ID || null,
       vercelIntegration: parseVercelIntegrationConfig(environment),
     }),
     gmail,
