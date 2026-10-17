@@ -49,6 +49,8 @@ export const ownerMemoryClient = Object.freeze({
   cancelSocialPublication: (id) => request(`/api/social/publications/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
   createSocialLaunchBatch: (projectId) => request("/api/social/launch-batch", { method: "POST", body: JSON.stringify({ projectId }) }),
   refreshSocialMetrics: (projectId) => request("/api/social/metrics/refresh", { method: "POST", body: JSON.stringify({ projectId }) }),
+  sharpCutsAutomationDashboard: () => request("/api/business-automation/sharp-cuts/dashboard"),
+  runSharpCutsRetentionDemo: () => request("/api/business-automation/sharp-cuts/retention-demo", { method: "POST", body: "{}" }),
   approvals: ({ status, conversationId, limit } = {}) => {
     const query = new URLSearchParams();
     if (status) query.set("status", status);

@@ -75,6 +75,7 @@ import {createApprovalReconciliation} from "./autonomy/approval-reconciliation.j
 import {createSocialService} from "./social/social-service.js";
 import {registerSocialTools} from "./social/social-tools.js";
 import {createInstagramOAuthService} from "./social/instagram-oauth.js";
+import {createSharpCutsAutomationService} from "./automation/sharp-cuts-automation.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -164,6 +165,7 @@ export function createApp({
   const whatsappService = createWhatsAppService({ config, storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), fetchImpl: whatsappFetchImpl || globalThis.fetch, logger });
   const instagramOAuth=createInstagramOAuthService({config,storage,ownerId:OWNER_ID});
   const socialService=createSocialService({config,storage,ownerId:OWNER_ID,instagramOAuth});
+  const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID});
   registerSocialTools(toolRegistry,{service:socialService});
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){
@@ -416,6 +418,7 @@ export function createApp({
     whatsappService,
     socialService,
     instagramOAuth,
+    sharpCutsAutomation,
     ownerContactPolicy,
     pstnSpeakerEnrollment,
     pstnSpeakerControls,
@@ -423,5 +426,5 @@ export function createApp({
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, instagramOAuth, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding, projectDiscovery, vercelAccountIntegration });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, instagramOAuth, sharpCutsAutomation, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding, projectDiscovery, vercelAccountIntegration });
 }

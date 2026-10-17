@@ -66,6 +66,7 @@ import { OwnerContactPolicyError } from "../phone/owner-contact-policy.js";
 import { assertTwilioSignature } from "../phone/twilio-signature.js";
 import { WhatsAppError } from "../whatsapp/whatsapp-service.js";
 import {SocialError} from "../social/social-service.js";
+import {SharpCutsAutomationError} from "../automation/sharp-cuts-automation.js";
 
 class StorageUnavailableError extends Error {}
 
@@ -231,6 +232,7 @@ export function createApi({
   whatsappService,
   socialService,
   instagramOAuth,
+  sharpCutsAutomation,
   ownerContactPolicy,
   pstnSpeakerEnrollment,
   pstnSpeakerControls,
@@ -2253,6 +2255,8 @@ export function createApi({
         if(socialPublicationCancelMatch&&request.method==="POST"){await ready();sendJson(response,200,await socialService.cancelPublication(decodeURIComponent(socialPublicationCancelMatch[1])));return;}
         if(request.method==="POST"&&pathname==="/api/social/launch-batch"){await ready();const input=await readJsonBody(request,config.maxBodyBytes);if(typeof input.projectId!=="string"||!input.projectId.trim())throw new ValidationError("projectId is required.");sendJson(response,201,await socialService.createLaunchBatch(input.projectId.trim()));return;}
         if(request.method==="POST"&&pathname==="/api/social/metrics/refresh"){await ready();const input=await readJsonBody(request,config.maxBodyBytes);if(typeof input.projectId!=="string"||!input.projectId.trim())throw new ValidationError("projectId is required.");sendJson(response,200,await socialService.refreshMetrics(input.projectId.trim()));return;}
+        if(request.method==="GET"&&pathname==="/api/business-automation/sharp-cuts/dashboard"){await ready();sendJson(response,200,await sharpCutsAutomation.dashboard());return;}
+        if(request.method==="POST"&&pathname==="/api/business-automation/sharp-cuts/retention-demo"){await ready();sendJson(response,200,await sharpCutsAutomation.runSyntheticRetentionDemo());return;}
         if(request.method==="POST"&&pathname==="/api/admin/worker/social/tick"){await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);if(typeof input.workerId!=="string"||!input.workerId.trim()||input.workerId.length>200)throw new ValidationError("workerId is invalid.");sendJson(response,200,await socialService.processNext({workerId:input.workerId.trim()}));return;}
         if (request.method === "POST" && pathname === "/api/admin/worker/whatsapp/tick") {
           await ready();
@@ -2313,6 +2317,7 @@ export function createApi({
         if(error instanceof InstagramOAuthError||error?.code?.startsWith?.("instagram_")){logger.error("Nova Instagram OAuth request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"instagram_oauth_error",requestId});return;}
         if(error instanceof VercelAccountIntegrationError||error?.code?.startsWith?.("vercel_")){logger.error("Nova Vercel account connection request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"vercel_account_integration_error",requestId});return;}
         if(error instanceof SocialError||error?.code?.startsWith?.("social_")){logger.error("Nova Social request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"social_error",requestId});return;}
+        if(error instanceof SharpCutsAutomationError||error?.code?.startsWith?.("sharp_cuts_")){logger.error("Sharp Cuts automation request failed",{requestId,code:error.code});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"sharp_cuts_automation_error",requestId});return;}
         if (error instanceof PhoneError || error instanceof OwnerContactPolicyError || error?.code?.startsWith?.("phone_") || error?.code?.startsWith?.("owner_contact_")) {
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "phone_error", requestId });
           return;
