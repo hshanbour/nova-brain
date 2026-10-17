@@ -1,5 +1,6 @@
 import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
 import {PROJECT_DOCUMENT_LIMITS,ProjectSourceError} from "../projects/document-extractor.js";
+import {ProjectDiscoveryError} from "../projects/project-discovery.js";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -221,6 +222,7 @@ export function createApi({
   learningService,
   projectService,
   projectOnboarding,
+  projectDiscovery,
   gmailService,
   phoneService,
   whatsappService,
@@ -2186,6 +2188,15 @@ export function createApi({
           if(typeof input.name!=="string"||!input.name.trim()||input.name.length>120||input.id!==undefined&&(typeof input.id!=="string"||input.id.length>80)||input.description!==undefined&&(typeof input.description!=="string"||input.description.length>1000))throw new ValidationError("Project input is invalid.");
           sendJson(response,201,await projectService.create(input));return;
         }
+        if(request.method==="GET"&&pathname==="/api/project-discovery/catalog"){
+          await ready();if(!projectDiscovery)throw new ValidationError("Project discovery is unavailable.");sendJson(response,200,await projectDiscovery.catalog());return;
+        }
+        if(request.method==="POST"&&pathname==="/api/project-discovery/inspect"){
+          await ready();if(!projectDiscovery)throw new ValidationError("Project discovery is unavailable.");sendJson(response,200,await projectDiscovery.inspect(await readJsonBody(request,config.maxBodyBytes)));return;
+        }
+        if(request.method==="POST"&&pathname==="/api/project-discovery/import"){
+          await ready();if(!projectDiscovery)throw new ValidationError("Project discovery is unavailable.");sendJson(response,201,await projectDiscovery.importProject(await readJsonBody(request,config.maxBodyBytes)));return;
+        }
         const projectOnboardingMatch=pathname.match(/^\/api\/projects\/([^/]+)\/onboarding$/);
         if(projectOnboardingMatch&&request.method==="GET"){
           await ready();const result=await projectOnboarding?.summary(decodeURIComponent(projectOnboardingMatch[1]));sendJson(response,result?200:404,result||{error:"Project not found"});return;
@@ -2461,7 +2472,7 @@ export function createApi({
           return;
         }
 
-        if(error instanceof ProjectSourceError){sendJson(response,error.statusCode||400,{error:error.message,code:error.code,diagnostics:error.safeDiagnostics});return;}
+        if(error instanceof ProjectSourceError||error instanceof ProjectDiscoveryError){sendJson(response,error.statusCode||400,{error:error.message,code:error.code,diagnostics:error.safeDiagnostics});return;}
         if (error instanceof AgentDeadlineError) {
           sendJson(response, 504, { error: error.message,requestId,...(error.runId?{runId:error.runId}:{}),...(error.userMessageId?{userMessageId:error.userMessageId}:{}),...(error.conversationId?{conversationId:error.conversationId}:{}) });
           return;

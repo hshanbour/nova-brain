@@ -329,6 +329,12 @@ export function readConfig(environment = process.env) {
           (environment.NOVA_BRAIN_VERCEL_TEAM_ID || environment.VERCEL_TEAM_ID),
       ),
     }),
+    projectDiscovery: Object.freeze({
+      vercelToken: environment.NOVA_BRAIN_VERCEL_TOKEN || null,
+      vercelTeamId: environment.NOVA_BRAIN_VERCEL_TEAM_ID || environment.VERCEL_TEAM_ID || null,
+      githubToken: environment.NOVA_BRAIN_GITHUB_TOKEN || null,
+      neonApiKey: environment.NOVA_PROJECT_DISCOVERY_NEON_API_KEY || null,
+    }),
     gmail,
     phone,
     whatsapp,

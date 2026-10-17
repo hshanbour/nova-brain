@@ -33,6 +33,7 @@ import { createLocalWorkerHandoff } from "./autonomy/local-worker-handoff.js";
 import {createMemoryLearningService} from "./memory/learning-service.js";
 import {createProjectService} from "./projects/project-service.js";
 import {createProjectOnboardingService} from "./projects/project-onboarding.js";
+import {createProjectDiscoveryProviders,createProjectDiscoveryService} from "./projects/project-discovery.js";
 import { createGithubWriteAttestation } from "./autonomy/github-write-attestation.js";
 import { createPostAttestationRecovery } from "./autonomy/post-attestation-recovery.js";
 import { createSelfDevelopmentService, isDurableSelfDevelopmentRequest, parseExistingTaskControlRequest, SelfDevelopmentError, validateExistingTaskControlRequest } from "./autonomy/self-development.js";
@@ -95,6 +96,7 @@ export function createApp({
   phoneFetchImpl,
   phoneDialProvider,
   whatsappFetchImpl,
+  projectDiscoveryFetchImpl,
 } = {}) {
   const config = readConfig(environment);
   const storage = storageOverride || createStorage(config);
@@ -127,6 +129,7 @@ export function createApp({
   const learningService=typeof storage?.createMemoryCandidate==="function"?createMemoryLearningService({storage,ownerId:OWNER_ID}):null;
   const pageReader=createPublicPageReader({fetchImpl:webFetchImpl||globalThis.fetch,...(webResolveHost?{resolveHost:webResolveHost}:{})});
   const projectOnboarding=learningService&&typeof storage?.createProjectSource==="function"?createProjectOnboardingService({storage,ownerId:OWNER_ID,learningService,pageReader}):null;
+  const projectDiscovery=projectOnboarding?createProjectDiscoveryService({providers:createProjectDiscoveryProviders({config:config.projectDiscovery,fetchImpl:projectDiscoveryFetchImpl||globalThis.fetch}),projectService,projectOnboarding,storage,ownerId:OWNER_ID,pageReader}):null;
   const executionTruth=createExecutionTruthService({storage,ownerId:OWNER_ID});
   registerDeveloperTools(toolRegistry, {
     environment,
@@ -404,6 +407,7 @@ export function createApp({
     learningService,
     projectService,
     projectOnboarding,
+    projectDiscovery,
     gmailService,
     phoneService,
     whatsappService,
@@ -416,5 +420,5 @@ export function createApp({
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, instagramOAuth, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, instagramOAuth, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding, projectDiscovery });
 }
