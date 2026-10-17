@@ -10,13 +10,13 @@ Supported source records are owner statements, extracted owner documents, retain
 
 ## Provider discovery boundaries
 
-Vercel account discovery uses a team-scoped Vercel Integration installation. Its API scopes are limited to Project Read and Deployment Read. Integration Configuration Read/Write is used only to revoke the installation from Nova. The owner chooses the team and project-access policy in Vercel's official install screen. Selecting all projects allows later projects to appear on the next bounded refresh without a Nova code change. Tokens are encrypted at rest and never returned to the browser.
+For this private owner-operated Nova instance, Vercel account discovery uses a dedicated Vercel access token scoped to the owner's team and All Projects. Vercel access tokens are resource-scoped rather than HTTP-method-scoped, so Nova does not describe the provider credential itself as read-only. The server enforces a deterministic allowlist containing only `GET /v9/projects`, `GET /v9/projects/:id`, and `GET /v6/deployments`; redirects, other hosts, additional paths, query parameters, and every non-GET method fail closed. The discovery token is configured separately from Nova's deployment credential and is never reusable by execution tools. Selecting All Projects allows later projects to appear on the next bounded refresh without a code change. The token remains a server-only Preview secret and is never returned to the browser.
 
 GitHub and Neon remain independent connections. A Vercel installation neither supplies nor implies repository or database access. Each provider reports `connected`, `not configured`, `expired`, or insufficient-permission state independently.
 
 Discovery is read-only and distinct from knowledge ingestion and execution. Inspection may create a proposed fact set, but only the existing owner-review flow can import it into project memory. No provider connection grants execution authority. A later change must name the stable Nova project, exact external resources, action, consequences, and rollback plan, and must receive a formal owner approval before a narrowly scoped adapter can execute it.
 
-Every initial connection and later permission escalation requires owner authorization. Provider secrets never belong in project source records, memory, Activity, or browser responses. Revoking discovery access does not erase previously accepted, provenance-preserving project history.
+Every initial connection and later permission escalation requires owner authorization. Provider secrets never belong in project source records, memory, Activity, or browser responses. Token rotation or revocation is performed from the owner's Vercel Account Tokens page and does not erase previously accepted, provenance-preserving project history.
 
 ## Model allowance
 

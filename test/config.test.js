@@ -117,3 +117,16 @@ test("storage auto-detects durable Postgres without exposing its connection stri
   assert.equal(JSON.stringify({ provider: config.storageProvider }).includes("private-token"), false);
   assert.throws(() => readConfig({ NOVA_BRAIN_STORAGE_PROVIDER: "postgres" }), /Postgres connection variable is required/);
 });
+
+test("project discovery requires its own paired team token and never reuses deployment credentials",()=>{
+  const deploymentOnly=readConfig({NOVA_BRAIN_VERCEL_TOKEN:"deployment-only",NOVA_BRAIN_VERCEL_TEAM_ID:"team_owner",NOVA_BRAIN_VERCEL_PROJECT_ID:"prj_nova"});
+  assert.equal(deploymentOnly.projectDiscovery.vercelToken,null);
+  assert.equal(deploymentOnly.projectDiscovery.vercelTeamId,null);
+  assert.equal(deploymentOnly.projectDiscovery.vercelIntegration.teamToken,null);
+  assert.throws(()=>readConfig({NOVA_PROJECT_DISCOVERY_VERCEL_TOKEN:"discovery-only"}),/must be configured together/);
+  assert.throws(()=>readConfig({NOVA_PROJECT_DISCOVERY_VERCEL_TEAM_ID:"team_owner"}),/must be configured together/);
+  const configured=readConfig({NOVA_PROJECT_DISCOVERY_VERCEL_TOKEN:"dedicated-discovery",NOVA_PROJECT_DISCOVERY_VERCEL_TEAM_ID:"team_owner"});
+  assert.equal(configured.projectDiscovery.vercelToken,"dedicated-discovery");
+  assert.equal(configured.projectDiscovery.vercelTeamId,"team_owner");
+  assert.equal(configured.projectDiscovery.vercelIntegration.teamToken,"dedicated-discovery");
+});

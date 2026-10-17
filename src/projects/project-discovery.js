@@ -16,11 +16,30 @@ async function jsonRequest(fetchImpl,url,{token,headers={}}={}){
   return response.json();
 }
 
+const VERCEL_READ_ROUTES=Object.freeze([
+  Object.freeze({pathname:/^\/v9\/projects$/,query:new Set(["teamId","limit","until"]),required:["teamId","limit"]}),
+  Object.freeze({pathname:/^\/v9\/projects\/[^/]+$/,query:new Set(["teamId"]),required:["teamId"]}),
+  Object.freeze({pathname:/^\/v6\/deployments$/,query:new Set(["teamId","projectId","limit"]),required:["teamId","projectId","limit"]}),
+]);
+
+export function assertVercelDiscoveryGetUrl(value,{method="GET"}={}){
+  let url;try{url=new URL(value);}catch{throw new ProjectDiscoveryError("vercel_discovery_request_forbidden","Nova blocked an invalid Vercel discovery request.",403);}
+  const route=VERCEL_READ_ROUTES.find(item=>item.pathname.test(url.pathname)),queryKeys=[...url.searchParams.keys()];
+  if(method!=="GET"||url.origin!=="https://api.vercel.com"||url.username||url.password||url.hash||!route||queryKeys.some(key=>!route.query.has(key))||[...route.query].some(key=>url.searchParams.getAll(key).length>1)||route.required.some(key=>!url.searchParams.get(key)))throw new ProjectDiscoveryError("vercel_discovery_request_forbidden","Nova permits only the bounded Vercel project and deployment reads required for discovery.",403);
+  return url.toString();
+}
+
+async function vercelReadRequest(fetchImpl,url,{token}={}){
+  const allowed=assertVercelDiscoveryGetUrl(url),response=await fetchImpl(allowed,{method:"GET",headers:{Accept:"application/json",Authorization:`Bearer ${token}`},redirect:"error",signal:AbortSignal.timeout(12_000)});
+  if(!response.ok)throw new ProjectDiscoveryError("project_provider_unavailable","The authorised Vercel project provider could not be read.",503,{provider:"api.vercel.com",status:response.status});
+  return response.json();
+}
+
 function vercelClient({token,teamId,credentialProvider,fetchImpl}){
-  const configured=Boolean(credentialProvider||token&&teamId),credential=async()=>credentialProvider?credentialProvider():token&&teamId?{token,teamId,authMode:"legacy_token"}:null;
+  const configured=Boolean(credentialProvider||token&&teamId),credential=async()=>credentialProvider?credentialProvider():token&&teamId?{token,teamId,authMode:"team_access_token"}:null;
   return Object.freeze({configured,
-    async list(){const auth=await credential();if(!auth)return[];const projects=[];let until=null;for(let page=0;page<20;page++){const query=new URLSearchParams({teamId:auth.teamId,limit:"100",...(until?{until:String(until)}:{})}),data=await jsonRequest(fetchImpl,`https://api.vercel.com/v9/projects?${query}`,{token:auth.token});projects.push(...(data.projects||[]));until=data.pagination?.next??null;if(!until)break;}return projects.map(item=>({provider:"vercel",id:clean(item.id,120),name:clean(item.name,120),framework:clean(item.framework,80)||null,updatedAt:item.updatedAt?new Date(item.updatedAt).toISOString():null})).filter(item=>item.id&&item.name);},
-    async inspect(id){const auth=await credential();if(!auth)throw new ProjectDiscoveryError("vercel_discovery_unconfigured","Vercel project discovery is not configured.",503);const query=`teamId=${encodeURIComponent(auth.teamId)}`,project=await jsonRequest(fetchImpl,`https://api.vercel.com/v9/projects/${encodeURIComponent(id)}?${query}`,{token:auth.token}),deployments=await jsonRequest(fetchImpl,`https://api.vercel.com/v6/deployments?${query}&projectId=${encodeURIComponent(id)}&limit=1`,{token:auth.token}),deployment=(deployments.deployments||[])[0]||null,meta=deployment?.meta||{},repository=clean(meta.githubCommitRepo||project.link?.repo||"",200),owner=clean(meta.githubCommitOrg||project.link?.org||"",100),fullRepository=repoPattern.test(repository)?repository:repoPattern.test(`${owner}/${repository}`)?`${owner}/${repository}`:null;
+    async list(){const auth=await credential();if(!auth)return[];const projects=[];let until=null;for(let page=0;page<20;page++){const query=new URLSearchParams({teamId:auth.teamId,limit:"100",...(until?{until:String(until)}:{})}),data=await vercelReadRequest(fetchImpl,`https://api.vercel.com/v9/projects?${query}`,{token:auth.token});projects.push(...(data.projects||[]));until=data.pagination?.next??null;if(!until)break;}return projects.map(item=>({provider:"vercel",id:clean(item.id,120),name:clean(item.name,120),framework:clean(item.framework,80)||null,updatedAt:item.updatedAt?new Date(item.updatedAt).toISOString():null})).filter(item=>item.id&&item.name);},
+    async inspect(id){const auth=await credential();if(!auth)throw new ProjectDiscoveryError("vercel_discovery_unconfigured","Vercel project discovery is not configured.",503);const query=`teamId=${encodeURIComponent(auth.teamId)}`,project=await vercelReadRequest(fetchImpl,`https://api.vercel.com/v9/projects/${encodeURIComponent(id)}?${query}`,{token:auth.token}),deployments=await vercelReadRequest(fetchImpl,`https://api.vercel.com/v6/deployments?${query}&projectId=${encodeURIComponent(id)}&limit=1`,{token:auth.token}),deployment=(deployments.deployments||[])[0]||null,meta=deployment?.meta||{},repository=clean(meta.githubCommitRepo||project.link?.repo||"",200),owner=clean(meta.githubCommitOrg||project.link?.org||"",100),fullRepository=repoPattern.test(repository)?repository:repoPattern.test(`${owner}/${repository}`)?`${owner}/${repository}`:null;
       return{provider:"vercel",id:clean(project.id,120),name:clean(project.name,120),framework:clean(project.framework,80)||null,updatedAt:project.updatedAt?new Date(project.updatedAt).toISOString():null,latestDeployment:deployment?{id:clean(deployment.uid||deployment.id,120),state:clean(deployment.state||deployment.readyState,40),environment:clean(deployment.target||"preview",40),url:safeUrl(`https://${deployment.url}`),createdAt:deployment.created?new Date(deployment.created).toISOString():null,git:{repository:fullRepository,branch:clean(meta.githubCommitRef,200)||null,commitSha:/^[a-f0-9]{7,40}$/i.test(String(meta.githubCommitSha||""))?meta.githubCommitSha:null,commitMessage:clean(meta.githubCommitMessage,500)||null}}:null,domains:[...new Set([...(project.alias||[]),...(deployment?.alias||[])].map(value=>safeUrl(String(value).startsWith("http")?value:`https://${value}`)).filter(Boolean))].slice(0,20)};
     }
   });
