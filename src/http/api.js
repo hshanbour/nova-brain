@@ -1,6 +1,7 @@
 import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
 import {PROJECT_DOCUMENT_LIMITS,ProjectSourceError} from "../projects/document-extractor.js";
 import {ProjectDiscoveryError} from "../projects/project-discovery.js";
+import {VERCEL_ACCOUNT_COOKIE,VercelAccountIntegrationError} from "../projects/vercel-account-integration.js";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -189,6 +190,7 @@ function gmailOAuthCookie(value, { secure, clear = false } = {}) {
 }
 
 function instagramOAuthCookie(value,{secure,clear=false}={}){return `${INSTAGRAM_OAUTH_COOKIE}=${clear?"":encodeURIComponent(value)}; Path=/api/integrations/instagram/oauth/callback; HttpOnly; SameSite=Lax; ${secure?"Secure; ":""}Max-Age=${clear?0:600}`;}
+function vercelAccountCookie(value,{secure,clear=false}={}){return `${VERCEL_ACCOUNT_COOKIE}=${clear?"":encodeURIComponent(value)}; Path=/api/integrations/vercel/oauth/callback; HttpOnly; SameSite=Lax; ${secure?"Secure; ":""}Max-Age=${clear?0:600}`;}
 
 export function createApi({
   agent,
@@ -223,6 +225,7 @@ export function createApi({
   projectService,
   projectOnboarding,
   projectDiscovery,
+  vercelAccountIntegration,
   gmailService,
   phoneService,
   whatsappService,
@@ -2191,6 +2194,15 @@ export function createApi({
         if(request.method==="GET"&&pathname==="/api/project-discovery/catalog"){
           await ready();if(!projectDiscovery)throw new ValidationError("Project discovery is unavailable.");sendJson(response,200,await projectDiscovery.catalog());return;
         }
+        if(request.method==="POST"&&pathname==="/api/integrations/vercel/oauth/start"){
+          await ready();const started=await vercelAccountIntegration.start(),secure=new URL(config.projectDiscovery.vercelIntegration.redirectUri).protocol==="https:";response.setHeader("Set-Cookie",vercelAccountCookie(started.session,{secure}));sendJson(response,200,{authorizationUrl:started.authorizationUrl,expiresAt:started.expiresAt});return;
+        }
+        if(request.method==="GET"&&pathname==="/api/integrations/vercel/oauth/callback"){
+          await ready();if(url.searchParams.get("error"))throw new VercelAccountIntegrationError("Vercel account authorization was not completed.",{code:"vercel_oauth_denied",statusCode:400,category:"authorization"});await vercelAccountIntegration.complete({code:url.searchParams.get("code"),state:url.searchParams.get("state"),session:cookieValue(request,VERCEL_ACCOUNT_COOKIE),teamId:url.searchParams.get("teamId"),configurationId:url.searchParams.get("configurationId")});const secure=new URL(config.projectDiscovery.vercelIntegration.redirectUri).protocol==="https:";response.statusCode=302;response.setHeader("Location","/#projects");response.setHeader("Set-Cookie",vercelAccountCookie("",{secure,clear:true}));response.setHeader("Cache-Control","no-store");response.setHeader("Referrer-Policy","no-referrer");response.end();return;
+        }
+        if(request.method==="DELETE"&&pathname==="/api/integrations/vercel"){
+          await ready();sendJson(response,200,await vercelAccountIntegration.disconnect());return;
+        }
         if(request.method==="POST"&&pathname==="/api/project-discovery/inspect"){
           await ready();if(!projectDiscovery)throw new ValidationError("Project discovery is unavailable.");sendJson(response,200,await projectDiscovery.inspect(await readJsonBody(request,config.maxBodyBytes)));return;
         }
@@ -2299,6 +2311,7 @@ export function createApi({
           return;
         }
         if(error instanceof InstagramOAuthError||error?.code?.startsWith?.("instagram_")){logger.error("Nova Instagram OAuth request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"instagram_oauth_error",requestId});return;}
+        if(error instanceof VercelAccountIntegrationError||error?.code?.startsWith?.("vercel_")){logger.error("Nova Vercel account connection request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"vercel_account_integration_error",requestId});return;}
         if(error instanceof SocialError||error?.code?.startsWith?.("social_")){logger.error("Nova Social request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"social_error",requestId});return;}
         if (error instanceof PhoneError || error instanceof OwnerContactPolicyError || error?.code?.startsWith?.("phone_") || error?.code?.startsWith?.("owner_contact_")) {
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "phone_error", requestId });

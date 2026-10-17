@@ -43,8 +43,8 @@ test("Instagram-only metrics do not call Facebook and Facebook publishing fails 
   await assert.rejects(adapter.publish({platform:"facebook",content:{caption:"Safe",media:[]}}),error=>error.code==="social_facebook_not_configured");
 });
 
-test("schema 27 contains project-scoped social data and encrypted Instagram OAuth storage",()=>{
-  assert.equal(SCHEMA_VERSION,27);
+test("current schema contains project-scoped social data and encrypted Instagram OAuth storage",()=>{
+  assert.ok(SCHEMA_VERSION>=27);
   for(const table of["nova_social_content","nova_social_publications"])assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes(`CREATE TABLE IF NOT EXISTS ${table}`)));
   assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_social_metric_snapshots")));
   assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("ADD COLUMN IF NOT EXISTS plan")));

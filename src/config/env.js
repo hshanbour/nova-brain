@@ -137,6 +137,14 @@ function parseSocialConfig(environment) {
   return Object.freeze({configured,facebookConfigured:facebookSupplied===2,liveEnabled:configured&&environment.NOVA_SOCIAL_LIVE_ENABLED==="true",instagramLoginAccessToken,oauth:Object.freeze({configured:oauthSupplied===4,...oauthValues}),...values});
 }
 
+function parseVercelIntegrationConfig(environment){
+  const values={clientId:environment.NOVA_VERCEL_INTEGRATION_CLIENT_ID||null,clientSecret:environment.NOVA_VERCEL_INTEGRATION_CLIENT_SECRET||null,redirectUri:environment.NOVA_VERCEL_INTEGRATION_REDIRECT_URI||null,tokenEncryptionKey:environment.NOVA_VERCEL_INTEGRATION_TOKEN_ENCRYPTION_KEY||null,integrationSlug:environment.NOVA_VERCEL_INTEGRATION_SLUG||null};
+  const supplied=Object.values(values).filter(Boolean).length;
+  if(supplied>0&&supplied!==Object.keys(values).length)throw new Error("All five Vercel Integration environment variables must be configured together.");
+  if(supplied){let redirect;try{redirect=new URL(values.redirectUri);}catch{throw new Error("NOVA_VERCEL_INTEGRATION_REDIRECT_URI must be an absolute URL.");}if(redirect.protocol!=="https:"||redirect.pathname!=="/api/integrations/vercel/oauth/callback")throw new Error("NOVA_VERCEL_INTEGRATION_REDIRECT_URI must be Nova's HTTPS Vercel callback route.");if(!/^[a-z0-9][a-z0-9-]{1,31}$/.test(values.integrationSlug))throw new Error("NOVA_VERCEL_INTEGRATION_SLUG is invalid.");const key=/^[a-f0-9]{64}$/i.test(values.tokenEncryptionKey)?Buffer.from(values.tokenEncryptionKey,"hex"):Buffer.from(values.tokenEncryptionKey,"base64");if(key.length!==32)throw new Error("NOVA_VERCEL_INTEGRATION_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");}
+  return Object.freeze({configured:supplied===Object.keys(values).length,...values,legacyToken:environment.NOVA_PROJECT_DISCOVERY_VERCEL_TOKEN||environment.NOVA_BRAIN_VERCEL_TOKEN||null,teamId:environment.NOVA_PROJECT_DISCOVERY_VERCEL_TEAM_ID||environment.NOVA_BRAIN_VERCEL_TEAM_ID||environment.VERCEL_TEAM_ID||null});
+}
+
 function parseOptionalReasoningEffort(value, name) {
   if (value === undefined || value === "") return null;
   if (!SUPPORTED_REASONING_EFFORTS.has(value)) {
@@ -330,10 +338,11 @@ export function readConfig(environment = process.env) {
       ),
     }),
     projectDiscovery: Object.freeze({
-      vercelToken: environment.NOVA_BRAIN_VERCEL_TOKEN || null,
-      vercelTeamId: environment.NOVA_BRAIN_VERCEL_TEAM_ID || environment.VERCEL_TEAM_ID || null,
+      vercelToken: environment.NOVA_PROJECT_DISCOVERY_VERCEL_TOKEN || environment.NOVA_BRAIN_VERCEL_TOKEN || null,
+      vercelTeamId: environment.NOVA_PROJECT_DISCOVERY_VERCEL_TEAM_ID || environment.NOVA_BRAIN_VERCEL_TEAM_ID || environment.VERCEL_TEAM_ID || null,
       githubToken: environment.NOVA_BRAIN_GITHUB_TOKEN || null,
       neonApiKey: environment.NOVA_PROJECT_DISCOVERY_NEON_API_KEY || null,
+      vercelIntegration: parseVercelIntegrationConfig(environment),
     }),
     gmail,
     phone,

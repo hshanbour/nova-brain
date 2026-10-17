@@ -44,6 +44,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const gmailConnections = new Map();
   const instagramOAuthStates = new Map();
   const instagramConnections = new Map();
+  const vercelAccountOAuthStates = new Map();
+  const vercelAccountConnections = new Map();
   const gmailDrafts = new Map();
   const gmailSendIntents = new Map();
   const whatsappInboundMessages = new Map();
@@ -1022,6 +1024,11 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async saveInstagramConnection(input) { const current=instagramConnections.get(input.ownerId),timestamp=now(clock),saved={...copy(input),connectedAt:current?.connectedAt||timestamp,updatedAt:timestamp};instagramConnections.set(input.ownerId,saved);return copy(saved); },
     async getInstagramConnection(ownerId) { return copy(instagramConnections.get(ownerId)||null); },
     async deleteInstagramConnection(ownerId) { const current=instagramConnections.get(ownerId);if(!current)return null;instagramConnections.delete(ownerId);return copy(current); },
+    async saveVercelAccountOAuthState(input){for(const [key,value] of vercelAccountOAuthStates)if(value.consumedAt||new Date(value.expiresAt)<=clock())vercelAccountOAuthStates.delete(key);const record={...copy(input),consumedAt:null,createdAt:now(clock)};vercelAccountOAuthStates.set(record.stateHash,record);return copy(record);},
+    async consumeVercelAccountOAuthState({stateHash,ownerId,sessionHash,consumedAt}){const current=vercelAccountOAuthStates.get(stateHash);if(!current||current.ownerId!==ownerId||current.sessionHash!==sessionHash||current.consumedAt||new Date(current.expiresAt)<=new Date(consumedAt))return null;const updated={...current,consumedAt};vercelAccountOAuthStates.set(stateHash,updated);return copy(updated);},
+    async saveVercelAccountConnection(input){const current=vercelAccountConnections.get(input.ownerId),timestamp=now(clock),saved={...copy(input),connectedAt:current?.connectedAt||timestamp,updatedAt:timestamp};vercelAccountConnections.set(input.ownerId,saved);return copy(saved);},
+    async getVercelAccountConnection(ownerId){return copy(vercelAccountConnections.get(ownerId)||null);},
+    async deleteVercelAccountConnection(ownerId){const current=vercelAccountConnections.get(ownerId);if(!current)return null;vercelAccountConnections.delete(ownerId);return copy(current);},
     async createGmailDraft(input) {
       const saved = { ...copy(input), createdAt: now(clock) };
       gmailDrafts.set(saved.id, saved);

@@ -6,16 +6,17 @@ Document uploads are capped at 4 MB; PDFs at 40 pages; retained extracted text a
 
 Public URL ingestion reuses Nova's credential-free public page reader. It permits only HTTPS on standard ports, resolves and validates every host and redirect, rejects private/reserved/metadata addresses and DNS rebinding, respects robots.txt, and applies timeout, redirect, content-type, and response-size limits. It does not bypass authentication, CAPTCHA, paywalls, or access restrictions and does not crawl the domain. Retrieved page text is marked untrusted; instruction-shaped page content is excluded from candidates and cannot change Nova's authority.
 
-Supported source records are owner statements, extracted owner documents, retained public pages, and future GitHub, Vercel, Neon, or Stripe connection proposals. Connector source registration never grants provider access. Revocation disables the source authorization but does not rewrite already reviewed memory history. A changed document or page creates a new content-hash version rather than silently overwriting earlier evidence.
+Supported source records are owner statements, extracted owner documents, retained public pages, and GitHub, Vercel, Neon, or Stripe connection proposals. Connector source registration never grants provider access. Revocation disables the source authorization but does not rewrite already reviewed memory history. A changed document or page creates a new content-hash version rather than silently overwriting earlier evidence.
 
-Future provider connections are deliberately proposals only:
+## Provider discovery boundaries
 
-- GitHub: one repository through a fine-grained token or GitHub App installation.
-- Vercel: one project/team-scoped read surface or a narrow projection endpoint.
-- Neon: a project-specific read-only database role or projection.
-- Stripe: a restricted key limited to the exact required read resources.
+Vercel account discovery uses a team-scoped Vercel Integration installation. Its API scopes are limited to Project Read and Deployment Read. Integration Configuration Read/Write is used only to revoke the installation from Nova. The owner chooses the team and project-access policy in Vercel's official install screen. Selecting all projects allows later projects to appear on the next bounded refresh without a Nova code change. Tokens are encrypted at rest and never returned to the browser.
 
-Every initial connection and later permission escalation requires a separate formal owner approval. Account-wide unrestricted credentials are forbidden. Provider secrets never belong in project source records, memory, Activity, or browser responses.
+GitHub and Neon remain independent connections. A Vercel installation neither supplies nor implies repository or database access. Each provider reports `connected`, `not configured`, `expired`, or insufficient-permission state independently.
+
+Discovery is read-only and distinct from knowledge ingestion and execution. Inspection may create a proposed fact set, but only the existing owner-review flow can import it into project memory. No provider connection grants execution authority. A later change must name the stable Nova project, exact external resources, action, consequences, and rollback plan, and must receive a formal owner approval before a narrowly scoped adapter can execute it.
+
+Every initial connection and later permission escalation requires owner authorization. Provider secrets never belong in project source records, memory, Activity, or browser responses. Revoking discovery access does not erase previously accepted, provenance-preserving project history.
 
 ## Model allowance
 
