@@ -22,20 +22,21 @@ test("owner review includes exact offer/copy and fails closed before consent, bo
   const audit=analyseSharpCutsWinbackAudience(rows,{asOf:AS_OF}),review=buildSharpCutsWinbackReview(audit);
   assert.equal(review.projectId,"sharp-cuts-web");assert.equal(review.status,"blocked_before_approval");assert.equal(review.approval.status,"not_created");assert.equal(review.approval.approveEnabled,false);assert.equal(review.approval.rejectEnabled,true);
   assert.equal(review.audience.verifiedSendableRecipients,0);assert.equal(review.safeguards.liveSend,false);assert.equal(review.safeguards.projectIsolated,true);
-  assert.match(review.email.body,/upgraded shop/);assert.match(review.email.body,/new chairs/);assert.match(review.email.body,/new décor/);assert.match(review.email.body,/team/);assert.match(review.email.body,new RegExp(SHARP_CUTS_BOOKING_URL.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")));
+  assert.match(review.email.body,/SAME SHARP CUTS\. A WHOLE NEW EXPERIENCE/);assert.match(review.email.body,/It's been a while/);assert.match(review.email.body,/fresh new look/);assert.match(review.email.body,/NOW IT'S YOUR TURN FOR A FRESH LOOK/);assert.match(review.email.body,new RegExp(SHARP_CUTS_BOOKING_URL.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")));
   assert.equal(review.deliveryCost.amount,null);assert.equal(review.whatsapp.eligibilityIndependentFromEmail,true);
 });
 
 test("premium comeback offer uses only verified service prices and renders a mobile email without pretending placeholders are shop photos",()=>{
   const review=buildSharpCutsWinbackReview(analyseSharpCutsWinbackAudience(rows,{asOf:AS_OF}));
-  assert.equal(review.version,2);assert.equal(review.offer.proposal,"20% off one selected adult cut for customers inactive more than 90 days");
-  assert.deepEqual(review.offer.eligibleServices.map(({name,priceGbp,offerPriceGbp,savingGbp})=>({name,priceGbp,offerPriceGbp,savingGbp})),[
-    {name:"Skin Fade + Beard",priceGbp:28,offerPriceGbp:22.4,savingGbp:5.6},
-    {name:"Skin Fade",priceGbp:23,offerPriceGbp:18.4,savingGbp:4.6},
-    {name:"Shape Up + Taper",priceGbp:18,offerPriceGbp:14.4,savingGbp:3.6}
+  assert.equal(review.version,3);assert.equal(review.offer.proposal,"20% off one selected adult cut for customers inactive more than 90 days");
+  assert.deepEqual(review.offer.eligibleServices.map(({name,priceGbp,pricePrefix,offerPriceGbp,savingGbp})=>({name,priceGbp,pricePrefix,offerPriceGbp,savingGbp})),[
+    {name:"Sharp cuts premium package",priceGbp:40,pricePrefix:"from",offerPriceGbp:32,savingGbp:8},
+    {name:"The premium package",priceGbp:37,pricePrefix:null,offerPriceGbp:29.6,savingGbp:7.4},
+    {name:"Haircut and beard trim",priceGbp:25,pricePrefix:null,offerPriceGbp:20,savingGbp:5},
+    {name:"Haircut (no beard trim )",priceGbp:20,pricePrefix:null,offerPriceGbp:16,savingGbp:4}
   ]);
-  assert.equal(review.offer.serviceSource,SHARP_CUTS_SERVICE_SOURCE);assert.equal(SHARP_CUTS_VERIFIED_SERVICES.length,6);
-  assert.match(review.email.html,/OWNER PHOTO PLACEHOLDER/);assert.match(review.email.html,/Only genuine Sharp Cuts imagery/);assert.match(review.email.html,/BOOK NOW/);assert.match(review.email.html,/Unsubscribe from Sharp Cuts emails/);assert.match(review.email.html,/£22\.40/);
+  assert.equal(review.offer.serviceSource,SHARP_CUTS_SERVICE_SOURCE);assert.equal(SHARP_CUTS_VERIFIED_SERVICES.length,10);
+  assert.match(review.email.html,/GENUINE SHOP PHOTO PLACEHOLDER/);assert.match(review.email.html,/No stock imagery/);assert.match(review.email.html,/BOOK YOUR NEXT CUT/);assert.match(review.email.html,/Unsubscribe from Sharp Cuts emails/);assert.match(review.email.html,/from £32\.00/);assert.match(review.email.html,/£29\.60/);assert.match(review.email.html,/£20\.00/);assert.match(review.email.html,/£16\.00/);
   assert.doesNotMatch(review.email.html,/<script|stock photo|data:image/i);assert.equal(review.email.imageStatus,"owner_shop_photos_required");
   assert.equal(review.social.concepts.length,2);assert.ok(review.social.concepts.every(concept=>concept.status==="image_placeholders_only"));assert.equal(review.social.publishingEnabled,false);
   assert.equal(review.approval.approveEnabled,false);assert.equal(review.audience.verifiedSendableRecipients,0);assert.equal(review.safeguards.liveSend,false);
