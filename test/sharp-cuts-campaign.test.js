@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {analyseSharpCutsWinbackAudience,buildSharpCutsWinbackReview,SHARP_CUTS_BOOKING_URL,SHARP_CUTS_STAGING_SNAPSHOT} from "../src/automation/sharp-cuts-campaign.js";
+import {analyseSharpCutsWinbackAudience,buildSharpCutsWinbackReview,SHARP_CUTS_BOOKING_URL,SHARP_CUTS_SERVICE_SOURCE,SHARP_CUTS_STAGING_SNAPSHOT,SHARP_CUTS_VERIFIED_SERVICES} from "../src/automation/sharp-cuts-campaign.js";
 
 const AS_OF=new Date("2026-10-19T00:00:00.000Z");
 const rows=[
@@ -24,6 +24,21 @@ test("owner review includes exact offer/copy and fails closed before consent, bo
   assert.equal(review.audience.verifiedSendableRecipients,0);assert.equal(review.safeguards.liveSend,false);assert.equal(review.safeguards.projectIsolated,true);
   assert.match(review.email.body,/upgraded shop/);assert.match(review.email.body,/new chairs/);assert.match(review.email.body,/new décor/);assert.match(review.email.body,/team/);assert.match(review.email.body,new RegExp(SHARP_CUTS_BOOKING_URL.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")));
   assert.equal(review.deliveryCost.amount,null);assert.equal(review.whatsapp.eligibilityIndependentFromEmail,true);
+});
+
+test("premium comeback offer uses only verified service prices and renders a mobile email without pretending placeholders are shop photos",()=>{
+  const review=buildSharpCutsWinbackReview(analyseSharpCutsWinbackAudience(rows,{asOf:AS_OF}));
+  assert.equal(review.version,2);assert.equal(review.offer.proposal,"20% off one selected adult cut for customers inactive more than 90 days");
+  assert.deepEqual(review.offer.eligibleServices.map(({name,priceGbp,offerPriceGbp,savingGbp})=>({name,priceGbp,offerPriceGbp,savingGbp})),[
+    {name:"Skin Fade + Beard",priceGbp:28,offerPriceGbp:22.4,savingGbp:5.6},
+    {name:"Skin Fade",priceGbp:23,offerPriceGbp:18.4,savingGbp:4.6},
+    {name:"Shape Up + Taper",priceGbp:18,offerPriceGbp:14.4,savingGbp:3.6}
+  ]);
+  assert.equal(review.offer.serviceSource,SHARP_CUTS_SERVICE_SOURCE);assert.equal(SHARP_CUTS_VERIFIED_SERVICES.length,6);
+  assert.match(review.email.html,/OWNER PHOTO PLACEHOLDER/);assert.match(review.email.html,/Only genuine Sharp Cuts imagery/);assert.match(review.email.html,/BOOK NOW/);assert.match(review.email.html,/Unsubscribe from Sharp Cuts emails/);assert.match(review.email.html,/£22\.40/);
+  assert.doesNotMatch(review.email.html,/<script|stock photo|data:image/i);assert.equal(review.email.imageStatus,"owner_shop_photos_required");
+  assert.equal(review.social.concepts.length,2);assert.ok(review.social.concepts.every(concept=>concept.status==="image_placeholders_only"));assert.equal(review.social.publishingEnabled,false);
+  assert.equal(review.approval.approveEnabled,false);assert.equal(review.audience.verifiedSendableRecipients,0);assert.equal(review.safeguards.liveSend,false);
 });
 
 test("staging snapshot exposes only safe aggregates",()=>{

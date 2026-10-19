@@ -105,7 +105,7 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(css, /\.message-markdown h1/);
   assert.match(css, /\.markdown-table-wrap\{[^}]*overflow-x:auto/);
   assert.match(css, /\.message-markdown \[dir="auto"\]/);
-  assert.match(consoleJs, /90\+ day reopening win-back/);
+  assert.match(consoleJs, /90\+ day premium comeback campaign/);
   assert.match(consoleJs, /verifiedSendableRecipients/);
   assert.match(consoleJs, /Approval is unavailable until every eligibility and sender check passes/);
   assert.match(consoleJs, /No uncertain profile has been merged or deleted/);
@@ -114,6 +114,12 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(consoleJs, /customer identity/);
   assert.match(consoleJs, /emailProvider\.fromEmail/);
   assert.match(css, /campaign-email-preview/);
+  assert.match(consoleJs, /campaign-email-visual/);
+  assert.match(consoleJs, /frame\.setAttribute\("sandbox",""\)/);
+  assert.match(consoleJs, /frame\.srcdoc=review\.email\.html/);
+  assert.match(consoleJs, /Matching Reel \+ Story concepts/);
+  assert.match(css, /campaign-service-choices/);
+  assert.match(css, /campaign-email-visual/);
 });
 
 async function liveActivitySource() {
