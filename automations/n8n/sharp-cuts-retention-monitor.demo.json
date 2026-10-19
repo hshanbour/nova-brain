@@ -11,7 +11,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const asOf = new Date('2026-10-17T09:00:00.000Z'); const day = 86400000; const row=(id,days,marketingBasis,suppressed=false,nextDays=null)=>({customerRef:`demo-customer-${String(id).padStart(3,'0')}`,lastVisitAt:new Date(asOf-days*day).toISOString(),marketingBasis,suppressed,nextBookingAt:nextDays===null?null:new Date(asOf+nextDays*day).toISOString()}); return [row(1,31,'consent'),row(2,47,'soft_opt_in_verified'),row(3,67,'unknown'),row(4,72,'consent',true),row(5,61,'consent',false,3),row(6,12,'consent')].map(json=>({json}));"
+        "jsCode": "const asOf = new Date('2026-10-17T09:00:00.000Z'); const day = 86400000; const row=(id,days,marketingBasis,suppressed=false,nextDays=null)=>({customerRef:`demo-customer-${String(id).padStart(3,'0')}`,lastVisitAt:new Date(asOf-days*day).toISOString(),marketingBasis,suppressed,nextBookingAt:nextDays===null?null:new Date(asOf+nextDays*day).toISOString()}); return [row(1,31,'consent'),row(2,47,'soft_opt_in_verified'),row(3,67,'unknown'),row(4,72,'consent',true),row(5,61,'consent',false,3),row(6,12,'consent'),row(7,95,'consent')].map(json=>({json}));"
       },
       "id": "synthetic-fixture",
       "name": "Synthetic Fresha-style Fixture",
@@ -21,10 +21,10 @@
     },
     {
       "parameters": {
-        "jsCode": "const now=new Date('2026-10-17T09:00:00.000Z'); return items.map(({json})=>{const daysInactive=Math.floor((now-new Date(json.lastVisitAt))/86400000);let segment=daysInactive>=60?'inactive_60':daysInactive>=45?'inactive_45':daysInactive>=30?'inactive_30':'not_due';if(json.nextBookingAt&&new Date(json.nextBookingAt)>=now)segment='already_booked';const candidate=segment.startsWith('inactive_');const allowed=new Set(['consent','soft_opt_in_verified']);const eligibleForOwnerReview=candidate&&!json.suppressed&&allowed.has(json.marketingBasis);return{json:{...json,daysInactive,segment,eligibleForOwnerReview,recommendedAction:eligibleForOwnerReview?'prepare_rebooking_recommendation':candidate?'blocked':'none',liveMessagesSent:false}};});"
+        "jsCode": "const now=new Date('2026-10-17T09:00:00.000Z'); return items.map(({json})=>{const daysInactive=Math.floor((now-new Date(json.lastVisitAt))/86400000);let segment=daysInactive>=90?'inactive_90':daysInactive>=60?'inactive_60':daysInactive>=45?'inactive_45':daysInactive>=30?'inactive_30':'not_due';if(json.nextBookingAt&&new Date(json.nextBookingAt)>=now)segment='already_booked';const candidate=segment.startsWith('inactive_');const allowed=new Set(['consent','soft_opt_in_verified']);const eligibleForOwnerReview=candidate&&!json.suppressed&&allowed.has(json.marketingBasis);return{json:{...json,daysInactive,segment,eligibleForOwnerReview,recommendedAction:eligibleForOwnerReview?'prepare_rebooking_recommendation':candidate?'blocked':'none',liveMessagesSent:false}};});"
       },
       "id": "retention-gate",
-      "name": "30-45-60 Day Retention and Consent Gate",
+      "name": "30-45-60-90 Day Retention and Consent Gate",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [500, 0]
@@ -32,7 +32,7 @@
   ],
   "connections": {
     "Manual Test Only": {"main": [[{"node": "Synthetic Fresha-style Fixture", "type": "main", "index": 0}]]},
-    "Synthetic Fresha-style Fixture": {"main": [[{"node": "30-45-60 Day Retention and Consent Gate", "type": "main", "index": 0}]]}
+    "Synthetic Fresha-style Fixture": {"main": [[{"node": "30-45-60-90 Day Retention and Consent Gate", "type": "main", "index": 0}]]}
   },
   "settings": {"executionOrder": "v1"},
   "active": false,

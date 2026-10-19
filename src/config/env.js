@@ -2,6 +2,7 @@ import {
   ELEVENLABS_DEFAULT_TTS_MODEL,
   ELEVENLABS_OUTPUT_FORMAT,
 } from "../voice/elevenlabs-models.js";
+import {parseSharpCutsSenderConfig} from "../email/sender-marketing.js";
 
 const SUPPORTED_MODEL_PROVIDERS = new Set(["mock", "openai"]);
 const SUPPORTED_STORAGE_PROVIDERS = new Set(["auto", "memory", "postgres"]);
@@ -351,6 +352,7 @@ export function readConfig(environment = process.env) {
       vercelIntegration: parseVercelIntegrationConfig(environment),
     }),
     gmail,
+    sharpCutsEmail: parseSharpCutsSenderConfig(environment),
     phone,
     whatsapp,
     social,

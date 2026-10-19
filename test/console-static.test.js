@@ -105,6 +105,15 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(css, /\.message-markdown h1/);
   assert.match(css, /\.markdown-table-wrap\{[^}]*overflow-x:auto/);
   assert.match(css, /\.message-markdown \[dir="auto"\]/);
+  assert.match(consoleJs, /90\+ day reopening win-back/);
+  assert.match(consoleJs, /verifiedSendableRecipients/);
+  assert.match(consoleJs, /Approval is unavailable until every eligibility and sender check passes/);
+  assert.match(consoleJs, /No uncertain profile has been merged or deleted/);
+  assert.match(consoleJs, /Email eligibility will never be reused as WhatsApp permission/);
+  assert.match(consoleJs, /Sender\.net \$\{review\.emailProvider\.plan\}/);
+  assert.match(consoleJs, /customer identity/);
+  assert.match(consoleJs, /emailProvider\.fromEmail/);
+  assert.match(css, /campaign-email-preview/);
 });
 
 async function liveActivitySource() {

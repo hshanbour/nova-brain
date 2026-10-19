@@ -76,6 +76,7 @@ import {createSocialService} from "./social/social-service.js";
 import {registerSocialTools} from "./social/social-tools.js";
 import {createInstagramOAuthService} from "./social/instagram-oauth.js";
 import {createSharpCutsAutomationService} from "./automation/sharp-cuts-automation.js";
+import {createSenderMarketingClient} from "./email/sender-marketing.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -99,6 +100,7 @@ export function createApp({
   phoneDialProvider,
   whatsappFetchImpl,
   projectDiscoveryFetchImpl,
+  sharpCutsEmailFetchImpl,
 } = {}) {
   const config = readConfig(environment);
   const storage = storageOverride || createStorage(config);
@@ -165,7 +167,8 @@ export function createApp({
   const whatsappService = createWhatsAppService({ config, storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), fetchImpl: whatsappFetchImpl || globalThis.fetch, logger });
   const instagramOAuth=createInstagramOAuthService({config,storage,ownerId:OWNER_ID});
   const socialService=createSocialService({config,storage,ownerId:OWNER_ID,instagramOAuth});
-  const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID});
+  const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch}):null;
+  const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender});
   registerSocialTools(toolRegistry,{service:socialService});
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){
