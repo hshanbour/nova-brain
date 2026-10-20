@@ -86,7 +86,7 @@ test("the demonstration is idempotent, project-isolated, durable in Activity, an
   assert.equal(dashboard.stagingSnapshot.duplicates.confirmedPairs,10);assert.equal(dashboard.stagingSnapshot.duplicates.ambiguousPairs,1647);assert.equal(dashboard.stagingSnapshot.duplicates.mergedProfiles,0);
   assert.equal(dashboard.campaignReview.audience.candidateProfiles,1530);assert.equal(dashboard.campaignReview.audience.potentialUniqueEmailRecipients,1161);assert.equal(dashboard.campaignReview.audience.duplicateAddressProfilesExcluded,7);assert.equal(dashboard.campaignReview.audience.verifiedSendableRecipients,0);
   assert.equal(dashboard.campaignReview.status,"blocked_before_approval");assert.equal(dashboard.campaignReview.approval.status,"not_created");assert.equal(dashboard.campaignReview.approval.approveEnabled,false);assert.equal(dashboard.campaignReview.safeguards.liveSend,false);
-  assert.match(dashboard.campaignReview.email.body,/SAME SHARP CUTS\. A WHOLE NEW EXPERIENCE/);assert.match(dashboard.campaignReview.email.body,/fresh new look/);assert.match(dashboard.campaignReview.email.body,/NOW IT'S YOUR TURN FOR A FRESH LOOK/);assert.match(dashboard.campaignReview.email.body,/20% OFF/);
+  assert.match(dashboard.campaignReview.email.body,/SAME SHARP CUTS\. A WHOLE NEW EXPERIENCE/);assert.match(dashboard.campaignReview.email.body,/fresh new look/);assert.match(dashboard.campaignReview.email.body,/NOW IT'S YOUR TURN FOR A FRESH LOOK/);assert.doesNotMatch(dashboard.campaignReview.email.body,/20% OFF/);assert.equal((dashboard.campaignReview.email.html.match(/>20% OFF</g)||[]).length,1);
 });
 
 test("dashboard performs only a redacted read-only Sender probe and never exposes credentials",async()=>{

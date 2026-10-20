@@ -2,6 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
+test('Sharp Cuts campaign UI preserves original prices and verified brand styling', async () => {
+  const [consoleJs, consoleCss] = await Promise.all(['assets/console.js','assets/console.css'].map((path) => readFile(path, 'utf8')));
+  assert.doesNotMatch(consoleJs, /offerPriceGbp\.toFixed/);
+  assert.match(consoleCss, /#070707/);
+  assert.match(consoleCss, /rgba\(211,165,59/);
+});
+
 test('console uses the canonical composer voice contract', async () => {
   const [consoleJs, voice, html, css, approvalPresenter] = await Promise.all([
     'assets/console.js',

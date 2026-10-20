@@ -28,7 +28,7 @@ test("owner review includes exact offer/copy and fails closed before consent, bo
 
 test("premium comeback offer uses only verified service prices and renders a mobile email without pretending placeholders are shop photos",()=>{
   const review=buildSharpCutsWinbackReview(analyseSharpCutsWinbackAudience(rows,{asOf:AS_OF}));
-  assert.equal(review.version,3);assert.equal(review.offer.proposal,"20% off one selected adult cut for customers inactive more than 90 days");
+  assert.equal(review.version,4);assert.equal(review.offer.proposal,"20% off one selected adult cut for customers inactive more than 90 days");
   assert.deepEqual(review.offer.eligibleServices.map(({name,priceGbp,pricePrefix,offerPriceGbp,savingGbp})=>({name,priceGbp,pricePrefix,offerPriceGbp,savingGbp})),[
     {name:"Sharp cuts premium package",priceGbp:40,pricePrefix:"from",offerPriceGbp:32,savingGbp:8},
     {name:"The premium package",priceGbp:37,pricePrefix:null,offerPriceGbp:29.6,savingGbp:7.4},
@@ -36,7 +36,10 @@ test("premium comeback offer uses only verified service prices and renders a mob
     {name:"Haircut (no beard trim )",priceGbp:20,pricePrefix:null,offerPriceGbp:16,savingGbp:4}
   ]);
   assert.equal(review.offer.serviceSource,SHARP_CUTS_SERVICE_SOURCE);assert.equal(SHARP_CUTS_VERIFIED_SERVICES.length,10);
-  assert.match(review.email.html,/GENUINE SHOP PHOTO PLACEHOLDER/);assert.match(review.email.html,/No stock imagery/);assert.match(review.email.html,/BOOK YOUR NEXT CUT/);assert.match(review.email.html,/Unsubscribe from Sharp Cuts emails/);assert.match(review.email.html,/from £32\.00/);assert.match(review.email.html,/£29\.60/);assert.match(review.email.html,/£20\.00/);assert.match(review.email.html,/£16\.00/);
+  assert.match(review.email.html,/GENUINE SHOP PHOTO PLACEHOLDER/);assert.match(review.email.html,/No stock imagery/);assert.match(review.email.html,/BOOK YOUR NEXT CUT/);assert.match(review.email.html,/Unsubscribe from Sharp Cuts emails/);
+  assert.match(review.email.html,/GENTS BARBERS/);assert.doesNotMatch(review.email.html,/PREMIUM GROOMING/);assert.equal((review.email.html.match(/>20% OFF</g)||[]).length,1);
+  assert.match(review.email.html,/from £40\.00/);assert.match(review.email.html,/£37\.00/);assert.match(review.email.html,/£25\.00/);assert.match(review.email.html,/£20\.00/);assert.doesNotMatch(review.email.html,/from £32\.00|£29\.60|£16\.00|text-decoration:line-through/);
+  assert.match(review.email.html,/#070707/);assert.match(review.email.html,/#d3a53b/i);assert.match(review.email.html,/#f2d16f/i);assert.match(review.email.html,/#f2eee5/i);assert.doesNotMatch(review.email.body,/20% OFF/);
   assert.doesNotMatch(review.email.html,/<script|stock photo|data:image/i);assert.equal(review.email.imageStatus,"owner_shop_photos_required");
   assert.equal(review.social.concepts.length,2);assert.ok(review.social.concepts.every(concept=>concept.status==="image_placeholders_only"));assert.equal(review.social.publishingEnabled,false);
   assert.equal(review.approval.approveEnabled,false);assert.equal(review.audience.verifiedSendableRecipients,0);assert.equal(review.safeguards.liveSend,false);
