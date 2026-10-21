@@ -5,7 +5,7 @@ export const SHARP_CUTS_WORKSPACE_ID="sharp-cuts-business-workspace";
 const resource=(value)=>Object.freeze(value);
 
 export function buildSharpCutsWorkspaceManifest({projectReady=false,senderConnected=false,metaConnection=null}={}){
-  const metaConnected=metaConnection?.connected===true,instagramConnected=metaConnected&&metaConnection.accountId&&metaConnection.username==="sharpcuts.uk",facebookConnected=metaConnected&&metaConnection.facebookPageId&&metaConnection.facebookPageName==="Sharp Cuts Gents Barbers";
+  const instagramConnected=metaConnection?.instagram?.connected===true&&metaConnection.instagram.accountId&&metaConnection.instagram.username==="sharpcuts.uk",facebookConnected=metaConnection?.facebook?.connected===true&&metaConnection.facebook.pageId&&metaConnection.facebook.pageName==="Sharp Cuts Gents Barbers";
   return Object.freeze({
     version:1,
     id:SHARP_CUTS_WORKSPACE_ID,

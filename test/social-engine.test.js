@@ -5,7 +5,7 @@ import { readConfig } from "../src/config/env.js";
 import { OWNER_ID } from "../src/identity/initial-context.js";
 import { createActionPolicy, ApprovalRequiredError } from "../src/policy/action-policy.js";
 import { createMetaPublishingAdapter, createSocialService } from "../src/social/social-service.js";
-import { createInstagramOAuthService, FACEBOOK_SCOPES, INSTAGRAM_SCOPES } from "../src/social/instagram-oauth.js";
+import { createInstagramOAuthService, FACEBOOK_SCOPES, INSTAGRAM_SCOPES, SHARP_CUTS_INSTAGRAM_SCOPES } from "../src/social/instagram-oauth.js";
 import { registerSocialTools } from "../src/social/social-tools.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { SCHEMA_STATEMENTS, SCHEMA_VERSION } from "../src/storage/schema.js";
@@ -115,7 +115,7 @@ test("Instagram OAuth configuration fails closed for incomplete settings, unsafe
   assert.throws(()=>readConfig({...ENV,NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"private",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:"too-short"}),/exactly 32 bytes/i);
 });
 
-test("Sharp Cuts Facebook Login binds only the verified Page and Instagram account without changing Nova Digital Services",async()=>{
+test("Sharp Cuts split OAuth binds Instagram and Facebook independently without changing Nova Digital Services",async()=>{
   const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[{id:"nova-digital-services-uk",name:"Nova Digital Services UK"},{id:"sharp-cuts-web",name:"Sharp Cuts"}]});
   await storage.saveProjectMetaConnection({ownerId:OWNER_ID,projectId:"nova-digital-services-uk",provider:"instagram_login",accountId:"23456789012",username:"novadigitalservicesuk",facebookPageId:null,facebookPageName:null,scopes:INSTAGRAM_SCOPES,encryptedAccessToken:{version:1,algorithm:"aes-256-gcm",iv:"existing",tag:"existing",ciphertext:"existing-nova-ciphertext"},encryptedSecondaryToken:null,expiresAt:"2026-12-15T10:00:00.000Z",lastSyncedAt:"2026-10-15T09:00:00.000Z"});
   const before=await storage.getProjectMetaConnection(OWNER_ID,"nova-digital-services-uk","instagram_login"),requests=[];
@@ -123,23 +123,32 @@ test("Sharp Cuts Facebook Login binds only the verified Page and Instagram accou
     {access_token:"short-user-private",expires_in:3600},
     {access_token:"long-user-private",expires_in:5184000},
     {data:[...FACEBOOK_SCOPES,"public_profile"].map(permission=>({permission,status:"granted"}))},
-    {data:[{id:"56789012345",name:"Sharp Cuts Gents Barbers",access_token:"page-private",instagram_business_account:{id:"45678901234",username:"sharpcuts.uk"}}]},
+    {data:[{id:"56789012345",name:"Sharp Cuts Gents Barbers",access_token:"page-private"}]},
   ];
-  const config=readConfig({...ENV,...SHARP_META_ENV}),service=createInstagramOAuthService({config,storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,6),fetchImpl:async(url,options={})=>{requests.push({url:String(url),method:options.method||"GET"});return{ok:true,async json(){return replies.shift();}};}}),started=await service.start("sharp-cuts-web"),authorization=new URL(started.authorizationUrl);
+  const config=readConfig({...ENV,...SHARP_META_ENV}),service=createInstagramOAuthService({config,storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,6),fetchImpl:async(url,options={})=>{requests.push({url:String(url),method:options.method||"GET"});return{ok:true,async json(){return replies.shift();}};}}),started=await service.start("sharp-cuts-web","facebook_login"),authorization=new URL(started.authorizationUrl);
   assert.equal(authorization.hostname,"www.facebook.com");assert.deepEqual(authorization.searchParams.get("scope").split(","),FACEBOOK_SCOPES);assert.doesNotMatch(authorization.searchParams.get("scope"),/ads|messages|comments/);
   const completed=await service.complete({code:"facebook-provider-code",state:authorization.searchParams.get("state"),session:started.session});
-  assert.equal(completed.projectId,"sharp-cuts-web");assert.equal(completed.accountId,"45678901234");assert.equal(completed.facebookPageId,"56789012345");
+  assert.equal(completed.projectId,"sharp-cuts-web");assert.equal(completed.accountId,"56789012345");assert.equal(completed.facebookPageId,"56789012345");
   const sharp=await storage.getProjectMetaConnection(OWNER_ID,"sharp-cuts-web","facebook_login"),after=await storage.getProjectMetaConnection(OWNER_ID,"nova-digital-services-uk","instagram_login");
   assert.equal(JSON.stringify(sharp).includes("page-private"),false);assert.equal(JSON.stringify(sharp).includes("long-user-private"),false);assert.ok(sharp.encryptedSecondaryToken);assert.deepEqual(after,before);
-  assert.equal((await service.credentials("sharp-cuts-web")).accessToken,"page-private");assert.equal(requests.filter(item=>item.url.includes("/me/accounts?")).length,1);
+  assert.deepEqual((await service.status("sharp-cuts-web")).facebook.scopes,[...FACEBOOK_SCOPES].sort());await assert.rejects(service.credentials("sharp-cuts-web"),error=>error.code==="instagram_not_connected");assert.equal(requests.filter(item=>item.url.includes("/me/accounts?")).length,1);
+});
+
+test("Sharp Cuts requests exactly five read-only scopes and combines both encrypted connections",async()=>{
+  const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[{id:"sharp-cuts-web",name:"Sharp Cuts"}]});
+  let facebookExchanges=0;const requests=[];
+  const service=createInstagramOAuthService({config:readConfig({...ENV,...SHARP_META_ENV}),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,2),fetchImpl:async(url,options={})=>{const href=String(url),method=options.method||"GET";requests.push({href,method});let body;if(href.startsWith("https://api.instagram.com/oauth/access_token"))body={access_token:"ig-short-private",permissions:SHARP_CUTS_INSTAGRAM_SCOPES};else if(href.startsWith("https://graph.instagram.com/access_token"))body={access_token:"ig-long-private",expires_in:5184000};else if(href.startsWith("https://graph.instagram.com/me?"))body={id:"45678901234",user_id:"45678901234",username:"sharpcuts.uk",account_type:"BUSINESS"};else if(href.includes("/oauth/access_token")){facebookExchanges+=1;body={access_token:facebookExchanges===1?"fb-short-private":"fb-long-private",expires_in:5184000};}else if(href.includes("/me/permissions?"))body={data:[...FACEBOOK_SCOPES,"public_profile"].map(permission=>({permission,status:"granted"}))};else if(href.includes("/me/accounts?"))body={data:[{id:"56789012345",name:"Sharp Cuts Gents Barbers",access_token:"page-private"}]};else body={};return{ok:true,async json(){return body;}};}});
+  const instagram=await service.start("sharp-cuts-web","instagram_login"),instagramUrl=new URL(instagram.authorizationUrl);assert.deepEqual(instagramUrl.searchParams.get("scope").split(","),SHARP_CUTS_INSTAGRAM_SCOPES);await service.complete({code:"instagram-provider-code",state:instagramUrl.searchParams.get("state"),session:instagram.session});
+  const facebook=await service.start("sharp-cuts-web","facebook_login"),facebookUrl=new URL(facebook.authorizationUrl);assert.deepEqual(facebookUrl.searchParams.get("scope").split(","),FACEBOOK_SCOPES);assert.doesNotMatch(`${instagramUrl.searchParams.get("scope")},${facebookUrl.searchParams.get("scope")}`,/business_management|ads_management|pages_manage_posts|content_publish|messages/);await service.complete({code:"facebook-provider-code",state:facebookUrl.searchParams.get("state"),session:facebook.session});
+  const status=await service.status("sharp-cuts-web"),credentials=await service.credentials("sharp-cuts-web");assert.equal(status.connected,true);assert.equal(status.instagram.username,"sharpcuts.uk");assert.equal(status.facebook.pageName,"Sharp Cuts Gents Barbers");assert.equal(credentials.instagramAccessToken,"ig-long-private");assert.equal(credentials.facebookAccessToken,"page-private");assert.equal(JSON.stringify(await storage.listProjectMetaConnections(OWNER_ID,"sharp-cuts-web")).includes("private"),false);
 });
 
 test("project-scoped Meta OAuth rejects cross-project access, wrong assets, and unauthorized permissions",async()=>{
   const config=readConfig({...ENV,...SHARP_META_ENV});
   const attempt=async({permissions=FACEBOOK_SCOPES,pageId="56789012345",instagramId="45678901234",pageName="Sharp Cuts Gents Barbers",expectedCode})=>{
     const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[{id:"nova-digital-services-uk",name:"Nova Digital Services UK"},{id:"sharp-cuts-web",name:"Sharp Cuts"}]});
-    const responses=[{access_token:"short-user-private"},{access_token:"long-user-private",expires_in:5184000},{data:permissions.map(permission=>({permission,status:"granted"}))},{data:[{id:pageId,name:pageName,access_token:"page-private",instagram_business_account:{id:instagramId,username:"sharpcuts.uk"}}]}],requests=[];
-    const service=createInstagramOAuthService({config,storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,3),fetchImpl:async(url,options={})=>{requests.push({url:String(url),method:options.method||"GET"});return{ok:true,async json(){return options.method==="DELETE"?{}:responses.shift();}};}}),started=await service.start("sharp-cuts-web");
+    const responses=[{access_token:"short-user-private"},{access_token:"long-user-private",expires_in:5184000},{data:permissions.map(permission=>({permission,status:"granted"}))},{data:[{id:pageId,name:pageName,access_token:"page-private"}]}],requests=[];
+    const service=createInstagramOAuthService({config,storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,3),fetchImpl:async(url,options={})=>{requests.push({url:String(url),method:options.method||"GET"});return{ok:true,async json(){return options.method==="DELETE"?{}:responses.shift();}};}}),started=await service.start("sharp-cuts-web","facebook_login");
     await assert.rejects(service.complete({code:"facebook-provider-code",state:new URL(started.authorizationUrl).searchParams.get("state"),session:started.session}),error=>error.code===expectedCode);
     assert.equal(await storage.getProjectMetaConnection(OWNER_ID,"sharp-cuts-web","facebook_login"),null);assert.equal(requests.at(-1).method,"DELETE");
   };
@@ -251,7 +260,7 @@ test("Console exposes a Social Command Centre while approval copy shows exact pu
   const [html,consoleJs,presenter,memoryClient]=await Promise.all([readFile(new URL("../index.html",import.meta.url),"utf8"),readFile(new URL("../assets/console.js",import.meta.url),"utf8"),readFile(new URL("../assets/approval-presenter.js",import.meta.url),"utf8"),readFile(new URL("../assets/memory-client.js",import.meta.url),"utf8")]);
   assert.match(html,/Social Command Centre/);assert.match(html,/Organic audience growth/);assert.match(html,/socialProjectFilter/);assert.match(html,/Verified growth measurement/);assert.match(html,/socialDetailDialog/);assert.match(html,/socialActivityFilter/);assert.match(html,/data-section="social"/);assert.match(consoleJs,/socialDashboard/);assert.match(consoleJs,/openSocialContentDetail/);assert.match(consoleJs,/requestSocialRevision/);assert.match(consoleJs,/cancelSocialPublication/);assert.match(consoleJs,/socialApprovalList/);assert.match(consoleJs,/socialActivityLabels/);assert.match(presenter,/Approve social publication/);assert.match(presenter,/Immutable content hash/);
   assert.match(consoleJs,/loadGeneration=loadDashboard\.socialLoadGeneration=/);assert.match(consoleJs,/if\(loadGeneration!==loadDashboard\.socialLoadGeneration\)return/);
-  assert.match(consoleJs,/Connect Instagram/);assert.match(consoleJs,/startInstagramOAuth\(projectId\)/);assert.match(consoleJs,/www\.instagram\.com/);assert.match(consoleJs,/www\.facebook\.com/);assert.match(memoryClient,/\/api\/integrations\/instagram\/oauth\/start/);
+  assert.match(consoleJs,/Connect Instagram/);assert.match(consoleJs,/Connect Facebook Page/);assert.match(consoleJs,/startInstagramOAuth\(projectId,"instagram_login"\)/);assert.match(consoleJs,/startInstagramOAuth\(projectId,"facebook_login"\)/);assert.match(consoleJs,/www\.instagram\.com/);assert.match(consoleJs,/www\.facebook\.com/);assert.match(memoryClient,/\/api\/integrations\/instagram\/oauth\/start/);
   assert.match(consoleJs,/socialProject/);
 });
 

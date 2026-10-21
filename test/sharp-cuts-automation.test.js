@@ -79,7 +79,7 @@ test("business workspace links resources without merging projects or granting ex
 });
 
 test("business workspace reports only a verified project-scoped Sharp Cuts Meta binding",()=>{
-  const workspace=buildSharpCutsWorkspaceManifest({projectReady:true,metaConnection:{connected:true,accountId:"45678901234",username:"sharpcuts.uk",facebookPageId:"56789012345",facebookPageName:"Sharp Cuts Gents Barbers"}});
+  const workspace=buildSharpCutsWorkspaceManifest({projectReady:true,metaConnection:{connected:true,instagram:{connected:true,accountId:"45678901234",username:"sharpcuts.uk"},facebook:{connected:true,pageId:"56789012345",pageName:"Sharp Cuts Gents Barbers"}}});
   assert.equal(workspace.resources.find(item=>item.id==="instagram").novaStatus,"project_scoped_connection_verified");
   assert.equal(workspace.resources.find(item=>item.id==="facebook").novaStatus,"project_scoped_connection_verified");
   assert.equal(workspace.resources.find(item=>item.id==="instagram").writesEnabled,false);

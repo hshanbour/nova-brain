@@ -132,7 +132,6 @@ function parseSocialConfig(environment) {
     if(key.length!==32)throw new Error("NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");
   }
   const sharpCutsValues={
-    provider:"facebook_login",
     appId:environment.NOVA_SHARP_CUTS_META_APP_ID||null,
     appSecret:environment.NOVA_SHARP_CUTS_META_APP_SECRET||null,
     redirectUri:environment.NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI||null,
