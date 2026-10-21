@@ -168,7 +168,7 @@ export function createApp({
   const instagramOAuth=createInstagramOAuthService({config,storage,ownerId:OWNER_ID});
   const socialService=createSocialService({config,storage,ownerId:OWNER_ID,instagramOAuth});
   const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch}):null;
-  const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender});
+  const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender,instagramOAuth});
   registerSocialTools(toolRegistry,{service:socialService});
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){

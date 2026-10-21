@@ -5,13 +5,21 @@ import { readConfig } from "../src/config/env.js";
 import { OWNER_ID } from "../src/identity/initial-context.js";
 import { createActionPolicy, ApprovalRequiredError } from "../src/policy/action-policy.js";
 import { createMetaPublishingAdapter, createSocialService } from "../src/social/social-service.js";
-import { createInstagramOAuthService, INSTAGRAM_SCOPES } from "../src/social/instagram-oauth.js";
+import { createInstagramOAuthService, FACEBOOK_SCOPES, INSTAGRAM_SCOPES } from "../src/social/instagram-oauth.js";
 import { registerSocialTools } from "../src/social/social-tools.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { SCHEMA_STATEMENTS, SCHEMA_VERSION } from "../src/storage/schema.js";
 import { createToolRegistry } from "../src/tools/tool-registry.js";
 
 const ENV=Object.freeze({NOVA_META_GRAPH_API_VERSION:"v24.0",NOVA_META_FACEBOOK_PAGE_ID:"12345678901",NOVA_META_INSTAGRAM_ACCOUNT_ID:"23456789012",NOVA_META_PAGE_ACCESS_TOKEN:"server-only-token"});
+const SHARP_META_ENV=Object.freeze({
+  NOVA_SHARP_CUTS_META_APP_ID:"34567890123",
+  NOVA_SHARP_CUTS_META_APP_SECRET:"sharp-server-only-secret",
+  NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",
+  NOVA_SHARP_CUTS_META_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32,8).toString("base64"),
+  NOVA_SHARP_CUTS_META_INSTAGRAM_ACCOUNT_ID:"45678901234",
+  NOVA_SHARP_CUTS_META_FACEBOOK_PAGE_ID:"56789012345",
+});
 const now=()=>new Date("2026-10-15T10:00:00.000Z");
 
 async function fixture({live=true,publisher}={}){
@@ -44,25 +52,37 @@ test("Instagram-only metrics do not call Facebook and Facebook publishing fails 
 });
 
 test("current schema contains project-scoped social data and encrypted Instagram OAuth storage",()=>{
-  assert.ok(SCHEMA_VERSION>=27);
+  assert.ok(SCHEMA_VERSION>=29);
   for(const table of["nova_social_content","nova_social_publications"])assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes(`CREATE TABLE IF NOT EXISTS ${table}`)));
   assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_social_metric_snapshots")));
   assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("ADD COLUMN IF NOT EXISTS plan")));
   assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_instagram_oauth_states")));
   assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_instagram_connections")));
+  assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_project_meta_oauth_states")));
+  assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_project_meta_connections")));
+  assert.ok(SCHEMA_STATEMENTS.some(statement=>statement.includes("SELECT owner_id,'nova-digital-services-uk','instagram_login',account_id,username,scopes,encrypted_access_token")));
   const publication=SCHEMA_STATEMENTS.find(statement=>statement.includes("CREATE TABLE IF NOT EXISTS nova_social_publications"));
   assert.match(publication,/UNIQUE\(owner_id,intent_hash\)/);assert.match(publication,/lease_token/);assert.match(publication,/approval_id/);
+});
+
+test("schema 29 migration copies the existing Nova connection without decrypting or replacing it",async()=>{
+  const migration=await readFile(new URL("../migrations/029_project_scoped_meta.sql",import.meta.url),"utf8");
+  assert.match(migration,/SELECT owner_id,'nova-digital-services-uk','instagram_login',account_id,username,scopes,encrypted_access_token/);
+  assert.match(migration,/ON CONFLICT \(owner_id,project_id,provider\) DO NOTHING/);
+  assert.match(migration,/UNIQUE \(owner_id,provider,account_id\)/);
+  assert.match(migration,/VALUES \(29\)/);
+  assert.doesNotMatch(migration,/decrypt|app_secret|access_token\s*=|DROP\s+TABLE|DELETE\s+FROM/i);
 });
 
 test("Instagram OAuth is single-use, exact-scope, owner-bound, encrypted, and verifies Nova's account",async()=>{
   const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[]});
   const environment={...ENV,NOVA_META_INSTAGRAM_ACCOUNT_ID:"17841421559881769",NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"server-only-secret",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32,7).toString("base64")};
   const replies=[{data:[{access_token:"short-private",user_id:"17841421559881769",permissions:INSTAGRAM_SCOPES.join(",")}]},{access_token:"long-private",expires_in:5184000},{id:"17841421559881769",user_id:"17841421559881769",username:"novadigitalservicesuk",account_type:"BUSINESS"}],requests=[];
-  const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,9),fetchImpl:async(url,options={})=>{requests.push({url:String(url),method:options.method||"GET"});return{ok:true,async json(){return replies.shift();}};}}),started=await service.start(),url=new URL(started.authorizationUrl);
+  const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,9),fetchImpl:async(url,options={})=>{requests.push({url:String(url),method:options.method||"GET"});return{ok:true,async json(){return replies.shift();}};}}),started=await service.start("nova-digital-services-uk"),url=new URL(started.authorizationUrl);
   assert.deepEqual(url.searchParams.get("scope").split(","),INSTAGRAM_SCOPES);assert.doesNotMatch(started.authorizationUrl,/messages|comments|advertising/);
   const state=url.searchParams.get("state"),completed=await service.complete({code:"provider-code",state,session:started.session});assert.equal(completed.username,"novadigitalservicesuk");
   assert.equal(requests.some(item=>item.method==="GET"&&item.url.includes("/me/permissions")),false);
-  const stored=await storage.getInstagramConnection(OWNER_ID);assert.notEqual(stored.encryptedAccessToken.ciphertext,"long-private");assert.equal(JSON.stringify(stored).includes("long-private"),false);
+  const stored=await storage.getProjectMetaConnection(OWNER_ID,"nova-digital-services-uk","instagram_login");assert.notEqual(stored.encryptedAccessToken.ciphertext,"long-private");assert.equal(JSON.stringify(stored).includes("long-private"),false);
   await assert.rejects(service.complete({code:"provider-code",state,session:started.session}),error=>error.code==="instagram_oauth_state_rejected");
 });
 
@@ -71,9 +91,9 @@ test("Instagram OAuth normalizes observed token responses and rejects missing, u
   const attempt=async({profile,permissions,expectedCode})=>{
     const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[]});
     const requests=[];
-    const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,5),fetchImpl:async(url,options={})=>{const href=String(url),method=options.method||"GET";requests.push({url:href,method});let body={};if(href.startsWith("https://api.instagram.com/oauth/access_token"))body={access_token:"short-private",permissions};else if(href.startsWith("https://graph.instagram.com/access_token"))body={access_token:"long-private",expires_in:5184000};else if(method==="GET"&&href.startsWith("https://graph.instagram.com/me?"))body=profile;return{ok:true,async json(){return body;}};}}),started=await service.start();
+    const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,5),fetchImpl:async(url,options={})=>{const href=String(url),method=options.method||"GET";requests.push({url:href,method});let body={};if(href.startsWith("https://api.instagram.com/oauth/access_token"))body={access_token:"short-private",permissions};else if(href.startsWith("https://graph.instagram.com/access_token"))body={access_token:"long-private",expires_in:5184000};else if(method==="GET"&&href.startsWith("https://graph.instagram.com/me?"))body=profile;return{ok:true,async json(){return body;}};}}),started=await service.start("nova-digital-services-uk");
     await assert.rejects(service.complete({code:"provider-code",state:new URL(started.authorizationUrl).searchParams.get("state"),session:started.session}),error=>error.code===expectedCode);
-    assert.equal(requests.at(-1).method,"DELETE");assert.equal(await storage.getInstagramConnection(OWNER_ID),null);
+    assert.equal(requests.at(-1).method,"DELETE");assert.equal(await storage.getProjectMetaConnection(OWNER_ID,"nova-digital-services-uk","instagram_login"),null);
   };
   await attempt({profile:{id:"not-nova",username:"someone_else"},permissions:INSTAGRAM_SCOPES,expectedCode:"instagram_wrong_account"});
   await attempt({permissions:INSTAGRAM_SCOPES.slice(0,2),expectedCode:"instagram_scope_missing"});
@@ -84,15 +104,62 @@ test("Instagram OAuth normalizes observed token responses and rejects missing, u
 test("Instagram OAuth revokes an acquired token after any later provider failure without persisting it",async()=>{
   const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[]});
   const environment={...ENV,NOVA_META_INSTAGRAM_ACCOUNT_ID:"17841421559881769",NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"server-only-secret",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32,7).toString("base64")},requests=[];
-  const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,4),fetchImpl:async(url,options={})=>{const href=String(url),method=options.method||"GET";requests.push({href,method});if(href.startsWith("https://api.instagram.com/oauth/access_token"))return{ok:true,async json(){return{data:[{access_token:"short-private",permissions:INSTAGRAM_SCOPES.join(",")}]};}};if(method==="DELETE")return{ok:true,async json(){return{};}};return{ok:false,async json(){return{error:{code:190}};}};}}),started=await service.start();
+  const service=createInstagramOAuthService({config:readConfig(environment),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,4),fetchImpl:async(url,options={})=>{const href=String(url),method=options.method||"GET";requests.push({href,method});if(href.startsWith("https://api.instagram.com/oauth/access_token"))return{ok:true,async json(){return{data:[{access_token:"short-private",permissions:INSTAGRAM_SCOPES.join(",")}]};}};if(method==="DELETE")return{ok:true,async json(){return{};}};return{ok:false,async json(){return{error:{code:190}};}};}}),started=await service.start("nova-digital-services-uk");
   await assert.rejects(service.complete({code:"provider-code",state:new URL(started.authorizationUrl).searchParams.get("state"),session:started.session}),error=>error.code==="instagram_provider_rejected"&&!error.message.includes("short-private"));
-  assert.equal(requests.at(-1).method,"DELETE");assert.equal(await storage.getInstagramConnection(OWNER_ID),null);
+  assert.equal(requests.at(-1).method,"DELETE");assert.equal(await storage.getProjectMetaConnection(OWNER_ID,"nova-digital-services-uk","instagram_login"),null);
 });
 
 test("Instagram OAuth configuration fails closed for incomplete settings, unsafe callbacks, and invalid encryption keys",()=>{
   assert.throws(()=>readConfig({...ENV,NOVA_META_INSTAGRAM_APP_ID:"1601026398491282"}),/all four Instagram OAuth/i);
   assert.throws(()=>readConfig({...ENV,NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"private",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"http://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32).toString("base64")}),/HTTPS Instagram callback/i);
   assert.throws(()=>readConfig({...ENV,NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"private",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:"too-short"}),/exactly 32 bytes/i);
+});
+
+test("Sharp Cuts Facebook Login binds only the verified Page and Instagram account without changing Nova Digital Services",async()=>{
+  const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[{id:"nova-digital-services-uk",name:"Nova Digital Services UK"},{id:"sharp-cuts-web",name:"Sharp Cuts"}]});
+  await storage.saveProjectMetaConnection({ownerId:OWNER_ID,projectId:"nova-digital-services-uk",provider:"instagram_login",accountId:"23456789012",username:"novadigitalservicesuk",facebookPageId:null,facebookPageName:null,scopes:INSTAGRAM_SCOPES,encryptedAccessToken:{version:1,algorithm:"aes-256-gcm",iv:"existing",tag:"existing",ciphertext:"existing-nova-ciphertext"},encryptedSecondaryToken:null,expiresAt:"2026-12-15T10:00:00.000Z",lastSyncedAt:"2026-10-15T09:00:00.000Z"});
+  const before=await storage.getProjectMetaConnection(OWNER_ID,"nova-digital-services-uk","instagram_login"),requests=[];
+  const replies=[
+    {access_token:"short-user-private",expires_in:3600},
+    {access_token:"long-user-private",expires_in:5184000},
+    {data:[...FACEBOOK_SCOPES,"public_profile"].map(permission=>({permission,status:"granted"}))},
+    {data:[{id:"56789012345",name:"Sharp Cuts Gents Barbers",access_token:"page-private",instagram_business_account:{id:"45678901234",username:"sharpcuts.uk"}}]},
+  ];
+  const config=readConfig({...ENV,...SHARP_META_ENV}),service=createInstagramOAuthService({config,storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,6),fetchImpl:async(url,options={})=>{requests.push({url:String(url),method:options.method||"GET"});return{ok:true,async json(){return replies.shift();}};}}),started=await service.start("sharp-cuts-web"),authorization=new URL(started.authorizationUrl);
+  assert.equal(authorization.hostname,"www.facebook.com");assert.deepEqual(authorization.searchParams.get("scope").split(","),FACEBOOK_SCOPES);assert.doesNotMatch(authorization.searchParams.get("scope"),/ads|messages|comments/);
+  const completed=await service.complete({code:"facebook-provider-code",state:authorization.searchParams.get("state"),session:started.session});
+  assert.equal(completed.projectId,"sharp-cuts-web");assert.equal(completed.accountId,"45678901234");assert.equal(completed.facebookPageId,"56789012345");
+  const sharp=await storage.getProjectMetaConnection(OWNER_ID,"sharp-cuts-web","facebook_login"),after=await storage.getProjectMetaConnection(OWNER_ID,"nova-digital-services-uk","instagram_login");
+  assert.equal(JSON.stringify(sharp).includes("page-private"),false);assert.equal(JSON.stringify(sharp).includes("long-user-private"),false);assert.ok(sharp.encryptedSecondaryToken);assert.deepEqual(after,before);
+  assert.equal((await service.credentials("sharp-cuts-web")).accessToken,"page-private");assert.equal(requests.filter(item=>item.url.includes("/me/accounts?")).length,1);
+});
+
+test("project-scoped Meta OAuth rejects cross-project access, wrong assets, and unauthorized permissions",async()=>{
+  const config=readConfig({...ENV,...SHARP_META_ENV});
+  const attempt=async({permissions=FACEBOOK_SCOPES,pageId="56789012345",instagramId="45678901234",pageName="Sharp Cuts Gents Barbers",expectedCode})=>{
+    const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[{id:"nova-digital-services-uk",name:"Nova Digital Services UK"},{id:"sharp-cuts-web",name:"Sharp Cuts"}]});
+    const responses=[{access_token:"short-user-private"},{access_token:"long-user-private",expires_in:5184000},{data:permissions.map(permission=>({permission,status:"granted"}))},{data:[{id:pageId,name:pageName,access_token:"page-private",instagram_business_account:{id:instagramId,username:"sharpcuts.uk"}}]}],requests=[];
+    const service=createInstagramOAuthService({config,storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,3),fetchImpl:async(url,options={})=>{requests.push({url:String(url),method:options.method||"GET"});return{ok:true,async json(){return options.method==="DELETE"?{}:responses.shift();}};}}),started=await service.start("sharp-cuts-web");
+    await assert.rejects(service.complete({code:"facebook-provider-code",state:new URL(started.authorizationUrl).searchParams.get("state"),session:started.session}),error=>error.code===expectedCode);
+    assert.equal(await storage.getProjectMetaConnection(OWNER_ID,"sharp-cuts-web","facebook_login"),null);assert.equal(requests.at(-1).method,"DELETE");
+  };
+  await attempt({permissions:FACEBOOK_SCOPES.slice(0,-1),expectedCode:"instagram_scope_missing"});
+  await attempt({permissions:[...FACEBOOK_SCOPES,"ads_management"],expectedCode:"instagram_scope_unexpected"});
+  await attempt({pageId:"99999999999",expectedCode:"instagram_wrong_account"});
+  const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[{id:"independent-project",name:"Independent"}]});const service=createInstagramOAuthService({config,storage,ownerId:OWNER_ID,clock:now});
+  await assert.rejects(service.start("independent-project"),error=>error.code==="instagram_project_not_authorized");await assert.rejects(service.credentials("independent-project"),error=>error.code==="instagram_project_not_authorized");
+});
+
+test("one verified Meta account cannot be bound to two Nova projects",async()=>{
+  const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[{id:"sharp-cuts-web",name:"Sharp Cuts"},{id:"independent-project",name:"Independent"}]});
+  await storage.saveProjectMetaConnection({ownerId:OWNER_ID,projectId:"independent-project",provider:"facebook_login",accountId:"45678901234",username:"sharpcuts.uk",facebookPageId:"56789012345",facebookPageName:"Sharp Cuts Gents Barbers",scopes:FACEBOOK_SCOPES,encryptedAccessToken:{version:1,algorithm:"aes-256-gcm",iv:"other",tag:"other",ciphertext:"other"},encryptedSecondaryToken:null,expiresAt:"2026-12-15T10:00:00.000Z"});
+  await assert.rejects(storage.saveProjectMetaConnection({ownerId:OWNER_ID,projectId:"sharp-cuts-web",provider:"facebook_login",accountId:"45678901234",username:"sharpcuts.uk",facebookPageId:"56789012345",facebookPageName:"Sharp Cuts Gents Barbers",scopes:FACEBOOK_SCOPES,encryptedAccessToken:{version:1,algorithm:"aes-256-gcm",iv:"sharp",tag:"sharp",ciphertext:"sharp"},encryptedSecondaryToken:null,expiresAt:"2026-12-15T10:00:00.000Z"}),error=>error.code==="meta_account_scope_conflict");
+});
+
+test("Sharp Cuts Meta configuration is complete-only, Preview HTTPS-only, and live publishing stays off",()=>{
+  assert.throws(()=>readConfig({...ENV,NOVA_SHARP_CUTS_META_APP_ID:"34567890123"}),/All six Sharp Cuts Meta OAuth/i);
+  assert.throws(()=>readConfig({...ENV,...SHARP_META_ENV,NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI:"http://preview.example/api/integrations/instagram/oauth/callback"}),/HTTPS Meta callback/i);
+  const config=readConfig({...ENV,...SHARP_META_ENV});assert.equal(config.social.sharpCutsOAuth.configured,true);assert.equal(config.social.liveEnabled,false);
 });
 
 test("the five-concept launch batch is idempotent, English-first, project-scoped, and follows the 40/40/20 pillars",async()=>{
@@ -108,7 +175,7 @@ test("Reels cannot become review-ready or scheduled until a rights-declared vide
 });
 
 test("official Meta metric reads are retained as project-scoped snapshots without asset identifiers",async()=>{
-  let reads=0;const {service,storage}=await fixture({publisher:{async publish(){throw new Error("not used");},async readMetrics(){reads+=1;return{facebook:{followers:12,pageLikes:9},instagram:{followers:34,mediaCount:5}};}}});
+  let reads=0;const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[{id:"nova-digital-services-uk",name:"Nova Digital Services UK"},{id:"independent-project",name:"Independent Project"}]});const config=readConfig({...ENV,NOVA_SOCIAL_LIVE_ENABLED:"true"}),service=createSocialService({config,storage,ownerId:OWNER_ID,clock:now,instagramOAuth:{status:async projectId=>({connected:projectId==="nova-digital-services-uk"})},publisher:{async publish(){throw new Error("not used");},async readMetrics(projectId){assert.equal(projectId,"nova-digital-services-uk");reads+=1;return{facebook:{followers:12,pageLikes:9},instagram:{followers:34,mediaCount:5}};}}});
   const {snapshot,cached}=await service.refreshMetrics("nova-digital-services-uk"),second=await service.refreshMetrics("nova-digital-services-uk");assert.deepEqual(snapshot.metrics.instagram,{followers:34,mediaCount:5});assert.equal(cached,false);assert.equal(second.cached,true);assert.equal(reads,1);
   assert.equal((await storage.listSocialMetricSnapshots(OWNER_ID,{projectId:"independent-project"})).length,0);assert.equal((await service.dashboard("nova-digital-services-uk")).status.metricsVerified,true);
 });
@@ -183,7 +250,8 @@ test("Instagram adapter waits for a finished media container before publishing",
 test("Console exposes a Social Command Centre while approval copy shows exact publication data",async()=>{
   const [html,consoleJs,presenter,memoryClient]=await Promise.all([readFile(new URL("../index.html",import.meta.url),"utf8"),readFile(new URL("../assets/console.js",import.meta.url),"utf8"),readFile(new URL("../assets/approval-presenter.js",import.meta.url),"utf8"),readFile(new URL("../assets/memory-client.js",import.meta.url),"utf8")]);
   assert.match(html,/Social Command Centre/);assert.match(html,/Organic audience growth/);assert.match(html,/socialProjectFilter/);assert.match(html,/Verified growth measurement/);assert.match(html,/socialDetailDialog/);assert.match(html,/socialActivityFilter/);assert.match(html,/data-section="social"/);assert.match(consoleJs,/socialDashboard/);assert.match(consoleJs,/openSocialContentDetail/);assert.match(consoleJs,/requestSocialRevision/);assert.match(consoleJs,/cancelSocialPublication/);assert.match(consoleJs,/socialApprovalList/);assert.match(consoleJs,/socialActivityLabels/);assert.match(presenter,/Approve social publication/);assert.match(presenter,/Immutable content hash/);
-  assert.match(consoleJs,/Connect Instagram/);assert.match(consoleJs,/startInstagramOAuth\(\)/);assert.match(consoleJs,/url\.hostname!=="www\.instagram\.com"/);assert.match(memoryClient,/\/api\/integrations\/instagram\/oauth\/start/);
+  assert.match(consoleJs,/Connect Instagram/);assert.match(consoleJs,/startInstagramOAuth\(projectId\)/);assert.match(consoleJs,/www\.instagram\.com/);assert.match(consoleJs,/www\.facebook\.com/);assert.match(memoryClient,/\/api\/integrations\/instagram\/oauth\/start/);
+  assert.match(consoleJs,/socialProject/);
 });
 
 test("dashboard isolates projects and returns only social approvals and activity",async()=>{

@@ -44,6 +44,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const gmailConnections = new Map();
   const instagramOAuthStates = new Map();
   const instagramConnections = new Map();
+  const projectMetaOAuthStates = new Map();
+  const projectMetaConnections = new Map();
   const vercelAccountOAuthStates = new Map();
   const vercelAccountConnections = new Map();
   const gmailDrafts = new Map();
@@ -1024,6 +1026,12 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async saveInstagramConnection(input) { const current=instagramConnections.get(input.ownerId),timestamp=now(clock),saved={...copy(input),connectedAt:current?.connectedAt||timestamp,updatedAt:timestamp};instagramConnections.set(input.ownerId,saved);return copy(saved); },
     async getInstagramConnection(ownerId) { return copy(instagramConnections.get(ownerId)||null); },
     async deleteInstagramConnection(ownerId) { const current=instagramConnections.get(ownerId);if(!current)return null;instagramConnections.delete(ownerId);return copy(current); },
+    async saveProjectMetaOAuthState(input){for(const [key,state] of projectMetaOAuthStates)if(state.consumedAt||new Date(state.expiresAt)<=clock())projectMetaOAuthStates.delete(key);const record={...copy(input),consumedAt:null,createdAt:now(clock)};projectMetaOAuthStates.set(record.stateHash,record);return copy(record);},
+    async consumeProjectMetaOAuthState({stateHash,ownerId,sessionHash,consumedAt}){const current=projectMetaOAuthStates.get(stateHash);if(!current||current.ownerId!==ownerId||current.sessionHash!==sessionHash||current.consumedAt||new Date(current.expiresAt)<=new Date(consumedAt))return null;const updated={...current,consumedAt};projectMetaOAuthStates.set(stateHash,updated);return copy(updated);},
+    async saveProjectMetaConnection(input){const key=`${input.ownerId}:${input.projectId}:${input.provider}`,conflict=[...projectMetaConnections.values()].find(item=>item.ownerId===input.ownerId&&item.provider===input.provider&&item.accountId===input.accountId&&item.projectId!==input.projectId);if(conflict)throw Object.assign(new Error("Meta account is already bound to another project."),{code:"meta_account_scope_conflict"});const current=projectMetaConnections.get(key),timestamp=now(clock),saved={...copy(input),connectedAt:current?.connectedAt||timestamp,updatedAt:timestamp};projectMetaConnections.set(key,saved);return copy(saved);},
+    async getProjectMetaConnection(ownerId,projectId,provider){return copy(projectMetaConnections.get(`${ownerId}:${projectId}:${provider}`)||null);},
+    async listProjectMetaConnections(ownerId,projectId){return[...projectMetaConnections.values()].filter(item=>item.ownerId===ownerId&&(!projectId||item.projectId===projectId)).map(copy);},
+    async deleteProjectMetaConnection(ownerId,projectId,provider){const key=`${ownerId}:${projectId}:${provider}`,current=projectMetaConnections.get(key);if(!current)return null;projectMetaConnections.delete(key);return copy(current);},
     async saveVercelAccountOAuthState(input){for(const [key,value] of vercelAccountOAuthStates)if(value.consumedAt||new Date(value.expiresAt)<=clock())vercelAccountOAuthStates.delete(key);const record={...copy(input),consumedAt:null,createdAt:now(clock)};vercelAccountOAuthStates.set(record.stateHash,record);return copy(record);},
     async consumeVercelAccountOAuthState({stateHash,ownerId,sessionHash,consumedAt}){const current=vercelAccountOAuthStates.get(stateHash);if(!current||current.ownerId!==ownerId||current.sessionHash!==sessionHash||current.consumedAt||new Date(current.expiresAt)<=new Date(consumedAt))return null;const updated={...current,consumedAt};vercelAccountOAuthStates.set(stateHash,updated);return copy(updated);},
     async saveVercelAccountConnection(input){const current=vercelAccountConnections.get(input.ownerId),timestamp=now(clock),saved={...copy(input),connectedAt:current?.connectedAt||timestamp,updatedAt:timestamp};vercelAccountConnections.set(input.ownerId,saved);return copy(saved);},

@@ -131,11 +131,32 @@ function parseSocialConfig(environment) {
     const key=/^[a-f0-9]{64}$/i.test(oauthValues.tokenEncryptionKey)?Buffer.from(oauthValues.tokenEncryptionKey,"hex"):Buffer.from(oauthValues.tokenEncryptionKey,"base64");
     if(key.length!==32)throw new Error("NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");
   }
-  if(!identitySupplied){if(instagramLoginAccessToken||oauthSupplied||facebookSupplied)throw new Error("Social credentials require NOVA_META_GRAPH_API_VERSION and NOVA_META_INSTAGRAM_ACCOUNT_ID.");return Object.freeze({configured:false,facebookConfigured:false,liveEnabled:false,instagramLoginAccessToken:null,oauth:Object.freeze({configured:false,...oauthValues}),...values});}
+  const sharpCutsValues={
+    provider:"facebook_login",
+    appId:environment.NOVA_SHARP_CUTS_META_APP_ID||null,
+    appSecret:environment.NOVA_SHARP_CUTS_META_APP_SECRET||null,
+    redirectUri:environment.NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI||null,
+    tokenEncryptionKey:environment.NOVA_SHARP_CUTS_META_TOKEN_ENCRYPTION_KEY||null,
+    instagramAccountId:environment.NOVA_SHARP_CUTS_META_INSTAGRAM_ACCOUNT_ID||null,
+    facebookPageId:environment.NOVA_SHARP_CUTS_META_FACEBOOK_PAGE_ID||null,
+    instagramUsername:"sharpcuts.uk",
+    facebookPageName:"Sharp Cuts Gents Barbers",
+  };
+  const sharpCutsSupplied=[sharpCutsValues.appId,sharpCutsValues.appSecret,sharpCutsValues.redirectUri,sharpCutsValues.tokenEncryptionKey,sharpCutsValues.instagramAccountId,sharpCutsValues.facebookPageId].filter(Boolean).length;
+  if(sharpCutsSupplied>0&&sharpCutsSupplied!==6)throw new Error("All six Sharp Cuts Meta OAuth environment variables must be configured together.");
+  if(sharpCutsSupplied){
+    if(!/^\d{5,30}$/.test(sharpCutsValues.appId)||!/^\d{5,30}$/.test(sharpCutsValues.instagramAccountId)||!/^\d{5,30}$/.test(sharpCutsValues.facebookPageId))throw new Error("Sharp Cuts Meta app and asset IDs are invalid.");
+    let redirect;try{redirect=new URL(sharpCutsValues.redirectUri);}catch{throw new Error("NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI must be an absolute URL.");}
+    if(redirect.protocol!=="https:"||redirect.pathname!=="/api/integrations/instagram/oauth/callback")throw new Error("NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI must be Nova's HTTPS Meta callback route.");
+    const key=/^[a-f0-9]{64}$/i.test(sharpCutsValues.tokenEncryptionKey)?Buffer.from(sharpCutsValues.tokenEncryptionKey,"hex"):Buffer.from(sharpCutsValues.tokenEncryptionKey,"base64");
+    if(key.length!==32)throw new Error("NOVA_SHARP_CUTS_META_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");
+  }
+  const sharpCutsOAuth=Object.freeze({configured:sharpCutsSupplied===6,...sharpCutsValues});
+  if(!identitySupplied){if(instagramLoginAccessToken||oauthSupplied||facebookSupplied)throw new Error("Social credentials require NOVA_META_GRAPH_API_VERSION and NOVA_META_INSTAGRAM_ACCOUNT_ID.");return Object.freeze({configured:sharpCutsOAuth.configured,facebookConfigured:false,liveEnabled:false,instagramLoginAccessToken:null,oauth:Object.freeze({configured:false,...oauthValues}),sharpCutsOAuth,...values});}
   if(!/^v\d+\.\d+$/.test(values.graphVersion))throw new Error("NOVA_META_GRAPH_API_VERSION is invalid.");
   if((values.pageId&&!/^\d{5,30}$/.test(values.pageId))||!/^\d{5,30}$/.test(values.instagramAccountId))throw new Error("Nova Social Meta asset IDs are invalid.");
   const configured=Boolean(instagramLoginAccessToken||oauthSupplied===4||facebookSupplied===2);
-  return Object.freeze({configured,facebookConfigured:facebookSupplied===2,liveEnabled:configured&&environment.NOVA_SOCIAL_LIVE_ENABLED==="true",instagramLoginAccessToken,oauth:Object.freeze({configured:oauthSupplied===4,...oauthValues}),...values});
+  return Object.freeze({configured:configured||sharpCutsOAuth.configured,facebookConfigured:facebookSupplied===2,liveEnabled:(configured||sharpCutsOAuth.configured)&&environment.NOVA_SOCIAL_LIVE_ENABLED==="true",instagramLoginAccessToken,oauth:Object.freeze({configured:oauthSupplied===4,provider:"instagram_login",instagramUsername:"novadigitalservicesuk",facebookPageId:null,...oauthValues}),sharpCutsOAuth,...values});
 }
 
 function parseVercelIntegrationConfig(environment){

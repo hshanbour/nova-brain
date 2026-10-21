@@ -78,6 +78,14 @@ test("business workspace links resources without merging projects or granting ex
   assert.doesNotMatch(JSON.stringify(workspace),/hamoodtrims/i);
 });
 
+test("business workspace reports only a verified project-scoped Sharp Cuts Meta binding",()=>{
+  const workspace=buildSharpCutsWorkspaceManifest({projectReady:true,metaConnection:{connected:true,accountId:"45678901234",username:"sharpcuts.uk",facebookPageId:"56789012345",facebookPageName:"Sharp Cuts Gents Barbers"}});
+  assert.equal(workspace.resources.find(item=>item.id==="instagram").novaStatus,"project_scoped_connection_verified");
+  assert.equal(workspace.resources.find(item=>item.id==="facebook").novaStatus,"project_scoped_connection_verified");
+  assert.equal(workspace.resources.find(item=>item.id==="instagram").writesEnabled,false);
+  assert.equal(workspace.controls.publishing,false);
+});
+
 test("Sharp Cuts Command Centre exposes the resource boundary without adding another dashboard",async()=>{
   const consoleSource=await readFile(new URL("../assets/console.js",import.meta.url),"utf8");
   assert.match(consoleSource,/Sharp Cuts · isolated business workspace/);

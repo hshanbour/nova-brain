@@ -41,7 +41,7 @@ export const ownerMemoryClient = Object.freeze({
   cancelTask: (id) => request(`/api/autonomy/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   tools: () => request("/api/tools"),
   socialDashboard: (projectId = "") => request(`/api/social/dashboard${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
-  startInstagramOAuth: () => request("/api/integrations/instagram/oauth/start", { method: "POST" }),
+  startInstagramOAuth: (projectId) => request("/api/integrations/instagram/oauth/start", { method: "POST", body: JSON.stringify({projectId}) }),
   socialContent: (id) => request(`/api/social/content/${encodeURIComponent(id)}`),
   reviseSocialContent: (id,input) => request(`/api/social/content/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
   submitSocialReview: (id) => request(`/api/social/content/${encodeURIComponent(id)}/submit-review`, { method: "POST", body: "{}" }),
