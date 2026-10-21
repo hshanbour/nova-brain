@@ -69,6 +69,8 @@ test("business workspace links resources without merging projects or granting ex
   assert.equal(workspace.projectBoundary.legacyContextInjection,false);
   assert.equal(workspace.projectBoundary.mergeAuthorised,false);
   assert.equal(workspace.resources.find(item=>item.id==="instagram").novaStatus,"blocked_pending_project_scoped_oauth");
+  assert.equal(workspace.resources.find(item=>item.id==="shop-operations").writesEnabled,false);
+  assert.equal(workspace.resources.find(item=>item.id==="tiktok").novaStatus,"official_authorization_required");
   assert.equal(workspace.resources.find(item=>item.id==="email").externalStatus,"authenticated_provider_probe_passed");
   assert.equal(workspace.resources.every(item=>item.writesEnabled===false),true);
   assert.equal(workspace.controls.ownerApprovalRequired,true);
@@ -82,6 +84,8 @@ test("Sharp Cuts Command Centre exposes the resource boundary without adding ano
   assert.match(consoleSource,/sharpCutsWorkspaceConnections/);
   assert.match(consoleSource,/legacy context blocked/);
   assert.match(consoleSource,/External writes off/);
+  assert.match(consoleSource,/visibleProjects=projects\.filter\(project=>project\.id!=="sharp-cuts"\)/);
+  assert.match(consoleSource,/One isolated business workspace for Shop Operations, Sharp Cuts Web, Fresha, Instagram, Facebook and future TikTok integration/);
 });
 
 test("calendar capacity never counts a long Walk-in block as a customer appointment or offerable time",()=>{
