@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
 import {createInMemoryStorage} from "../src/storage/in-memory-storage.js";
 import {analyseCalendarCapacity,buildMigrationReadySourceManifest,buildSharpCutsSocialWorkflow,buildWinbackProgramme,buildWinbackProposal,classifyRetentionRecords,createSharpCutsAutomationService,estimateCampaignCost,SHARP_CUTS_FUTURE_AUTOMATION,syntheticRetentionFixture} from "../src/automation/sharp-cuts-automation.js";
+import {buildSharpCutsWorkspaceManifest,SHARP_CUTS_WORKSPACE_ID} from "../src/automation/sharp-cuts-workspace.js";
 
 const OWNER="owner-primary",AS_OF=new Date("2026-10-17T09:00:00.000Z");
 
@@ -60,6 +61,29 @@ test("future automation remains fail-closed and evidence-based",()=>{
   assert.equal(SHARP_CUTS_FUTURE_AUTOMATION.emptySlotPromotions.status,"blocked_until_availability_is_certified");assert.equal(SHARP_CUTS_FUTURE_AUTOMATION.loyalty.liveProgrammeCreated,false);assert.equal(SHARP_CUTS_FUTURE_AUTOMATION.channels.whatsapp.status,"manual_app_only");assert.ok(SHARP_CUTS_FUTURE_AUTOMATION.measurement.metrics.includes("attributed_revenue"));
 });
 
+test("business workspace links resources without merging projects or granting external writes",()=>{
+  const workspace=buildSharpCutsWorkspaceManifest({projectReady:true,senderConnected:true});
+  assert.equal(workspace.id,SHARP_CUTS_WORKSPACE_ID);
+  assert.equal(workspace.projectBoundary.primaryProjectId,"sharp-cuts-web");
+  assert.equal(workspace.projectBoundary.legacyProjectId,"sharp-cuts");
+  assert.equal(workspace.projectBoundary.legacyContextInjection,false);
+  assert.equal(workspace.projectBoundary.mergeAuthorised,false);
+  assert.equal(workspace.resources.find(item=>item.id==="instagram").novaStatus,"blocked_pending_project_scoped_oauth");
+  assert.equal(workspace.resources.find(item=>item.id==="email").externalStatus,"authenticated_provider_probe_passed");
+  assert.equal(workspace.resources.every(item=>item.writesEnabled===false),true);
+  assert.equal(workspace.controls.ownerApprovalRequired,true);
+  assert.equal(workspace.controls.publishing,false);
+  assert.doesNotMatch(JSON.stringify(workspace),/hamoodtrims/i);
+});
+
+test("Sharp Cuts Command Centre exposes the resource boundary without adding another dashboard",async()=>{
+  const consoleSource=await readFile(new URL("../assets/console.js",import.meta.url),"utf8");
+  assert.match(consoleSource,/Sharp Cuts · isolated business workspace/);
+  assert.match(consoleSource,/sharpCutsWorkspaceConnections/);
+  assert.match(consoleSource,/legacy context blocked/);
+  assert.match(consoleSource,/External writes off/);
+});
+
 test("calendar capacity never counts a long Walk-in block as a customer appointment or offerable time",()=>{
   const result=analyseCalendarCapacity([{barberRef:"demo-barber-01",date:"2026-10-19",shiftStartMinute:540,shiftEndMinute:1020,intervals:[
     {startMinute:540,endMinute:570,kind:"service",label:"Haircut",customerBound:true,serviceBound:true},
@@ -86,6 +110,7 @@ test("the demonstration is idempotent, project-isolated, durable in Activity, an
   assert.equal(dashboard.stagingSnapshot.duplicates.confirmedPairs,10);assert.equal(dashboard.stagingSnapshot.duplicates.ambiguousPairs,1647);assert.equal(dashboard.stagingSnapshot.duplicates.mergedProfiles,0);
   assert.equal(dashboard.campaignReview.audience.candidateProfiles,1530);assert.equal(dashboard.campaignReview.audience.potentialUniqueEmailRecipients,1161);assert.equal(dashboard.campaignReview.audience.duplicateAddressProfilesExcluded,7);assert.equal(dashboard.campaignReview.audience.verifiedSendableRecipients,0);
   assert.equal(dashboard.campaignReview.status,"blocked_before_approval");assert.equal(dashboard.campaignReview.approval.status,"not_created");assert.equal(dashboard.campaignReview.approval.approveEnabled,false);assert.equal(dashboard.campaignReview.safeguards.liveSend,false);
+  assert.equal(dashboard.workspace.id,"sharp-cuts-business-workspace");assert.equal(dashboard.workspace.projectBoundary.legacyContextInjection,false);assert.equal(dashboard.workspace.controls.externalWrites,false);
   assert.match(dashboard.campaignReview.email.body,/SAME SHARP CUTS\. A WHOLE NEW EXPERIENCE/);assert.match(dashboard.campaignReview.email.body,/fresh new look/);assert.match(dashboard.campaignReview.email.body,/NOW IT'S YOUR TURN FOR A FRESH LOOK/);assert.doesNotMatch(dashboard.campaignReview.email.body,/20% OFF/);assert.equal((dashboard.campaignReview.email.html.match(/>20% OFF</g)||[]).length,1);
 });
 
