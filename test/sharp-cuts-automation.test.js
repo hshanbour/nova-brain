@@ -85,6 +85,7 @@ test("Sharp Cuts Command Centre exposes the resource boundary without adding ano
   assert.match(consoleSource,/legacy context blocked/);
   assert.match(consoleSource,/External writes off/);
   assert.match(consoleSource,/visibleProjects=projects\.filter\(project=>project\.id!=="sharp-cuts"\)/);
+  assert.match(consoleSource,/socialProjects=projects\.filter\(project=>project\.id!=="sharp-cuts"\)/);
   assert.match(consoleSource,/One isolated business workspace for Shop Operations, Sharp Cuts Web, Fresha, Instagram, Facebook and future TikTok integration/);
 });
 
