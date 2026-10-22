@@ -6,6 +6,7 @@ import { OWNER_ID } from "../src/identity/initial-context.js";
 import { createActionPolicy, ApprovalRequiredError } from "../src/policy/action-policy.js";
 import { createMetaPublishingAdapter, createSocialService } from "../src/social/social-service.js";
 import { createInstagramOAuthService, FACEBOOK_SCOPES, INSTAGRAM_SCOPES, SHARP_CUTS_INSTAGRAM_SCOPES } from "../src/social/instagram-oauth.js";
+import {isMetaOAuthCallbackUrl,isSupportedMetaOAuthRedirect,metaOAuthCookiePath} from "../src/social/meta-oauth-callback.js";
 import { registerSocialTools } from "../src/social/social-tools.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { SCHEMA_STATEMENTS, SCHEMA_VERSION } from "../src/storage/schema.js";
@@ -115,6 +116,21 @@ test("Instagram OAuth configuration fails closed for incomplete settings, unsafe
   assert.throws(()=>readConfig({...ENV,NOVA_META_INSTAGRAM_APP_ID:"1601026398491282"}),/all four Instagram OAuth/i);
   assert.throws(()=>readConfig({...ENV,NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"private",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"http://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32).toString("base64")}),/HTTPS Instagram callback/i);
   assert.throws(()=>readConfig({...ENV,NOVA_META_INSTAGRAM_APP_ID:"1601026398491282",NOVA_META_INSTAGRAM_APP_SECRET:"private",NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY:"too-short"}),/exactly 32 bytes/i);
+});
+
+test("Meta OAuth accepts only exact HTTPS legacy or browser-safe root callbacks",()=>{
+  const root="https://preview.example/?meta_oauth_callback=1";
+  assert.equal(isSupportedMetaOAuthRedirect(root),true);
+  assert.equal(isSupportedMetaOAuthRedirect("https://preview.example/api/integrations/instagram/oauth/callback"),true);
+  for(const unsafe of["http://preview.example/?meta_oauth_callback=1","https://preview.example/?meta_oauth_callback=1&next=https://evil.example","https://preview.example/?meta_oauth_callback=2","https://preview.example/#meta_oauth_callback=1","https://user:pass@preview.example/?meta_oauth_callback=1"])assert.equal(isSupportedMetaOAuthRedirect(unsafe),false);
+  assert.equal(isMetaOAuthCallbackUrl(new URL(`${root}&code=unused&state=unused`)),true);
+  assert.equal(isMetaOAuthCallbackUrl(new URL("https://preview.example/?code=unused&state=unused")),false);
+  assert.equal(metaOAuthCookiePath(root),"/");
+});
+
+test("Sharp Cuts accepts the exact browser-safe root callback without weakening OAuth controls",()=>{
+  const redirectUri="https://preview.example/?meta_oauth_callback=1",config=readConfig({...ENV,...SHARP_META_ENV,NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI:redirectUri});
+  assert.equal(config.social.sharpCutsOAuth.redirectUri,redirectUri);assert.equal(config.social.liveEnabled,false);
 });
 
 test("Sharp Cuts split OAuth binds Instagram and Facebook independently without changing Nova Digital Services",async()=>{

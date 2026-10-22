@@ -3,6 +3,7 @@ import {
   ELEVENLABS_OUTPUT_FORMAT,
 } from "../voice/elevenlabs-models.js";
 import {parseSharpCutsSenderConfig} from "../email/sender-marketing.js";
+import {isSupportedMetaOAuthRedirect} from "../social/meta-oauth-callback.js";
 
 const SUPPORTED_MODEL_PROVIDERS = new Set(["mock", "openai"]);
 const SUPPORTED_STORAGE_PROVIDERS = new Set(["auto", "memory", "postgres"]);
@@ -127,7 +128,7 @@ function parseSocialConfig(environment) {
   if(oauthSupplied){
     if(!/^\d{5,30}$/.test(oauthValues.appId))throw new Error("NOVA_META_INSTAGRAM_APP_ID is invalid.");
     let redirect;try{redirect=new URL(oauthValues.redirectUri);}catch{throw new Error("NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI must be an absolute URL.");}
-    if(redirect.protocol!=="https:"||redirect.pathname!=="/api/integrations/instagram/oauth/callback")throw new Error("NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI must be Nova's HTTPS Instagram callback route.");
+    if(!isSupportedMetaOAuthRedirect(redirect))throw new Error("NOVA_META_INSTAGRAM_OAUTH_REDIRECT_URI must be Nova's exact supported HTTPS Instagram callback URI.");
     const key=/^[a-f0-9]{64}$/i.test(oauthValues.tokenEncryptionKey)?Buffer.from(oauthValues.tokenEncryptionKey,"hex"):Buffer.from(oauthValues.tokenEncryptionKey,"base64");
     if(key.length!==32)throw new Error("NOVA_META_INSTAGRAM_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");
   }
@@ -148,7 +149,7 @@ function parseSocialConfig(environment) {
   if(sharpCutsSupplied){
     if(!/^\d{5,30}$/.test(sharpCutsValues.appId)||!/^\d{5,30}$/.test(sharpCutsValues.instagramAppId)||!/^\d{5,30}$/.test(sharpCutsValues.instagramAccountId)||!/^\d{5,30}$/.test(sharpCutsValues.facebookPageId))throw new Error("Sharp Cuts Meta app and asset IDs are invalid.");
     let redirect;try{redirect=new URL(sharpCutsValues.redirectUri);}catch{throw new Error("NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI must be an absolute URL.");}
-    if(redirect.protocol!=="https:"||redirect.pathname!=="/api/integrations/instagram/oauth/callback")throw new Error("NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI must be Nova's HTTPS Meta callback route.");
+    if(!isSupportedMetaOAuthRedirect(redirect))throw new Error("NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI must be Nova's exact supported HTTPS Meta callback URI.");
     const key=/^[a-f0-9]{64}$/i.test(sharpCutsValues.tokenEncryptionKey)?Buffer.from(sharpCutsValues.tokenEncryptionKey,"hex"):Buffer.from(sharpCutsValues.tokenEncryptionKey,"base64");
     if(key.length!==32)throw new Error("NOVA_SHARP_CUTS_META_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");
   }
