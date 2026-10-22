@@ -14,6 +14,7 @@ import { createToolRegistry } from "../src/tools/tool-registry.js";
 const ENV=Object.freeze({NOVA_META_GRAPH_API_VERSION:"v24.0",NOVA_META_FACEBOOK_PAGE_ID:"12345678901",NOVA_META_INSTAGRAM_ACCOUNT_ID:"23456789012",NOVA_META_PAGE_ACCESS_TOKEN:"server-only-token"});
 const SHARP_META_ENV=Object.freeze({
   NOVA_SHARP_CUTS_META_APP_ID:"34567890123",
+  NOVA_SHARP_CUTS_META_INSTAGRAM_APP_ID:"23456789012",
   NOVA_SHARP_CUTS_META_APP_SECRET:"sharp-server-only-secret",
   NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI:"https://preview.example/api/integrations/instagram/oauth/callback",
   NOVA_SHARP_CUTS_META_TOKEN_ENCRYPTION_KEY:Buffer.alloc(32,8).toString("base64"),
@@ -134,12 +135,12 @@ test("Sharp Cuts split OAuth binds Instagram and Facebook independently without 
   assert.deepEqual((await service.status("sharp-cuts-web")).facebook.scopes,[...FACEBOOK_SCOPES].sort());await assert.rejects(service.credentials("sharp-cuts-web"),error=>error.code==="instagram_not_connected");assert.equal(requests.filter(item=>item.url.includes("/me/accounts?")).length,1);
 });
 
-test("Sharp Cuts requests exactly five read-only scopes and combines both encrypted connections",async()=>{
+test("Sharp Cuts requests exactly five read-only scopes with provider-specific app IDs and combines both encrypted connections",async()=>{
   const storage=createInMemoryStorage({clock:now});await storage.initialize({owner:{id:OWNER_ID,fullName:"Owner"},projects:[{id:"sharp-cuts-web",name:"Sharp Cuts"}]});
   let facebookExchanges=0;const requests=[];
   const service=createInstagramOAuthService({config:readConfig({...ENV,...SHARP_META_ENV}),storage,ownerId:OWNER_ID,clock:now,randomBytesImpl:size=>Buffer.alloc(size,2),fetchImpl:async(url,options={})=>{const href=String(url),method=options.method||"GET";requests.push({href,method});let body;if(href.startsWith("https://api.instagram.com/oauth/access_token"))body={access_token:"ig-short-private",permissions:SHARP_CUTS_INSTAGRAM_SCOPES};else if(href.startsWith("https://graph.instagram.com/access_token"))body={access_token:"ig-long-private",expires_in:5184000};else if(href.startsWith("https://graph.instagram.com/me?"))body={id:"45678901234",user_id:"45678901234",username:"sharpcuts.uk",account_type:"BUSINESS"};else if(href.includes("/oauth/access_token")){facebookExchanges+=1;body={access_token:facebookExchanges===1?"fb-short-private":"fb-long-private",expires_in:5184000};}else if(href.includes("/me/permissions?"))body={data:[...FACEBOOK_SCOPES,"public_profile"].map(permission=>({permission,status:"granted"}))};else if(href.includes("/me/accounts?"))body={data:[{id:"56789012345",name:"Sharp Cuts Gents Barbers",access_token:"page-private"}]};else body={};return{ok:true,async json(){return body;}};}});
-  const instagram=await service.start("sharp-cuts-web","instagram_login"),instagramUrl=new URL(instagram.authorizationUrl);assert.deepEqual(instagramUrl.searchParams.get("scope").split(","),SHARP_CUTS_INSTAGRAM_SCOPES);await service.complete({code:"instagram-provider-code",state:instagramUrl.searchParams.get("state"),session:instagram.session});
-  const facebook=await service.start("sharp-cuts-web","facebook_login"),facebookUrl=new URL(facebook.authorizationUrl);assert.deepEqual(facebookUrl.searchParams.get("scope").split(","),FACEBOOK_SCOPES);assert.doesNotMatch(`${instagramUrl.searchParams.get("scope")},${facebookUrl.searchParams.get("scope")}`,/business_management|ads_management|pages_manage_posts|content_publish|messages/);await service.complete({code:"facebook-provider-code",state:facebookUrl.searchParams.get("state"),session:facebook.session});
+  const instagram=await service.start("sharp-cuts-web","instagram_login"),instagramUrl=new URL(instagram.authorizationUrl);assert.equal(instagramUrl.searchParams.get("client_id"),SHARP_META_ENV.NOVA_SHARP_CUTS_META_INSTAGRAM_APP_ID);assert.deepEqual(instagramUrl.searchParams.get("scope").split(","),SHARP_CUTS_INSTAGRAM_SCOPES);await service.complete({code:"instagram-provider-code",state:instagramUrl.searchParams.get("state"),session:instagram.session});
+  const facebook=await service.start("sharp-cuts-web","facebook_login"),facebookUrl=new URL(facebook.authorizationUrl);assert.equal(facebookUrl.searchParams.get("client_id"),SHARP_META_ENV.NOVA_SHARP_CUTS_META_APP_ID);assert.deepEqual(facebookUrl.searchParams.get("scope").split(","),FACEBOOK_SCOPES);assert.doesNotMatch(`${instagramUrl.searchParams.get("scope")},${facebookUrl.searchParams.get("scope")}`,/business_management|ads_management|pages_manage_posts|content_publish|messages/);await service.complete({code:"facebook-provider-code",state:facebookUrl.searchParams.get("state"),session:facebook.session});
   const status=await service.status("sharp-cuts-web"),credentials=await service.credentials("sharp-cuts-web");assert.equal(status.connected,true);assert.equal(status.instagram.username,"sharpcuts.uk");assert.equal(status.facebook.pageName,"Sharp Cuts Gents Barbers");assert.equal(credentials.instagramAccessToken,"ig-long-private");assert.equal(credentials.facebookAccessToken,"page-private");assert.equal(JSON.stringify(await storage.listProjectMetaConnections(OWNER_ID,"sharp-cuts-web")).includes("private"),false);
 });
 
@@ -166,7 +167,7 @@ test("one verified Meta account cannot be bound to two Nova projects",async()=>{
 });
 
 test("Sharp Cuts Meta configuration is complete-only, Preview HTTPS-only, and live publishing stays off",()=>{
-  assert.throws(()=>readConfig({...ENV,NOVA_SHARP_CUTS_META_APP_ID:"34567890123"}),/All six Sharp Cuts Meta OAuth/i);
+  assert.throws(()=>readConfig({...ENV,NOVA_SHARP_CUTS_META_APP_ID:"34567890123"}),/All seven Sharp Cuts Meta OAuth/i);
   assert.throws(()=>readConfig({...ENV,...SHARP_META_ENV,NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI:"http://preview.example/api/integrations/instagram/oauth/callback"}),/HTTPS Meta callback/i);
   const config=readConfig({...ENV,...SHARP_META_ENV});assert.equal(config.social.sharpCutsOAuth.configured,true);assert.equal(config.social.liveEnabled,false);
 });

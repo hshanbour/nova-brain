@@ -37,13 +37,14 @@ Keep `NOVA_SOCIAL_LIVE_ENABLED=false` until the owner has verified the exact Pag
 Phase 2 stores Meta authorization by owner, Nova project, provider, and verified provider account. The existing Nova Digital Services UK Instagram Login record is copied unchanged into its project scope by schema migration 29; its encrypted token is neither decrypted nor replaced. Sharp Cuts uses a separate Facebook Login app configuration and encryption key:
 
 - `NOVA_SHARP_CUTS_META_APP_ID`
+- `NOVA_SHARP_CUTS_META_INSTAGRAM_APP_ID`
 - `NOVA_SHARP_CUTS_META_APP_SECRET`
 - `NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI`
 - `NOVA_SHARP_CUTS_META_TOKEN_ENCRYPTION_KEY`
 - `NOVA_SHARP_CUTS_META_INSTAGRAM_ACCOUNT_ID`
 - `NOVA_SHARP_CUTS_META_FACEBOOK_PAGE_ID`
 
-All six Sharp Cuts values are required together and belong in server-only Preview configuration. Nova accepts the authorization only when the official API returns both the configured `@sharpcuts.uk` Instagram professional account and the configured `Sharp Cuts Gents Barbers` Page. A provider account already bound to another Nova project is rejected. OAuth state is single-use, session-bound and expires after ten minutes. Tokens are AES-256-GCM encrypted with the project-specific key.
+All seven Sharp Cuts values are required together and belong in server-only Preview configuration. Meta exposes a distinct Instagram Login app ID for the Instagram platform; Nova therefore never reuses the Facebook app ID in the Instagram authorization request. Nova accepts the authorization only when the official API returns both the configured `@sharpcuts.uk` Instagram professional account and the configured `Sharp Cuts Gents Barbers` Page. A provider account already bound to another Nova project is rejected. OAuth state is single-use, session-bound and expires after ten minutes. Tokens are AES-256-GCM encrypted with the project-specific key.
 
 The minimum requested scopes are deliberately narrow. Facebook Page publishing/measurement uses `pages_manage_posts`, `pages_read_engagement`, and `read_insights`. Instagram Login uses `instagram_business_basic` and `instagram_business_content_publish`; the fallback Page-linked path uses `instagram_basic`, `instagram_content_publish`, `instagram_manage_insights`, `pages_show_list`, and `pages_read_engagement`. Nova does not request advertising, messaging, comment moderation, or public-content discovery permissions for Social V1.
 
