@@ -75,6 +75,7 @@ import {createApprovalReconciliation} from "./autonomy/approval-reconciliation.j
 import {createSocialService} from "./social/social-service.js";
 import {registerSocialTools} from "./social/social-tools.js";
 import {createMediaAutomationService} from "./social/media-automation.js";
+import {createPrivateR2Store} from "./social/r2-private-store.js";
 import {createInstagramOAuthService} from "./social/instagram-oauth.js";
 import {createSharpCutsAutomationService} from "./automation/sharp-cuts-automation.js";
 import {createSenderMarketingClient} from "./email/sender-marketing.js";
@@ -167,8 +168,10 @@ export function createApp({
   registerPhoneTools(toolRegistry, { service: phoneService });
   const whatsappService = createWhatsAppService({ config, storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), fetchImpl: whatsappFetchImpl || globalThis.fetch, logger });
   const instagramOAuth=createInstagramOAuthService({config,storage,ownerId:OWNER_ID});
-  const socialService=createSocialService({config,storage,ownerId:OWNER_ID,instagramOAuth});
-  const mediaAutomation=createMediaAutomationService({storage,socialService,ownerId:OWNER_ID});
+  const privateR2=config.socialMedia.r2Configured?createPrivateR2Store(config.socialMedia):null;
+  const mediaUrlResolver=privateR2?async(media,{projectId})=>{const asset=await storage.getSocialMediaAsset(media.assetId,OWNER_ID);if(!asset||asset.projectId!==projectId||asset.storage!=="r2"||asset.state!=="cloud_ready")throw Object.assign(new Error("Approved media is unavailable for this project."),{code:"social_media_project_mismatch"});return privateR2.createReadGrant({key:asset.cloudKey}).url;}:null;
+  const socialService=createSocialService({config,storage,ownerId:OWNER_ID,instagramOAuth,mediaUrlResolver});
+  const mediaAutomation=createMediaAutomationService({storage,socialService,ownerId:OWNER_ID,cloudStore:privateR2,maxApprovedCloudBytes:config.socialMedia.hardQuotaBytes});
   const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch}):null;
   const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender,instagramOAuth});
   registerSocialTools(toolRegistry,{service:socialService,mediaAutomation});

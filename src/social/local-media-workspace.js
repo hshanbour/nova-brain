@@ -10,6 +10,7 @@ const inside=(root,target)=>target===root||target.startsWith(`${root}${sep}`);
 
 export function createLocalMediaWorkspace({root,maxBytes=8*1024**3}={}){
   const workspace=resolve(String(root||""));if(!root)throw new Error("A dedicated Sharp Cuts media root is required.");
+  const capabilityPath=(projectId,capability,extension,collection)=>{if(projectId!=="sharp-cuts-web"||!/^[a-f0-9]{48}$/.test(capability)||!EXTENSIONS.has(extension)||!["originals","renders"].includes(collection))throw new Error("Invalid local media capability.");const target=resolve(workspace,projectId,collection,`${capability}${extension}`);if(!inside(workspace,target))throw new Error("Unsafe media path.");return target;};
   return Object.freeze({
     root:workspace,
     async ingest({sourcePath,projectId="sharp-cuts-web"}={}){
@@ -21,6 +22,8 @@ export function createLocalMediaWorkspace({root,maxBytes=8*1024**3}={}){
       const input=createReadStream(source);input.on("data",chunk=>hash.update(chunk));try{await pipeline(input,createWriteStream(temporary,{flags:"wx",mode:0o600}));await rename(temporary,destination);}catch(error){await unlink(temporary).catch(()=>{});throw error;}
       return{localCapabilityId:capability,sha256:hash.digest("hex"),bytes:sourceStats.size,mimeType:MIME[extension],type:MIME[extension].startsWith("video/")?"video":"image",originalName:basename(source),storedPath:destination};
     },
-    resolveCapability(projectId,capability,extension){if(projectId!=="sharp-cuts-web"||!/^[a-f0-9]{48}$/.test(capability)||!EXTENSIONS.has(extension))throw new Error("Invalid local media capability.");const target=resolve(workspace,projectId,"originals",`${capability}${extension}`);if(!inside(workspace,target))throw new Error("Unsafe media path.");return target;}
+    async reserveRender({projectId="sharp-cuts-web",extension=".mp4"}={}){const capability=randomBytes(24).toString("hex"),target=capabilityPath(projectId,capability,extension,"renders");await mkdir(resolve(workspace,projectId,"renders"),{recursive:true});return{localCapabilityId:capability,outputPath:target};},
+    async inspectRender({projectId="sharp-cuts-web",localCapabilityId,extension=".mp4"}={}){const target=capabilityPath(projectId,localCapabilityId,extension,"renders"),details=await stat(target);if(!details.isFile()||details.size<=0||details.size>maxBytes)throw new Error("Rendered media size is outside the configured local limit.");const hash=createHash("sha256"),input=createReadStream(target);for await(const chunk of input)hash.update(chunk);return{storedPath:target,sha256:hash.digest("hex"),bytes:details.size,mimeType:MIME[extension],type:MIME[extension].startsWith("video/")?"video":"image"};},
+    resolveCapability(projectId,capability,extension,collection="originals"){return capabilityPath(projectId,capability,extension,collection);}
   });
 }

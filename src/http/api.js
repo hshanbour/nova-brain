@@ -1898,7 +1898,7 @@ export function createApi({
           await ready();
           authorizeLocalWorker(request, config.localWorkerToken);
           const dispatch=await autoDispatch.next(await readJsonBody(request,config.maxBodyBytes));
-          sendJson(response,200,{...dispatch,channelPolling:["whatsapp","social"]});
+          sendJson(response,200,{...dispatch,channelPolling:["whatsapp","social","social_media"]});
           return;
         }
         const handoffMatch = pathname.match(

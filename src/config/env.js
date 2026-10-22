@@ -161,6 +161,13 @@ function parseSocialConfig(environment) {
   return Object.freeze({configured:configured||sharpCutsOAuth.configured,facebookConfigured:facebookSupplied===2,liveEnabled:(configured||sharpCutsOAuth.configured)&&environment.NOVA_SOCIAL_LIVE_ENABLED==="true",instagramLoginAccessToken,oauth:Object.freeze({configured:oauthSupplied===4,provider:"instagram_login",instagramUsername:"novadigitalservicesuk",facebookPageId:null,...oauthValues}),sharpCutsOAuth,...values});
 }
 
+function parseSocialMediaConfig(environment){
+  const values={accountId:environment.NOVA_SHARP_CUTS_R2_ACCOUNT_ID||null,bucket:environment.NOVA_SHARP_CUTS_R2_BUCKET||null,accessKeyId:environment.NOVA_SHARP_CUTS_R2_ACCESS_KEY_ID||null,secretAccessKey:environment.NOVA_SHARP_CUTS_R2_SECRET_ACCESS_KEY||null},supplied=Object.values(values).filter(Boolean).length;
+  if(supplied>0&&supplied!==4)throw new Error("All four Sharp Cuts private R2 variables must be configured together.");if(supplied&&(!/^[a-f0-9]{32}$/i.test(values.accountId)||!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(values.bucket)))throw new Error("Sharp Cuts private R2 account or bucket is invalid.");
+  const quota=Number(environment.NOVA_SHARP_CUTS_R2_HARD_QUOTA_BYTES||8*1024**3);if(!Number.isSafeInteger(quota)||quota<100*1024**2||quota>10*1024**3)throw new Error("NOVA_SHARP_CUTS_R2_HARD_QUOTA_BYTES must be between 100 MiB and 10 GiB.");
+  return Object.freeze({r2Configured:supplied===4,hardQuotaBytes:quota,...values});
+}
+
 function parseVercelIntegrationConfig(environment){
   const values={clientId:environment.NOVA_VERCEL_INTEGRATION_CLIENT_ID||null,clientSecret:environment.NOVA_VERCEL_INTEGRATION_CLIENT_SECRET||null,redirectUri:environment.NOVA_VERCEL_INTEGRATION_REDIRECT_URI||null,tokenEncryptionKey:environment.NOVA_VERCEL_INTEGRATION_TOKEN_ENCRYPTION_KEY||null,integrationSlug:environment.NOVA_VERCEL_INTEGRATION_SLUG||null};
   const supplied=Object.values(values).filter(Boolean).length;
@@ -206,6 +213,7 @@ export function readConfig(environment = process.env) {
   const phone = parsePhoneConfig(environment);
   const whatsapp = parseWhatsAppConfig(environment, phone);
   const social = parseSocialConfig(environment);
+  const socialMedia = parseSocialMediaConfig(environment);
 
   if (!SUPPORTED_MODEL_PROVIDERS.has(modelProvider)) {
     throw new Error(`Unsupported NOVA_BRAIN_MODEL_PROVIDER: ${modelProvider}`);
@@ -379,6 +387,7 @@ export function readConfig(environment = process.env) {
     phone,
     whatsapp,
     social,
+    socialMedia,
     allowedOrigins: parseOrigins(environment.CORS_ALLOWED_ORIGINS),
     maxBodyBytes: 64 * 1024,
     developerWorkspaceHandoffMaxBodyBytes: 3 * 1024 * 1024,

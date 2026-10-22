@@ -139,3 +139,5 @@ test("Neon discovery requires a dedicated organization-bound credential pair",()
   assert.equal(configured.projectDiscovery.neonApiKey,"dedicated-neon");
   assert.equal(configured.projectDiscovery.neonOrgId,"org-owner");
 });
+
+test("private Sharp Cuts R2 storage is all-or-none, bounded, and disabled by default",()=>{const disabled=readConfig({});assert.equal(disabled.socialMedia.r2Configured,false);assert.equal(disabled.socialMedia.hardQuotaBytes,8*1024**3);assert.throws(()=>readConfig({NOVA_SHARP_CUTS_R2_ACCOUNT_ID:"a".repeat(32)}),/All four/);const configured=readConfig({NOVA_SHARP_CUTS_R2_ACCOUNT_ID:"a".repeat(32),NOVA_SHARP_CUTS_R2_BUCKET:"sharp-cuts-approved",NOVA_SHARP_CUTS_R2_ACCESS_KEY_ID:"server-only-key",NOVA_SHARP_CUTS_R2_SECRET_ACCESS_KEY:"server-only-secret",NOVA_SHARP_CUTS_R2_HARD_QUOTA_BYTES:String(1024**3)});assert.equal(configured.socialMedia.r2Configured,true);assert.equal(configured.socialMedia.hardQuotaBytes,1024**3);});

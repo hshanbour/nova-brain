@@ -5,6 +5,7 @@ import {canonicalSchemaDiagnostic,localSchemaDiagnostic} from "./schema-diagnost
 import {REVIEW_REMEDIATION_CLASS,reviewRemediationDescriptorForClass} from "./review-remediation-scope.js";
 import {registerCodexExecutorTool} from "../tools/codex-executor-tool.js";
 import {CODING_ACTIVE_PROGRESS_PHASES,requireCodingTaskId} from "./coding-executor.js";
+import {createLocalSocialMediaWorker} from "../social/local-social-media-worker.js";
 
 const ALLOWED=new Set(["repo_read_task_owned_local","repo_apply_patch","repo_validate_patch","test_run","test_run_full","repo_diff","repo_review_commit","git_commit","git_integrate_reviewed_commit","codex_execute"]);
 const SHA=/^[a-f0-9]{40}$/;
@@ -35,11 +36,12 @@ function exactReviewRemediationScope(task,job,{repository,branch,root,runtimeVer
   const steps=new Map([...(scope.readStepIds||[]).map(id=>[id,["read_files","repo_read_task_owned_local"]]),[scope.validateStepId,["validate_patch","repo_validate_patch"]],[scope.applyStepId,["apply_patch","repo_apply_patch"]],[scope.focusedStepId,["run_focused_tests","test_run"]],[scope.fullTestStepId,["run_full_tests","test_run_full"]]]),expected=steps.get(job.stepId);
   return Boolean(task.reviewRemediationScopeRequired===true&&!job.executionScope&&!job.fullTestScope&&!job.approvedDelivery&&scope.taskId===task.id&&scope.repository===repository&&scope.branch===branch&&scope.currentCommit===task.expectedCommit&&scope.runtimeVersion===runtimeVersion&&scope.workerId===workerId&&canonical(scope.workspaceRoot)===canonical(root)&&scope.continuationGenerationId===task.continuationGenerationId&&expected&&expected[0]===job.stepType&&expected[1]===job.tool);
 }
-export function createPersistentLocalWorker({client:sourceClient,root,branch,repository="hshanbour/nova-brain",runtimeVersion,gitExecutable, codexExecutable,environment=process.env,workerId=`persistent-local-${randomUUID()}`,registry}={}){
+export function createPersistentLocalWorker({client:sourceClient,root,branch,repository="hshanbour/nova-brain",runtimeVersion,gitExecutable, codexExecutable,environment=process.env,workerId=`persistent-local-${randomUUID()}`,registry,mediaWorker:sourceMediaWorker=null}={}){
   if(!sourceClient)throw new Error("Protected local Worker client is required.");
   if(!branch||["main","master"].includes(branch))throw Object.assign(new Error("An explicit non-production worker branch is required."),{code:"worker_repository_branch_required"});
   let prefetchedDispatch=null;
   const client={request(path,input,options){if(path==="/api/admin/worker/auto-dispatch/next"&&prefetchedDispatch){const value=prefetchedDispatch;prefetchedDispatch=null;return Promise.resolve(value);}return sourceClient.request(path,input,options);}};
+  const mediaWorker=sourceMediaWorker||(environment.NOVA_SHARP_CUTS_MEDIA_ROOT?createLocalSocialMediaWorker({client,root:environment.NOVA_SHARP_CUTS_MEDIA_ROOT,workerId,ffmpegExecutable:environment.NOVA_FFMPEG_EXECUTABLE||"ffmpeg"}):null);
   if(!root&&!registry)throw Object.assign(new Error("An explicit controlled repository root is required."),{code:"repository_context_unproven"});
   const controlledRoot=root||"injected-registry";
   const repositoryContext=Object.freeze({version:1,source:"persistent_worker_startup",repository,root:controlledRoot,branch});
@@ -74,7 +76,7 @@ export function createPersistentLocalWorker({client:sourceClient,root,branch,rep
     const replanned=await client.request(`/api/admin/self-development/tasks/${encodeURIComponent(task.id)}/replan-discovery-only`,{expectedVersion:result.task.stateVersion});
     return{worked:true,taskId:task.id,status:replanned.task.status,stepType:"automatic_discovery_replan"};
   }return{worked:true,taskId:task.id,status:result.status,stepType:result.stepType};}
-  const runOnceWithChannels=async()=>{const found=await sourceClient.request("/api/admin/worker/auto-dispatch/next",{workerId,branch});if(found.dispatched){prefetchedDispatch=found;return runOnce();}for(const channel of found.channelPolling||[]){if(!["whatsapp","social"].includes(channel))continue;const result=await sourceClient.request(`/api/admin/worker/${channel}/tick`,{workerId});if(result?.worked)return{...result,stepType:channel==="whatsapp"?"whatsapp_inbound":"social_publish"};}return{worked:false};};
+  const runOnceWithChannels=async()=>{const found=await sourceClient.request("/api/admin/worker/auto-dispatch/next",{workerId,branch});if(found.dispatched){prefetchedDispatch=found;return runOnce();}for(const channel of found.channelPolling||[]){if(channel==="social_media"){if(!mediaWorker)continue;const result=await mediaWorker.runOnce();if(result?.worked)return result;continue;}if(!["whatsapp","social"].includes(channel))continue;const result=await sourceClient.request(`/api/admin/worker/${channel}/tick`,{workerId});if(result?.worked)return{...result,stepType:channel==="whatsapp"?"whatsapp_inbound":"social_publish"};}return{worked:false};};
   return Object.freeze({workerId,runOnce:runOnceWithChannels});
 }
 
