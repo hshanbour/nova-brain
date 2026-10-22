@@ -135,6 +135,7 @@ function parseSocialConfig(environment) {
     appId:environment.NOVA_SHARP_CUTS_META_APP_ID||null,
     instagramAppId:environment.NOVA_SHARP_CUTS_META_INSTAGRAM_APP_ID||null,
     appSecret:environment.NOVA_SHARP_CUTS_META_APP_SECRET||null,
+    instagramAppSecret:environment.NOVA_SHARP_CUTS_META_INSTAGRAM_APP_SECRET||null,
     redirectUri:environment.NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI||null,
     tokenEncryptionKey:environment.NOVA_SHARP_CUTS_META_TOKEN_ENCRYPTION_KEY||null,
     instagramAccountId:environment.NOVA_SHARP_CUTS_META_INSTAGRAM_ACCOUNT_ID||null,
@@ -142,8 +143,8 @@ function parseSocialConfig(environment) {
     instagramUsername:"sharpcuts.uk",
     facebookPageName:"Sharp Cuts Gents Barbers",
   };
-  const sharpCutsSupplied=[sharpCutsValues.appId,sharpCutsValues.instagramAppId,sharpCutsValues.appSecret,sharpCutsValues.redirectUri,sharpCutsValues.tokenEncryptionKey,sharpCutsValues.instagramAccountId,sharpCutsValues.facebookPageId].filter(Boolean).length;
-  if(sharpCutsSupplied>0&&sharpCutsSupplied!==7)throw new Error("All seven Sharp Cuts Meta OAuth environment variables must be configured together.");
+  const sharpCutsSupplied=[sharpCutsValues.appId,sharpCutsValues.instagramAppId,sharpCutsValues.appSecret,sharpCutsValues.instagramAppSecret,sharpCutsValues.redirectUri,sharpCutsValues.tokenEncryptionKey,sharpCutsValues.instagramAccountId,sharpCutsValues.facebookPageId].filter(Boolean).length;
+  if(sharpCutsSupplied>0&&sharpCutsSupplied!==8)throw new Error("All eight Sharp Cuts Meta OAuth environment variables must be configured together.");
   if(sharpCutsSupplied){
     if(!/^\d{5,30}$/.test(sharpCutsValues.appId)||!/^\d{5,30}$/.test(sharpCutsValues.instagramAppId)||!/^\d{5,30}$/.test(sharpCutsValues.instagramAccountId)||!/^\d{5,30}$/.test(sharpCutsValues.facebookPageId))throw new Error("Sharp Cuts Meta app and asset IDs are invalid.");
     let redirect;try{redirect=new URL(sharpCutsValues.redirectUri);}catch{throw new Error("NOVA_SHARP_CUTS_META_OAUTH_REDIRECT_URI must be an absolute URL.");}
@@ -151,7 +152,7 @@ function parseSocialConfig(environment) {
     const key=/^[a-f0-9]{64}$/i.test(sharpCutsValues.tokenEncryptionKey)?Buffer.from(sharpCutsValues.tokenEncryptionKey,"hex"):Buffer.from(sharpCutsValues.tokenEncryptionKey,"base64");
     if(key.length!==32)throw new Error("NOVA_SHARP_CUTS_META_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");
   }
-  const sharpCutsOAuth=Object.freeze({configured:sharpCutsSupplied===7,...sharpCutsValues});
+  const sharpCutsOAuth=Object.freeze({configured:sharpCutsSupplied===8,...sharpCutsValues});
   if(!identitySupplied){if(instagramLoginAccessToken||oauthSupplied||facebookSupplied)throw new Error("Social credentials require NOVA_META_GRAPH_API_VERSION and NOVA_META_INSTAGRAM_ACCOUNT_ID.");return Object.freeze({configured:sharpCutsOAuth.configured,facebookConfigured:false,liveEnabled:false,instagramLoginAccessToken:null,oauth:Object.freeze({configured:false,...oauthValues}),sharpCutsOAuth,...values});}
   if(!/^v\d+\.\d+$/.test(values.graphVersion))throw new Error("NOVA_META_GRAPH_API_VERSION is invalid.");
   if((values.pageId&&!/^\d{5,30}$/.test(values.pageId))||!/^\d{5,30}$/.test(values.instagramAccountId))throw new Error("Nova Social Meta asset IDs are invalid.");
