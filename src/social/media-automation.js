@@ -1,0 +1,78 @@
+import {createHash, randomUUID} from "node:crypto";
+
+const SHA256=/^[a-f0-9]{64}$/i,ASSET_STATES=new Set(["original","rendered","promotion_approved","cloud_ready","rejected"]),JOB_TYPES=new Set(["render","promote"]);
+const stable=value=>Array.isArray(value)?value.map(stable):value&&typeof value==="object"?Object.fromEntries(Object.keys(value).sort().map(key=>[key,stable(value[key])])):value;
+const digest=value=>createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+const required=(value,name,max=500)=>{const result=String(value||"").trim();if(!result||Buffer.byteLength(result)>max)throw new MediaAutomationError(`${name} is invalid.`);return result;};
+const projectAsset=(asset,projectId)=>{if(!asset||asset.projectId!==projectId)throw new MediaAutomationError("The media asset is not available in this business project.",{code:"social_media_project_mismatch",statusCode:404});return asset;};
+
+export class MediaAutomationError extends Error{
+  constructor(message,{code="social_media_invalid",statusCode=400}={}){super(message);this.name="MediaAutomationError";this.code=code;this.statusCode=statusCode;}
+}
+
+export async function fetchUkBankHolidays({fetchImpl=globalThis.fetch}={}){const response=await fetchImpl("https://www.gov.uk/bank-holidays.json",{headers:{accept:"application/json"},signal:AbortSignal.timeout(5000)});if(!response.ok)throw new MediaAutomationError("The official UK bank-holiday calendar is temporarily unavailable.",{code:"social_calendar_source_unavailable",statusCode:502});const value=await response.json();return(Array.isArray(value?.["england-and-wales"]?.events)?value["england-and-wales"].events:[]).map(item=>({date:String(item.date),title:String(item.title)}));}
+
+export function createMediaAutomationService({storage,socialService,ownerId,clock=()=>new Date(),bankHolidayProvider=()=>fetchUkBankHolidays(),maxLocalAssetBytes=8*1024**3,maxApprovedCloudBytes=8*1024**3}={}){
+  if(!storage||!socialService||!ownerId)throw new TypeError("Media automation dependencies are required.");
+  const project=async projectId=>{const found=(await storage.listProjects(ownerId)).find(item=>item.id===projectId);if(!found)throw new MediaAutomationError("Project was not found.",{code:"social_project_not_found",statusCode:404});return found;};
+  const asset=async(id,projectId)=>projectAsset(await storage.getSocialMediaAsset(id,ownerId),projectId);
+  const append=(projectId,action,status,summary,metadata={})=>storage.appendActivity({ownerId,projectId,action,tool:"social_media_production",status,summary,metadata});
+  return Object.freeze({
+    async registerLocalAsset(input){
+      await project(input.projectId);const bytes=Number(input.bytes),sha256=required(input.sha256,"sha256",64).toLowerCase();
+      if(!SHA256.test(sha256)||!Number.isSafeInteger(bytes)||bytes<=0||bytes>maxLocalAssetBytes)throw new MediaAutomationError("The local asset integrity metadata is invalid.");
+      const state=String(input.state||"original");if(!ASSET_STATES.has(state)||!new Set(["original","rendered"]).has(state))throw new MediaAutomationError("A local asset must be original or rendered.");
+      const record=await storage.createSocialMediaAsset({id:input.id||`media_${randomUUID().replaceAll("-","")}`,ownerId,projectId:input.projectId,contentId:input.contentId||null,type:required(input.type,"type",20),storage:"local",state,sha256,bytes,mimeType:required(input.mimeType,"mimeType",100),rightsStatus:required(input.rightsStatus,"rightsStatus",40),consentStatus:required(input.consentStatus,"consentStatus",40),localCapabilityId:required(input.localCapabilityId,"localCapabilityId",200),cloudKey:null,cloudUrl:null,cloudEtag:null,metadata:input.metadata&&typeof input.metadata==="object"?input.metadata:{}});
+      await append(record.projectId,"social_media_registered",record.state,"Registered an opaque local media asset without uploading its bytes.",{assetId:record.id,storage:"local",sha256:record.sha256,bytes:record.bytes});return{asset:record};
+    },
+    async createRenderJob(input){
+      await project(input.projectId);const ids=[...new Set(Array.isArray(input.inputAssetIds)?input.inputAssetIds:[])];if(!ids.length||ids.length>50)throw new MediaAutomationError("Render jobs require between 1 and 50 input assets.");
+      for(const id of ids){const current=await asset(id,input.projectId);if(current.storage!=="local"||current.state!=="original")throw new MediaAutomationError("Render inputs must be local original assets.");}
+      const job=await storage.createSocialMediaJob({id:`mediajob_${randomUUID().replaceAll("-","")}`,ownerId,projectId:input.projectId,contentId:input.contentId||null,type:"render",status:"queued",inputAssetIds:ids,outputAssetId:null,recipe:input.recipe&&typeof input.recipe==="object"?input.recipe:{},approvalId:null,intentHash:digest({ownerId,projectId:input.projectId,contentId:input.contentId||null,ids,recipe:input.recipe||{}})});
+      await append(job.projectId,"social_render_queued","queued","Queued a local-only FFmpeg render job.",{jobId:job.id,contentId:job.contentId,inputAssetIds:ids});return{job};
+    },
+    async completeLocalRender(input){
+      const job=await storage.getSocialMediaJob(input.jobId,ownerId);if(!job||job.type!=="render"||job.status!=="processing"||job.leaseToken!==input.leaseToken)throw new MediaAutomationError("The render lease is invalid or expired.",{code:"social_media_lease_invalid",statusCode:409});
+      const registered=await this.registerLocalAsset({projectId:job.projectId,contentId:job.contentId,type:input.type,state:"rendered",sha256:input.sha256,bytes:input.bytes,mimeType:input.mimeType,rightsStatus:input.rightsStatus,consentStatus:input.consentStatus,localCapabilityId:input.localCapabilityId,metadata:{...(input.metadata||{}),renderJobId:job.id,recipeHash:digest(job.recipe)}});
+      const finished=await storage.finishSocialMediaJob({...job,status:"succeeded",leaseToken:input.leaseToken,outputAssetId:registered.asset.id,errorCode:null});if(job.contentId)await socialService.attachRenderedLocalMedia(job.contentId,{assetId:registered.asset.id,type:registered.asset.type,sha256:registered.asset.sha256,rightsStatus:registered.asset.rightsStatus});
+      await append(job.projectId,"social_render_completed","completed","Completed a local-only render and attached its opaque preview reference.",{jobId:job.id,assetId:registered.asset.id,contentId:job.contentId,sha256:registered.asset.sha256});return{job:finished,asset:registered.asset};
+    },
+    async requestPromotionApproval(input){
+      await project(input.projectId);const currentAsset=await asset(input.assetId,input.projectId),current=(await socialService.current(input.contentId)).content;
+      if(current.projectId!==input.projectId||currentAsset.contentId!==current.id||currentAsset.storage!=="local"||currentAsset.state!=="rendered")throw new MediaAutomationError("Only the current rendered asset can be submitted for final-media approval.",{code:"social_media_not_reviewable",statusCode:409});
+      const args={projectId:input.projectId,contentId:current.id,contentHash:current.contentHash,assetId:currentAsset.id,assetSha256:currentAsset.sha256,assetBytes:currentAsset.bytes};
+      const existing=(await storage.listApprovals(ownerId,{status:"pending",limit:200})).find(item=>item.tool==="social_media_promote"&&digest(item.arguments)===digest(args));if(existing)return{approval:existing,created:false};
+      const approval=await storage.createApproval({id:`approval_socialmedia_${digest(args).slice(0,24)}`,ownerId,projectId:input.projectId,runId:null,tool:"social_media_promote",arguments:args,riskLevel:"sensitive",reason:"Owner approval is required before Nova uploads this exact final media binary to private R2.",status:"pending",expiresAt:new Date(clock().getTime()+24*60*60*1000).toISOString()});
+      await append(input.projectId,"social_media_approval_requested","pending","Requested formal approval for the exact rendered binary; no upload occurred.",{approvalId:approval.id,assetId:currentAsset.id,sha256:currentAsset.sha256,contentHash:current.contentHash});return{approval,created:true};
+    },
+    async queueApprovedPromotion(input,{approvalId}={}){
+      const currentAsset=await asset(input.assetId,input.projectId),current=(await socialService.current(input.contentId)).content;
+      if(!approvalId||current.contentHash!==input.contentHash||currentAsset.sha256!==input.assetSha256||currentAsset.bytes!==Number(input.assetBytes)||currentAsset.storage!=="local"||currentAsset.state!=="rendered")throw new MediaAutomationError("The approved final-media envelope no longer matches the current content and binary.",{code:"social_media_approval_mismatch",statusCode:409});
+      if(currentAsset.bytes>maxApprovedCloudBytes)throw new MediaAutomationError("The approved asset exceeds the configured R2 hard quota.",{code:"social_media_quota_exceeded",statusCode:409});
+      const intentHash=digest({ownerId,...input,approvalId}),job=await storage.createSocialMediaJob({id:`mediajob_${intentHash.slice(0,32)}`,ownerId,projectId:input.projectId,contentId:input.contentId,type:"promote",status:"queued",inputAssetIds:[input.assetId],outputAssetId:input.assetId,recipe:{contentHash:input.contentHash,expectedSha256:input.assetSha256,expectedBytes:Number(input.assetBytes)},approvalId,intentHash});
+      await storage.updateSocialMediaAsset(currentAsset.id,ownerId,{state:"promotion_approved"});await append(input.projectId,"social_media_promotion_queued","queued","Queued the exact owner-approved binary for private R2 promotion.",{jobId:job.id,approvalId,assetId:currentAsset.id,sha256:currentAsset.sha256});return{job};
+    },
+    async completeCloudPromotion(input){
+      const job=await storage.getSocialMediaJob(input.jobId,ownerId);if(!job||job.type!=="promote"||job.status!=="processing"||job.leaseToken!==input.leaseToken)throw new MediaAutomationError("The promotion lease is invalid or expired.",{code:"social_media_lease_invalid",statusCode:409});
+      const currentAsset=await asset(job.outputAssetId,job.projectId),current=(await socialService.current(job.contentId)).content,sha256=required(input.sha256,"sha256",64).toLowerCase();
+      if(current.contentHash!==job.recipe.contentHash)throw new MediaAutomationError("The content changed after approval; the uploaded object cannot be attached.",{code:"social_media_approval_mismatch",statusCode:409});if(sha256!==currentAsset.sha256||Number(input.bytes)!==currentAsset.bytes)throw new MediaAutomationError("R2 upload integrity verification failed.",{code:"social_media_integrity_failed",statusCode:409});
+      const finished=await storage.finishSocialMediaJob({...job,status:"succeeded",leaseToken:input.leaseToken,errorCode:null}),updated=await storage.updateSocialMediaAsset(currentAsset.id,ownerId,{storage:"r2",state:"cloud_ready",cloudKey:required(input.cloudKey,"cloudKey",1000),cloudEtag:required(input.cloudEtag,"cloudEtag",500)});
+      await socialService.attachApprovedCloudMedia(job.contentId,{assetId:updated.id,type:updated.type,sha256:updated.sha256,rightsStatus:updated.rightsStatus});await append(job.projectId,"social_media_promoted","completed","Verified and stored the exact approved final media in private R2.",{jobId:job.id,assetId:updated.id,sha256:updated.sha256,bytes:updated.bytes});return{job:finished,asset:updated};
+    },
+    async claimJob({workerId,type}){if(!JOB_TYPES.has(type))throw new MediaAutomationError("Unknown media job type.");const job=await storage.claimNextSocialMediaJob({ownerId,workerId:required(workerId,"workerId",200),type,leaseMs:120000});if(!job||type!=="promote")return{job};const current=(await socialService.current(job.contentId)).content,mediaAsset=await asset(job.outputAssetId,job.projectId);if(current.contentHash!==job.recipe.contentHash||mediaAsset.sha256!==job.recipe.expectedSha256||mediaAsset.bytes!==job.recipe.expectedBytes){await storage.finishSocialMediaJob({...job,status:"failed",errorCode:"approval_envelope_stale"});await append(job.projectId,"social_media_promotion_blocked","failed","Blocked a stale final-media promotion before any cloud upload.",{jobId:job.id,contentId:job.contentId});return{job:null,reason:"approval_envelope_stale"};}return{job};},
+    async refreshCalendar(projectId){await project(projectId);let bankHolidays=[],sourceWarning=null;try{bankHolidays=await bankHolidayProvider();}catch(error){sourceWarning=error?.code||"social_calendar_source_unavailable";}const entries=buildRollingMarketingCalendar({start:clock(),weeks:12,bankHolidays}).map(item=>({ownerId,projectId,eventKey:item.key,eventDate:item.date,title:item.title,status:"proposed",recommendation:{theme:item.theme,source:item.source||"Nova seasonal calendar",contentMix:item.contentMix,requiresOwnerApproval:true}})),saved=await storage.upsertSocialCalendarEntries(entries);await append(projectId,"social_calendar_refreshed",sourceWarning?"partial":"completed","Refreshed the rolling 12-week owner-approved marketing calendar.",{entryCount:saved.length,windowWeeks:12,sourceWarning});return{entries:saved,sourceWarning};},
+    async dashboard(projectId){await project(projectId);const[assets,jobs,calendar]=await Promise.all([storage.listSocialMediaAssets(ownerId,{projectId,limit:100}),storage.listSocialMediaJobs(ownerId,{projectId,limit:100}),storage.listSocialCalendarEntries(ownerId,{projectId,limit:100})]);return{assets,jobs,calendar,policy:{rawStorage:"local_only",draftStorage:"local_only",r2Promotion:"formal_owner_approval_required",publishing:"disabled_until_separately_approved",maxApprovedCloudBytes}};}
+  });
+}
+
+const fixedEvents=(year)=>[
+  {key:`halloween-${year}`,date:`${year}-10-31`,title:"Halloween",theme:"Seasonal transformation Reel and last-appointment Story"},
+  {key:`christmas-${year}`,date:`${year}-12-25`,title:"Christmas",theme:"Festive cuts, opening-hours reminder, and gift-ready grooming"},
+  {key:`new-year-${year+1}`,date:`${year+1}-01-01`,title:"New Year",theme:"Fresh-year transformation and booking reminder"},
+];
+
+export function buildRollingMarketingCalendar({start=new Date(),weeks=12,bankHolidays=[],religiousDates=[]}={}){
+  const from=new Date(Date.UTC(start.getUTCFullYear(),start.getUTCMonth(),start.getUTCDate())),until=new Date(from.getTime()+weeks*7*86400000),years=[...new Set([from.getUTCFullYear(),until.getUTCFullYear()])];
+  const candidates=[...years.flatMap(fixedEvents),...bankHolidays.map(item=>({key:`uk-${item.date}-${String(item.title).toLowerCase().replaceAll(/[^a-z0-9]+/g,"-")}`,date:item.date,title:item.title,theme:"Local opening-hours and appointment availability content",source:"GOV.UK Bank Holidays API"})),...religiousDates.map(item=>({...item,source:item.source||"owner_verified"}))];
+  return candidates.filter(item=>{const date=new Date(`${item.date}T00:00:00Z`);return date>=from&&date<=until;}).sort((a,b)=>a.date.localeCompare(b.date)).map(item=>({...item,status:"proposed",requiresOwnerApproval:true,contentMix:{reel:1,story:2,post:1},projectId:"sharp-cuts-web"}));
+}

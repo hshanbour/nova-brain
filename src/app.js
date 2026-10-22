@@ -74,6 +74,7 @@ import { createWhatsAppService } from "./whatsapp/whatsapp-service.js";
 import {createApprovalReconciliation} from "./autonomy/approval-reconciliation.js";
 import {createSocialService} from "./social/social-service.js";
 import {registerSocialTools} from "./social/social-tools.js";
+import {createMediaAutomationService} from "./social/media-automation.js";
 import {createInstagramOAuthService} from "./social/instagram-oauth.js";
 import {createSharpCutsAutomationService} from "./automation/sharp-cuts-automation.js";
 import {createSenderMarketingClient} from "./email/sender-marketing.js";
@@ -167,9 +168,10 @@ export function createApp({
   const whatsappService = createWhatsAppService({ config, storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), fetchImpl: whatsappFetchImpl || globalThis.fetch, logger });
   const instagramOAuth=createInstagramOAuthService({config,storage,ownerId:OWNER_ID});
   const socialService=createSocialService({config,storage,ownerId:OWNER_ID,instagramOAuth});
+  const mediaAutomation=createMediaAutomationService({storage,socialService,ownerId:OWNER_ID});
   const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch}):null;
   const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender,instagramOAuth});
-  registerSocialTools(toolRegistry,{service:socialService});
+  registerSocialTools(toolRegistry,{service:socialService,mediaAutomation});
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){
     const webRoute=config.openAI.routes.web;
@@ -420,6 +422,7 @@ export function createApp({
     phoneService,
     whatsappService,
     socialService,
+    mediaAutomation,
     instagramOAuth,
     sharpCutsAutomation,
     ownerContactPolicy,
@@ -429,5 +432,5 @@ export function createApp({
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, instagramOAuth, sharpCutsAutomation, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding, projectDiscovery, vercelAccountIntegration });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, mediaAutomation, instagramOAuth, sharpCutsAutomation, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding, projectDiscovery, vercelAccountIntegration });
 }

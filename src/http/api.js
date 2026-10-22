@@ -232,6 +232,7 @@ export function createApi({
   phoneService,
   whatsappService,
   socialService,
+  mediaAutomation,
   instagramOAuth,
   sharpCutsAutomation,
   ownerContactPolicy,
@@ -2256,9 +2257,17 @@ export function createApi({
         if(socialPublicationCancelMatch&&request.method==="POST"){await ready();sendJson(response,200,await socialService.cancelPublication(decodeURIComponent(socialPublicationCancelMatch[1])));return;}
         if(request.method==="POST"&&pathname==="/api/social/launch-batch"){await ready();const input=await readJsonBody(request,config.maxBodyBytes);if(typeof input.projectId!=="string"||!input.projectId.trim())throw new ValidationError("projectId is required.");sendJson(response,201,await socialService.createLaunchBatch(input.projectId.trim()));return;}
         if(request.method==="POST"&&pathname==="/api/social/metrics/refresh"){await ready();const input=await readJsonBody(request,config.maxBodyBytes);if(typeof input.projectId!=="string"||!input.projectId.trim())throw new ValidationError("projectId is required.");sendJson(response,200,await socialService.refreshMetrics(input.projectId.trim()));return;}
+        if(request.method==="GET"&&pathname==="/api/social/media/dashboard"){await ready();sendJson(response,200,await mediaAutomation.dashboard(url.searchParams.get("projectId")||"sharp-cuts-web"));return;}
+        if(request.method==="POST"&&pathname==="/api/social/media/request-approval"){await ready();sendJson(response,201,await mediaAutomation.requestPromotionApproval(await readJsonBody(request,config.maxBodyBytes)));return;}
+        if(request.method==="POST"&&pathname==="/api/social/calendar/refresh"){await ready();const input=await readJsonBody(request,config.maxBodyBytes);sendJson(response,200,await mediaAutomation.refreshCalendar(input.projectId||"sharp-cuts-web"));return;}
         if(request.method==="GET"&&pathname==="/api/business-automation/sharp-cuts/dashboard"){await ready();sendJson(response,200,await sharpCutsAutomation.dashboard());return;}
         if(request.method==="POST"&&pathname==="/api/business-automation/sharp-cuts/retention-demo"){await ready();sendJson(response,200,await sharpCutsAutomation.runSyntheticRetentionDemo());return;}
         if(request.method==="POST"&&pathname==="/api/admin/worker/social/tick"){await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);if(typeof input.workerId!=="string"||!input.workerId.trim()||input.workerId.length>200)throw new ValidationError("workerId is invalid.");sendJson(response,200,await socialService.processNext({workerId:input.workerId.trim()}));return;}
+        if(request.method==="POST"&&pathname==="/api/admin/worker/social-media/assets"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,201,await mediaAutomation.registerLocalAsset(await readJsonBody(request,config.maxBodyBytes)));return;}
+        if(request.method==="POST"&&pathname==="/api/admin/worker/social-media/render-jobs"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,201,await mediaAutomation.createRenderJob(await readJsonBody(request,config.maxBodyBytes)));return;}
+        if(request.method==="POST"&&pathname==="/api/admin/worker/social-media/claim"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await mediaAutomation.claimJob(await readJsonBody(request,config.maxBodyBytes)));return;}
+        if(request.method==="POST"&&pathname==="/api/admin/worker/social-media/render-complete"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await mediaAutomation.completeLocalRender(await readJsonBody(request,config.maxBodyBytes)));return;}
+        if(request.method==="POST"&&pathname==="/api/admin/worker/social-media/promote-complete"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await mediaAutomation.completeCloudPromotion(await readJsonBody(request,config.maxBodyBytes)));return;}
         if (request.method === "POST" && pathname === "/api/admin/worker/whatsapp/tick") {
           await ready();
           authorizeLocalWorker(request, config.localWorkerToken);
