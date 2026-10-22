@@ -234,6 +234,7 @@ export function createApi({
   whatsappService,
   socialService,
   mediaAutomation,
+  footageAnalysis,
   instagramOAuth,
   sharpCutsAutomation,
   ownerContactPolicy,
@@ -2270,6 +2271,7 @@ export function createApi({
         if(request.method==="POST"&&pathname==="/api/admin/worker/social-media/claim"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await mediaAutomation.claimJob(await readJsonBody(request,config.maxBodyBytes)));return;}
         if(request.method==="POST"&&pathname==="/api/admin/worker/social-media/render-complete"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await mediaAutomation.completeLocalRender(await readJsonBody(request,config.maxBodyBytes)));return;}
         if(request.method==="POST"&&pathname==="/api/admin/worker/social-media/promote-complete"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await mediaAutomation.completeCloudPromotion(await readJsonBody(request,config.maxBodyBytes)));return;}
+        if(request.method==="POST"&&pathname==="/api/admin/worker/social-media/analyse"){await ready();authorizeLocalWorker(request,config.localWorkerToken);sendJson(response,200,await footageAnalysis.analyse(await readJsonBody(request,2*1024*1024)));return;}
         if(request.method==="POST"&&pathname==="/api/admin/worker/social-media/dashboard"){await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);sendJson(response,200,await mediaAutomation.dashboard(input.projectId||"sharp-cuts-web",{includeLocalCapabilities:true}));return;}
         if(request.method==="POST"&&pathname==="/api/admin/worker/social-media/content"){await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);const result=await socialService.dashboard(input.projectId||"sharp-cuts-web");sendJson(response,200,{content:result.content.map(item=>({id:item.id,projectId:item.projectId,title:item.title,kind:item.kind,status:item.status,plan:item.plan}))});return;}
         if (request.method === "POST" && pathname === "/api/admin/worker/whatsapp/tick") {

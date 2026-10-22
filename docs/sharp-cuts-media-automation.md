@@ -16,6 +16,10 @@ The Windows worker reads `NOVA_SHARP_CUTS_MEDIA_ROOT` locally and may use `NOVA_
 
 When the media root is configured, the persistent worker starts a review companion on `127.0.0.1:43127`. It serves only completed renders, supports byte-range playback, exposes no original-footage route, has no CORS grant, and never binds a LAN or public interface. The Nova dashboard links to this local review surface without receiving the opaque local capability IDs.
 
+The owner can explicitly request AI analysis for one consented, rights-declared local video. FFmpeg/FFprobe then samples six evenly spaced JPEG frames at no more than 384 px and 128 KiB each, deletes the temporary files immediately, and sends only those bounded samples to the existing OpenAI Responses API. Full videos and audio never enter Nova, OpenAI, or R2. Nova rejects cuts that do not remain within three seconds of sampled visual evidence, records bounded token/cost telemetry, revises the exact project draft, and queues its local render. The action is never automatic.
+
+Local rendering requires the authentic Sharp Cuts logo at `<media-root>/sharp-cuts-web/branding/logo.png`. The worker fails closed rather than generating an unbranded substitute. Subtitle cues are written to a private temporary SRT, used by FFmpeg, and removed immediately after the render attempt.
+
 Private R2 support is disabled unless all four server-only Preview variables are present: `NOVA_SHARP_CUTS_R2_ACCOUNT_ID`, `NOVA_SHARP_CUTS_R2_BUCKET`, `NOVA_SHARP_CUTS_R2_ACCESS_KEY_ID`, and `NOVA_SHARP_CUTS_R2_SECRET_ACCESS_KEY`. `NOVA_SHARP_CUTS_R2_HARD_QUOTA_BYTES` defaults to 8 GiB and cannot exceed 10 GiB. The credential must be restricted in Cloudflare to the one approved-media bucket; Nova additionally restricts object keys to `sharp-cuts-web/approved/<sha256>.<extension>`.
 
 Signed upload and review URLs expire after 15 minutes. They are created only server-side, and an upload URL is returned only through the existing authenticated local-worker endpoint. The Social Command Centre receives policy/status metadata, never R2 credentials or presigned upload URLs.

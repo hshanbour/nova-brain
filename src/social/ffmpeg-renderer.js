@@ -1,4 +1,6 @@
 import {execFile} from "node:child_process";
+import {mkdtemp,mkdir,readFile,rm} from "node:fs/promises";
+import {join} from "node:path";
 import {promisify} from "node:util";
 
 const execute=promisify(execFile);
@@ -26,4 +28,15 @@ export async function inspectFfmpeg({executable="ffmpeg"}={}){
 export async function renderVerticalReel(input,{executable="ffmpeg"}={}){
   const readiness=await inspectFfmpeg({executable});if(!readiness.available)throw Object.assign(new Error("FFmpeg is not installed or is not available to the Nova media worker."),{code:"ffmpeg_unavailable"});
   const args=buildVerticalReelCommand(input);await execute(executable,args,{windowsHide:true,timeout:30*60*1000,maxBuffer:4*1024*1024});return{outputPath:input.outputPath,renderer:readiness.version};
+}
+
+const ffprobeFor=executable=>{const value=safePath(executable,"FFmpeg executable");return /ffmpeg(?:\.exe)?$/i.test(value)?value.replace(/ffmpeg(\.exe)?$/i,"ffprobe$1"):"ffprobe";};
+
+export async function extractVisualSamples({inputPath,outputDirectory,sampleCount=6},{executable="ffmpeg",ffprobeExecutable=ffprobeFor(executable),executeImpl=execute,inspectImpl=inspectFfmpeg}={}){
+  const source=safePath(inputPath,"inputPath"),count=Number(sampleCount);if(!Number.isInteger(count)||count<2||count>6)throw new Error("Visual analysis requires between 2 and 6 samples.");
+  const readiness=await inspectImpl({executable});if(!readiness.available)throw Object.assign(new Error("FFmpeg is not installed or is not available to sample footage."),{code:"ffmpeg_unavailable"});
+  let probe;try{probe=await executeImpl(ffprobeExecutable,["-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",source],{windowsHide:true,timeout:30_000,maxBuffer:1024*1024});}catch(error){throw Object.assign(new Error("FFprobe could not inspect the local footage."),{code:error?.code||"ffprobe_unavailable"});}
+  const duration=Number(String(probe.stdout||"").trim());if(!Number.isFinite(duration)||duration<.2||duration>4*60*60)throw Object.assign(new Error("The local footage duration is outside the analysis limit."),{code:"media_duration_invalid"});
+  const base=safePath(outputDirectory,"outputDirectory");await mkdir(base,{recursive:true});const temporary=await mkdtemp(join(base,"sample-")),samples=[];
+  try{for(let index=0;index<count;index+=1){const timestamp=Math.round(duration*((index+1)/(count+1))*100)/100,path=join(temporary,`${String(index).padStart(2,"0")}.jpg`);await executeImpl(executable,["-hide_banner","-nostdin","-y","-ss",String(timestamp),"-i",source,"-frames:v","1","-vf","scale='min(384,iw)':-2","-q:v","7",path],{windowsHide:true,timeout:60_000,maxBuffer:2*1024*1024});const bytes=await readFile(path);if(bytes.length<16||bytes.length>128*1024)throw Object.assign(new Error("A sampled frame is outside the privacy size limit."),{code:"media_sample_size_invalid"});samples.push({timestampSeconds:timestamp,jpegBase64:bytes.toString("base64")});}return{durationSeconds:Math.round(duration*100)/100,samples,renderer:readiness.version};}finally{await rm(temporary,{recursive:true,force:true});}
 }

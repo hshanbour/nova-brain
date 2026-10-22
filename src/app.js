@@ -75,6 +75,7 @@ import {createApprovalReconciliation} from "./autonomy/approval-reconciliation.j
 import {createSocialService} from "./social/social-service.js";
 import {registerSocialTools} from "./social/social-tools.js";
 import {createMediaAutomationService} from "./social/media-automation.js";
+import {createFootageAnalysisService} from "./social/footage-analysis.js";
 import {createPrivateR2Store} from "./social/r2-private-store.js";
 import {createInstagramOAuthService} from "./social/instagram-oauth.js";
 import {createSharpCutsAutomationService} from "./automation/sharp-cuts-automation.js";
@@ -172,6 +173,7 @@ export function createApp({
   const mediaUrlResolver=privateR2?async(media,{projectId})=>{const asset=await storage.getSocialMediaAsset(media.assetId,OWNER_ID);if(!asset||asset.projectId!==projectId||asset.storage!=="r2"||asset.state!=="cloud_ready")throw Object.assign(new Error("Approved media is unavailable for this project."),{code:"social_media_project_mismatch"});return privateR2.createReadGrant({key:asset.cloudKey}).url;}:null;
   const socialService=createSocialService({config,storage,ownerId:OWNER_ID,instagramOAuth,mediaUrlResolver});
   const mediaAutomation=createMediaAutomationService({storage,socialService,ownerId:OWNER_ID,cloudStore:privateR2,maxApprovedCloudBytes:config.socialMedia.hardQuotaBytes});
+  const footageAnalysis=createFootageAnalysisService({modelProvider,socialService,storage,ownerId:OWNER_ID});
   const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch}):null;
   const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender,instagramOAuth});
   registerSocialTools(toolRegistry,{service:socialService,mediaAutomation});
@@ -426,6 +428,7 @@ export function createApp({
     whatsappService,
     socialService,
     mediaAutomation,
+    footageAnalysis,
     instagramOAuth,
     sharpCutsAutomation,
     ownerContactPolicy,
@@ -435,5 +438,5 @@ export function createApp({
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, mediaAutomation, instagramOAuth, sharpCutsAutomation, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding, projectDiscovery, vercelAccountIntegration });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, mediaAutomation, footageAnalysis, instagramOAuth, sharpCutsAutomation, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding, projectDiscovery, vercelAccountIntegration });
 }

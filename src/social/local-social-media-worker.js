@@ -10,9 +10,9 @@ export function createLocalSocialMediaWorker({client,root,workerId,ffmpegExecuta
   const resolveAsset=asset=>workspace.resolveCapability(asset.projectId,asset.localCapabilityId,extensionFor(asset),locationFor(asset));
   async function render(){
     const claimed=await client.request("/api/admin/worker/social-media/claim",{workerId,type:"render"});if(!claimed.job)return{worked:false,reason:claimed.reason||"no_render_job"};
-    const {job,assets}=claimed,byId=new Map(assets.map(asset=>[asset.id,asset])),reserved=await workspace.reserveRender({projectId:job.projectId,extension:".mp4"});
+    const {job,assets}=claimed,byId=new Map(assets.map(asset=>[asset.id,asset])),reserved=await workspace.reserveRender({projectId:job.projectId,extension:".mp4"}),logoPath=await workspace.brandLogo({projectId:job.projectId}),subtitle=await workspace.subtitleSidecar({projectId:job.projectId,cues:job.recipe.subtitleCues||[]});
     const segments=job.recipe.segments.map((segment,index)=>{const asset=byId.get(segment.assetId||job.inputAssetIds[index]||job.inputAssetIds[0]);if(!asset)throw new Error("Render recipe references an unavailable local asset.");return{...segment,path:resolveAsset(asset),mediaType:asset.type,hasAudio:segment.hasAudio!==false&&asset.type==="video"};});
-    await renderImpl({segments,outputPath:reserved.outputPath},{executable:ffmpegExecutable});const output=await workspace.inspectRender({projectId:job.projectId,localCapabilityId:reserved.localCapabilityId,extension:".mp4"});
+    try{await renderImpl({segments,outputPath:reserved.outputPath,subtitlePath:subtitle?.path||null,logoPath},{executable:ffmpegExecutable});}finally{await subtitle?.cleanup?.();}const output=await workspace.inspectRender({projectId:job.projectId,localCapabilityId:reserved.localCapabilityId,extension:".mp4"});
     await client.request("/api/admin/worker/social-media/render-complete",{jobId:job.id,leaseToken:job.leaseToken,type:"video",sha256:output.sha256,bytes:output.bytes,mimeType:output.mimeType,rightsStatus:"owned",consentStatus:"owner_confirmed",localCapabilityId:reserved.localCapabilityId},{timeoutMs:60000});
     return{worked:true,stepType:"social_media_render",jobId:job.id};
   }
