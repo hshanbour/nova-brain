@@ -1,0 +1,4 @@
+import {timingSafeEqual} from "node:crypto";
+import {SocialError} from "./social-service.js";
+
+export function authorizeSocialScheduler(request,token){const header=request?.headers?.authorization||request?.headers?.Authorization;if(!token)throw new SocialError("Cloud social scheduling is not configured.",{code:"social_scheduler_not_configured",statusCode:503});if(typeof header!=="string"||!header.startsWith("Bearer "))throw new SocialError("Cloud scheduler authorization is required.",{code:"social_scheduler_unauthorized",statusCode:401});const supplied=Buffer.from(header.slice(7)),expected=Buffer.from(token);if(supplied.length!==expected.length||!timingSafeEqual(supplied,expected))throw new SocialError("Cloud scheduler authorization is required.",{code:"social_scheduler_unauthorized",statusCode:401});return{actorType:"scoped_social_scheduler"};}

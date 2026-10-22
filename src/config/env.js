@@ -214,6 +214,9 @@ export function readConfig(environment = process.env) {
   const whatsapp = parseWhatsAppConfig(environment, phone);
   const social = parseSocialConfig(environment);
   const socialMedia = parseSocialMediaConfig(environment);
+  const localWorkerToken=environment.NOVA_LOCAL_WORKER_TOKEN||null,socialSchedulerToken=environment.NOVA_SOCIAL_SCHEDULER_TOKEN||null;
+  if(socialSchedulerToken&&Buffer.byteLength(socialSchedulerToken)<32)throw new Error("NOVA_SOCIAL_SCHEDULER_TOKEN must contain at least 32 bytes.");
+  if(socialSchedulerToken&&socialSchedulerToken===localWorkerToken)throw new Error("NOVA_SOCIAL_SCHEDULER_TOKEN must remain separate from NOVA_LOCAL_WORKER_TOKEN.");
 
   if (!SUPPORTED_MODEL_PROVIDERS.has(modelProvider)) {
     throw new Error(`Unsupported NOVA_BRAIN_MODEL_PROVIDER: ${modelProvider}`);
@@ -324,7 +327,8 @@ export function readConfig(environment = process.env) {
       environment.NOVA_BRAIN_DEVELOPMENT_BRANCH ||
       "feat/nova-brain-mvp-foundation",
     workerAdminToken: environment.NOVA_WORKER_ADMIN_TOKEN || null,
-    localWorkerToken: environment.NOVA_LOCAL_WORKER_TOKEN || null,
+    localWorkerToken,
+    socialSchedulerToken,
     openAI: Object.freeze({
       apiKey: environment.OPENAI_API_KEY || null,
       model: openAIModel,

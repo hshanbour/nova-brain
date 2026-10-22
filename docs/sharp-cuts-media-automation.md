@@ -14,9 +14,13 @@
 
 The Windows worker reads `NOVA_SHARP_CUTS_MEDIA_ROOT` locally and may use `NOVA_FFMPEG_EXECUTABLE` to bind a reviewed FFmpeg binary. Neither value grants cloud access, and the media root is never returned by the dashboard.
 
+When the media root is configured, the persistent worker starts a review companion on `127.0.0.1:43127`. It serves only completed renders, supports byte-range playback, exposes no original-footage route, has no CORS grant, and never binds a LAN or public interface. The Nova dashboard links to this local review surface without receiving the opaque local capability IDs.
+
 Private R2 support is disabled unless all four server-only Preview variables are present: `NOVA_SHARP_CUTS_R2_ACCOUNT_ID`, `NOVA_SHARP_CUTS_R2_BUCKET`, `NOVA_SHARP_CUTS_R2_ACCESS_KEY_ID`, and `NOVA_SHARP_CUTS_R2_SECRET_ACCESS_KEY`. `NOVA_SHARP_CUTS_R2_HARD_QUOTA_BYTES` defaults to 8 GiB and cannot exceed 10 GiB. The credential must be restricted in Cloudflare to the one approved-media bucket; Nova additionally restricts object keys to `sharp-cuts-web/approved/<sha256>.<extension>`.
 
 Signed upload and review URLs expire after 15 minutes. They are created only server-side, and an upload URL is returned only through the existing authenticated local-worker endpoint. The Social Command Centre receives policy/status metadata, never R2 credentials or presigned upload URLs.
+
+`NOVA_SOCIAL_SCHEDULER_TOKEN` is a separate 32-byte-or-longer secret for a future cloud scheduler calling `/api/admin/scheduler/social/tick`. It cannot equal the Windows Worker token. The endpoint processes only already-scheduled, immutable, owner-approved publications, and the existing `NOVA_SOCIAL_LIVE_ENABLED=false` gate still makes it a no-op. Creating or activating the external scheduler remains a separate approval boundary.
 
 ## Prepared migration 30
 
