@@ -126,6 +126,7 @@ test("Meta OAuth accepts only exact HTTPS legacy or browser-safe root callbacks"
   assert.equal(isMetaOAuthCallbackUrl(new URL(`${root}&code=unused&state=unused`)),true);
   assert.equal(isMetaOAuthCallbackUrl(new URL("https://preview.example/?code=unused&state=unused")),false);
   assert.equal(metaOAuthCookiePath(root),"/");
+  assert.equal(metaOAuthCookiePath("https://preview.example/api/integrations/instagram/oauth/callback"),"/api/integrations/instagram/oauth/callback");
 });
 
 test("Sharp Cuts accepts the exact browser-safe root callback without weakening OAuth controls",()=>{
