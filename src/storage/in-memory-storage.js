@@ -58,6 +58,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const socialMediaAssets = new Map();
   const socialMediaJobs = new Map();
   const socialCalendarEntries = new Map();
+  const r2UsageMonths = new Map();
   const phoneCallIntents = new Map();
   const phoneCallEvents = new Map();
   const phoneCallTurns = new Map();
@@ -1178,6 +1179,8 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async finishSocialMediaJob(input){const item=socialMediaJobs.get(input.id),timestamp=clock();if(!item||item.ownerId!==input.ownerId||item.status!=="processing"||item.leaseToken!==input.leaseToken||new Date(item.leaseExpiresAt)<=timestamp)return null;const updated={...item,status:input.status,outputAssetId:input.outputAssetId??item.outputAssetId,errorCode:input.errorCode||null,leaseOwner:null,leaseToken:null,leaseExpiresAt:null,updatedAt:now(clock)};socialMediaJobs.set(item.id,updated);return copy(updated);},
     async upsertSocialCalendarEntries(inputs){const results=[];for(const input of inputs){const key=`${input.ownerId}:${input.projectId}:${input.eventKey}`,current=socialCalendarEntries.get(key),record={...copy(current||{}),...copy(input),createdAt:current?.createdAt||now(clock),updatedAt:now(clock)};socialCalendarEntries.set(key,record);results.push(copy(record));}return results;},
     async listSocialCalendarEntries(ownerId,{projectId,limit=100}={}){return[...socialCalendarEntries.values()].filter(item=>item.ownerId===ownerId&&(!projectId||item.projectId===projectId)).sort((a,b)=>a.eventDate.localeCompare(b.eventDate)||a.eventKey.localeCompare(b.eventKey)).slice(0,limit).map(copy);},
+    async getR2UsageMonth(ownerId,projectId,billingMonth){return copy(r2UsageMonths.get(`${ownerId}:${projectId}:${billingMonth}`)||null);},
+    async reserveR2Usage(input){const key=`${input.ownerId}:${input.projectId}:${input.billingMonth}`,current=r2UsageMonths.get(key)||{ownerId:input.ownerId,projectId:input.projectId,billingMonth:input.billingMonth,classAOperations:0,classBOperations:0,reservedStorageBytes:0},next={...current,classAOperations:current.classAOperations+input.classAOperations,classBOperations:current.classBOperations+input.classBOperations,reservedStorageBytes:current.reservedStorageBytes+input.reservedStorageBytes,updatedAt:now(clock)};if(next.classAOperations>input.classALimit||next.classBOperations>input.classBLimit||next.reservedStorageBytes>input.storageLimitBytes)return null;r2UsageMonths.set(key,next);return copy(next);},
     async createProject(input) {
       if(projects.has(input.id))throw Object.assign(new Error("Project already exists."),{code:"project_conflict"});
       const timestamp=now(clock),project={id:input.id,ownerId:input.ownerId,name:input.name,description:input.description||null,createdAt:timestamp,updatedAt:timestamp};

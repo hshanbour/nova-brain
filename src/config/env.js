@@ -164,8 +164,15 @@ function parseSocialConfig(environment) {
 function parseSocialMediaConfig(environment){
   const values={accountId:environment.NOVA_SHARP_CUTS_R2_ACCOUNT_ID||null,bucket:environment.NOVA_SHARP_CUTS_R2_BUCKET||null,accessKeyId:environment.NOVA_SHARP_CUTS_R2_ACCESS_KEY_ID||null,secretAccessKey:environment.NOVA_SHARP_CUTS_R2_SECRET_ACCESS_KEY||null},supplied=Object.values(values).filter(Boolean).length;
   if(supplied>0&&supplied!==4)throw new Error("All four Sharp Cuts private R2 variables must be configured together.");if(supplied&&(!/^[a-f0-9]{32}$/i.test(values.accountId)||!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(values.bucket)))throw new Error("Sharp Cuts private R2 account or bucket is invalid.");
-  const quota=Number(environment.NOVA_SHARP_CUTS_R2_HARD_QUOTA_BYTES||8*1024**3);if(!Number.isSafeInteger(quota)||quota<100*1024**2||quota>10*1024**3)throw new Error("NOVA_SHARP_CUTS_R2_HARD_QUOTA_BYTES must be between 100 MiB and 10 GiB.");
-  return Object.freeze({r2Configured:supplied===4,hardQuotaBytes:quota,...values});
+  const quota=Number(environment.NOVA_SHARP_CUTS_R2_HARD_QUOTA_BYTES||8*1024**3),classALimit=Number(environment.NOVA_SHARP_CUTS_R2_CLASS_A_MONTHLY_LIMIT||800000),classBLimit=Number(environment.NOVA_SHARP_CUTS_R2_CLASS_B_MONTHLY_LIMIT||8000000),warningPercent=Number(environment.NOVA_SHARP_CUTS_R2_WARNING_PERCENT||75),approvedOverageCents=Number(environment.NOVA_SHARP_CUTS_R2_APPROVED_OVERAGE_USD_CENTS||0);
+  if(!Number.isSafeInteger(quota)||quota<100*1024**2||quota>1024*1024**3)throw new Error("NOVA_SHARP_CUTS_R2_HARD_QUOTA_BYTES must be between 100 MiB and 1 TiB.");
+  if(!Number.isSafeInteger(classALimit)||classALimit<1||classALimit>100000000)throw new Error("NOVA_SHARP_CUTS_R2_CLASS_A_MONTHLY_LIMIT is invalid.");
+  if(!Number.isSafeInteger(classBLimit)||classBLimit<1||classBLimit>1000000000)throw new Error("NOVA_SHARP_CUTS_R2_CLASS_B_MONTHLY_LIMIT is invalid.");
+  if(!Number.isFinite(warningPercent)||warningPercent<50||warningPercent>95)throw new Error("NOVA_SHARP_CUTS_R2_WARNING_PERCENT must be between 50 and 95.");
+  if(!Number.isSafeInteger(approvedOverageCents)||approvedOverageCents<0||approvedOverageCents>100000)throw new Error("NOVA_SHARP_CUTS_R2_APPROVED_OVERAGE_USD_CENTS is invalid.");
+  if(approvedOverageCents===0&&(quota>10*1024**3||classALimit>1000000||classBLimit>10000000))throw new Error("R2 quotas cannot exceed verified free allowances without an explicit approved overage limit.");
+  const maximumOverageCents=Math.ceil(Math.max(0,quota-10*1024**3)/1024**3*1.5+Math.max(0,classALimit-1000000)/1000000*450+Math.max(0,classBLimit-10000000)/1000000*36);if(maximumOverageCents>approvedOverageCents)throw new Error("R2 hard quotas could exceed the owner-approved monthly overage limit.");
+  return Object.freeze({r2Configured:supplied===4,hardQuotaBytes:quota,classALimit,classBLimit,warningPercent,approvedOverageCents,freeAllowance:Object.freeze({storageBytes:10*1024**3,classAOperations:1000000,classBOperations:10000000}),pricing:Object.freeze({storageCentsPerGbMonth:1.5,classACentsPerMillion:450,classBCentsPerMillion:36}),...values});
 }
 
 function parseVercelIntegrationConfig(environment){

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 31;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -628,6 +628,17 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(owner_id,project_id,event_key)
   )`,
   `CREATE INDEX IF NOT EXISTS nova_social_calendar_scope_idx ON nova_social_calendar_entries (owner_id,project_id,event_date)`,
+  `CREATE TABLE IF NOT EXISTS nova_r2_usage_months (
+    owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
+    project_id text NOT NULL REFERENCES nova_projects(id) ON DELETE CASCADE,
+    billing_month date NOT NULL,
+    class_a_operations bigint NOT NULL DEFAULT 0 CHECK (class_a_operations >= 0),
+    class_b_operations bigint NOT NULL DEFAULT 0 CHECK (class_b_operations >= 0),
+    reserved_storage_bytes bigint NOT NULL DEFAULT 0 CHECK (reserved_storage_bytes >= 0),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (owner_id,project_id,billing_month)
+  )`,
+  `CREATE INDEX IF NOT EXISTS nova_r2_usage_months_scope_idx ON nova_r2_usage_months (owner_id,project_id,billing_month DESC)`,
   `CREATE TABLE IF NOT EXISTS nova_developer_sessions (
     id text PRIMARY KEY,
     owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
