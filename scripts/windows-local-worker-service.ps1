@@ -13,8 +13,10 @@ if($PreviewUrl -notmatch '^https://[a-z0-9.-]+\.vercel\.app/?$'){throw 'A protec
 . (Join-Path $PSScriptRoot 'windows-worker-replacement.ps1')
 
 $node=(Get-Command node.exe).Source
+$npm=(Get-Command npm.cmd -ErrorAction Stop).Source
 $git=(Get-Command git.exe -ErrorAction Stop).Source
 $codex=(Get-Command codex.exe -CommandType Application -ErrorAction Stop).Source
+if(-not [System.IO.Path]::IsPathRooted($npm) -or [System.IO.Path]::GetFileName($npm) -ne 'npm.cmd'){throw 'A validated npm executable is required.'}
 if(-not [System.IO.Path]::IsPathRooted($git) -or [System.IO.Path]::GetFileName($git) -ne 'git.exe'){throw 'A validated Git executable is required.'}
 if(-not [System.IO.Path]::IsPathRooted($codex) -or [System.IO.Path]::GetFileName($codex) -ne 'codex.exe' -or -not (Test-Path -LiteralPath $codex -PathType Leaf)){throw 'A validated Codex executable is required.'}
 $codexVersionProbe=Invoke-NovaNativeProbe -FilePath $codex -ArgumentValues @('--version')
@@ -76,6 +78,8 @@ try {
     if($archiveProbe.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $stagedArchive -PathType Leaf)){throw 'The canonical worker runtime export failed.'}
     Expand-Archive -LiteralPath $stagedArchive -DestinationPath $stagedRuntime
     Assert-RuntimeContent $stagedRuntime
+    $dependencyProbe=Invoke-NovaNativeProbe -FilePath $npm -ArgumentValues @('ci','--omit=dev','--ignore-scripts','--no-audit','--no-fund','--prefix',$stagedRuntime)
+    if($dependencyProbe.ExitCode -ne 0){throw 'The committed worker production dependencies could not be installed safely.'}
     $stagedScript=Join-Path $stagedRuntime 'scripts\persistent-local-worker.js'
     $verificationProbe=Invoke-NovaNativeProbe -FilePath $node -ArgumentValues @($stagedScript,'--verify-runtime','--runtime-version',$runtimeVersion,'--repository-root',$root,'--repository-branch',$RepositoryBranch,'--git-executable',$git,'--codex-executable',$codex)
     if($verificationProbe.ExitCode -ne 0){throw 'The staged worker runtime failed its bounded validation.'}
