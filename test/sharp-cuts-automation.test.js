@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
 import {createInMemoryStorage} from "../src/storage/in-memory-storage.js";
-import {analyseCalendarCapacity,buildMigrationReadySourceManifest,buildSharpCutsSocialWorkflow,buildWinbackProgramme,buildWinbackProposal,classifyRetentionRecords,createSharpCutsAutomationService,estimateCampaignCost,SHARP_CUTS_FUTURE_AUTOMATION,syntheticRetentionFixture} from "../src/automation/sharp-cuts-automation.js";
+import {analyseCalendarCapacity,buildMigrationReadySourceManifest,buildSharpCutsCampaignDryRun,buildSharpCutsChannelReadiness,buildSharpCutsSocialWorkflow,buildWinbackProgramme,buildWinbackProposal,classifyRetentionRecords,createSharpCutsAutomationService,estimateCampaignCost,SHARP_CUTS_FUTURE_AUTOMATION,syntheticRetentionFixture} from "../src/automation/sharp-cuts-automation.js";
 import {buildSharpCutsWorkspaceManifest,SHARP_CUTS_WORKSPACE_ID} from "../src/automation/sharp-cuts-workspace.js";
 
 const OWNER="owner-primary",AS_OF=new Date("2026-10-17T09:00:00.000Z");
@@ -59,6 +59,16 @@ test("social workflow requires rights-verified shop footage and cannot publish",
 
 test("future automation remains fail-closed and evidence-based",()=>{
   assert.equal(SHARP_CUTS_FUTURE_AUTOMATION.emptySlotPromotions.status,"blocked_until_availability_is_certified");assert.equal(SHARP_CUTS_FUTURE_AUTOMATION.loyalty.liveProgrammeCreated,false);assert.equal(SHARP_CUTS_FUTURE_AUTOMATION.channels.whatsapp.status,"manual_app_only");assert.ok(SHARP_CUTS_FUTURE_AUTOMATION.measurement.metrics.includes("attributed_revenue"));
+});
+
+test("channel readiness is project-scoped, read-only, and does not infer WhatsApp or sending access",()=>{
+  const channels=buildSharpCutsChannelReadiness({metaConnection:{instagram:{connected:true,username:"sharpcuts.uk"},facebook:{connected:true,pageId:"1707389769348747"}},senderProbe:{connected:true}}),byId=Object.fromEntries(channels.map(item=>[item.id,item]));
+  assert.equal(byId.instagram.status,"connected_read_only");assert.equal(byId.facebook.status,"connected_read_only");assert.equal(byId.email.status,"provider_connected_draft_only");assert.equal(byId.whatsapp.status,"business_app_preserved_manual_only");assert.equal(byId.sms.status,"no_project_scoped_provider");assert.ok(byId.instagram.blocked.includes("publishing"));assert.ok(byId.whatsapp.blocked.includes("api_send"));assert.doesNotMatch(JSON.stringify(channels),/hamoodtrims/i);
+});
+
+test("campaign dry run completes the lifecycle in a deterministic synthetic sink without an external call",()=>{
+  const dryRun=buildSharpCutsCampaignDryRun({asOf:AS_OF});
+  assert.equal(dryRun.mode,"synthetic_test_sink");assert.equal(dryRun.projectId,"sharp-cuts-web");assert.deepEqual(dryRun.stages.map(item=>item.id),["identify","prepare","approve","schedule","execute","monitor"]);assert.equal(dryRun.audience.eligible,3);assert.equal(dryRun.result.attempted,3);assert.equal(dryRun.result.delivered,2);assert.equal(dryRun.result.failed,1);assert.equal(dryRun.result.duplicateSends,0);assert.equal(dryRun.safeguards.externalCalls,0);assert.equal(dryRun.safeguards.liveMessagesSent,false);assert.match(dryRun.runHash,/^[a-f0-9]{64}$/);
 });
 
 test("business workspace links resources without merging projects or granting external writes",()=>{
@@ -125,6 +135,12 @@ test("the demonstration is idempotent, project-isolated, durable in Activity, an
   assert.equal(dashboard.campaignReview.status,"blocked_before_approval");assert.equal(dashboard.campaignReview.approval.status,"not_created");assert.equal(dashboard.campaignReview.approval.approveEnabled,false);assert.equal(dashboard.campaignReview.safeguards.liveSend,false);
   assert.equal(dashboard.workspace.id,"sharp-cuts-business-workspace");assert.equal(dashboard.workspace.projectBoundary.legacyContextInjection,false);assert.equal(dashboard.workspace.controls.externalWrites,false);
   assert.match(dashboard.campaignReview.email.body,/SAME SHARP CUTS\. A WHOLE NEW EXPERIENCE/);assert.match(dashboard.campaignReview.email.body,/fresh new look/);assert.match(dashboard.campaignReview.email.body,/NOW IT'S YOUR TURN FOR A FRESH LOOK/);assert.doesNotMatch(dashboard.campaignReview.email.body,/20% OFF/);assert.equal((dashboard.campaignReview.email.html.match(/>20% OFF</g)||[]).length,1);
+});
+
+test("the full campaign dry run is idempotent, durable, and isolated from the legacy project",async()=>{
+  const storage=createInMemoryStorage({clock:()=>AS_OF});await storage.initialize({owner:{id:OWNER,fullName:"Mohammad"},projects:[{id:"sharp-cuts",name:"Sharp Cuts"},{id:"sharp-cuts-web",name:"Sharp Cuts Web"}]});
+  const service=createSharpCutsAutomationService({storage,ownerId:OWNER,clock:()=>AS_OF}),first=await service.runSyntheticCampaignDryRun(),second=await service.runSyntheticCampaignDryRun(),dashboard=await service.dashboard();
+  assert.equal(first.created,true);assert.equal(second.created,false);assert.equal(dashboard.latestDryRun.runHash,first.dryRun.runHash);assert.equal(dashboard.latestDryRun.safeguards.externalCalls,0);assert.equal(dashboard.activity.filter(item=>item.action==="sharp_cuts_campaign_dry_run_completed").length,1);assert.equal((await storage.listActivity(OWNER,{projectId:"sharp-cuts"})).length,0);
 });
 
 test("dashboard performs only a redacted read-only Sender probe and never exposes credentials",async()=>{

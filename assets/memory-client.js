@@ -54,6 +54,7 @@ export const ownerMemoryClient = Object.freeze({
   refreshSocialCalendar: (projectId) => request("/api/social/calendar/refresh", { method: "POST", body: JSON.stringify({ projectId }) }),
   sharpCutsAutomationDashboard: () => request("/api/business-automation/sharp-cuts/dashboard"),
   runSharpCutsRetentionDemo: () => request("/api/business-automation/sharp-cuts/retention-demo", { method: "POST", body: "{}" }),
+  runSharpCutsCampaignDryRun: () => request("/api/business-automation/sharp-cuts/campaign-dry-run", { method: "POST", body: "{}" }),
   approvals: ({ status, conversationId, limit } = {}) => {
     const query = new URLSearchParams();
     if (status) query.set("status", status);
