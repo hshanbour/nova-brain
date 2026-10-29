@@ -76,6 +76,7 @@ import {createSocialService} from "./social/social-service.js";
 import {registerSocialTools} from "./social/social-tools.js";
 import {createMediaAutomationService} from "./social/media-automation.js";
 import {createFootageAnalysisService} from "./social/footage-analysis.js";
+import {createSharpCutsCustomerReader} from "./automation/sharp-cuts-customer-reader.js";
 import {createPrivateR2Store} from "./social/r2-private-store.js";
 import {createR2UsageGuard} from "./social/r2-usage-guard.js";
 import {createInstagramOAuthService} from "./social/instagram-oauth.js";
@@ -177,7 +178,8 @@ export function createApp({
   const mediaAutomation=createMediaAutomationService({storage,socialService,ownerId:OWNER_ID,cloudStore:privateR2,usageGuard:r2UsageGuard,maxApprovedCloudBytes:config.socialMedia.hardQuotaBytes});
   const footageAnalysis=createFootageAnalysisService({modelProvider,socialService,storage,ownerId:OWNER_ID});
   const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch}):null;
-  const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender,instagramOAuth});
+  const sharpCutsCustomerReader=config.sharpCutsCustomerDatabase.configured?createSharpCutsCustomerReader({config:config.sharpCutsCustomerDatabase}):null;
+  const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender,instagramOAuth,customerReader:sharpCutsCustomerReader});
   registerSocialTools(toolRegistry,{service:socialService,mediaAutomation});
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){

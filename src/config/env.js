@@ -175,6 +175,15 @@ function parseSocialMediaConfig(environment){
   return Object.freeze({r2Configured:supplied===4,hardQuotaBytes:quota,classALimit,classBLimit,warningPercent,approvedOverageCents,freeAllowance:Object.freeze({storageBytes:10*1024**3,classAOperations:1000000,classBOperations:10000000}),pricing:Object.freeze({storageCentsPerGbMonth:1.5,classACentsPerMillion:450,classBCentsPerMillion:36}),...values});
 }
 
+function parseSharpCutsCustomerDatabaseConfig(environment){
+  const connectionString=environment.NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL||null;
+  const expected=Object.freeze({projectId:"rapid-bread-69611868",branchId:"br-steep-truth-za3vyugo",branchName:"fresha-customer-staging-20261019",host:"ep-autumn-tree-zaetzhlw-pooler.c-2.eu-west-2.aws.neon.tech",database:"neondb",role:"nova_sharp_cuts_preview_select",view:"public.sc_customer_deduplicated_preview"});
+  if(!connectionString)return Object.freeze({configured:false,connectionString:null,...expected});
+  let parsed;try{parsed=new URL(connectionString);}catch{throw new Error("NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL must be a valid PostgreSQL URL.");}
+  if(!["postgres:","postgresql:"].includes(parsed.protocol)||parsed.hostname!==expected.host||parsed.username!==expected.role||parsed.pathname!==`/${expected.database}`||parsed.searchParams.get("sslmode")!=="require")throw new Error("NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL must use the approved Sharp Cuts staging host, SELECT-only role, database and TLS mode.");
+  return Object.freeze({configured:true,connectionString,...expected});
+}
+
 function parseVercelIntegrationConfig(environment){
   const values={clientId:environment.NOVA_VERCEL_INTEGRATION_CLIENT_ID||null,clientSecret:environment.NOVA_VERCEL_INTEGRATION_CLIENT_SECRET||null,redirectUri:environment.NOVA_VERCEL_INTEGRATION_REDIRECT_URI||null,tokenEncryptionKey:environment.NOVA_VERCEL_INTEGRATION_TOKEN_ENCRYPTION_KEY||null,integrationSlug:environment.NOVA_VERCEL_INTEGRATION_SLUG||null};
   const supplied=Object.values(values).filter(Boolean).length;
@@ -395,6 +404,7 @@ export function readConfig(environment = process.env) {
     }),
     gmail,
     sharpCutsEmail: parseSharpCutsSenderConfig(environment),
+    sharpCutsCustomerDatabase: parseSharpCutsCustomerDatabaseConfig(environment),
     phone,
     whatsapp,
     social,
