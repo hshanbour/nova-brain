@@ -178,3 +178,9 @@ test('terminal cards remain visible without Stop and stop polling while nontermi
   assert.match(source, /card\.replaceChildren\(\)/);
   assert.match(source, /liveActivityRecords\.has\(stored\.taskId\)/);
 });
+
+test('Sharp Cuts calendar preparation is visible and explicitly reports zero external effects', async () => {
+  const consoleJs=await readFile(new URL('../assets/console.js',import.meta.url),'utf8'),client=await readFile(new URL('../assets/memory-client.js',import.meta.url),'utf8');
+  assert.match(consoleJs,/Prepare next safe action/);assert.match(consoleJs,/safeguards\.externalCalls/);assert.match(consoleJs,/safeguards\.messagesSent/);assert.match(consoleJs,/safeguards\.publications/);assert.match(consoleJs,/safeguards\.contactsUploaded/);
+  assert.match(client,/\/api\/social\/calendar\/prepare-next/);
+});

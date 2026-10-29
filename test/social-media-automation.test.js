@@ -7,7 +7,7 @@ import {join} from "node:path";
 import {OWNER_ID} from "../src/identity/initial-context.js";
 import {buildVerticalReelCommand,extractVisualSamples} from "../src/social/ffmpeg-renderer.js";
 import {createFootageAnalysisService} from "../src/social/footage-analysis.js";
-import {buildRollingMarketingCalendar,createMediaAutomationService} from "../src/social/media-automation.js";
+import {buildCalendarActionPreparation,buildRollingMarketingCalendar,createMediaAutomationService} from "../src/social/media-automation.js";
 import {createLocalMediaWorkspace} from "../src/social/local-media-workspace.js";
 import {createLocalSocialMediaWorker} from "../src/social/local-social-media-worker.js";
 import {createLocalMediaCompanion} from "../src/social/local-media-companion.js";
@@ -78,6 +78,18 @@ test("12-week marketing calendar combines an operating cadence with seasonal opp
 });
 
 test("90-day marketing calendar is exactly bounded and supplies practical channel actions",()=>{const start=now(),entries=buildRollingMarketingCalendar({start,days:90}),lastAllowed=new Date("2027-01-19T00:00:00.000Z");assert.ok(entries.length>=39);assert.ok(entries.every(item=>new Date(`${item.date}T00:00:00Z`)>=new Date("2026-10-22T00:00:00.000Z")&&new Date(`${item.date}T00:00:00Z`)<=lastAllowed));assert.equal(entries.some(item=>item.date==="2027-01-20"),false);const weekly=entries.find(item=>item.title==="Weekly performance and content review");assert.equal(weekly.date,"2026-10-26");assert.equal(weekly.channel,"multi_channel");assert.equal(weekly.nextAction,"prepare_recommendations");assert.ok(entries.every(item=>item.requiresOwnerApproval));});
+
+test("calendar action preparation is fail-closed and creates no external side effects",async()=>{
+  const{storage,media}=await fixture();await media.refreshCalendar("sharp-cuts-web");const result=await media.prepareNextCalendarAction("sharp-cuts-web"),repeat=await media.prepareNextCalendarAction("sharp-cuts-web");
+  assert.equal(result.idempotent,false);assert.equal(repeat.idempotent,true);assert.deepEqual(result.preparation.safeguards,{externalCalls:0,messagesSent:0,publications:0,contactsUploaded:0,approvalsCreated:0,providerWrites:false});
+  assert.equal(result.preparation.stages.find(item=>item.id==="validate_evidence").status,"blocked_until_verified");assert.equal(result.preparation.stages.find(item=>item.id==="owner_approval").status,"not_requested");
+  assert.equal((await storage.listApprovals(OWNER_ID,{status:"pending",limit:20})).length,0);assert.equal((await media.dashboard("sharp-cuts-web")).latestPreparation.eventKey,result.preparation.eventKey);
+});
+
+test("retention preparation requires consent, suppression, reachability and future-booking evidence",()=>{
+  const preparation=buildCalendarActionPreparation({eventKey:"retention",eventDate:"2026-10-26",title:"Retention review",recommendation:{channel:"retention",objective:"retention"}});
+  assert.deepEqual(preparation.evidenceChecks,["consent_and_source","suppression_and_opt_out","channel_reachability","future_booking_exclusion","recipient_deduplication"]);assert.equal(preparation.safeguards.contactsUploaded,0);assert.match(preparation.nextOwnerAction,/consent-preserving/);
+});
 
 test("rolling calendar includes Ramadan and Eid as owner-verified planning windows, never automatic offers",()=>{const entries=buildRollingMarketingCalendar({start:new Date("2027-01-01T00:00:00Z"),weeks:14});assert.deepEqual(entries.filter(item=>/Ramadan|Eid/.test(item.title)).map(item=>item.title),["Ramadan planning window","Eid al-Fitr planning window"]);assert.ok(entries.filter(item=>/Ramadan|Eid/.test(item.title)).every(item=>item.source.includes("owner_date_verification_required")&&item.requiresOwnerApproval));});
 
