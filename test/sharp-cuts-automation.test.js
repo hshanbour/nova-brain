@@ -2,10 +2,30 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
 import {createInMemoryStorage} from "../src/storage/in-memory-storage.js";
-import {analyseCalendarCapacity,buildMigrationReadySourceManifest,buildSharpCutsCampaignDryRun,buildSharpCutsChannelReadiness,buildSharpCutsSocialWorkflow,buildWinbackProgramme,buildWinbackProposal,classifyRetentionRecords,createSharpCutsAutomationService,estimateCampaignCost,SHARP_CUTS_FUTURE_AUTOMATION,syntheticRetentionFixture} from "../src/automation/sharp-cuts-automation.js";
+import {analyseCalendarCapacity,buildMigrationReadySourceManifest,buildSharpCutsCampaignDryRun,buildSharpCutsChannelReadiness,buildSharpCutsOperationalReadiness,buildSharpCutsOperationalRehearsal,buildSharpCutsSocialWorkflow,buildWinbackProgramme,buildWinbackProposal,classifyRetentionRecords,createSharpCutsAutomationService,estimateCampaignCost,evaluateSharpCutsChannelEligibility,SHARP_CUTS_FUTURE_AUTOMATION,syntheticRetentionFixture} from "../src/automation/sharp-cuts-automation.js";
 import {buildSharpCutsWorkspaceManifest,SHARP_CUTS_WORKSPACE_ID} from "../src/automation/sharp-cuts-workspace.js";
 
 const OWNER="owner-primary",AS_OF=new Date("2026-10-17T09:00:00.000Z");
+
+test("channel eligibility is channel-specific and requires complete evidence",()=>{
+  const softOptIn={collectedDirectly:true,saleOrNegotiation:true,similarServices:true,optOutOfferedAtCollection:true,optOutInEveryMessage:true};
+  assert.equal(evaluateSharpCutsChannelEligibility({reachable:true,softOptIn},"email").eligible,true);
+  assert.equal(evaluateSharpCutsChannelEligibility({reachable:true,softOptIn},"sms").eligible,true);
+  assert.deepEqual(evaluateSharpCutsChannelEligibility({reachable:true,softOptIn},"whatsapp").reasons,["whatsapp_opt_in_unverified"]);
+  assert.equal(evaluateSharpCutsChannelEligibility({reachable:true,explicitConsent:true,consentChannel:"whatsapp"},"whatsapp").eligible,true);
+  for(const patch of [{suppressed:true},{optedOut:true},{hasFutureBooking:true},{duplicateRecipient:true},{reachable:false}])assert.equal(evaluateSharpCutsChannelEligibility({reachable:true,softOptIn,...patch},"email").eligible,false);
+  assert.equal(evaluateSharpCutsChannelEligibility({reachable:true,softOptIn:{...softOptIn,optOutOfferedAtCollection:false}},"email").eligible,false);
+});
+
+test("operational readiness is fail-closed and preserves WhatsApp Business App coexistence",()=>{
+  const readiness=buildSharpCutsOperationalReadiness({metaConnection:{instagram:{connected:true,username:"sharpcuts.uk"},facebook:{connected:true,pageId:"1707389769348747"}},senderProbe:{connected:true}});
+  assert.equal(readiness.email.connected,true);assert.equal(readiness.email.contactUploadAuthorised,false);assert.equal(readiness.whatsapp.businessAppPreserved,true);assert.equal(readiness.whatsapp.migrationAuthorised,false);assert.equal(readiness.social.instagram.publishingPermission,false);assert.equal(readiness.safeguards.spendAuthorisedGbp,0);
+});
+
+test("operational rehearsal covers approval, scheduling, suppression and reporting without external effects",()=>{
+  const result=buildSharpCutsOperationalRehearsal({asOf:AS_OF});
+  assert.equal(result.audience.evaluated,6);assert.equal(result.audience.eligible,2);assert.equal(result.execution.externalCalls,0);assert.equal(result.execution.providerWrites,0);assert.equal(result.schedule.duplicateExecutions,0);assert.equal(result.monitoring.weeklySummaryPrepared,true);assert.equal(result.safeguards.ownerApprovalRequiredForRealExecution,true);
+});
 
 test("30/45/60/90 retention segmentation excludes booked customers and fails closed on consent and suppression",()=>{
   const result=classifyRetentionRecords(syntheticRetentionFixture(AS_OF),{asOf:AS_OF});

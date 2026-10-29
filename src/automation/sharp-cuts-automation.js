@@ -201,6 +201,57 @@ export const SHARP_CUTS_FUTURE_AUTOMATION=Object.freeze({
 });
 
 export const SHARP_CUTS_CAMPAIGN_DRY_RUN_ID="sharp-cuts-campaign-dry-run-v1";
+export const SHARP_CUTS_OPERATIONAL_REHEARSAL_ID="sharp-cuts-operational-rehearsal-v1";
+
+const ELECTRONIC_CHANNELS=new Set(["email","sms"]);
+
+export function evaluateSharpCutsChannelEligibility(record,channel){
+  if(!new Set(["email","sms","whatsapp"]).has(channel))throw new SharpCutsAutomationError("The requested marketing channel is unsupported.",{code:"sharp_cuts_channel_invalid"});
+  const reasons=[];
+  if(record?.duplicateRecipient===true)reasons.push("duplicate_recipient");
+  if(record?.hasFutureBooking===true)reasons.push("future_booking");
+  if(record?.suppressed===true||record?.optedOut===true)reasons.push("suppressed_or_opted_out");
+  if(record?.reachable!==true)reasons.push("reachability_unverified");
+  let basis="none";
+  if(record?.explicitConsent===true&&record?.consentChannel===channel)basis="explicit_consent";
+  else if(ELECTRONIC_CHANNELS.has(channel)&&record?.softOptIn?.collectedDirectly===true&&record?.softOptIn?.saleOrNegotiation===true&&record?.softOptIn?.similarServices===true&&record?.softOptIn?.optOutOfferedAtCollection===true&&record?.softOptIn?.optOutInEveryMessage===true)basis="soft_opt_in_verified";
+  if(channel==="whatsapp"&&record?.explicitConsent!==true)reasons.push("whatsapp_opt_in_unverified");
+  else if(basis==="none")reasons.push("marketing_basis_unverified");
+  const eligible=reasons.length===0;
+  return Object.freeze({channel,eligible,basis:eligible?basis:"none",reasons:Object.freeze(reasons),sendAuthorised:false,ownerApprovalRequired:true});
+}
+
+export function buildSharpCutsOperationalReadiness({metaConnection=null,senderProbe=null}={}){
+  const instagramReady=metaConnection?.instagram?.connected===true&&metaConnection.instagram.username==="sharpcuts.uk";
+  const facebookReady=metaConnection?.facebook?.connected===true&&metaConnection.facebook.pageId==="1707389769348747";
+  const senderReady=senderProbe?.connected===true;
+  return Object.freeze({
+    version:1,projectId:SHARP_CUTS_WEB_PROJECT_ID,status:"external_activation_required",
+    customerData:Object.freeze({source:"existing_encrypted_fresha_staging",profiles:SHARP_CUTS_STAGING_SNAPSHOT.profiles,recordLevelAdapter:"not_configured_in_nova_preview",deduplicationPreserved:true,futureBookingExclusionRequired:true,universalPermissionAssumed:false,universalProhibitionAssumed:false}),
+    email:Object.freeze({provider:"Sender.net",identity:"Sharp Cuts <info@sharpcuts.uk>",connected:senderReady,audienceGroupConfigured:false,contactUploadAuthorised:false,suppressionReconciliation:"required_before_upload",unsubscribe:"required_in_every_campaign",deliveryImport:"provider_status_polling_required",liveSend:false}),
+    whatsapp:Object.freeze({number:"+44 1582 510565",businessAppPreserved:true,coexistenceEligibility:"requires_official_embedded_signup_preflight",cloudApiConnected:false,inboundAutomation:false,stopHandling:"prepared_not_connected",staffHandoff:"prepared_not_connected",migrationAuthorised:false,paidServiceAuthorised:false}),
+    sms:Object.freeze({provider:null,status:"optional_provider_not_selected",stopHandling:"required",approvedSpendGbp:0,estimatedUnitCostGbpIncVat:0.096,liveSend:false}),
+    social:Object.freeze({instagram:Object.freeze({connected:instagramReady,publishingPermission:false,insights:instagramReady}),facebook:Object.freeze({connected:facebookReady,publishingPermission:false,insights:facebookReady}),approvalBoundScheduling:true,livePublishing:false}),
+    calendar:Object.freeze({days:90,proposalGeneration:true,immutableApprovalBinding:true,durableWorker:true,externalExecution:false}),
+    media:Object.freeze({localUpload:true,localPreview:true,calendarAssignment:true,r2OnlyAfterExactApproval:true,aiEditingOptional:true}),
+    safeguards:Object.freeze({projectIsolation:true,realCustomerContact:false,publicPublishing:false,spendAuthorisedGbp:0,productionChanged:false})
+  });
+}
+
+export function buildSharpCutsOperationalRehearsal({asOf=new Date()}={}){
+  const consent={collectedDirectly:true,saleOrNegotiation:true,similarServices:true,optOutOfferedAtCollection:true,optOutInEveryMessage:true};
+  const records=[
+    {id:"test-001",reachable:true,softOptIn:consent},
+    {id:"test-002",reachable:true,explicitConsent:true,consentChannel:"email"},
+    {id:"test-003",reachable:true,softOptIn:consent,duplicateRecipient:true},
+    {id:"test-004",reachable:true,softOptIn:consent,hasFutureBooking:true},
+    {id:"test-005",reachable:true,softOptIn:consent,optedOut:true},
+    {id:"test-006",reachable:false,softOptIn:consent},
+  ];
+  const evaluated=records.map(record=>({id:record.id,...evaluateSharpCutsChannelEligibility(record,"email")})),eligible=evaluated.filter(item=>item.eligible);
+  const audienceSnapshotHash=hash(JSON.stringify(eligible.map(item=>item.id).sort())),copyHash=hash("Sharp Cuts operational rehearsal copy v1"),idempotencyKey=hash(`${SHARP_CUTS_WEB_PROJECT_ID}:${audienceSnapshotHash}:${copyHash}`);
+  return Object.freeze({version:1,mode:"synthetic_test_sink",projectId:SHARP_CUTS_WEB_PROJECT_ID,createdAt:new Date(asOf).toISOString(),audience:Object.freeze({evaluated:evaluated.length,eligible:eligible.length,excluded:evaluated.length-eligible.length,audienceSnapshotHash,identifiersExposed:false}),eligibility:Object.freeze(evaluated),approval:Object.freeze({status:"simulated_test_authority",realApprovalCreated:false,boundTo:Object.freeze({audienceSnapshotHash,copyHash})}),schedule:Object.freeze({status:"simulated",idempotencyKey,retryPolicy:"transient_only_bounded",duplicateExecutions:0}),execution:Object.freeze({testSinkDeliveries:eligible.length,externalCalls:0,providerWrites:0,customerContacts:0,publications:0,costGbp:0}),monitoring:Object.freeze({delivered:eligible.length,failed:0,optOuts:0,bookings:0,revenueGbp:0,weeklySummaryPrepared:true}),safeguards:Object.freeze({liveSend:false,livePublishing:false,productionChanged:false,ownerApprovalRequiredForRealExecution:true})});
+}
 
 export function buildSharpCutsChannelReadiness({metaConnection=null,senderProbe=null}={}){
   const instagram=metaConnection?.instagram?.connected===true&&metaConnection.instagram.username==="sharpcuts.uk";
@@ -246,7 +297,8 @@ export function createSharpCutsAutomationService({storage,ownerId,clock=()=>new 
       const campaignReview=buildSharpCutsWinbackReview(SHARP_CUTS_REAL_WINBACK_AUDIT,{sender:{connected:senderProbe.connected===true,identity:"Sharp Cuts",provider:"Sender.net",verifiedDailyRecipientLimit:null,config:senderConfig}}),channels=buildSharpCutsChannelReadiness({metaConnection,senderProbe}),latestDryRun=events.find(item=>item.action==="sharp_cuts_campaign_dry_run_completed")||null;
       const workspace=buildSharpCutsWorkspaceManifest({projectReady:exists,senderConnected:senderProbe.connected===true,metaConnection});
       const meta={configured:metaConnection?.configured===true,connected:metaConnection?.connected===true,provider:metaConnection?.provider||null,instagram:{connected:metaConnection?.instagram?.connected===true,accountId:metaConnection?.instagram?.accountId||null,username:metaConnection?.instagram?.username||null,scopes:metaConnection?.instagram?.scopes||[]},facebook:{connected:metaConnection?.facebook?.connected===true,pageId:metaConnection?.facebook?.pageId||null,pageName:metaConnection?.facebook?.pageName||null,scopes:metaConnection?.facebook?.scopes||[]},scopes:metaConnection?.scopes||[],connectionUpdatedAt:metaConnection?.updatedAt||null,metricsCapturedAt:metaMetrics?.capturedAt||null,metrics:metaMetrics?.metrics||null,livePublishing:false};
-      return{projectId:SHARP_CUTS_WEB_PROJECT_ID,projectReady:exists,liveEnabled:false,workspace,meta,channels,source:{system:"Fresha + isolated Neon staging",mode:"encrypted_staging_read_only_summary",lastRefresh:"2026-10-19T16:55:40.000Z",dataClass:"privacy_safe_aggregate",publicApiAssumed:false},sections:{bookings:{status:"future_booking_evidence_required",count:null},customers:{status:"encrypted_staging_verified",count:SHARP_CUTS_STAGING_SNAPSHOT.profiles},retention:{status:"real_90_plus_candidate_pool_verified",count:SHARP_CUTS_REAL_WINBACK_AUDIT.candidateProfiles},capacity:{status:"paused_until_campaign_requires_it",count:0},noShows:{status:"planned",count:null},campaigns:{status:"blocked_before_approval",count:campaignReview.audience.verifiedSendableRecipients},followUps:{status:"candidate_pool_not_sendable",count:campaignReview.audience.potentialUniqueEmailRecipients||SHARP_CUTS_REAL_WINBACK_AUDIT.email.profilesWithAddress},loyalty:{status:"blocked_by_zero_subscription_budget",count:0},socialMedia:{status:metaConnection?.connected?"read_only_metrics_connected_publishing_disabled":"oauth_required",count:1},automationActivity:{status:events.length?"available":"empty",count:events.length},pendingApprovals:{status:"none",count:0}},stagingSnapshot:SHARP_CUTS_STAGING_SNAPSHOT,campaignReview,latestDemo:latest?{id:latest.id,status:latest.status,createdAt:latest.createdAt,counts:latest.metadata?.counts,sourceHash:latest.metadata?.sourceHash,proposal:latest.metadata?.proposal,winbackProgramme:latest.metadata?.winbackProgramme,customerSource:latest.metadata?.customerSource,socialWorkflow:latest.metadata?.socialWorkflow,capacity:latest.metadata?.capacity,loyalty:latest.metadata?.loyalty,futureAutomation:latest.metadata?.futureAutomation}:null,latestDryRun:latestDryRun?latestDryRun.metadata?.dryRun||null: null,activity:events.slice(0,20),safeguards:{promotionalSend:"owner_approval_required",liveMessagesSent:false,rawCustomerDataStored:false,suppressionRequired:true,marketingBasisRequired:true,duplicateFreshaReminders:false,livePublishing:false,paidWhatsappApi:false}};
+      const operationalReadiness=buildSharpCutsOperationalReadiness({metaConnection,senderProbe}),latestOperationalRehearsal=events.find(item=>item.action==="sharp_cuts_operational_rehearsal_completed")||null;
+      return{projectId:SHARP_CUTS_WEB_PROJECT_ID,projectReady:exists,liveEnabled:false,workspace,meta,channels,operationalReadiness,source:{system:"Fresha + isolated Neon staging",mode:"encrypted_staging_read_only_summary",lastRefresh:"2026-10-19T16:55:40.000Z",dataClass:"privacy_safe_aggregate",publicApiAssumed:false},sections:{bookings:{status:"future_booking_evidence_required",count:null},customers:{status:"encrypted_staging_verified",count:SHARP_CUTS_STAGING_SNAPSHOT.profiles},retention:{status:"real_90_plus_candidate_pool_verified",count:SHARP_CUTS_REAL_WINBACK_AUDIT.candidateProfiles},capacity:{status:"paused_until_campaign_requires_it",count:0},noShows:{status:"planned",count:null},campaigns:{status:"blocked_before_approval",count:campaignReview.audience.verifiedSendableRecipients},followUps:{status:"candidate_pool_not_sendable",count:campaignReview.audience.potentialUniqueEmailRecipients||SHARP_CUTS_REAL_WINBACK_AUDIT.email.profilesWithAddress},loyalty:{status:"blocked_by_zero_subscription_budget",count:0},socialMedia:{status:metaConnection?.connected?"read_only_metrics_connected_publishing_disabled":"oauth_required",count:1},automationActivity:{status:events.length?"available":"empty",count:events.length},pendingApprovals:{status:"none",count:0}},stagingSnapshot:SHARP_CUTS_STAGING_SNAPSHOT,campaignReview,latestDemo:latest?{id:latest.id,status:latest.status,createdAt:latest.createdAt,counts:latest.metadata?.counts,sourceHash:latest.metadata?.sourceHash,proposal:latest.metadata?.proposal,winbackProgramme:latest.metadata?.winbackProgramme,customerSource:latest.metadata?.customerSource,socialWorkflow:latest.metadata?.socialWorkflow,capacity:latest.metadata?.capacity,loyalty:latest.metadata?.loyalty,futureAutomation:latest.metadata?.futureAutomation}:null,latestDryRun:latestDryRun?latestDryRun.metadata?.dryRun||null: null,latestOperationalRehearsal:latestOperationalRehearsal?.metadata?.rehearsal||null,activity:events.slice(0,20),safeguards:{promotionalSend:"owner_approval_required",liveMessagesSent:false,rawCustomerDataStored:false,suppressionRequired:true,marketingBasisRequired:true,duplicateFreshaReminders:false,livePublishing:false,paidWhatsappApi:false}};
     },
     async runSyntheticRetentionDemo(){
       await project();const existing=(await activity()).find(item=>item.id===SHARP_CUTS_RETENTION_DEMO_ID);if(existing)return{created:false,event:existing,analysis:existing.metadata?.analysis||null};
@@ -260,6 +312,11 @@ export function createSharpCutsAutomationService({storage,ownerId,clock=()=>new 
       await project();const existing=(await activity()).find(item=>item.id===SHARP_CUTS_CAMPAIGN_DRY_RUN_ID);if(existing)return{created:false,event:existing,dryRun:existing.metadata?.dryRun||null};
       const dryRun=buildSharpCutsCampaignDryRun({asOf:clock()}),event=await storage.appendActivity({id:SHARP_CUTS_CAMPAIGN_DRY_RUN_ID,ownerId,projectId:SHARP_CUTS_WEB_PROJECT_ID,action:"sharp_cuts_campaign_dry_run_completed",tool:"sharp_cuts_automation_campaign_orchestrator",status:"completed",summary:"Completed the full Sharp Cuts campaign lifecycle against a synthetic test sink; no provider, customer, post, booking or payment was touched.",metadata:{version:1,source:"synthetic_test_sink",dryRun,liveMessagesSent:false,livePostsPublished:false,ownerApprovalRequiredForRealExecution:true}});
       return{created:true,event,dryRun};
+    },
+    async runOperationalRehearsal(){
+      await project();const existing=(await activity()).find(item=>item.id===SHARP_CUTS_OPERATIONAL_REHEARSAL_ID);if(existing)return{created:false,event:existing,rehearsal:existing.metadata?.rehearsal||null};
+      const rehearsal=buildSharpCutsOperationalRehearsal({asOf:clock()}),event=await storage.appendActivity({id:SHARP_CUTS_OPERATIONAL_REHEARSAL_ID,ownerId,projectId:SHARP_CUTS_WEB_PROJECT_ID,action:"sharp_cuts_operational_rehearsal_completed",tool:"sharp_cuts_automation_operational_orchestrator",status:"completed",summary:"Rehearsed eligibility, immutable approval binding, scheduling, idempotent execution and reporting against a synthetic sink; no provider or customer was contacted.",metadata:{version:1,source:"synthetic_test_sink",rehearsal,liveMessagesSent:false,livePostsPublished:false,providerWrites:0,ownerApprovalRequiredForRealExecution:true}});
+      return{created:true,event,rehearsal};
     }
   });
 }
