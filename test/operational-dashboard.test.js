@@ -1,0 +1,7 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import {calendarWindow,compareMetricSeries,filterMetricSnapshots,metricSeries,shiftCalendarAnchor} from "../assets/operational-dashboard.js";
+
+test("metric history is filtered, ordered and compared without inventing missing values",()=>{const snapshots=[{capturedAt:"2026-10-30T12:00:00Z",metrics:{instagram:{followers:12}}},{capturedAt:"2026-10-20T12:00:00Z",metrics:{instagram:{followers:10}}},{capturedAt:"2026-08-01T12:00:00Z",metrics:{instagram:{followers:7}}}],filtered=filterMetricSnapshots(snapshots,{days:30,now:new Date("2026-10-31T12:00:00Z")}),series=metricSeries(filtered,"instagram","followers");assert.deepEqual(series.map(item=>item.value),[10,12]);assert.deepEqual(compareMetricSeries(series),{available:true,delta:2,percent:20});assert.deepEqual(compareMetricSeries(series.slice(0,1)),{available:false,delta:null,percent:null});});
+
+test("month and week windows place stored events on the correct days",()=>{const entries=[{eventKey:"a",eventDate:"2026-10-31"},{eventKey:"b",eventDate:"2026-11-02"}],month=calendarWindow(entries,{anchor:new Date("2026-10-15T00:00:00Z"),view:"month"}),week=calendarWindow(entries,{anchor:new Date("2026-10-31T00:00:00Z"),view:"week"});assert.equal(month.days.find(item=>item.date==="2026-10-31").entries[0].eventKey,"a");assert.equal(week.days.length,7);assert.equal(shiftCalendarAnchor(new Date("2026-10-15T00:00:00Z"),"month",1).toISOString().slice(0,7),"2026-11");});
