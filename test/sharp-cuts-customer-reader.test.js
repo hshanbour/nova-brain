@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {readConfig} from "../src/config/env.js";
-import {AGGREGATE_QUERY,createSharpCutsCustomerReader} from "../src/automation/sharp-cuts-customer-reader.js";
+import {AGGREGATE_QUERY,createSharpCutsCustomerReader,SharpCutsCustomerDatabaseError} from "../src/automation/sharp-cuts-customer-reader.js";
 
 const URL_VALUE="postgresql://nova_sharp_cuts_preview_select:private@ep-autumn-tree-zaetzhlw-pooler.c-2.eu-west-2.aws.neon.tech/neondb?sslmode=require";
 
@@ -10,8 +10,24 @@ test("Sharp Cuts customer database requires the exact restricted role, database 
   assert.throws(()=>readConfig({NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL:"postgresql://neondb_owner:private@ep-autumn-tree-zaetzhlw-pooler.c-2.eu-west-2.aws.neon.tech/neondb?sslmode=require"}),/SELECT-only role/);
   assert.throws(()=>readConfig({NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL:"postgresql://nova_sharp_cuts_preview_select:private@ep-example.neon.tech/neondb?sslmode=require"}),/staging host/);
   assert.throws(()=>readConfig({NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL:"postgresql://nova_sharp_cuts_preview_select:private@ep-autumn-tree-zaetzhlw-pooler.c-2.eu-west-2.aws.neon.tech/neondb"}),/TLS mode/);
-  const configured=readConfig({NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL:URL_VALUE}).sharpCutsCustomerDatabase;
+  const configured=readConfig({NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL:URL_VALUE.replace("private","private%40phrase")}).sharpCutsCustomerDatabase;
   assert.equal(configured.configured,true);assert.equal(configured.branchId,"br-steep-truth-za3vyugo");assert.equal(configured.view,"public.sc_customer_deduplicated_preview");
+});
+
+test("malformed database URLs fail without disclosing credential material",()=>{
+  const marker="credential-marker-never-log";
+  assert.throws(()=>readConfig({NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL:`postgresql://nova_sharp_cuts_preview_select:${marker}%@ep-autumn-tree-zaetzhlw-pooler.c-2.eu-west-2.aws.neon.tech/neondb?sslmode=require`}),error=>{
+    assert.doesNotMatch(error.message,/credential-marker|postgresql:\/\//);return true;
+  });
+});
+
+test("database client failures are converted to secret-free fail-closed errors",async()=>{
+  const marker="credential-marker-never-log";
+  const config=readConfig({NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL:URL_VALUE}).sharpCutsCustomerDatabase;
+  const reader=createSharpCutsCustomerReader({config,sqlClient:{async query(){throw new Error(`failed ${marker} postgresql://restricted:secret@example.invalid/db`);}}});
+  await assert.rejects(reader.snapshot(),error=>{
+    assert.ok(error instanceof SharpCutsCustomerDatabaseError);assert.equal(error.code,"sharp_cuts_customer_database_unavailable");assert.equal(error.statusCode,503);assert.doesNotMatch(error.message,/credential-marker|postgresql:\/\/|secret/);return true;
+  });
 });
 
 test("reader returns aggregate-only channel evidence and fails closed on missing marketing evidence",async()=>{

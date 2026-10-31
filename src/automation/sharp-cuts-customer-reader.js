@@ -11,9 +11,17 @@ FROM public.sc_customer_deduplicated_preview`;
 function count(value,name){const parsed=Number(value);if(!Number.isSafeInteger(parsed)||parsed<0)throw new Error(`Sharp Cuts aggregate ${name} is invalid.`);return parsed;}
 function channel(contactCandidates,evidence){return Object.freeze({contactCandidates,verifiedEligible:0,marketingBasisVerified:0,suppressionCleared:0,futureBookingCleared:0,reachabilityVerified:0,status:"blocked_evidence_incomplete",evidence:Object.freeze(evidence)});}
 
+export class SharpCutsCustomerDatabaseError extends Error{
+  constructor(){super("Sharp Cuts customer aggregates are temporarily unavailable.");this.name="SharpCutsCustomerDatabaseError";this.code="sharp_cuts_customer_database_unavailable";this.statusCode=503;}
+}
+
 export function createSharpCutsCustomerReader({config,sqlClient}={}){
   if(!config?.configured&&!sqlClient)return null;
-  const sql=sqlClient||neon(config.connectionString),query=(statement,params=[])=>sql.query(statement,params);
+  let sql=sqlClient||null;
+  const query=async(statement,params=[])=>{
+    try{sql||=neon(config.connectionString);return await sql.query(statement,params);}
+    catch{throw new SharpCutsCustomerDatabaseError();}
+  };
   return Object.freeze({
     async snapshot(){
       const rows=await query(AGGREGATE_QUERY,[]),row=rows?.[0];if(!row)throw new Error("Sharp Cuts aggregate query returned no result.");

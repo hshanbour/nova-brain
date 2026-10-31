@@ -179,8 +179,11 @@ function parseSharpCutsCustomerDatabaseConfig(environment){
   const connectionString=environment.NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL||null;
   const expected=Object.freeze({projectId:"rapid-bread-69611868",branchId:"br-steep-truth-za3vyugo",branchName:"fresha-customer-staging-20261019",host:"ep-autumn-tree-zaetzhlw-pooler.c-2.eu-west-2.aws.neon.tech",database:"neondb",role:"nova_sharp_cuts_preview_select",view:"public.sc_customer_deduplicated_preview"});
   if(!connectionString)return Object.freeze({configured:false,connectionString:null,...expected});
+  const invalidMessage="NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL must be a valid, percent-encoded PostgreSQL URL.";
+  if(/[\u0000-\u0020\u007f]/.test(connectionString)||/%(?![0-9a-f]{2})/i.test(connectionString))throw new Error(invalidMessage);
   let parsed;try{parsed=new URL(connectionString);}catch{throw new Error("NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL must be a valid PostgreSQL URL.");}
-  if(!["postgres:","postgresql:"].includes(parsed.protocol)||parsed.hostname!==expected.host||parsed.username!==expected.role||parsed.pathname!==`/${expected.database}`||parsed.searchParams.get("sslmode")!=="require")throw new Error("NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL must use the approved Sharp Cuts staging host, SELECT-only role, database and TLS mode.");
+  try{decodeURIComponent(parsed.username);decodeURIComponent(parsed.password);}catch{throw new Error(invalidMessage);}
+  if(!parsed.password||parsed.hash||!["postgres:","postgresql:"].includes(parsed.protocol)||parsed.hostname!==expected.host||parsed.username!==expected.role||parsed.pathname!==`/${expected.database}`||parsed.searchParams.get("sslmode")!=="require")throw new Error("NOVA_SHARP_CUTS_CUSTOMER_DATABASE_URL must use the approved Sharp Cuts staging host, SELECT-only role, database and TLS mode.");
   return Object.freeze({configured:true,connectionString,...expected});
 }
 
