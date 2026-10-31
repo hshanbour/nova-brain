@@ -6,17 +6,19 @@ import {createSharpCutsWhatsAppCoexistenceService} from "../src/whatsapp/sharp-c
 import {createPersistentLocalWorker} from "../src/autonomy/persistent-local-worker.js";
 
 const OWNER="owner-1",TOKEN="w".repeat(40),ENV={
-  NOVA_SHARP_CUTS_WHATSAPP_PROVIDER:"360dialog_coexistence",
+  NOVA_SHARP_CUTS_WHATSAPP_PROVIDER:"gupshup_coexistence",
   NOVA_SHARP_CUTS_WHATSAPP_NUMBER:"+441582510565",
   NOVA_SHARP_CUTS_WHATSAPP_PROJECT_ID:"sharp-cuts-web",
   NOVA_SHARP_CUTS_WHATSAPP_PUBLIC_BASE_URL:"https://preview.example",
   NOVA_SHARP_CUTS_WHATSAPP_PHONE_NUMBER_ID:"123456789012345",
+  NOVA_SHARP_CUTS_WHATSAPP_APP_ID:"4005ef9e-581e-41f4-9b04-e0797e0463d2",
+  NOVA_SHARP_CUTS_WHATSAPP_APP_NAME:"SharpCutsNova",
   NOVA_SHARP_CUTS_WHATSAPP_API_KEY:"api-"+"a".repeat(32),
   NOVA_SHARP_CUTS_WHATSAPP_WEBHOOK_TOKEN:TOKEN,
   NOVA_SHARP_CUTS_WHATSAPP_IDENTITY_KEY:Buffer.alloc(32,8).toString("base64"),
   NOVA_SHARP_CUTS_WHATSAPP_MODE:"draft_only",
 };
-const payload=(body="Can I book a haircut?",id="wamid.test-123456789")=>({object:"whatsapp_business_account",entry:[{id:"waba",changes:[{field:"messages",value:{messaging_product:"whatsapp",metadata:{display_phone_number:"441582510565",phone_number_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_PHONE_NUMBER_ID},contacts:[{wa_id:"447700900111"}],messages:[{from:"447700900111",id,timestamp:"1793450000",type:"text",text:{body}}]}}]}]});
+const payload=(body="Can I book a haircut?",id="wamid.test-123456789")=>({gs_app_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_APP_ID,object:"whatsapp_business_account",entry:[{id:"waba",changes:[{field:"messages",value:{messaging_product:"whatsapp",metadata:{display_phone_number:"441582510565",phone_number_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_PHONE_NUMBER_ID},contacts:[{wa_id:"447700900111"}],messages:[{from:"447700900111",id,timestamp:"1793450000",type:"text",text:{body}}]}}]}]});
 
 async function fixture(){
   const storage=createInMemoryStorage();await storage.initialize({owner:{id:OWNER,fullName:"Owner",preferences:{},facts:{}},projects:[{id:"sharp-cuts-web",name:"Sharp Cuts",description:""}],memories:[]});
@@ -26,7 +28,7 @@ async function fixture(){
 
 test("Sharp Cuts Coexistence config is disabled by default and all-or-none",()=>{
   const disabled=readConfig({}).sharpCutsWhatsApp;assert.equal(disabled.configured,false);assert.equal(disabled.number,"+441582510565");assert.equal(disabled.sendEnabled,false);
-  assert.throws(()=>readConfig({NOVA_SHARP_CUTS_WHATSAPP_PROVIDER:"360dialog_coexistence"}),/all eight/i);
+  assert.throws(()=>readConfig({NOVA_SHARP_CUTS_WHATSAPP_PROVIDER:"gupshup_coexistence"}),/all eight/i);
   const configured=readConfig(ENV).sharpCutsWhatsApp;assert.equal(configured.configured,true);assert.equal(configured.mode,"draft_only");assert.equal(configured.sendEnabled,false);
   assert.throws(()=>readConfig({...ENV,NOVA_SHARP_CUTS_WHATSAPP_NUMBER:"+447700900999"}),/verified Sharp Cuts number/);
 });
@@ -52,8 +54,15 @@ test("STOP is captured without AI generation or outbound send",async()=>{
 });
 
 test("Business App echo is monitored without exposing message contents",async()=>{
-  const{storage,service}=await fixture(),echoPayload={entry:[{changes:[{field:"messages",value:{messaging_product:"whatsapp",metadata:{phone_number_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_PHONE_NUMBER_ID},message_echoes:[{id:"wamid.echo-123456789",from:"441582510565",to:"447700900111",type:"text",text:{body:"private staff reply"}}]}}]}]};
+  const{storage,service}=await fixture(),echoPayload={gs_app_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_APP_ID,entry:[{changes:[{field:"smb_message_echoes",value:{messaging_product:"whatsapp",metadata:{phone_number_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_PHONE_NUMBER_ID},message_echoes:[{id:"wamid.echo-123456789",from:"441582510565",to:"447700900111",type:"text",text:{body:"private staff reply"}}]}}]}]};
   const result=await service.receive(echoPayload,`Bearer ${TOKEN}`);assert.equal(result.echoes,1);const activity=await storage.listActivity(OWNER,{projectId:"sharp-cuts-web",limit:20});assert.doesNotMatch(JSON.stringify(activity),/private staff reply|447700900111/);
+});
+
+test("owner test sends only to the exact allowlisted number and records the provider result",async()=>{
+  const sent=[];const storage=createInMemoryStorage();await storage.initialize({owner:{id:OWNER,fullName:"Owner",preferences:{},facts:{}},projects:[{id:"sharp-cuts-web",name:"Sharp Cuts",description:""}],memories:[]});
+  const config=readConfig({...ENV,NOVA_SHARP_CUTS_WHATSAPP_MODE:"owner_test",NOVA_SHARP_CUTS_WHATSAPP_TEST_RECIPIENTS:"+447700900111"});
+  const service=createSharpCutsWhatsAppCoexistenceService({config,storage,ownerId:OWNER,fetchImpl:async(url,options)=>{sent.push({url,options});return{ok:true,status:200,async json(){return{status:"submitted",messageId:"gs-test-message-123"};}};},async novaTurn(input){await storage.appendMessage({id:input.assistantMessageId,conversationId:input.conversationId,ownerId:OWNER,role:"assistant",content:"Book securely through the Sharp Cuts Fresha page."});return{id:input.assistantMessageId,runId:"run-owner-test",message:"Book securely through the Sharp Cuts Fresha page."};},logger:{error(){}}});
+  await service.receive(payload(),{sourceIp:"34.202.224.208"});const result=await service.processNext({workerId:"worker-owner-test"});assert.equal(result.status,"replied");assert.equal(result.sent,true);assert.equal(sent.length,1);assert.equal(sent[0].url,"https://api.gupshup.io/wa/api/v1/msg");assert.equal(sent[0].options.headers.apikey,ENV.NOVA_SHARP_CUTS_WHATSAPP_API_KEY);assert.doesNotMatch(JSON.stringify(await storage.listActivity(OWNER,{projectId:"sharp-cuts-web",limit:20})),/447700900111/);
 });
 
 test("persistent worker polls the isolated Sharp Cuts WhatsApp queue",async()=>{

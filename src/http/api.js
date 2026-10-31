@@ -2255,7 +2255,7 @@ export function createApi({
         if(request.method==="POST"&&pathname==="/api/integrations/sharp-cuts/whatsapp/webhook"){
           await ready();
           const payload=await readJsonBody(request,config.maxBodyBytes);
-          sendJson(response,200,await sharpCutsWhatsAppService.receive(payload,request.headers?.authorization));
+            sendJson(response,200,await sharpCutsWhatsAppService.receive(payload,{authorization:request.headers?.authorization,sourceIp:request.headers?.["x-vercel-forwarded-for"]||request.headers?.["x-forwarded-for"]}));
           return;
         }
         if(request.method==="GET"&&pathname==="/api/social/status"){await ready();sendJson(response,200,await socialService.status());return;}

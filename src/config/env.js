@@ -115,27 +115,32 @@ function parseSharpCutsWhatsAppConfig(environment) {
     projectId: environment.NOVA_SHARP_CUTS_WHATSAPP_PROJECT_ID || null,
     publicBaseUrl: environment.NOVA_SHARP_CUTS_WHATSAPP_PUBLIC_BASE_URL || null,
     phoneNumberId: environment.NOVA_SHARP_CUTS_WHATSAPP_PHONE_NUMBER_ID || null,
+    appId: environment.NOVA_SHARP_CUTS_WHATSAPP_APP_ID || null,
+    appName: environment.NOVA_SHARP_CUTS_WHATSAPP_APP_NAME || null,
     apiKey: environment.NOVA_SHARP_CUTS_WHATSAPP_API_KEY || null,
     webhookToken: environment.NOVA_SHARP_CUTS_WHATSAPP_WEBHOOK_TOKEN || null,
     identityKey: environment.NOVA_SHARP_CUTS_WHATSAPP_IDENTITY_KEY || null,
   };
-  const supplied = Object.values(values).filter(Boolean).length;
+  const commonKeys = ["provider","number","projectId","publicBaseUrl","phoneNumberId","apiKey","webhookToken","identityKey"];
+  const supplied = commonKeys.filter(key => values[key]).length;
   const mode = environment.NOVA_SHARP_CUTS_WHATSAPP_MODE || "disabled";
   if (!new Set(["disabled", "draft_only", "owner_test"]).has(mode))
     throw new Error("NOVA_SHARP_CUTS_WHATSAPP_MODE must be disabled, draft_only, or owner_test.");
-  if (supplied > 0 && supplied !== Object.keys(values).length)
+  if (supplied > 0 && supplied !== commonKeys.length)
     throw new Error("All eight Sharp Cuts WhatsApp Coexistence variables must be configured together.");
   if (!supplied) return Object.freeze({
     configured: false,
-    provider: "360dialog_coexistence",
+    provider: "gupshup_coexistence",
     projectId: SHARP_CUTS_WHATSAPP_PROJECT,
     number: SHARP_CUTS_WHATSAPP_NUMBER,
     mode: "disabled",
     receiveEnabled: false,
     sendEnabled: false,
   });
-  if (values.provider !== "360dialog_coexistence")
-    throw new Error("NOVA_SHARP_CUTS_WHATSAPP_PROVIDER must use the reviewed 360dialog Coexistence route.");
+  if (!new Set(["360dialog_coexistence","gupshup_coexistence"]).has(values.provider))
+    throw new Error("NOVA_SHARP_CUTS_WHATSAPP_PROVIDER must use a reviewed Coexistence route.");
+  if(values.provider === "gupshup_coexistence" && (!/^[0-9a-f-]{20,64}$/i.test(values.appId||"") || !/^[A-Za-z0-9_-]{6,100}$/.test(values.appName||"")))
+    throw new Error("Gupshup Coexistence requires a valid app ID and app name.");
   if (values.number !== SHARP_CUTS_WHATSAPP_NUMBER)
     throw new Error("NOVA_SHARP_CUTS_WHATSAPP_NUMBER must be the verified Sharp Cuts number.");
   if (values.projectId !== SHARP_CUTS_WHATSAPP_PROJECT)
@@ -154,14 +159,18 @@ function parseSharpCutsWhatsAppConfig(environment) {
     : Buffer.from(values.identityKey, "base64");
   if (identityKeyBytes.length !== 32)
     throw new Error("NOVA_SHARP_CUTS_WHATSAPP_IDENTITY_KEY must decode to exactly 32 bytes.");
+  const testRecipients = String(environment.NOVA_SHARP_CUTS_WHATSAPP_TEST_RECIPIENTS||"").split(",").map(value=>value.trim()).filter(Boolean);
+  if(testRecipients.some(value=>!/^\+[1-9]\d{7,14}$/.test(value)))throw new Error("NOVA_SHARP_CUTS_WHATSAPP_TEST_RECIPIENTS must contain comma-separated E.164 numbers.");
+  if(mode === "owner_test" && testRecipients.length === 0)throw new Error("owner_test mode requires at least one allowlisted test recipient.");
   return Object.freeze({
     configured: true,
     ...values,
     publicBaseUrl: `${baseUrl.origin}/`,
     identityKeyBytes,
     mode,
+    testRecipients:Object.freeze(testRecipients),
     receiveEnabled: mode !== "disabled",
-    sendEnabled: false,
+    sendEnabled: mode === "owner_test",
   });
 }
 
