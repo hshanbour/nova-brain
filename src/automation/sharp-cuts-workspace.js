@@ -47,7 +47,7 @@ export function buildSharpCutsWorkspaceManifest({projectReady=false,senderConnec
       resource({id:"tiktok",label:"TikTok · future integration",businessRole:"future_short_form_distribution",externalStatus:"not_connected",novaStatus:"official_authorization_required",permissionBoundary:"no_placeholder_account_or_unsupported_publishing",writesEnabled:false}),
       resource({id:"meta",label:"SHARP CUTS Meta Business Portfolio and Ad Account",businessRole:"asset_and_campaign_management",externalStatus:"owner_confirmed_existing",novaStatus:"readiness_record_only",permissionBoundary:"no_ad_creation_or_spend_authority",writesEnabled:false}),
       resource({id:"email",label:"Sender.net · info@sharpcuts.uk",businessRole:"approval_gated_email_campaigns",externalStatus:senderConnected?"authenticated_provider_probe_passed":"connection_not_verified_in_this_runtime",novaStatus:senderConnected?"draft_preparation_connected":"draft_only",permissionBoundary:"customer_upload_and_send_require_separate_exact_approval",writesEnabled:false}),
-      resource({id:"whatsapp",label:"Sharp Cuts WhatsApp Business",businessRole:"manual_customer_contact",externalStatus:"business_app_managed",novaStatus:"manual_app_only",permissionBoundary:"no_paid_api_or_automated_messaging_authorised",writesEnabled:false})
+      resource({id:"whatsapp",label:"Sharp Cuts WhatsApp Business",businessRole:"customer_contact_and_handoff",externalStatus:"business_app_preserved",novaStatus:"coexistence_prepared_eligibility_required",permissionBoundary:"inbound_draft_only_until_owner_test_and_separate_send_approval",writesEnabled:false})
     ]),
     controls:Object.freeze({
       externalWrites:false,

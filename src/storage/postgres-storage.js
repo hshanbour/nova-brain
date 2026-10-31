@@ -1472,19 +1472,19 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         [messageSid,ownerId,patch.status||null,patch.runId||null,patch.assistantMessageId||null,patch.errorCode??null],
       ))[0]);
     },
-    async claimNextWhatsAppInbound({ ownerId, workerId, leaseMs }) {
+    async claimNextWhatsAppInbound({ ownerId, workerId, leaseMs, conversationPrefix = null }) {
       const token=randomUUID();
       return whatsappInboundRow((await run(
         `WITH expired AS (
            UPDATE nova_whatsapp_inbound_messages SET status='queued',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=now()
-           WHERE owner_id=$1 AND status='processing' AND lease_expires_at<=now()
+           WHERE owner_id=$1 AND ($5::text IS NULL OR conversation_id LIKE ($5 || '%')) AND status='processing' AND lease_expires_at<=now()
          ), candidate AS (
            SELECT message_sid FROM nova_whatsapp_inbound_messages
-           WHERE owner_id=$1 AND status='queued' AND COALESCE(next_attempt_at,now())<=now()
+           WHERE owner_id=$1 AND status='queued' AND ($5::text IS NULL OR conversation_id LIKE ($5 || '%')) AND COALESCE(next_attempt_at,now())<=now()
            ORDER BY created_at,message_sid FOR UPDATE SKIP LOCKED LIMIT 1
          ) UPDATE nova_whatsapp_inbound_messages message SET status='processing',attempt_count=attempt_count+1,lease_owner=$2,lease_token=$3,lease_expires_at=now()+($4::int*interval '1 millisecond'),updated_at=now()
          FROM candidate WHERE message.message_sid=candidate.message_sid RETURNING message.*`,
-        [ownerId,workerId,token,leaseMs],
+        [ownerId,workerId,token,leaseMs,conversationPrefix],
       ))[0]);
     },
     async renewWhatsAppInboundLease(input) {

@@ -1113,10 +1113,10 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const updated = { ...current, ...copy(patch), messageSid: current.messageSid, ownerId: current.ownerId, conversationId: current.conversationId, contactId: current.contactId, bodyHash: current.bodyHash, updatedAt: now(clock) };
       whatsappInboundMessages.set(messageSid, updated); return copy(updated);
     },
-    async claimNextWhatsAppInbound({ ownerId, workerId, leaseMs }) {
+    async claimNextWhatsAppInbound({ ownerId, workerId, leaseMs, conversationPrefix = null }) {
       const timestamp=clock();
-      for(const message of whatsappInboundMessages.values())if(message.ownerId===ownerId&&message.status==="processing"&&new Date(message.leaseExpiresAt)<=timestamp){message.status="queued";message.leaseOwner=null;message.leaseToken=null;message.leaseExpiresAt=null;}
-      const message=[...whatsappInboundMessages.values()].filter(item=>item.ownerId===ownerId&&item.status==="queued"&&(!item.nextAttemptAt||new Date(item.nextAttemptAt)<=timestamp)).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.messageSid.localeCompare(b.messageSid))[0];
+      for(const message of whatsappInboundMessages.values())if(message.ownerId===ownerId&&(!conversationPrefix||message.conversationId.startsWith(conversationPrefix))&&message.status==="processing"&&new Date(message.leaseExpiresAt)<=timestamp){message.status="queued";message.leaseOwner=null;message.leaseToken=null;message.leaseExpiresAt=null;}
+      const message=[...whatsappInboundMessages.values()].filter(item=>item.ownerId===ownerId&&item.status==="queued"&&(!conversationPrefix||item.conversationId.startsWith(conversationPrefix))&&(!item.nextAttemptAt||new Date(item.nextAttemptAt)<=timestamp)).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.messageSid.localeCompare(b.messageSid))[0];
       if(!message)return null;message.status="processing";message.attemptCount+=1;message.leaseOwner=workerId;message.leaseToken=randomUUID();message.leaseExpiresAt=new Date(timestamp.getTime()+leaseMs).toISOString();message.updatedAt=now(clock);return copy(message);
     },
     async renewWhatsAppInboundLease(input) {

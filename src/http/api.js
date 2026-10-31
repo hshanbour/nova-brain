@@ -67,6 +67,7 @@ import { PhoneError } from "../phone/phone-service.js";
 import { OwnerContactPolicyError } from "../phone/owner-contact-policy.js";
 import { assertTwilioSignature } from "../phone/twilio-signature.js";
 import { WhatsAppError } from "../whatsapp/whatsapp-service.js";
+import {SharpCutsWhatsAppError} from "../whatsapp/sharp-cuts-coexistence.js";
 import {SocialError} from "../social/social-service.js";
 import {authorizeSocialScheduler} from "../social/cloud-scheduler.js";
 import {SharpCutsAutomationError} from "../automation/sharp-cuts-automation.js";
@@ -233,6 +234,7 @@ export function createApi({
   gmailService,
   phoneService,
   whatsappService,
+  sharpCutsWhatsAppService,
   socialService,
   mediaAutomation,
   footageAnalysis,
@@ -1902,7 +1904,7 @@ export function createApi({
           await ready();
           authorizeLocalWorker(request, config.localWorkerToken);
           const dispatch=await autoDispatch.next(await readJsonBody(request,config.maxBodyBytes));
-          sendJson(response,200,{...dispatch,channelPolling:["whatsapp","social","social_media"]});
+          sendJson(response,200,{...dispatch,channelPolling:["whatsapp","social","social_media",...(config.sharpCutsWhatsApp.configured?["sharp_cuts_whatsapp"]:[])]});
           return;
         }
         const handoffMatch = pathname.match(
@@ -2249,6 +2251,13 @@ export function createApi({
           sendJson(response, 200, await whatsappService.status());
           return;
         }
+        if(request.method==="GET"&&pathname==="/api/business-automation/sharp-cuts/whatsapp/status"){await ready();sendJson(response,200,await sharpCutsWhatsAppService.status());return;}
+        if(request.method==="POST"&&pathname==="/api/integrations/sharp-cuts/whatsapp/webhook"){
+          await ready();
+          const payload=await readJsonBody(request,config.maxBodyBytes);
+          sendJson(response,200,await sharpCutsWhatsAppService.receive(payload,request.headers?.authorization));
+          return;
+        }
         if(request.method==="GET"&&pathname==="/api/social/status"){await ready();sendJson(response,200,await socialService.status());return;}
         if(request.method==="GET"&&pathname==="/api/integrations/instagram/status"){await ready();sendJson(response,200,await instagramOAuth.status(url.searchParams.get("projectId")));return;}
         if(request.method==="POST"&&pathname==="/api/integrations/instagram/oauth/start"){await ready();const input=await readJsonBody(request,config.maxBodyBytes),started=await instagramOAuth.start(input.projectId,input.provider),policy=input.projectId==="sharp-cuts-web"?config.social.sharpCutsOAuth:config.social.oauth,secure=new URL(policy.redirectUri).protocol==="https:",path=metaOAuthCookiePath(policy.redirectUri);response.setHeader("Set-Cookie",instagramOAuthCookie(started.session,{secure,path}));sendJson(response,200,{authorizationUrl:started.authorizationUrl,expiresAt:started.expiresAt,projectId:started.projectId,provider:started.provider});return;}
@@ -2291,6 +2300,11 @@ export function createApi({
           if(typeof input.workerId!=="string"||!input.workerId.trim()||input.workerId.length>200)throw new ValidationError("workerId is invalid.");
           sendJson(response,200,await whatsappService.processNext({workerId:input.workerId.trim()}));
           return;
+        }
+        if(request.method==="POST"&&pathname==="/api/admin/worker/sharp-cuts/whatsapp/tick"){
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);
+          if(typeof input.workerId!=="string"||!input.workerId.trim()||input.workerId.length>200)throw new ValidationError("workerId is invalid.");
+          sendJson(response,200,await sharpCutsWhatsAppService.processNext({workerId:input.workerId.trim()}));return;
         }
         if (request.method === "POST" && pathname === "/api/integrations/whatsapp/webhook") {
           await ready();
@@ -2335,7 +2349,7 @@ export function createApi({
           return;
         }
 
-        if (error instanceof WhatsAppError || error?.code?.startsWith?.("whatsapp_")) {
+        if (error instanceof WhatsAppError || error instanceof SharpCutsWhatsAppError || error?.code?.startsWith?.("whatsapp_") || error?.code?.startsWith?.("sharp_cuts_whatsapp_")) {
           logger.error("Nova WhatsApp request failed", { requestId, code: error.code, category: error.category || "validation" });
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "whatsapp_error", requestId });
           return;

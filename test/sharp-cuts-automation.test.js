@@ -83,7 +83,7 @@ test("future automation remains fail-closed and evidence-based",()=>{
 
 test("channel readiness is project-scoped, read-only, and does not infer WhatsApp or sending access",()=>{
   const channels=buildSharpCutsChannelReadiness({metaConnection:{instagram:{connected:true,username:"sharpcuts.uk"},facebook:{connected:true,pageId:"1707389769348747"}},senderProbe:{connected:true}}),byId=Object.fromEntries(channels.map(item=>[item.id,item]));
-  assert.equal(byId.instagram.status,"connected_read_only");assert.equal(byId.facebook.status,"connected_read_only");assert.equal(byId.email.status,"provider_connected_draft_only");assert.equal(byId.whatsapp.status,"business_app_preserved_manual_only");assert.equal(byId.sms.status,"no_project_scoped_provider");assert.ok(byId.instagram.blocked.includes("publishing"));assert.ok(byId.whatsapp.blocked.includes("api_send"));assert.doesNotMatch(JSON.stringify(channels),/hamoodtrims/i);
+  assert.equal(byId.instagram.status,"connected_read_only");assert.equal(byId.facebook.status,"connected_read_only");assert.equal(byId.email.status,"provider_connected_draft_only");assert.equal(byId.whatsapp.status,"coexistence_prepared_eligibility_required");assert.equal(byId.sms.status,"no_project_scoped_provider");assert.ok(byId.instagram.blocked.includes("publishing"));assert.ok(byId.whatsapp.blocked.includes("nova_api_send"));assert.doesNotMatch(JSON.stringify(channels),/hamoodtrims/i);
 });
 
 test("campaign dry run completes the lifecycle in a deterministic synthetic sink without an external call",()=>{

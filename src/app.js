@@ -71,6 +71,7 @@ import { createOwnerContactPolicy } from "./phone/owner-contact-policy.js";
 import { createPstnSpeakerEnrollment } from "./voice/pstn-speaker-enrollment.js";
 import { createPstnSpeakerControls } from "./voice/pstn-speaker-controls.js";
 import { createWhatsAppService } from "./whatsapp/whatsapp-service.js";
+import {createSharpCutsWhatsAppCoexistenceService} from "./whatsapp/sharp-cuts-coexistence.js";
 import {createApprovalReconciliation} from "./autonomy/approval-reconciliation.js";
 import {createSocialService} from "./social/social-service.js";
 import {registerSocialTools} from "./social/social-tools.js";
@@ -171,6 +172,7 @@ export function createApp({
   const phoneService = createPhoneService({ config, storage, ownerId: OWNER_ID, dialProvider: phoneProvider, sessionAuth: phoneSessionAuth, novaTurn: (input) => agent.run(input), ownerContactPolicy, prewarmSpeaker: () => speakerEngines.readiness(), fetchImpl: phoneFetchImpl || globalThis.fetch });
   registerPhoneTools(toolRegistry, { service: phoneService });
   const whatsappService = createWhatsAppService({ config, storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), fetchImpl: whatsappFetchImpl || globalThis.fetch, logger });
+  const sharpCutsWhatsAppService=createSharpCutsWhatsAppCoexistenceService({config,storage,ownerId:OWNER_ID,novaTurn:(input)=>agent.run(input),logger});
   const instagramOAuth=createInstagramOAuthService({config,storage,ownerId:OWNER_ID});
   const privateR2=config.socialMedia.r2Configured?createPrivateR2Store(config.socialMedia):null;
   const r2UsageGuard=createR2UsageGuard({storage,ownerId:OWNER_ID,config:config.socialMedia});
@@ -432,6 +434,7 @@ export function createApp({
     gmailService,
     phoneService,
     whatsappService,
+    sharpCutsWhatsAppService,
     socialService,
     mediaAutomation,
     footageAnalysis,
@@ -445,5 +448,5 @@ export function createApp({
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, mediaAutomation, footageAnalysis, instagramOAuth, sharpCutsAutomation, projectAutomationControls, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding, projectDiscovery, vercelAccountIntegration });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, sharpCutsWhatsAppService, socialService, mediaAutomation, footageAnalysis, instagramOAuth, sharpCutsAutomation, projectAutomationControls, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding, projectDiscovery, vercelAccountIntegration });
 }

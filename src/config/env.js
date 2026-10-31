@@ -105,6 +105,66 @@ function parseWhatsAppConfig(environment, phone) {
   });
 }
 
+const SHARP_CUTS_WHATSAPP_NUMBER = "+441582510565";
+const SHARP_CUTS_WHATSAPP_PROJECT = "sharp-cuts-web";
+
+function parseSharpCutsWhatsAppConfig(environment) {
+  const values = {
+    provider: environment.NOVA_SHARP_CUTS_WHATSAPP_PROVIDER || null,
+    number: environment.NOVA_SHARP_CUTS_WHATSAPP_NUMBER || null,
+    projectId: environment.NOVA_SHARP_CUTS_WHATSAPP_PROJECT_ID || null,
+    publicBaseUrl: environment.NOVA_SHARP_CUTS_WHATSAPP_PUBLIC_BASE_URL || null,
+    phoneNumberId: environment.NOVA_SHARP_CUTS_WHATSAPP_PHONE_NUMBER_ID || null,
+    apiKey: environment.NOVA_SHARP_CUTS_WHATSAPP_API_KEY || null,
+    webhookToken: environment.NOVA_SHARP_CUTS_WHATSAPP_WEBHOOK_TOKEN || null,
+    identityKey: environment.NOVA_SHARP_CUTS_WHATSAPP_IDENTITY_KEY || null,
+  };
+  const supplied = Object.values(values).filter(Boolean).length;
+  const mode = environment.NOVA_SHARP_CUTS_WHATSAPP_MODE || "disabled";
+  if (!new Set(["disabled", "draft_only", "owner_test"]).has(mode))
+    throw new Error("NOVA_SHARP_CUTS_WHATSAPP_MODE must be disabled, draft_only, or owner_test.");
+  if (supplied > 0 && supplied !== Object.keys(values).length)
+    throw new Error("All eight Sharp Cuts WhatsApp Coexistence variables must be configured together.");
+  if (!supplied) return Object.freeze({
+    configured: false,
+    provider: "360dialog_coexistence",
+    projectId: SHARP_CUTS_WHATSAPP_PROJECT,
+    number: SHARP_CUTS_WHATSAPP_NUMBER,
+    mode: "disabled",
+    receiveEnabled: false,
+    sendEnabled: false,
+  });
+  if (values.provider !== "360dialog_coexistence")
+    throw new Error("NOVA_SHARP_CUTS_WHATSAPP_PROVIDER must use the reviewed 360dialog Coexistence route.");
+  if (values.number !== SHARP_CUTS_WHATSAPP_NUMBER)
+    throw new Error("NOVA_SHARP_CUTS_WHATSAPP_NUMBER must be the verified Sharp Cuts number.");
+  if (values.projectId !== SHARP_CUTS_WHATSAPP_PROJECT)
+    throw new Error("NOVA_SHARP_CUTS_WHATSAPP_PROJECT_ID must remain sharp-cuts-web.");
+  if (!/^\d{5,30}$/.test(values.phoneNumberId))
+    throw new Error("NOVA_SHARP_CUTS_WHATSAPP_PHONE_NUMBER_ID is invalid.");
+  if (Buffer.byteLength(values.apiKey) < 24 || Buffer.byteLength(values.webhookToken) < 32)
+    throw new Error("Sharp Cuts WhatsApp provider and webhook credentials are too short.");
+  let baseUrl;
+  try { baseUrl = new URL(values.publicBaseUrl); }
+  catch { throw new Error("NOVA_SHARP_CUTS_WHATSAPP_PUBLIC_BASE_URL must be an absolute URL."); }
+  if (baseUrl.protocol !== "https:" || baseUrl.username || baseUrl.password || baseUrl.pathname !== "/")
+    throw new Error("NOVA_SHARP_CUTS_WHATSAPP_PUBLIC_BASE_URL must be an HTTPS origin without a path.");
+  const identityKeyBytes = /^[a-f0-9]{64}$/i.test(values.identityKey)
+    ? Buffer.from(values.identityKey, "hex")
+    : Buffer.from(values.identityKey, "base64");
+  if (identityKeyBytes.length !== 32)
+    throw new Error("NOVA_SHARP_CUTS_WHATSAPP_IDENTITY_KEY must decode to exactly 32 bytes.");
+  return Object.freeze({
+    configured: true,
+    ...values,
+    publicBaseUrl: `${baseUrl.origin}/`,
+    identityKeyBytes,
+    mode,
+    receiveEnabled: mode !== "disabled",
+    sendEnabled: false,
+  });
+}
+
 function parseSocialConfig(environment) {
   const values={
     graphVersion:environment.NOVA_META_GRAPH_API_VERSION||null,
@@ -231,6 +291,7 @@ export function readConfig(environment = process.env) {
   const gmail = parseGmailConfig(environment);
   const phone = parsePhoneConfig(environment);
   const whatsapp = parseWhatsAppConfig(environment, phone);
+  const sharpCutsWhatsApp = parseSharpCutsWhatsAppConfig(environment);
   const social = parseSocialConfig(environment);
   const socialMedia = parseSocialMediaConfig(environment);
   const localWorkerToken=environment.NOVA_LOCAL_WORKER_TOKEN||null,socialSchedulerToken=environment.NOVA_SOCIAL_SCHEDULER_TOKEN||null;
@@ -410,6 +471,7 @@ export function readConfig(environment = process.env) {
     sharpCutsCustomerDatabase: parseSharpCutsCustomerDatabaseConfig(environment),
     phone,
     whatsapp,
+    sharpCutsWhatsApp,
     social,
     socialMedia,
     allowedOrigins: parseOrigins(environment.CORS_ALLOWED_ORIGINS),
