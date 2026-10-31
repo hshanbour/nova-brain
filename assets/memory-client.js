@@ -30,6 +30,8 @@ export const ownerMemoryClient = Object.freeze({
   inspectAuthorisedProject: (input) => request("/api/project-discovery/inspect", { method: "POST", body: JSON.stringify(input) }),
   importAuthorisedProject: (input) => request("/api/project-discovery/import", { method: "POST", body: JSON.stringify(input) }),
   projectOnboarding: (id) => request(`/api/projects/${encodeURIComponent(id)}/onboarding`),
+  automationControls: (id) => request(`/api/projects/${encodeURIComponent(id)}/automation-controls`),
+  updateAutomationControls: (id,controls) => request(`/api/projects/${encodeURIComponent(id)}/automation-controls`, { method: "PATCH", body: JSON.stringify({controls}) }),
   proposeProjectKnowledge: (id,input) => request(`/api/projects/${encodeURIComponent(id)}/knowledge-candidates`, { method: "POST", body: JSON.stringify(input) }),
   uploadProjectDocument: (id,file) => { const body=new FormData();body.append("document",file);return request(`/api/projects/${encodeURIComponent(id)}/documents`,{method:"POST",body}); },
   ingestProjectUrl: (id,input) => request(`/api/projects/${encodeURIComponent(id)}/url-ingestions`,{method:"POST",body:JSON.stringify(input)}),

@@ -48,7 +48,7 @@ export function createMetaPublishingAdapter({config,metaCredentials,instagramAcc
   });
 }
 
-export function createSocialService({config,storage,ownerId,publisher,instagramOAuth,mediaUrlResolver,clock=()=>new Date()}={}){
+export function createSocialService({config,storage,ownerId,publisher,instagramOAuth,mediaUrlResolver,automationControls,clock=()=>new Date()}={}){
   if(!config||!storage||!ownerId)throw new TypeError("Social service dependencies are required.");
   const settings=config.social;
   const provider=publisher||createMetaPublishingAdapter({config,metaCredentials:instagramOAuth?.credentials,mediaUrlResolver});
@@ -98,7 +98,11 @@ export function createSocialService({config,storage,ownerId,publisher,instagramO
     },
     async processNext({workerId=`social-${randomUUID()}`}={}){
       if(!settings.configured||!settings.liveEnabled)return{worked:false,reason:"not_enabled"};
+      const projects=await storage.listProjects(ownerId),automationStates=new Map();for(const project of projects){const state=await automationControls?.current?.(project.id);if(state)automationStates.set(project.id,state);}
+      if(automationControls&&![...automationStates.values()].some(state=>state.effective.publishing))return{worked:false,reason:"automation_disabled"};
       const claim=await storage.claimNextSocialPublication({ownerId,workerId,leaseMs:120000});if(!claim)return{worked:false};const content=await get(claim.contentId);
+      const automationState=automationStates.get(claim.projectId);if(automationControls&&!automationState?.effective.publishing){await storage.finishSocialPublication({...claim,status:"paused",providerResults:claim.providerResults||{},errorCode:"project_automation_disabled"});return{worked:false,reason:"project_automation_disabled",projectId:claim.projectId};}
+      if(automationState?.updatedAt&&new Date(claim.publishAt)<=new Date(automationState.updatedAt)){await storage.finishSocialPublication({...claim,status:"paused",providerResults:claim.providerResults||{},errorCode:"missed_work_requires_reschedule"});return{worked:false,reason:"missed_work_requires_reschedule",projectId:claim.projectId};}
       if(content.contentHash!==claim.contentHash||content.approvedHash!==claim.contentHash){await storage.finishSocialPublication({...claim,status:"failed",errorCode:"content_hash_mismatch"});return{worked:true,publicationId:claim.id,status:"failed",errorCode:"content_hash_mismatch"};}
       const results={...(claim.providerResults||{})};try{for(const platform of claim.platforms){if(results[platform]?.status==="submitted")continue;results[platform]={status:"submitting"};await storage.checkpointSocialPublication({...claim,providerResults:results});const result=await provider.publish({platform,content});results[platform]={status:"submitted",providerId:String(result.id)};await storage.checkpointSocialPublication({...claim,providerResults:results});}await storage.finishSocialPublication({...claim,status:"published",providerResults:results,errorCode:null});await storage.updateSocialContent(content.id,ownerId,{status:"published"});await storage.appendActivity({ownerId,projectId:content.projectId,action:"social_publication_submitted",tool:"social_schedule_publish",status:"completed",summary:"Submitted the approved social content to every selected platform.",metadata:{publicationId:claim.id,platforms:claim.platforms}});return{worked:true,publicationId:claim.id,status:"published"};}catch(error){const uncertain=error?.code==="social_publish_uncertain";await storage.finishSocialPublication({...claim,status:uncertain?"uncertain":"failed",providerResults:results,errorCode:error?.code||"social_publish_failed"});await storage.updateSocialContent(content.id,ownerId,{status:uncertain?"uncertain":"failed"});return{worked:true,publicationId:claim.id,status:uncertain?"uncertain":"failed",errorCode:error?.code||"social_publish_failed"};}
     },

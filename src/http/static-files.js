@@ -21,6 +21,7 @@ const ASSETS = Object.freeze({
   "/assets/speaker-familiarity.js": { file: "../../assets/speaker-familiarity.js", type: "text/javascript; charset=utf-8" },
   "/assets/voice-benchmark.js": { file: "../../assets/voice-benchmark.js", type: "text/javascript; charset=utf-8" },
   "/assets/workspace-navigation.js": { file: "../../assets/workspace-navigation.js", type: "text/javascript; charset=utf-8" },
+  "/assets/project-workspace.js": { file: "../../assets/project-workspace.js", type: "text/javascript; charset=utf-8" },
   "/assets/web-citations.js": { file: "../../assets/web-citations.js", type: "text/javascript; charset=utf-8" },
   "/assets/nova-mark.svg": { file: "../../assets/nova-mark.svg", type: "image/svg+xml" },
   "/assets/social/reels/three-jobs-ai-should-assist-v1.mp4": { file: "../../assets/social/reels/three-jobs-ai-should-assist-v1.mp4", type: "video/mp4" },

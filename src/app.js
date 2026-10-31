@@ -81,6 +81,7 @@ import {createPrivateR2Store} from "./social/r2-private-store.js";
 import {createR2UsageGuard} from "./social/r2-usage-guard.js";
 import {createInstagramOAuthService} from "./social/instagram-oauth.js";
 import {createSharpCutsAutomationService} from "./automation/sharp-cuts-automation.js";
+import {createProjectAutomationControls} from "./automation/project-automation-controls.js";
 import {createSenderMarketingClient} from "./email/sender-marketing.js";
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
@@ -174,7 +175,8 @@ export function createApp({
   const privateR2=config.socialMedia.r2Configured?createPrivateR2Store(config.socialMedia):null;
   const r2UsageGuard=createR2UsageGuard({storage,ownerId:OWNER_ID,config:config.socialMedia});
   const mediaUrlResolver=privateR2?async(media,{projectId})=>{const asset=await storage.getSocialMediaAsset(media.assetId,OWNER_ID);if(!asset||asset.projectId!==projectId||asset.storage!=="r2"||asset.state!=="cloud_ready")throw Object.assign(new Error("Approved media is unavailable for this project."),{code:"social_media_project_mismatch"});await r2UsageGuard.reserve(projectId,{classBOperations:10});return privateR2.createReadGrant({key:asset.cloudKey}).url;}:null;
-  const socialService=createSocialService({config,storage,ownerId:OWNER_ID,instagramOAuth,mediaUrlResolver});
+  const projectAutomationControls=createProjectAutomationControls({storage,ownerId:OWNER_ID});
+  const socialService=createSocialService({config,storage,ownerId:OWNER_ID,instagramOAuth,mediaUrlResolver,automationControls:projectAutomationControls});
   const mediaAutomation=createMediaAutomationService({storage,socialService,ownerId:OWNER_ID,cloudStore:privateR2,usageGuard:r2UsageGuard,maxApprovedCloudBytes:config.socialMedia.hardQuotaBytes});
   const footageAnalysis=createFootageAnalysisService({modelProvider,socialService,storage,ownerId:OWNER_ID});
   const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch}):null;
@@ -435,6 +437,7 @@ export function createApp({
     footageAnalysis,
     instagramOAuth,
     sharpCutsAutomation,
+    projectAutomationControls,
     ownerContactPolicy,
     pstnSpeakerEnrollment,
     pstnSpeakerControls,
@@ -442,5 +445,5 @@ export function createApp({
     gptLiveRound2Authorization: environment.VERCEL_ENV === "preview" ? createRound2Authorization(environment.VERCEL_AUTOMATION_BYPASS_SECRET) : () => false,
     logger,
   });
-  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, mediaAutomation, footageAnalysis, instagramOAuth, sharpCutsAutomation, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding, projectDiscovery, vercelAccountIntegration });
+  return Object.freeze({ ...api, initialize, workerRuntime, phoneService, whatsappService, socialService, mediaAutomation, footageAnalysis, instagramOAuth, sharpCutsAutomation, projectAutomationControls, pstnSpeakerEnrollment, pstnSpeakerControls, learningService, projectOnboarding, projectDiscovery, vercelAccountIntegration });
 }

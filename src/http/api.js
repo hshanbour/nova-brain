@@ -1,6 +1,7 @@
 import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
 import {PROJECT_DOCUMENT_LIMITS,ProjectSourceError} from "../projects/document-extractor.js";
 import {ProjectDiscoveryError} from "../projects/project-discovery.js";
+import {ProjectAutomationControlError} from "../automation/project-automation-controls.js";
 import {VERCEL_ACCOUNT_COOKIE,VercelAccountIntegrationError} from "../projects/vercel-account-integration.js";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -237,6 +238,7 @@ export function createApi({
   footageAnalysis,
   instagramOAuth,
   sharpCutsAutomation,
+  projectAutomationControls,
   ownerContactPolicy,
   pstnSpeakerEnrollment,
   pstnSpeakerControls,
@@ -2239,6 +2241,9 @@ export function createApi({
         if(projectSourceRevokeMatch&&request.method==="POST"){
           await ready();const source=await projectOnboarding?.revokeSource(decodeURIComponent(projectSourceRevokeMatch[1]));sendJson(response,source?200:404,source?{source}:{error:"Project source not found"});return;
         }
+        const projectAutomationMatch=pathname.match(/^\/api\/projects\/([^/]+)\/automation-controls$/);
+        if(projectAutomationMatch&&request.method==="GET"){await ready();sendJson(response,200,await projectAutomationControls.current(decodeURIComponent(projectAutomationMatch[1])));return;}
+        if(projectAutomationMatch&&request.method==="PATCH"){await ready();sendJson(response,200,await projectAutomationControls.update(decodeURIComponent(projectAutomationMatch[1]),await readJsonBody(request,config.maxBodyBytes)));return;}
         if (request.method === "GET" && pathname === "/api/integrations/whatsapp/status") {
           await ready();
           sendJson(response, 200, await whatsappService.status());
@@ -2509,7 +2514,7 @@ export function createApi({
           return;
         }
 
-        if(error instanceof ProjectSourceError||error instanceof ProjectDiscoveryError){sendJson(response,error.statusCode||400,{error:error.message,code:error.code,diagnostics:error.safeDiagnostics});return;}
+        if(error instanceof ProjectSourceError||error instanceof ProjectDiscoveryError||error instanceof ProjectAutomationControlError){sendJson(response,error.statusCode||400,{error:error.message,code:error.code,diagnostics:error.safeDiagnostics});return;}
         if (error instanceof AgentDeadlineError) {
           sendJson(response, 504, { error: error.message,requestId,...(error.runId?{runId:error.runId}:{}),...(error.userMessageId?{userMessageId:error.userMessageId}:{}),...(error.conversationId?{conversationId:error.conversationId}:{}) });
           return;
