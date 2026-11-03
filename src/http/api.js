@@ -281,6 +281,11 @@ export function createApi({
 
       const url = new URL(request.url || "/", "http://localhost");
       const pathname = url.pathname;
+      const forwardedHost=String(request.headers?.["x-forwarded-host"]||request.headers?.host||"").split(",")[0].trim().toLowerCase().split(":")[0];
+      if(forwardedHost==="scnovawa.vercel.app"&&pathname!=="/wa"){
+        sendJson(response,404,{error:"Not found."});
+        return;
+      }
 
       const ready = async () => {
         try {
