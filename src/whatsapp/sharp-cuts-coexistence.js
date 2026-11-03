@@ -34,7 +34,8 @@ export function createSharpCutsWhatsAppCoexistenceService({config,storage,ownerI
   const settings=config.sharpCutsWhatsApp;
   const contactId=number=>createHmac("sha256",settings.identityKeyBytes).update(`${PROJECT_ID}:${number}`).digest("hex");
   const finish=async(claim,patch)=>{const saved=await storage.finishWhatsAppInbound({messageSid:claim.messageSid,ownerId,workerId:claim.leaseOwner,leaseToken:claim.leaseToken,...patch});if(!saved)throw new SharpCutsWhatsAppError("The WhatsApp worker lease was fenced.",{code:"sharp_cuts_whatsapp_lease_stale",statusCode:409,category:"storage",retryable:true});return saved;};
-  const webhookAuthorised=({authorization,sourceIp}={})=>secureEqual(`Bearer ${settings.webhookToken}`,authorization)||(settings.provider==="gupshup_coexistence"&&GUPSHUP_WEBHOOK_IPS.has(String(sourceIp||"").trim()));
+  const providerIpAuthorised=({sourceIp}={})=>settings.provider==="gupshup_coexistence"&&GUPSHUP_WEBHOOK_IPS.has(String(sourceIp||"").trim());
+  const webhookAuthorised=({authorization,sourceIp}={})=>secureEqual(`Bearer ${settings.webhookToken}`,authorization)||providerIpAuthorised({sourceIp});
   async function sendOwnerTest({to,text,inboundSid}){
     if(settings.provider!=="gupshup_coexistence"||settings.mode!=="owner_test"||!settings.testRecipients.includes(to))throw new SharpCutsWhatsAppError("This recipient is not authorised for the Sharp Cuts owner test.",{code:"sharp_cuts_whatsapp_test_recipient_forbidden",statusCode:403,category:"authorization"});
     const claimed=await storage.claimWhatsAppOutbound({ownerId,inboundSid,bodyHash:hash(text)});if(!claimed.claimed)return claimed.message;
@@ -46,11 +47,14 @@ export function createSharpCutsWhatsAppCoexistenceService({config,storage,ownerI
   return Object.freeze({
     async status(){return Object.freeze({projectId:PROJECT_ID,number:"+44 1582 510565",provider:settings.provider||"gupshup_coexistence",configured:settings.configured===true,coexistenceRequired:true,businessAppPreserved:true,receiveEnabled:settings.receiveEnabled===true,mode:settings.mode||"disabled",aiReplyPolicy:settings.mode==="owner_test"?"allowlisted_owner_test_only":"draft_then_owner_review",humanTakeover:"business_app_remains_authoritative",sendEnabled:settings.sendEnabled===true,campaignsEnabled:false,spendAuthorisedGbp:0,webhookAuthentication:settings.provider==="gupshup_coexistence"?"vercel_verified_provider_ip_or_shared_bearer":"provider_custom_bearer_header",projectIsolation:"conversation_and_worker_prefix_enforced",nextAction:settings.configured?"complete_owner_controlled_inbound_test":"complete_official_gupshup_coexistence_signup"});},
     async receive(payload,requestIdentity){
+      const identity=typeof requestIdentity==="string"?{authorization:requestIdentity}:requestIdentity;
       if(!settings.configured||!settings.receiveEnabled)throw new SharpCutsWhatsAppError("Sharp Cuts WhatsApp inbound processing is not enabled.",{code:"sharp_cuts_whatsapp_not_enabled",statusCode:503,category:"configuration"});
-      if(!webhookAuthorised(typeof requestIdentity==="string"?{authorization:requestIdentity}:requestIdentity))throw new SharpCutsWhatsAppError("WhatsApp webhook authentication failed.",{code:"sharp_cuts_whatsapp_webhook_unauthorized",statusCode:401,category:"authorization"});
+      if(!webhookAuthorised(identity))throw new SharpCutsWhatsAppError("WhatsApp webhook authentication failed.",{code:"sharp_cuts_whatsapp_webhook_unauthorized",statusCode:401,category:"authorization"});
       if(settings.provider==="gupshup_coexistence"&&String(payload?.gs_app_id||"")!==settings.appId)throw new SharpCutsWhatsAppError("The webhook app identity does not match Sharp Cuts.",{code:"sharp_cuts_whatsapp_app_mismatch",statusCode:403,category:"authorization"});
+      const values=changes(payload),verificationProbe=providerIpAuthorised(identity)&&values.length>0&&values.every(value=>!(value?.messages?.length||value?.message_echoes?.length||value?.statuses?.length));
+      if(verificationProbe)return{accepted:true,queued:0,duplicates:0,ignored:0,echoes:0,verification:true};
       let accepted=0,duplicates=0,ignored=0,echoes=0;
-      for(const value of changes(payload)){
+      for(const value of values){
         if(String(value?.metadata?.phone_number_id||"")!==settings.phoneNumberId)throw new SharpCutsWhatsAppError("The webhook phone identity does not match Sharp Cuts.",{code:"sharp_cuts_whatsapp_target_mismatch",statusCode:403,category:"authorization"});
         for(const echo of value.message_echoes||[]){providerId(echo.id);echoes+=1;await storage.appendActivity({ownerId,projectId:PROJECT_ID,action:"sharp_cuts_whatsapp_business_app_echo",status:"completed",summary:"A staff reply from the preserved WhatsApp Business App was observed.",metadata:{providerMessageHash:hash(echo.id),source:"business_app_echo"}});}
         for(const message of value.messages||[]){

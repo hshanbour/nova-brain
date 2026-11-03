@@ -42,6 +42,12 @@ test("authenticated inbound messages produce project-scoped owner-review drafts 
   const inbound=await storage.getWhatsAppInbound("wamid.test-123456789",OWNER);assert.equal(inbound.status,"awaiting_owner_review");assert.doesNotMatch(JSON.stringify(await storage.listActivity(OWNER,{projectId:"sharp-cuts-web",limit:20})),/447700900111/);
 });
 
+test("authenticated Gupshup URL-validation probe is accepted without weakening event identity checks",async()=>{
+  const{service}=await fixture(),probe={gs_app_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_APP_ID,entry:[{changes:[{field:"messages",value:{messaging_product:"whatsapp",metadata:{phone_number_id:"provider-validation"}}}]}]};
+  assert.deepEqual(await service.receive(probe,{sourceIp:"34.202.224.208"}),{accepted:true,queued:0,duplicates:0,ignored:0,echoes:0,verification:true});
+  await assert.rejects(()=>service.receive(probe,{sourceIp:"203.0.113.10"}),error=>error.code==="sharp_cuts_whatsapp_webhook_unauthorized");
+});
+
 test("Sharp Cuts worker cannot claim another WhatsApp project's queued message",async()=>{
   const{storage,service}=await fixture();
   await storage.claimWhatsAppInbound({messageSid:"SM"+"1".repeat(32),ownerId:OWNER,conversationId:"whatsapp_other_project",contactId:"other",contactCiphertext:"opaque",bodyHash:"b".repeat(64)});
