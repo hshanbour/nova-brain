@@ -44,8 +44,13 @@ test("authenticated inbound messages produce project-scoped owner-review drafts 
 
 test("authenticated Gupshup URL-validation probe is accepted without weakening event identity checks",async()=>{
   const{service}=await fixture(),probe={gs_app_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_APP_ID,entry:[{changes:[{field:"messages",value:{messaging_product:"whatsapp",metadata:{phone_number_id:"provider-validation"}}}]}]};
-  assert.deepEqual(await service.receive(probe,{sourceIp:"34.202.224.208"}),{accepted:true,queued:0,duplicates:0,ignored:0,echoes:0,verification:true});
+  assert.deepEqual(await service.receive(probe,{sourceIp:"34.202.224.208"}),{accepted:true,queued:0,duplicates:0,ignored:0,echoes:0,verification:true,acknowledgedOnly:true});
   await assert.rejects(()=>service.receive(probe,{sourceIp:"203.0.113.10"}),error=>error.code==="sharp_cuts_whatsapp_webhook_unauthorized");
+  const platformProbe={entry:[{changes:[{field:"platform-event",value:{type:"connectivity-check"}}]}]};
+  assert.equal((await service.receive(platformProbe,{sourceIp:"34.202.224.208"})).acknowledgedOnly,true);
+  const mockMessage={gs_app_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_APP_ID,entry:[{changes:[{field:"messages",value:{messaging_product:"whatsapp",metadata:{phone_number_id:"provider-validation"},messages:[{id:"wamid.provider-validation",from:"447700900111",type:"text",text:{body:"probe"}}]}}]}]};
+  const ignored=await service.receive(mockMessage,{sourceIp:"34.202.224.208"});assert.equal(ignored.queued,0);assert.equal(ignored.ignored,1);assert.equal(ignored.acknowledgedOnly,true);
+  await assert.rejects(()=>service.receive(mockMessage,`Bearer ${TOKEN}`),error=>error.code==="sharp_cuts_whatsapp_target_mismatch");
 });
 
 test("Sharp Cuts worker cannot claim another WhatsApp project's queued message",async()=>{

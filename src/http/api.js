@@ -2264,7 +2264,9 @@ export function createApi({
         if(request.method==="POST"&&(pathname==="/api/integrations/sharp-cuts/whatsapp/webhook"||pathname==="/wa")){
           await ready();
           const payload=await readJsonBody(request,config.maxBodyBytes);
-            sendJson(response,200,await sharpCutsWhatsAppService.receive(payload,{authorization:request.headers?.authorization,sourceIp:request.headers?.["x-vercel-forwarded-for"]||request.headers?.["x-forwarded-for"]}));
+          const result=await sharpCutsWhatsAppService.receive(payload,{authorization:request.headers?.authorization,sourceIp:request.headers?.["x-vercel-forwarded-for"]||request.headers?.["x-forwarded-for"]});
+          if(result.acknowledgedOnly){response.statusCode=200;response.setHeader("Cache-Control","no-store");response.end();return;}
+          sendJson(response,200,result);
           return;
         }
         if(request.method==="GET"&&pathname==="/api/social/status"){await ready();sendJson(response,200,await socialService.status());return;}
