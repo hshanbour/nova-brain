@@ -2252,6 +2252,10 @@ export function createApi({
           return;
         }
         if(request.method==="GET"&&pathname==="/api/business-automation/sharp-cuts/whatsapp/status"){await ready();sendJson(response,200,await sharpCutsWhatsAppService.status());return;}
+        if(request.method==="GET"&&pathname==="/api/integrations/sharp-cuts/whatsapp/webhook"){
+          sendJson(response,200,{ok:true,service:"sharp-cuts-whatsapp-webhook"});
+          return;
+        }
         if(request.method==="POST"&&pathname==="/api/integrations/sharp-cuts/whatsapp/webhook"){
           await ready();
           const payload=await readJsonBody(request,config.maxBodyBytes);
