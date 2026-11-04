@@ -54,3 +54,10 @@ test("campaign draft creation requires exact immutable authority and still does 
   const result=await client.createCampaignDraft(payload,{authority:{operation:"create_campaign_draft",projectId:"sharp-cuts-web",audienceSnapshotHash:payload.audienceSnapshotHash,copyHash:payload.copyHash}});
   assert.deepEqual(result,{created:true,campaignId:"campaign_1",status:"DRAFT",sent:false});assert.equal(calls.length,1);
 });
+
+test("owner test is one-recipient transactional mail and never uploads a subscriber",async()=>{
+  const calls=[],client=createSenderMarketingClient({config:CONFIG,fetchImpl:async(url,options)=>{calls.push({url,options});return Response.json({success:true,message:"Email sent",emailId:"owner-test-1"});}});
+  await assert.rejects(()=>client.sendOwnerTest(),error=>error.code==="sender_test_authority_required");
+  const result=await client.sendOwnerTest({recipient:"sharpcuts.luton@gmail.com"},{authority:{operation:"send_owner_test",projectId:"sharp-cuts-web",recipient:"sharpcuts.luton@gmail.com"}});
+  assert.equal(result.accepted,true);assert.equal(result.subscriberUploads,0);assert.equal(calls.length,1);assert.equal(calls[0].url,"https://api.sender.net/v2/message/send");const body=JSON.parse(calls[0].options.body);assert.equal(body.from.email,"info@sharpcuts.uk");assert.equal(body.from.name,"Sharp Cuts");assert.equal(body.to.email,"sharpcuts.luton@gmail.com");assert.doesNotMatch(JSON.stringify(body),/groups|subscribers/);
+});

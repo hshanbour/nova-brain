@@ -67,7 +67,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
   if(!config?.configured)throw new TypeError("Configured Sharp Cuts Sender.net credentials are required.");
   if(typeof fetchImpl!=="function")throw new TypeError("fetchImpl is required.");
   const request=async(path,{method="GET",body,signal}={})=>{
-    if(!new Set(["GET","POST"]).has(method)||!/^\/(?:groups(?:\?limit=1)?|campaigns|campaigns\/[A-Za-z0-9_-]{2,80})$/.test(path))throw new Error("Sender.net endpoint is not allowlisted.");
+    if(!new Set(["GET","POST"]).has(method)||!/^\/(?:groups(?:\?limit=1)?|campaigns|campaigns\/[A-Za-z0-9_-]{2,80}(?:\/(?:emails-sent|errors|schedule|send))?|message\/send)$/.test(path))throw new Error("Sender.net endpoint is not allowlisted.");
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
     const combined=signal?AbortSignal.any([signal,controller.signal]):controller.signal;
     try{
@@ -84,6 +84,14 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
       const response=await request("/campaigns",{method:"POST",body:payload.provider});
       return Object.freeze({created:true,campaignId:response?.data?.id||null,status:response?.data?.status||"DRAFT",sent:false});
     },
+    async sendOwnerTest({recipient=SHARP_CUTS_SENDER_PLAN.accountMailbox,subject="Nova Sender integration test — no action required"}={}, {authority}={}){
+      if(!authority||authority.operation!=="send_owner_test"||authority.projectId!=="sharp-cuts-web"||authority.recipient!==recipient||recipient!==SHARP_CUTS_SENDER_PLAN.accountMailbox)throw Object.assign(new Error("Exact owner-test authority is required."),{code:"sender_test_authority_required",statusCode:403});
+      const html='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head><body><main><h1>Sharp Cuts email connection verified</h1><p>This is a single owner-controlled integration test from Nova Preview.</p><p>No customer list was uploaded and no marketing campaign was sent.</p><p>Sharp Cuts, 57 Cheapside, Luton.</p></main></body></html>';
+      const response=await request("/message/send",{method:"POST",body:{from:{email:config.fromEmail,name:SHARP_CUTS_SENDER_PLAN.displayName},to:{email:recipient,name:"Sharp Cuts owner"},subject,text:"Sharp Cuts email connection verified. This is a single owner-controlled integration test from Nova Preview. No customer list was uploaded and no marketing campaign was sent.",html,headers:{charset:"utf-8"}}});
+      if(response?.success!==true||typeof response?.emailId!=="string")throw safeProviderError(502);
+      return Object.freeze({accepted:true,status:"submitted",provider:"Sender.net",messageId:response.emailId,recipient,customerContacts:0,subscriberUploads:0});
+    },
+    async campaignStatus(campaignId){if(!safeId(campaignId))throw new TypeError("campaignId is invalid.");const [sent,errors]=await Promise.all([request(`/campaigns/${campaignId}/emails-sent`),request(`/campaigns/${campaignId}/errors`)]);return Object.freeze({campaignId,sentCount:Array.isArray(sent?.data)?sent.data.length:Number(sent?.data?.total||0),errors:Array.isArray(errors?.data)?errors.data.map(item=>({code:String(item?.code||"provider_error"),severity:String(item?.severity||"error")})):[],recipientDetailsExposed:false});},
     async sendCampaign(){throw Object.assign(new Error("Sharp Cuts live email sending is disabled."),{code:"sender_live_send_disabled",statusCode:403});},
   });
 }

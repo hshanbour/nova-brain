@@ -81,9 +81,9 @@ test("future automation remains fail-closed and evidence-based",()=>{
   assert.equal(SHARP_CUTS_FUTURE_AUTOMATION.emptySlotPromotions.status,"blocked_until_availability_is_certified");assert.equal(SHARP_CUTS_FUTURE_AUTOMATION.loyalty.liveProgrammeCreated,false);assert.equal(SHARP_CUTS_FUTURE_AUTOMATION.channels.whatsapp.status,"manual_app_only");assert.ok(SHARP_CUTS_FUTURE_AUTOMATION.measurement.metrics.includes("attributed_revenue"));
 });
 
-test("channel readiness is project-scoped, read-only, and does not infer WhatsApp or sending access",()=>{
+test("channel readiness is project-scoped, flags missing publish authorisation, and does not infer WhatsApp or sending access",()=>{
   const channels=buildSharpCutsChannelReadiness({metaConnection:{instagram:{connected:true,username:"sharpcuts.uk"},facebook:{connected:true,pageId:"1707389769348747"}},senderProbe:{connected:true}}),byId=Object.fromEntries(channels.map(item=>[item.id,item]));
-  assert.equal(byId.instagram.status,"connected_read_only");assert.equal(byId.facebook.status,"connected_read_only");assert.equal(byId.email.status,"provider_connected_draft_only");assert.equal(byId.whatsapp.status,"coexistence_prepared_eligibility_required");assert.equal(byId.sms.status,"no_project_scoped_provider");assert.ok(byId.instagram.blocked.includes("publishing"));assert.ok(byId.whatsapp.blocked.includes("unrestricted_auto_reply"));assert.doesNotMatch(JSON.stringify(channels),/hamoodtrims/i);
+  assert.equal(byId.instagram.status,"connected_reauthorisation_required");assert.equal(byId.facebook.status,"connected_reauthorisation_required");assert.equal(byId.email.status,"provider_connected_draft_only");assert.equal(byId.whatsapp.status,"coexistence_prepared_eligibility_required");assert.equal(byId.sms.status,"no_project_scoped_provider");assert.ok(byId.instagram.blocked.includes("publishing"));assert.ok(byId.whatsapp.blocked.includes("unrestricted_auto_reply"));assert.doesNotMatch(JSON.stringify(channels),/hamoodtrims/i);
 });
 
 test("campaign dry run completes the lifecycle in a deterministic synthetic sink without an external call",()=>{

@@ -1,8 +1,8 @@
 import {createCipheriv,createDecipheriv,createHash,randomBytes} from "node:crypto";
 
 export const INSTAGRAM_SCOPES=Object.freeze(["instagram_business_basic","instagram_business_content_publish","instagram_business_manage_insights"]);
-export const SHARP_CUTS_INSTAGRAM_SCOPES=Object.freeze(["instagram_business_basic","instagram_business_manage_insights"]);
-export const FACEBOOK_SCOPES=Object.freeze(["pages_show_list","pages_read_engagement","read_insights"]);
+export const SHARP_CUTS_INSTAGRAM_SCOPES=Object.freeze(["instagram_business_basic","instagram_business_content_publish","instagram_business_manage_insights"]);
+export const FACEBOOK_SCOPES=Object.freeze(["pages_show_list","pages_read_engagement","pages_manage_posts","read_insights"]);
 export const INSTAGRAM_OAUTH_COOKIE="nova_instagram_oauth_session";
 const INSTAGRAM_AUTH_URL="https://www.instagram.com/oauth/authorize",INSTAGRAM_TOKEN_URL="https://api.instagram.com/oauth/access_token",INSTAGRAM_GRAPH_URL="https://graph.instagram.com",FACEBOOK_GRAPH_URL="https://graph.facebook.com";
 const digest=value=>createHash("sha256").update(value).digest("hex"),randomToken=bytes=>bytes(32).toString("base64url"),tokenRecord=payload=>{const record=Array.isArray(payload?.data)?payload.data[0]:payload;return record&&typeof record==="object"?record:null;};

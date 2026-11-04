@@ -48,6 +48,7 @@ export const ownerMemoryClient = Object.freeze({
   reviseSocialContent: (id,input) => request(`/api/social/content/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) }),
   submitSocialReview: (id) => request(`/api/social/content/${encodeURIComponent(id)}/submit-review`, { method: "POST", body: "{}" }),
   requestSocialRevision: (id,input={}) => request(`/api/social/content/${encodeURIComponent(id)}/request-revision`, { method: "POST", body: JSON.stringify(input) }),
+  requestSocialPublicationApproval: (id,input) => request(`/api/social/content/${encodeURIComponent(id)}/request-publication-approval`, { method: "POST", body: JSON.stringify(input) }),
   cancelSocialPublication: (id) => request(`/api/social/publications/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
   createSocialLaunchBatch: (projectId) => request("/api/social/launch-batch", { method: "POST", body: JSON.stringify({ projectId }) }),
   refreshSocialMetrics: (projectId) => request("/api/social/metrics/refresh", { method: "POST", body: JSON.stringify({ projectId }) }),
@@ -61,6 +62,7 @@ export const ownerMemoryClient = Object.freeze({
   runSharpCutsRetentionDemo: () => request("/api/business-automation/sharp-cuts/retention-demo", { method: "POST", body: "{}" }),
   runSharpCutsCampaignDryRun: () => request("/api/business-automation/sharp-cuts/campaign-dry-run", { method: "POST", body: "{}" }),
   runSharpCutsOperationalRehearsal: () => request("/api/business-automation/sharp-cuts/operational-rehearsal", { method: "POST", body: "{}" }),
+  sendSharpCutsOwnerEmailTest: () => request("/api/business-automation/sharp-cuts/email/owner-test", { method: "POST", body: "{}" }),
   approvals: ({ status, conversationId, limit } = {}) => {
     const query = new URLSearchParams();
     if (status) query.set("status", status);
