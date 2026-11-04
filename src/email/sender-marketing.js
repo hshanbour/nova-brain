@@ -60,7 +60,9 @@ export function senderReadiness(config){
 }
 
 function safeProviderError(status){
-  const error=new Error("Sender.net request failed safely.");error.name="SenderMarketingError";error.code=status===401?"sender_authentication_required":status===429?"sender_rate_limited":"sender_provider_failed";error.statusCode=status===429?503:502;return error;
+  const code=status===401?"sender_authentication_required":status===403?"sender_account_restricted":status===429?"sender_rate_limited":new Set([400,422]).has(status)?"sender_request_rejected":"sender_provider_failed";
+  const message=status===403?"Sender.net has not authorised sending for this account yet.":new Set([400,422]).has(status)?"Sender.net rejected the test email request.":"Sender.net request failed safely.";
+  const error=new Error(message);error.name="SenderMarketingError";error.code=code;error.statusCode=status===429?503:502;error.upstreamStatus=Number.isInteger(status)?status:null;return error;
 }
 
 export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,timeoutMs=10_000}={}){

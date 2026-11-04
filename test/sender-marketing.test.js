@@ -32,6 +32,11 @@ test("provider failures are redacted and never expose secrets or response bodies
   await assert.rejects(()=>client.probe(),error=>{assert.equal(error.code,"sender_authentication_required");assert.doesNotMatch(`${error.message}${JSON.stringify(error)}`,/provider-secret|leaked body/);return true;});
 });
 
+test("provider account restrictions are classified without exposing the response body",async()=>{
+  const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async()=>new Response(JSON.stringify({error:"private provider review detail"}),{status:403,headers:{"content-type":"application/json"}})});
+  await assert.rejects(()=>client.sendOwnerTest({recipient:"sharpcuts.luton@gmail.com"},{authority:{operation:"send_owner_test",projectId:"sharp-cuts-web",recipient:"sharpcuts.luton@gmail.com"}}),error=>{assert.equal(error.code,"sender_account_restricted");assert.equal(error.upstreamStatus,403);assert.equal(error.statusCode,502);assert.doesNotMatch(`${error.message}${JSON.stringify(error)}`,/private provider review detail|provider-secret-token/);return true;});
+});
+
 test("campaign draft uses Sharp Cuts identity, authenticated-domain address and mandatory unsubscribe",()=>{
   const audience={segment:"inactive_more_than_90_days",rawIdentifiersRetained:false,candidateProfiles:3,email:{uniqueRecipientCandidates:2,duplicateAddressProfilesExcluded:1},futureDateProxyExcluded:0,verifiedEligibility:{email:2},evidence:{futureBooking:"authoritative"},audienceSnapshotHash:"a".repeat(64)};
   const review=buildSharpCutsWinbackReview(audience,{sender:{connected:true,identity:"Sharp Cuts",provider:"Sender.net",verifiedDailyRecipientLimit:2500,config:CONFIG}});
