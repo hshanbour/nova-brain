@@ -80,6 +80,7 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
       return publicProfile(profile);
     },
     async list() { return (await storage.listSpeakerProfiles(ownerId)).map(publicProfile); },
+    async get(id) { if (!id) return null; return publicProfile((await storage.listSpeakerProfiles(ownerId)).find((profile) => profile.id === id) || null); },
     async getByEnrollmentAttempt(enrollmentAttemptId){return publicProfile(await storage.getSpeakerProfileByEnrollmentAttempt(ownerId,enrollmentAttemptId));},
     async isActiveProfile(id) { if(!id)return false;return (await storage.listSpeakerProfiles(ownerId)).some((profile)=>profile.id===id&&profile.status==="active"); },
     async candidateCount() { return (await storage.listSpeakerProfiles(ownerId)).filter((profile)=>profile.status==="active").length; },

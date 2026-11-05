@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { buildPhoneCallSystemContext, buildSpeakerSafeSystemContext, buildSystemContext, retrieveAgentContext } from "../memory/context-retriever.js";
+import { buildPhoneCallSystemContext, buildSpeakerSafeSystemContext, buildSystemContext, retrieveAgentContext, retrieveSpeakerContext } from "../memory/context-retriever.js";
 import { ApprovalRequiredError } from "../policy/action-policy.js";
 import {shouldUseDurableWebResearch} from "../web/durable-web-research.js";
 import {ANSWER_PRESENTATION_GUIDANCE,isConversationLocalTransform,retainConversationLinks} from "./answer-presentation.js";
@@ -218,6 +218,7 @@ export function createAgent({
   verifySpeakerAssertion = () => null,
   validateSpeakerProfile = async () => false,
   validateAnonymousSpeaker = async () => false,
+  speakerIdentity = null,
   routeExistingTaskRequest = async () => null,
   routeDurableRequest = async () => null,
   durableResearchTaskService = null,
@@ -260,6 +261,9 @@ export function createAgent({
       context={...context,projectId:resolvedProjectId};
       const contextRetrievalStartedAt=Date.now();
       const speakerRestricted = context?.voice === true && !verifiedOwnerVoice;
+      const verifiedMemberVoice = speakerRestricted && verifiedSpeaker?.match_status === "confirmed" && verifiedSpeaker?.speaker_label === "enrolled_member";
+      const speakerProfile = verifiedMemberVoice ? await speakerIdentity?.get?.(verifiedSpeaker.speaker_profile_id) : null;
+      const speakerScopedContext = speakerProfile ? await retrieveSpeakerContext({ storage, ownerId, speakerProfile, message, memoryLimit }) : null;
       const phoneCallProfile = context?.phoneCall?.profile === "bounded_outbound";
       const liveReadOnly = context?.gptLiveRound2?.authority === "read_only";
       const trustedContext=context?.voice===true?{...context,speaker:verifiedSpeaker?.match_status==="confirmed"?{speaker_profile_id:verifiedSpeaker.speaker_profile_id,speaker_label:verifiedSpeaker.speaker_label,match_status:"confirmed",authenticated_identity:verifiedSpeaker.speaker_label==="owner"?"owner":"known_member",speaker_familiarity:"none",anonymous_speaker_id:null}:{speaker_profile_id:null,speaker_label:"unknown",match_status:verifiedSpeaker?.match_status||"unknown",authenticated_identity:"none",speaker_familiarity:verifiedSpeaker?.speaker_familiarity||"none",anonymous_speaker_id:verifiedSpeaker?.anonymous_speaker_id||null}}:context;
@@ -288,7 +292,7 @@ export function createAgent({
       };
       const correlatedRunResult=(response,extra={})=>({message:response.message,requestId:requestId||null,userMessageId,assistantMessageId:response.id,...(response.approval?.id?{approvalId:response.approval.id}:{}),...extra});
       const verifiedBusinessProfile=externalChannel&&context?.verifiedBusinessProfile&&typeof context.verifiedBusinessProfile==="object"?JSON.stringify(context.verifiedBusinessProfile):null;
-      const baseSystemContext = externalChannel ? `You are Nova speaking with an external WhatsApp contact. Use only this contact's messages in this conversation${verifiedBusinessProfile?" and the server-verified business profile below":""}. Never disclose owner memory, projects, private data, tools, internal metadata, or infer that the contact is the owner. Do not take actions or make commitments. Never invent prices, availability, bookings, opening hours, offers, policies, or staff details. Escalate to a human when the verified profile is insufficient. Reply naturally and concisely in the contact's language.${verifiedBusinessProfile?`\n\nSERVER-VERIFIED BUSINESS PROFILE:\n${verifiedBusinessProfile}`:""}` : phoneCallProfile ? buildPhoneCallSystemContext(context.phoneCall.envelope) : speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker) : buildSystemContext(retrieved);
+      const baseSystemContext = externalChannel ? `You are Nova speaking with an external WhatsApp contact. Use only this contact's messages in this conversation${verifiedBusinessProfile?" and the server-verified business profile below":""}. Never disclose owner memory, projects, private data, tools, internal metadata, or infer that the contact is the owner. Do not take actions or make commitments. Never invent prices, availability, bookings, opening hours, offers, policies, or staff details. Escalate to a human when the verified profile is insufficient. Reply naturally and concisely in the contact's language.${verifiedBusinessProfile?`\n\nSERVER-VERIFIED BUSINESS PROFILE:\n${verifiedBusinessProfile}`:""}` : phoneCallProfile ? buildPhoneCallSystemContext(context.phoneCall.envelope) : speakerRestricted ? buildSpeakerSafeSystemContext(verifiedSpeaker, speakerScopedContext) : buildSystemContext(retrieved);
       let systemContext = `${context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext}\n\n${ANSWER_PRESENTATION_GUIDANCE}`;
       if(context?.voice===true)systemContext+=`\n\nLIVE VOICE RESPONSE: Reply naturally in the language or Arabic-English mix used by the speaker. Lead with the answer and normally use no more than two short spoken sentences unless the speaker explicitly asks for detail. Do not add headings, tables, citations, or repetitive framing to an ordinary conversational answer.`;
       if(context?.gptLiveRound2)systemContext+=`\n\nGPT-LIVE TRUSTED SERVER CONTEXT: This is an active phone session. ${trustedContext?.speaker?.authenticated_identity==="owner"?"The current turn carries a valid server-signed owner speaker assertion; normal owner-private retrieval policy may apply to this turn.":"The current speaker is not authenticated as the owner. Do not disclose private owner memory or infer identity from the destination."} Same-call canonical messages may be used for conversational continuity. The following bounded prior Nova results are server-recorded and remain authoritative unless a newer successful authoritative result supersedes them: ${JSON.stringify(context.gptLiveRound2.trustedResults||[])}. An unrelated failure does not invalidate an earlier successful result. This information route remains read-only; no write or external-action tools are available.`;

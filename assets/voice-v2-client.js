@@ -6,6 +6,7 @@ export function createVoiceV2Client({ fetchImpl = globalThis.fetch, now = () => 
   if (typeof fetchImpl !== "function") throw new TypeError("Voice V2 requires a fetch implementation.");
   return Object.freeze({
     async readiness() { return requestJson(fetchImpl, "/api/voice/readiness"); },
+    async persistRealtimeTurn(payload) { return requestJson(fetchImpl, "/api/voice/realtime/transcript", { method: "POST", body: JSON.stringify(payload) }); },
     async telemetry(payload) { return requestJson(fetchImpl, "/api/voice/telemetry", { method: "POST", body: JSON.stringify(payload) }); },
     async control({audio,mimeType,durationSeconds,signal,lifecycleState}){const audioBase64=bytesToBase64(new Uint8Array(await audio.arrayBuffer()));return requestJson(fetchImpl,"/api/voice/control",{method:"POST",signal,body:JSON.stringify({audioBase64,mimeType,durationSeconds,lifecycleState})});},
     async transcribe({ audio, mimeType, durationSeconds, signal, relevanceContext }) {

@@ -738,6 +738,16 @@ export function createApi({
           });
           return;
         }
+        if (request.method === "POST" && pathname === "/api/voice/speaker/readiness") {
+          if (!sameOriginRequest(request)) {
+            sendJson(response, 403, { error: "Speaker warm-up requires a same-origin request." });
+            return;
+          }
+          const speaker = await (recognitionEngines?.readiness?.() || speakerExtractor?.readiness?.() || Promise.resolve({ status: "Missing", available: false }));
+          logger.info("Nova speaker worker warm-up completed", { requestId, status: speaker.status, available: speaker.available, latencyMs: speaker.latencyMs });
+          sendJson(response, 200, { speakerRecognition: speaker });
+          return;
+        }
         if (request.method === "POST" && pathname === "/api/voice/realtime/session") {
           if (!sameOriginRequest(request)) {
             sendJson(response, 403, { error: "Realtime Voice requires a same-origin request." });
@@ -752,6 +762,32 @@ export function createApi({
             transport: "webrtc",
           });
           sendJson(response, 201, session);
+          return;
+        }
+        if (request.method === "POST" && pathname === "/api/voice/realtime/transcript") {
+          if (!sameOriginRequest(request)) {
+            sendJson(response, 403, { error: "Realtime transcript persistence requires a same-origin request." });
+            return;
+          }
+          await ready();
+          const input = await readJsonBody(request, config.maxBodyBytes);
+          const userText = typeof input?.userText === "string" ? input.userText.trim().slice(0, 12000) : "";
+          const assistantText = typeof input?.assistantText === "string" ? input.assistantText.trim().slice(0, 12000) : "";
+          const turnId = typeof input?.turnId === "string" && /^[A-Za-z0-9_.:-]{1,160}$/.test(input.turnId) ? input.turnId : null;
+          const conversationId = typeof input?.conversationId === "string" && input.conversationId ? input.conversationId : randomUUID();
+          if (!turnId || !userText || !assistantText) {
+            sendJson(response, 400, { error: "A complete Realtime voice turn is required." });
+            return;
+          }
+          const conversation = await storage.ensureConversation({ id: conversationId, ownerId, title: userText.slice(0, 120) });
+          if (!conversation) {
+            sendJson(response, 404, { error: "Conversation is unavailable." });
+            return;
+          }
+          const messageId = (role) => `voice_${createHash("sha256").update(`${ownerId}:${conversationId}:${turnId}:${role}`).digest("hex").slice(0, 48)}`;
+          const user = await storage.appendMessage({ id: messageId("user"), conversationId, ownerId, role: "user", content: userText });
+          const assistant = await storage.appendMessage({ id: messageId("assistant"), conversationId, ownerId, role: "assistant", content: assistantText });
+          sendJson(response, 201, { conversationId, user, assistant });
           return;
         }
         if (request.method === "POST" && pathname === "/api/voice/speaker/recognize") {
@@ -776,6 +812,9 @@ export function createApi({
           speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
           if (speaker.match_status === "confirmed" && !speaker.assertion) speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: speaker.extractor_version, match_status: "unknown", authenticated_identity: "none", assertion: null };
           logger.info("Nova realtime speaker recognition completed", { requestId, matchStatus: speaker.match_status, speakerCategory: speaker.speaker_label, assertionIssued: Boolean(speaker.assertion) });
+          if (typeof input?.transcript === "string" && input.transcript.trim()) {
+            await speakerIdentity.recordUtterance({ conversationId: typeof input.conversationId === "string" ? input.conversationId : null, speakerProfileId: speaker.speaker_profile_id, speakerLabel: speaker.speaker_label, confidence: speaker.confidence, text: input.transcript.trim().slice(0, 12000) });
+          }
           sendJson(response, 200, { speaker });
           return;
         }
@@ -1214,6 +1253,10 @@ export function createApi({
             representationVersion: extracted[0].extractorVersion,
             enrollmentAttemptId,
           });
+          const personalContext = typeof input.personalContext === "string" ? input.personalContext.trim().slice(0, 800) : "";
+          if (personalContext) {
+            await storage.createMemory({ ownerId, category: "relationship_context", content: personalContext, provenance: "speaker-explicit-consent", privacy: "restricted", sensitivity: "normal", scope: "global", projectId: null, confidence: 1, evidence: { speakerProfileId: speaker.id, consentAt: new Date().toISOString() }, status: "active" });
+          }
           logger.info("Nova speaker enrollment completed", {
             requestId,
             enrollmentAttemptId,

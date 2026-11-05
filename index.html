@@ -47,7 +47,7 @@
     <main class="workspace" id="chat">
       <header class="topbar">
         <div><p class="eyebrow">Command center</p><h1>Chat with Nova</h1></div>
-        <div class="chat-actions"><span class="voice-mode-status" id="voiceModeStatus" role="status" aria-live="polite">Voice idle</span><button class="new-chat-button voice-mode-button" id="voiceModeButton" type="button" aria-label="Start Voice"><span>●</span><span>Start Voice</span></button><button class="new-chat-button voice-end-button" id="endVoiceButton" type="button" aria-label="End Voice" disabled><span>■</span><span>End Voice</span></button><button class="new-chat-button" id="speakerEnrollmentButton" type="button" aria-label="Open speaker enrollment"><span>◎</span><span>Learn voice</span></button><button class="new-chat-button voice-settings-button" id="voiceSettingsButton" type="button" aria-label="Open voice settings"><span>◉</span><span>Voice settings</span></button><button class="new-chat-button history-button" id="historyButton" type="button" aria-label="Open recent conversations"><span>☰</span><span>Recents</span></button><button class="new-chat-button" id="newChatButton" type="button" aria-label="Start a new conversation"><span>＋</span><span>New conversation</span></button></div>
+        <div class="chat-actions"><span class="voice-mode-status" id="voiceModeStatus" role="status" aria-live="polite">Voice idle</span><button class="new-chat-button" id="speakerEnrollmentButton" type="button" aria-label="Open speaker enrollment"><span>◎</span><span>Learn voice</span></button><button class="new-chat-button voice-settings-button" id="voiceSettingsButton" type="button" aria-label="Open voice settings"><span>◉</span><span>Voice settings</span></button><button class="new-chat-button history-button" id="historyButton" type="button" aria-label="Open recent conversations"><span>☰</span><span>Recents</span></button><button class="new-chat-button" id="newChatButton" type="button" aria-label="Start a new conversation"><span>＋</span><span>New conversation</span></button></div>
         <details id="speakerFamiliarityPanel" class="privacy-note"><summary>Optional recurring voice familiarity</summary><p>This is separate from identity verification. Without explicit consent, Nova will not store or match an anonymous voiceprint. Voice Mode still works normally.</p><label>Speaker's own name or consent label <input id="speakerFamiliarityActor" maxlength="120" autocomplete="off"></label><label>Optional self-reported name <input id="speakerFamiliarityAlias" maxlength="80" autocomplete="off"></label><label class="toggle-label"><input id="speakerFamiliarityConsent" type="checkbox"> I explicitly consent to Nova deriving and storing an encrypted anonymous voiceprint only to recognize this voice as a recurring speaker. I understand this does not verify my identity, grant permissions, or retain raw audio, and I can withdraw consent and delete the voiceprint.</label><p id="speakerFamiliarityStatus" role="status">Voice familiarity is off. Voice turns continue normally without storing an anonymous voiceprint.</p><div id="anonymousSpeakerProfiles"></div></details>
       </header>
       <section class="conversation" aria-label="Conversation with Nova Brain">
@@ -70,6 +70,8 @@
                 <button class="dictation-action" id="composerVoiceReviewButton" type="button" hidden>Stop &amp; review</button>
                 <button class="dictation-action dictation-send" id="composerVoiceSendButton" type="button" hidden>Send immediately</button>
               <button class="icon-button voice-button" id="voiceButton" type="button" data-voice-state="idle" aria-pressed="false" aria-describedby="composerVoiceStatus" aria-label="Dictate message" title="Dictate message"><span></span></button>
+              <button class="icon-button conversation-voice-button" id="voiceModeButton" type="button" aria-label="Start voice conversation" title="Start voice conversation"><span aria-hidden="true">≋</span></button>
+              <button class="icon-button voice-end-button" id="endVoiceButton" type="button" aria-label="End voice conversation" title="End voice conversation" disabled hidden><span aria-hidden="true">■</span></button>
               <button class="send-button" id="sendButton" type="submit" aria-label="Send message"><span>Send</span><span class="send-arrow">↑</span></button>
             </div>
           </form>
@@ -148,10 +150,22 @@
     <form method="dialog">
       <div class="dialog-heading"><div><p class="eyebrow">Input and output</p><h2 id="voiceSettingsTitle">Voice settings</h2></div><button type="button" class="dialog-close" data-close-voice-settings aria-label="Close voice settings">×</button></div>
       <fieldset><legend>Voice input</legend><label>Microphone<select id="microphoneDevice"><option value="">System default microphone</option></select></label><meter id="microphoneLevel" min="0" max="1" low="0.02" high="0.08" optimum="0.12" value="0" aria-label="Live microphone level"></meter><p id="microphoneDiagnostic" class="privacy-note" role="status">Choose the microphone that moves the level meter when you speak.</p><p id="voiceInputSupport" class="privacy-note"></p></fieldset>
+      <fieldset><legend>Conversation experience</legend><label>Voice Mode<select id="voiceExperienceMode"><option value="separate">Separate immersive screen (recommended)</option><option value="integrated">Integrated with workspace</option></select></label><p class="privacy-note">Switching views never ends the active conversation. Dictation remains a separate control.</p></fieldset>
       <fieldset><legend>Voice output</legend><label>Preferred browser voice<select id="preferredVoice"></select></label><label class="toggle-label"><input id="autoSpeak" type="checkbox"> Automatically speak new Nova responses</label><div class="voice-test-row"><button type="button" class="secondary-button" id="testVoiceButton">Test Voice</button><span id="voiceDiagnostic" role="status">Ready to test browser speech.</span></div><p id="voiceOutputSupport" class="privacy-note"></p></fieldset>
       <p class="privacy-note">Microphone and browser voice preferences stay in this browser and are not saved to Nova memory.</p>
       <div class="dialog-actions"><button type="button" class="secondary-button" data-close-voice-settings>Done</button></div>
     </form>
+  </section>
+  <section id="voiceExperience" class="voice-experience" role="dialog" aria-modal="true" aria-labelledby="voiceExperienceTitle" hidden data-state="idle">
+    <div class="voice-experience-backdrop"></div>
+    <div class="voice-experience-shell">
+      <div class="voice-experience-heading"><div><p class="eyebrow">Nova Realtime Voice</p><h2 id="voiceExperienceTitle">Conversation</h2></div><button type="button" class="secondary-button" id="voiceContinueWorkspace">Continue in workspace</button></div>
+      <div class="voice-presence" aria-hidden="true"><span class="voice-presence-core"></span><span class="voice-presence-ring ring-one"></span><span class="voice-presence-ring ring-two"></span><span class="voice-presence-ring ring-three"></span></div>
+      <p id="voiceExperienceStatus" class="voice-experience-status" role="status" aria-live="polite">Connecting…</p>
+      <div id="voiceExperienceTranscript" class="voice-experience-transcript" aria-live="polite"><p data-voice-user hidden></p><p data-voice-assistant hidden></p></div>
+      <div class="voice-experience-controls"><button type="button" class="secondary-button" id="voiceMuteButton" aria-pressed="false">Mute</button><button type="button" class="secondary-button" id="voiceTranscriptButton" aria-pressed="true">Hide transcript</button><button type="button" class="send-button" id="voiceExperienceEnd">End conversation</button></div>
+      <p class="privacy-note">Visual presence preview only — permanent avatar style awaits owner selection.</p>
+    </div>
   </section>
   <section id="speakerEnrollmentDialog" class="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="speakerEnrollmentTitle" hidden>
     <form id="speakerEnrollmentForm" method="dialog">
@@ -159,7 +173,8 @@
       <p class="privacy-note">Nova sends each sample to the private speaker-embedding worker, immediately discards the raw recording, and stores only an encrypted derived voiceprint. It will not infer emotion, age, ethnicity, health, or accent origin. You can revoke or delete the profile later.</p>
       <div id="speakerExistingProfiles" class="privacy-note" aria-live="polite"></div>
       <div class="dialog-grid"><label>Display name<input name="displayName" maxlength="100" required></label><label>Relationship<select name="relation"><option value="owner">Owner</option><option value="family">Consenting household member</option></select></label></div>
-      <label class="toggle-label"><input name="consent" type="checkbox" required> I am the person speaking, I understand voice recognition is biometric processing, and I explicitly consent to enrollment.</label>
+      <label>Optional context this speaker permits Nova to remember<textarea name="personalContext" rows="2" maxlength="800" placeholder="For example: preferred language or how Nova should address this person"></textarea></label>
+      <label class="toggle-label"><input name="consent" type="checkbox" required> I am the person speaking, I understand voice recognition is biometric processing, and I explicitly consent to enrollment and to any optional context I entered above.</label>
       <button type="button" class="secondary-button" id="speakerSampleButton">Start sample 1</button>
       <ol class="speaker-sample-confirmations" aria-label="Enrollment sample status">
         <li data-speaker-sample-confirmation data-confirmed="false">Sample 1: Not recorded</li>

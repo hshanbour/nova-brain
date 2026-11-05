@@ -88,10 +88,10 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
     status.textContent = "Checking the private speaker worker before recording is enabled…";
     await refreshProfiles();
     try {
-      const ready = await fetchImpl("/api/voice/readiness").then((value) => value.json());
+      const ready = await fetchImpl("/api/voice/speaker/readiness", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" }).then((value) => value.json());
       if (!ready?.speakerRecognition?.available) {
         button.disabled = true;
-        status.textContent = "Speaker recognition worker is not configured in this Preview yet.";
+        status.textContent = "The private speaker worker did not become ready. Reopen Learn voice to retry safely.";
       } else { button.disabled = false; status.textContent = "Nothing is recorded until you explicitly start, stop, and confirm each sample."; }
     } catch {
       button.disabled = true;
@@ -170,7 +170,7 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enrollmentAttemptId, displayName: form.elements.displayName.value, relation: form.elements.relation.value, scope: "household", consent: true, consentActor: form.elements.displayName.value, samples }),
+        body: JSON.stringify({ enrollmentAttemptId, displayName: form.elements.displayName.value, relation: form.elements.relation.value, scope: "household", consent: true, consentActor: form.elements.displayName.value, personalContext: form.elements.personalContext.value, samples }),
         signal: enrollmentController.signal
       });
       const body = await response.json();

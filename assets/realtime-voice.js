@@ -12,6 +12,7 @@ export function createRealtimeVoice({
   getConversationId = () => null,
   onTranscript = () => {},
   onAssistantTranscript = () => {},
+  onDirectTurn = () => {},
   onSpeaker = () => {},
   onState = () => {},
   onTiming = () => {},
@@ -20,7 +21,7 @@ export function createRealtimeVoice({
 } = {}) {
   if (!mediaDevices?.getUserMedia || typeof RTCPeerConnectionImpl !== "function" || typeof fetchImpl !== "function") throw new TypeError("Realtime Voice browser dependencies are unavailable.");
   let active = false, generation = 0, pc, channel, stream, remoteAudio;
-  let lastTranscript = "", lastSpeechEndedAt = 0, assistantTranscript = "", toolInFlight = false;
+  let lastTranscript = "", lastSpeechEndedAt = 0, assistantTranscript = "", lastAssistantTranscript = "", toolInFlight = false, muted = false;
   let turnRecorder = null, turnStartedAt = 0, speakerPromise = null;
 
   const publish = (state, detail = {}) => onState({ active, state, mode: "realtime", ...detail });
@@ -34,6 +35,7 @@ export function createRealtimeVoice({
     try {
       stream = await requestMicrophone();
       if (!valid(current)) { stopTracks(stream); return false; }
+      void fetchImpl("/api/voice/speaker/readiness", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
       const sessionResponse = await fetchImpl("/api/voice/realtime/session", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" });
       const session = await sessionResponse.json().catch(() => null);
       if (!sessionResponse.ok || typeof session?.clientSecret !== "string") throw new Error(session?.error || "Nova could not prepare Realtime Voice.");
@@ -98,6 +100,7 @@ export function createRealtimeVoice({
     if (!event?.type) return;
     if (event.type === "input_audio_buffer.speech_started") {
       lastTranscript = "";
+      lastAssistantTranscript = "";
       lastSpeechEndedAt = 0;
       startTurnRecording();
       publish("listening", { phase: "speech-detected" });
@@ -124,6 +127,7 @@ export function createRealtimeVoice({
     if (event.type === "response.output_audio_transcript.done") {
       const text = String(event.transcript || assistantTranscript).trim();
       assistantTranscript = "";
+      lastAssistantTranscript = text;
       if (text) onAssistantTranscript(text);
       return;
     }
@@ -136,6 +140,7 @@ export function createRealtimeVoice({
       if (calls.length) {
         for (const call of calls) await handleNovaTurn(call, current);
       } else if (lastSpeechEndedAt) {
+        if (lastTranscript && lastAssistantTranscript) void Promise.resolve(onDirectTurn({ turnId: String(event.response?.id || `turn-${Math.round(lastSpeechEndedAt)}`), userText: lastTranscript, assistantText: lastAssistantTranscript, conversationId: getConversationId() })).catch(() => {});
         onTiming({ stage: "realtime-response-done", measurements: { speechEndToResponseDoneMs: Math.max(0, now() - lastSpeechEndedAt) } });
         publish("listening");
       }
@@ -199,7 +204,8 @@ export function createRealtimeVoice({
           const durationSeconds = Math.max(0.2, (now() - turnStartedAt) / 1000);
           if (!audio.size || durationSeconds < 0.8) return resolve(null);
           const audioBase64 = bytesToBase64(new Uint8Array(await audio.arrayBuffer()));
-          const response = await fetchImpl("/api/voice/speaker/recognize", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audioBase64, mimeType: audio.type || "audio/webm", durationSeconds }) });
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+          const response = await fetchImpl("/api/voice/speaker/recognize", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audioBase64, mimeType: audio.type || "audio/webm", durationSeconds, transcript: lastTranscript || undefined, conversationId: getConversationId() || undefined }) });
           const value = await response.json().catch(() => null);
           resolve(response.ok ? value?.speaker || null : null);
         } catch { resolve(null); }
@@ -232,7 +238,14 @@ export function createRealtimeVoice({
     if (channel?.readyState === "open") channel.send(JSON.stringify(value));
   }
 
-  return Object.freeze({ start, end, interrupt, isActive: () => active, mode: "realtime" });
+  function setMuted(value) {
+    muted = Boolean(value);
+    for (const track of stream?.getAudioTracks?.() || stream?.getTracks?.() || []) if (track.kind === "audio" || !track.kind) track.enabled = !muted;
+    publish(muted ? "muted" : "listening", { muted });
+    return muted;
+  }
+
+  return Object.freeze({ start, end, interrupt, setMuted, isMuted: () => muted, isActive: () => active, mode: "realtime" });
 }
 
 function stopTracks(stream) { for (const track of stream?.getTracks?.() || []) track.stop?.(); }

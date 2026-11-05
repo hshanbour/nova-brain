@@ -88,6 +88,31 @@ test("realtime browser delegates the exact transcript to Nova and returns the au
   voice.end();
 });
 
+test("realtime warm-up is non-blocking, direct turns persist, and mute controls only the microphone track", async () => {
+  const channel = new FakeChannel(), peer = new FakePeer(channel), direct = [], requests = [];
+  const audioTrack = { kind: "audio", enabled: true, stop() {} };
+  const voice = createRealtimeVoice({
+    mediaDevices: { async getUserMedia() { return { getTracks: () => [audioTrack], getAudioTracks: () => [audioTrack] }; } },
+    RTCPeerConnectionImpl: class { constructor() { return peer; } },
+    MediaRecorderImpl: null,
+    AudioImpl: class { play() { return Promise.resolve(); } pause() {} },
+    fetchImpl: async (url) => { requests.push(url); if (url === "/api/voice/realtime/session") return new Response(JSON.stringify({ clientSecret: "ek_test" }), { status: 201, headers: { "Content-Type": "application/json" } }); if (url === "/api/voice/speaker/readiness") return new Promise(() => {}); return new Response("answer-sdp", { status: 200 }); },
+    onDirectTurn: (turn) => direct.push(turn),
+  });
+  assert.equal(await voice.start(), true);
+  assert.ok(requests.includes("/api/voice/speaker/readiness"));
+  channel.open();
+  channel.message({ type: "input_audio_buffer.speech_stopped" });
+  channel.message({ type: "conversation.item.input_audio_transcription.completed", transcript: "مرحبا Nova" });
+  channel.message({ type: "response.output_audio_transcript.done", transcript: "أهلاً، كيف أساعدك؟" });
+  channel.message({ type: "response.done", response: { id: "response-1", output: [] } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(direct, [{ turnId: "response-1", userText: "مرحبا Nova", assistantText: "أهلاً، كيف أساعدك؟", conversationId: null }]);
+  assert.equal(voice.setMuted(true), true); assert.equal(audioTrack.enabled, false); assert.equal(voice.isMuted(), true);
+  assert.equal(voice.setMuted(false), false); assert.equal(audioTrack.enabled, true);
+  voice.end();
+});
+
 class FakeChannel extends EventTarget {
   readyState = "connecting";
   sent = [];

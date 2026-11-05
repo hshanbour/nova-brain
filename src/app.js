@@ -302,6 +302,7 @@ export function createApp({
     verifySpeakerAssertion: speakerAssertions.verify,
     validateSpeakerProfile: speakerIdentity.isActiveProfile,
     validateAnonymousSpeaker: speakerIdentity.isActiveAnonymous,
+    speakerIdentity,
     routeExistingTaskRequest: async ({message,conversationId}) => {
       if(isConversationTaskResultQuestion(message)){
         const report=await terminalReporter.latestForConversation(conversationId);
