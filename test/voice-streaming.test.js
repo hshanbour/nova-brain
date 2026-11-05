@@ -154,7 +154,7 @@ test("client cancellation aborts ElevenLabs generation and is never retried", as
 
 test("v3 conversational multi-chunk requests omit incompatible continuity fields without changing Arabic-English order", async () => {
   const requests = []; const events = [];
-  const service = createVoiceService({ config: config({ firstSpeechChunkCharacters: 55, nextSpeechChunkCharacters: 70 }), fetchImpl: withCapabilities(async (_url, options) => {
+  const service = createVoiceService({ config: config({ ttsModel: "eleven_v3_conversational", firstSpeechChunkCharacters: 55, nextSpeechChunkCharacters: 70 }), fetchImpl: withCapabilities(async (_url, options) => {
     const body = JSON.parse(options.body); requests.push(body);
     return new Response(Buffer.from(`mp3:${body.text}`), { status: 200, headers: { "content-type": "audio/mpeg" } });
   }) });

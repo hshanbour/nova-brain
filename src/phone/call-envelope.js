@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { SALES_STYLES } from "./sales-policy.js";
 
 export const PHONE_CALL_DURATIONS = Object.freeze([5, 10, 15, 30, 60]);
 export const PHONE_MEDIA_PROFILES = Object.freeze(["chained_v1", "gpt_live_round2_preview", "speaker_enrollment_v1", "speaker_control_v1"]);
@@ -61,6 +62,9 @@ export function normalizeCallEnvelope(input, { now = new Date() } = {}) {
   const liveVoice = mediaProfile === "gpt_live_round2_preview" ? text(input.liveVoice, "liveVoice", 64) : null;
   if (liveVoice && !GPT_LIVE_PHONE_VOICES.includes(liveVoice))
     throw Object.assign(new Error("The GPT-Live phone voice is invalid."), { code: "phone_call_envelope_invalid", statusCode: 400 });
+  const salesStyle = input.salesStyle || "balanced";
+  if (!SALES_STYLES.includes(salesStyle))
+    throw Object.assign(new Error("The sales conversation style is invalid."), { code: "phone_call_envelope_invalid", statusCode: 400 });
 
   return Object.freeze({
     version: 1,
@@ -72,6 +76,9 @@ export function normalizeCallEnvelope(input, { now = new Date() } = {}) {
     expectedParty: text(input.expectedParty, "expectedParty", 200),
     callerDisclosure: text(input.callerDisclosure, "callerDisclosure", 500),
     objective: text(input.objective, "objective", 1000),
+    salesStyle,
+    approvedOffers: Object.freeze(list(input.approvedOffers, "approvedOffers", { optional: true })),
+    approvedNextSteps: Object.freeze(list(input.approvedNextSteps, "approvedNextSteps", { optional: true })),
     approvedContext: text(input.approvedContext, "approvedContext", 4000, { optional: true }),
     permittedQuestions: Object.freeze(list(input.permittedQuestions, "permittedQuestions", { optional: true })),
     permittedDisclosures: Object.freeze(list(input.permittedDisclosures, "permittedDisclosures", { optional: true })),

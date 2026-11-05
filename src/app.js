@@ -20,6 +20,7 @@ import {
 import { createBenchmarkProviders } from "./benchmark/providers.js";
 import { createVoiceBenchmark } from "./benchmark/service.js";
 import { createVoiceService } from "./voice/voice-service.js";
+import { createRealtimeVoiceService } from "./voice/realtime-voice-service.js";
 import { createSpeakerIdentity } from "./voice/speaker-identity.js";
 import { createSpeakerExtractor } from "./voice/speaker-extractor.js";
 import { createSpeakerAssertions } from "./voice/speaker-assertion.js";
@@ -382,6 +383,10 @@ export function createApp({
     config,
     ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}),
   });
+  const realtimeVoiceService = createRealtimeVoiceService({
+    apiKey: config.openAI.apiKey,
+    ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}),
+  });
   const speakerExtractor = createSpeakerExtractor({
     config,
     ...(voiceFetchImpl ? { fetchImpl: voiceFetchImpl } : {}),
@@ -414,6 +419,7 @@ export function createApp({
     selfDevelopmentExpiryRecovery,
     voiceBenchmark,
     voiceService,
+    realtimeVoiceService,
     speakerIdentity,
     speakerExtractor,
     speakerEngines,

@@ -7,6 +7,7 @@ import { createVoiceOutput, hasLanguageVoice } from "./voice-output.js";
 import { createVoiceV2Client } from "./voice-v2-client.js";
 import { createAudioPlayback, createMediaVoiceCapture } from "./voice-capture.js";
 import { createVoiceV2 } from "./voice-v2.js";
+import { createRealtimeVoice } from "./realtime-voice.js";
 import { initialiseVoiceBenchmark } from "./voice-benchmark.js";
 import { initialiseSpeakerEnrollment } from "./speaker-enrollment.js";
 import { initialiseSpeakerFamiliarity } from "./speaker-familiarity.js";
@@ -40,6 +41,8 @@ const conversationBinding = createConversationBindingState();
 const recentsDrawer = document.querySelector("#recentsDrawer");
 let voiceMessageSequence = 0;
 let voiceV2;
+let batchVoice;
+let realtimeVoice;
 let phoneStatusTimer;
 function showVoiceDiagnostic(message) { const target=document.querySelector("#voiceDiagnostic");if(target)target.textContent=String(message||"").slice(0,240); }
 const voiceOutput = createVoiceOutput({
@@ -692,8 +695,18 @@ const voiceModeButton=document.querySelector("#voiceModeButton");const endVoiceB
 const voiceModeLabels={idle:"Voice idle",connecting:"Connecting microphone…",getting_ready:"Getting ready…",listening:"Voice ready · speak to Nova",barge_candidate:"Nova speaking… · speak to interrupt",barge_verifying:"Nova speaking… · speak to interrupt",paused_waiting_for_user:"Nova paused · say continue when ready",transcribing:"Nova heard you · processing…",thinking:"Nova thinking…",speaking:"Nova speaking… · speak to interrupt",interrupted:"Interrupted · getting ready…",retrying:"Voice ready · retrying quietly…",error:"Voice needs attention"};
 const capture=createMediaVoiceCapture({mediaDevices:navigator.mediaDevices,MediaRecorder:window.MediaRecorder,AudioContext:window.AudioContext||window.webkitAudioContext,getAudioConstraints:microphoneConstraints,onInputLevel:({level,threshold})=>{microphoneLevel.value=Math.min(1,level*8);if(voiceV2?.isActive?.())microphoneDiagnostic.textContent=level>=threshold?"Voice signal detected.":"Listening — speak close to the selected microphone.";}});
 const playback=createAudioPlayback({Audio:window.Audio,URL});const interruptionPlayback=createAudioPlayback({Audio:window.Audio,URL});
-voiceV2=createVoiceV2({capture,client:voiceClient,playback,interruptionPlayback,getConversationId:()=>client.conversationId,sendTurn:(text,{signal,prepareAssistant,speaker})=>{input.value="";resizeInput();return sendMessage(text,{autoSpeakResponse:false,throwOnError:true,signal,prepareAssistant,context:{voice:true,speaker}});},onTranscript(text){input.value=text;resizeInput();},onState({active,state}){voiceModeStatus.dataset.state=state;voiceModeStatus.textContent=voiceModeLabels[state]||state;voiceModeButton.classList.toggle("active",active);voiceModeButton.disabled=active;endVoiceButton.disabled=!active;voiceButton.disabled=active&&state!=="speaking";voiceButton.setAttribute("aria-label",active&&state==="speaking"?"Interrupt Nova and speak":"Dictate message");},onTiming(timing){console.info("[nova-voice-timing]",timing);void voiceClient.telemetry(timing).catch(()=>{});showVoiceDiagnostic(`Voice turn ${timing.turnId}: ${timing.stage}. ${Object.entries(timing.measurements).map(([name,value])=>`${name} ${value} ms`).join(" · ")}`);},onNotice(message){voiceModeStatus.textContent=message;},onError(message){requestError.textContent=message;requestError.hidden=false;}});
-voiceModeButton.addEventListener("click",async()=>{requestError.hidden=true;if(!capture.supported){requestError.textContent="Start Voice requires MediaRecorder, microphone access, and Web Audio support.";requestError.hidden=false;return;}try{const readinessPromise=voiceClient.readiness();const startPromise=voiceV2.start();const [readiness,started]=await Promise.all([readinessPromise,startPromise]);if(!readiness.available){if(started)voiceV2.end();throw new Error("Voice V2 providers are not fully configured in this Preview.");}}catch(error){voiceV2.end();requestError.textContent=error.message||"Voice V2 could not start.";requestError.hidden=false;}});
+const voiceCallbacks={
+  getConversationId:()=>client.conversationId,
+  sendTurn:(text,{signal,prepareAssistant,speaker}={})=>{input.value="";resizeInput();return sendMessage(text,{autoSpeakResponse:false,throwOnError:true,signal,prepareAssistant,context:{voice:true,speaker}});},
+  onTranscript(text){input.value=text;resizeInput();},
+  onState({active,state,mode}){voiceModeStatus.dataset.state=state;voiceModeStatus.textContent=(mode==="realtime"&&state==="listening")?"Realtime Voice ready · speak to Nova":voiceModeLabels[state]||state;voiceModeButton.classList.toggle("active",active);voiceModeButton.disabled=active;endVoiceButton.disabled=!active;voiceButton.disabled=active&&state!=="speaking";voiceButton.setAttribute("aria-label",active&&state==="speaking"?"Interrupt Nova and speak":"Dictate message");},
+  onTiming(timing){console.info("[nova-voice-timing]",timing);void voiceClient.telemetry(timing).catch(()=>{});showVoiceDiagnostic(`Voice ${timing.stage}. ${Object.entries(timing.measurements||{}).map(([name,value])=>`${name} ${Math.round(value)} ms`).join(" · ")}`);},
+  onError(message){requestError.textContent=message;requestError.hidden=false;},
+};
+batchVoice=createVoiceV2({capture,client:voiceClient,playback,interruptionPlayback,...voiceCallbacks,onNotice(message){voiceModeStatus.textContent=message;}});
+try{realtimeVoice=createRealtimeVoice({mediaDevices:navigator.mediaDevices,RTCPeerConnectionImpl:window.RTCPeerConnection,MediaRecorderImpl:window.MediaRecorder,AudioImpl:window.Audio,fetchImpl:window.fetch.bind(window),getAudioConstraints:microphoneConstraints,...voiceCallbacks,onAssistantTranscript(text){showVoiceDiagnostic(`Realtime response: ${text.slice(0,140)}`);},onSpeaker(speaker){const verified=speaker?.authenticated_identity==="owner"&&speaker?.match_status==="confirmed";showVoiceDiagnostic(verified?"Owner voice matched by the enrolled ECAPA profile.":"Speaker identity was not verified for this turn; sensitive actions remain approval-gated.");}});}catch{realtimeVoice=null;}
+voiceV2=realtimeVoice||batchVoice;
+voiceModeButton.addEventListener("click",async()=>{requestError.hidden=true;if(!capture.supported){requestError.textContent="Start Voice requires MediaRecorder, microphone access, and Web Audio support.";requestError.hidden=false;return;}try{const readiness=await voiceClient.readiness();if(readiness.realtime?.available&&realtimeVoice){voiceV2=realtimeVoice;try{await voiceV2.start();return;}catch{showVoiceDiagnostic("Realtime Voice was unavailable; Nova switched to the proven recovery voice path.");}}if(!readiness.available)throw new Error("Voice providers are not fully configured in this Preview.");voiceV2=batchVoice;await voiceV2.start();}catch(error){voiceV2?.end?.();requestError.textContent=error.message||"Voice could not start.";requestError.hidden=false;}});
 endVoiceButton.addEventListener("click",()=>voiceV2.end());
 voiceButton.addEventListener("click",(event)=>{if(!voiceV2.isActive())return;event.stopImmediatePropagation();requestError.hidden=true;voiceV2.interrupt();},true);
 

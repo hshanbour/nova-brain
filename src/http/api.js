@@ -3,7 +3,7 @@ import {PROJECT_DOCUMENT_LIMITS,ProjectSourceError} from "../projects/document-e
 import {ProjectDiscoveryError} from "../projects/project-discovery.js";
 import {ProjectAutomationControlError} from "../automation/project-automation-controls.js";
 import {VERCEL_ACCOUNT_COOKIE,VercelAccountIntegrationError} from "../projects/vercel-account-integration.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
   AgentStepLimitError,
@@ -82,6 +82,15 @@ function sendJson(response, statusCode, payload) {
   response.setHeader("Cache-Control", "no-store");
   response.setHeader("Referrer-Policy", "no-referrer");
   response.end(JSON.stringify(payload));
+}
+
+function sameOriginRequest(request) {
+  const origin = String(request.headers?.origin || "").trim();
+  if (!origin) return true;
+  const host = String(request.headers?.["x-forwarded-host"] || request.headers?.host || "").split(",")[0].trim();
+  if (!host) return false;
+  try { return new URL(origin).host === host; }
+  catch { return false; }
 }
 
 function sendArtifact(response, artifact) {
@@ -215,6 +224,7 @@ export function createApi({
   selfDevelopmentExpiryRecovery,
   voiceBenchmark,
   voiceService,
+  realtimeVoiceService,
   speakerIdentity,
   speakerExtractor,
   speakerEngines,
@@ -717,8 +727,56 @@ export function createApi({
           });
           sendJson(response, 200, {
             ...readiness,
+            realtime: {
+              available: realtimeVoiceService?.configured === true,
+              transport: "webrtc",
+              model: realtimeVoiceService?.model || null,
+              voice: realtimeVoiceService?.voice || null,
+              authority: "nova_brain_delegated",
+            },
             speakerRecognition: speaker,
           });
+          return;
+        }
+        if (request.method === "POST" && pathname === "/api/voice/realtime/session") {
+          if (!sameOriginRequest(request)) {
+            sendJson(response, 403, { error: "Realtime Voice requires a same-origin request." });
+            return;
+          }
+          const safetyIdentifier = createHash("sha256").update(`nova-realtime:${ownerId}`).digest("hex");
+          const session = await realtimeVoiceService.createClientSecret({ safetyIdentifier });
+          logger.info("Nova realtime voice session prepared", {
+            requestId,
+            model: session.model,
+            voice: session.voice,
+            transport: "webrtc",
+          });
+          sendJson(response, 201, session);
+          return;
+        }
+        if (request.method === "POST" && pathname === "/api/voice/speaker/recognize") {
+          await ready();
+          const input = await readJsonBody(request, config.voiceV2.maxBodyBytes);
+          const controller = new AbortController();
+          const report = await withinBudget(
+            recognitionEngines?.recognize?.(input, {
+              requestId,
+              transcriptPromise: Promise.resolve({ transcript: "realtime speech" }),
+              readyPromise: Promise.resolve(),
+              signal: controller.signal,
+              speakerCalibration: config.speakerRecognition,
+            }) || Promise.reject(new Error("Speaker recognition is not configured.")),
+            config.speakerRecognition.liveTurnBudgetMs,
+            () => {
+              controller.abort();
+              return { authoritative: createSpeakerEngineResult({ engineId: recognitionEngines?.authoritativeEngineId || "ecapa", engineVersion: config.speakerRecognition.modelVersion, qualityState: "deadline_exceeded", status: "failure", error: { code: "recognition_deadline_exceeded", stage: "speaker_embedding" } }) };
+            },
+          );
+          let speaker = speakerFromAuthoritativeResult(report.authoritative, config.speakerRecognition.modelVersion);
+          speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
+          if (speaker.match_status === "confirmed" && !speaker.assertion) speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: speaker.extractor_version, match_status: "unknown", authenticated_identity: "none", assertion: null };
+          logger.info("Nova realtime speaker recognition completed", { requestId, matchStatus: speaker.match_status, speakerCategory: speaker.speaker_label, assertionIssued: Boolean(speaker.assertion) });
+          sendJson(response, 200, { speaker });
           return;
         }
         if (request.method === "POST" && pathname === "/api/voice/transcribe") {
