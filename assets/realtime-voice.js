@@ -5,6 +5,7 @@ export function createRealtimeVoice({
   RTCPeerConnectionImpl = globalThis.RTCPeerConnection,
   MediaRecorderImpl = globalThis.MediaRecorder,
   AudioImpl = globalThis.Audio,
+  AudioContextImpl = globalThis.AudioContext || globalThis.webkitAudioContext,
   fetchImpl = globalThis.fetch,
   getAudioConstraints = () => true,
   onMicrophoneFallback = () => {},
@@ -16,11 +17,13 @@ export function createRealtimeVoice({
   onSpeaker = () => {},
   onState = () => {},
   onTiming = () => {},
+  onInputLevel = () => {},
+  onOutputLevel = () => {},
   onError = () => {},
   now = () => globalThis.performance?.now?.() ?? Date.now(),
 } = {}) {
   if (!mediaDevices?.getUserMedia || typeof RTCPeerConnectionImpl !== "function" || typeof fetchImpl !== "function") throw new TypeError("Realtime Voice browser dependencies are unavailable.");
-  let active = false, generation = 0, pc, channel, stream, remoteAudio;
+  let active = false, generation = 0, pc, channel, stream, remoteAudio, inputMeter, outputMeter;
   let lastTranscript = "", lastSpeechEndedAt = 0, assistantTranscript = "", lastAssistantTranscript = "", toolInFlight = false, muted = false;
   let turnRecorder = null, turnStartedAt = 0, speakerPromise = null;
 
@@ -35,6 +38,7 @@ export function createRealtimeVoice({
     try {
       stream = await requestMicrophone();
       if (!valid(current)) { stopTracks(stream); return false; }
+      inputMeter = createAudioMeter({ AudioContextImpl, stream, onLevel: onInputLevel });
       void fetchImpl("/api/voice/speaker/readiness", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
       const sessionResponse = await fetchImpl("/api/voice/realtime/session", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" });
       const session = await sessionResponse.json().catch(() => null);
@@ -43,7 +47,7 @@ export function createRealtimeVoice({
       pc = new RTCPeerConnectionImpl();
       remoteAudio = new AudioImpl();
       remoteAudio.autoplay = true;
-      pc.ontrack = (event) => { remoteAudio.srcObject = event.streams?.[0] || new MediaStream([event.track]); void remoteAudio.play?.().catch?.(() => {}); };
+      pc.ontrack = (event) => { const remoteStream = event.streams?.[0] || new MediaStream([event.track]); remoteAudio.srcObject = remoteStream; outputMeter?.dispose?.(); outputMeter = createAudioMeter({ AudioContextImpl, stream: remoteStream, onLevel: onOutputLevel }); void remoteAudio.play?.().catch?.(() => {}); };
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       channel = pc.createDataChannel("oai-events");
       channel.addEventListener("open", () => { if (valid(current)) publish("listening"); });
@@ -231,6 +235,8 @@ export function createRealtimeVoice({
     try { pc?.close?.(); } catch {}
     stopTracks(stream);
     if (remoteAudio) { try { remoteAudio.pause?.(); remoteAudio.srcObject = null; } catch {} }
+    inputMeter?.dispose?.(); outputMeter?.dispose?.(); onInputLevel(0); onOutputLevel(0);
+    inputMeter = null; outputMeter = null;
     channel = null; pc = null; stream = null; remoteAudio = null; speakerPromise = null; toolInFlight = false;
   }
 
@@ -266,3 +272,17 @@ function safeParse(value) { try { return JSON.parse(String(value || "")); } catc
 function safeProviderError(event) { const code = String(event?.error?.code || "realtime_error").slice(0, 80); return `Realtime Voice error (${code}).`; }
 function bytesToBase64(bytes) { let binary = ""; for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)); return btoa(binary); }
 async function boundedSpeaker(promise, timeoutMs) { if (!promise) return null; return Promise.race([Promise.resolve(promise).catch(() => null), new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs))]); }
+
+function createAudioMeter({ AudioContextImpl, stream, onLevel }) {
+  if (typeof AudioContextImpl !== "function" || !stream) return null;
+  let context, frame = 0, disposed = false;
+  try {
+    context = new AudioContextImpl();
+    const source = context.createMediaStreamSource(stream), analyser = context.createAnalyser();
+    analyser.fftSize = 256; analyser.smoothingTimeConstant = .72; source.connect(analyser);
+    const values = new Uint8Array(analyser.fftSize);
+    const sample = () => { if (disposed) return; analyser.getByteTimeDomainData(values); let total = 0; for (const value of values) { const centered = (value - 128) / 128; total += centered * centered; } onLevel(Math.min(1, Math.sqrt(total / values.length) * 5)); frame = globalThis.requestAnimationFrame?.(sample) || globalThis.setTimeout(sample, 40); };
+    sample();
+    return { dispose() { disposed = true; if (frame) (globalThis.cancelAnimationFrame || globalThis.clearTimeout)?.(frame); try { source.disconnect(); } catch {} void context?.close?.().catch?.(() => {}); } };
+  } catch { void context?.close?.().catch?.(() => {}); return null; }
+}

@@ -62,16 +62,18 @@
         </div>
         <div class="composer-wrap">
           <div class="request-error" id="requestError" role="alert" hidden></div>
+          <section class="voice-workspace-dock" id="voiceWorkspaceDock" aria-label="Active Nova voice conversation" hidden>
+            <span class="voice-workspace-pulse" aria-hidden="true"></span><div><strong id="voiceWorkspaceState">Voice conversation active</strong><small>Conversation continues while you work</small></div>
+            <button type="button" class="secondary-button" id="voiceWorkspaceOpen">Open voice</button><button type="button" class="secondary-button" id="voiceWorkspaceMute">Mute</button><button type="button" class="danger-button" id="voiceWorkspaceEnd">End</button>
+          </section>
           <form class="composer" id="composer">
             <label class="sr-only" for="messageInput">Message Nova Brain</label>
             <textarea id="messageInput" name="message" rows="1" maxlength="12000" placeholder="Tell Nova what you want to accomplish…" required></textarea>
             <span id="composerVoiceWaveform" data-voice-state="idle" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></span>
             <div class="composer-actions">
-                <button class="dictation-action" id="composerVoiceReviewButton" type="button" hidden>Stop &amp; review</button>
                 <button class="dictation-action dictation-send" id="composerVoiceSendButton" type="button" hidden>Send immediately</button>
               <button class="icon-button voice-button" id="voiceButton" type="button" data-voice-state="idle" aria-pressed="false" aria-describedby="composerVoiceStatus" aria-label="Dictate message" title="Dictate message"><span></span></button>
-              <button class="icon-button conversation-voice-button" id="voiceModeButton" type="button" aria-label="Start voice conversation" title="Start voice conversation"><span aria-hidden="true">≋</span></button>
-              <button class="icon-button voice-end-button" id="endVoiceButton" type="button" aria-label="End voice conversation" title="End voice conversation" disabled hidden><span aria-hidden="true">■</span></button>
+              <button class="icon-button conversation-voice-button" id="voiceModeButton" type="button" aria-label="Start Nova voice conversation" title="Start Nova voice conversation"><span aria-hidden="true">≋</span><span class="sr-only">Voice</span></button>
               <button class="send-button" id="sendButton" type="submit" aria-label="Send message"><span>Send</span><span class="send-arrow">↑</span></button>
             </div>
           </form>
@@ -150,7 +152,7 @@
     <form method="dialog">
       <div class="dialog-heading"><div><p class="eyebrow">Input and output</p><h2 id="voiceSettingsTitle">Voice settings</h2></div><button type="button" class="dialog-close" data-close-voice-settings aria-label="Close voice settings">×</button></div>
       <fieldset><legend>Voice input</legend><label>Microphone<select id="microphoneDevice"><option value="">System default microphone</option></select></label><meter id="microphoneLevel" min="0" max="1" low="0.02" high="0.08" optimum="0.12" value="0" aria-label="Live microphone level"></meter><p id="microphoneDiagnostic" class="privacy-note" role="status">Choose the microphone that moves the level meter when you speak.</p><p id="voiceInputSupport" class="privacy-note"></p></fieldset>
-      <fieldset><legend>Conversation experience</legend><label>Voice Mode<select id="voiceExperienceMode"><option value="separate">Separate immersive screen (recommended)</option><option value="integrated">Integrated with workspace</option></select></label><p class="privacy-note">Switching views never ends the active conversation. Dictation remains a separate control.</p></fieldset>
+      <fieldset><legend>Conversation experience</legend><label>Voice Mode<select id="voiceExperienceMode"><option value="separate">Separate immersive screen (recommended)</option><option value="integrated">Integrated with workspace</option></select></label><button type="button" class="secondary-button avatar-gallery-launch" id="openAvatarGallery">Preview Matrix avatars</button><p class="privacy-note">Switching views never ends the active conversation. Dictation remains a separate control.</p></fieldset>
       <fieldset><legend>Voice output</legend><label>Preferred browser voice<select id="preferredVoice"></select></label><label class="toggle-label"><input id="autoSpeak" type="checkbox"> Automatically speak new Nova responses</label><div class="voice-test-row"><button type="button" class="secondary-button" id="testVoiceButton">Test Voice</button><span id="voiceDiagnostic" role="status">Ready to test browser speech.</span></div><p id="voiceOutputSupport" class="privacy-note"></p></fieldset>
       <p class="privacy-note">Microphone and browser voice preferences stay in this browser and are not saved to Nova memory.</p>
       <div class="dialog-actions"><button type="button" class="secondary-button" data-close-voice-settings>Done</button></div>
@@ -160,11 +162,22 @@
     <div class="voice-experience-backdrop"></div>
     <div class="voice-experience-shell">
       <div class="voice-experience-heading"><div><p class="eyebrow">Nova Realtime Voice</p><h2 id="voiceExperienceTitle">Conversation</h2></div><button type="button" class="secondary-button" id="voiceContinueWorkspace">Continue in workspace</button></div>
-      <div class="voice-presence" aria-hidden="true"><span class="voice-presence-core"></span><span class="voice-presence-ring ring-one"></span><span class="voice-presence-ring ring-two"></span><span class="voice-presence-ring ring-three"></span></div>
+      <div class="voice-presence"><canvas id="voiceAvatarCanvas" aria-label="Live abstract Nova digital presence"></canvas><div class="avatar-fallback" aria-hidden="true"></div></div>
       <p id="voiceExperienceStatus" class="voice-experience-status" role="status" aria-live="polite">Connecting…</p>
       <div id="voiceExperienceTranscript" class="voice-experience-transcript" aria-live="polite"><p data-voice-user hidden></p><p data-voice-assistant hidden></p></div>
       <div class="voice-experience-controls"><button type="button" class="secondary-button" id="voiceMuteButton" aria-pressed="false">Mute</button><button type="button" class="secondary-button" id="voiceTranscriptButton" aria-pressed="true">Hide transcript</button><button type="button" class="send-button" id="voiceExperienceEnd">End conversation</button></div>
-      <p class="privacy-note">Visual presence preview only — permanent avatar style awaits owner selection.</p>
+      <p class="privacy-note">Live procedural preview · no camera, identity or generated face · permanent style awaits owner selection.</p>
+    </div>
+  </section>
+  <section id="avatarGalleryDialog" class="avatar-gallery-dialog" role="dialog" aria-modal="true" aria-labelledby="avatarGalleryTitle" hidden>
+    <div class="avatar-gallery-shell">
+      <div class="dialog-heading"><div><p class="eyebrow">Live Matrix presence</p><h2 id="avatarGalleryTitle">Avatar Gallery</h2><p>Three genuinely animated directions. Preview states here; no permanent choice is saved.</p></div><button type="button" class="dialog-close" id="closeAvatarGallery" aria-label="Close avatar gallery">×</button></div>
+      <div class="avatar-gallery-grid">
+        <article class="avatar-option" data-avatar-option="particle"><canvas aria-label="Particle Matrix live preview"></canvas><h3>A · Particle Matrix</h3><p>Feminine particle silhouette, data-strand hair and luminous depth.</p><button type="button" class="secondary-button" data-preview-avatar="particle">Preview in voice</button></article>
+        <article class="avatar-option" data-avatar-option="wireframe"><canvas aria-label="Neural Wireframe live preview"></canvas><h3>B · Neural Wireframe</h3><p>Calm neural topology with flowing connections and precise state changes.</p><button type="button" class="secondary-button" data-preview-avatar="wireframe">Preview in voice</button></article>
+        <article class="avatar-option" data-avatar-option="entity"><canvas aria-label="Data Entity live preview"></canvas><h3>C · Data Entity</h3><p>Abstract intelligence that assembles, dissolves and reforms in three dimensions.</p><button type="button" class="secondary-button" data-preview-avatar="entity">Preview in voice</button></article>
+      </div>
+      <div class="avatar-state-demo" aria-label="Avatar state demonstration"><span>Simulate:</span><button type="button" data-avatar-state="listening">Listening</button><button type="button" data-avatar-state="thinking">Thinking</button><button type="button" data-avatar-state="speaking">Speaking</button><button type="button" data-avatar-state="executing">Executing</button><small id="avatarPerformanceStatus">Animation sleeps when this gallery closes.</small></div>
     </div>
   </section>
   <section id="speakerEnrollmentDialog" class="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="speakerEnrollmentTitle" hidden>

@@ -325,8 +325,11 @@ export function createComposerVoiceControl(options = {}) {
     lastError = error || '';
     button.dataset.voiceState = state;
     button.setAttribute('aria-pressed', String(state === 'recording'));
+    const buttonLabel = state === 'recording' ? 'Stop and review dictation' : state === 'processing' ? 'Processing dictation' : 'Dictate message';
+    button.setAttribute('aria-label', buttonLabel);
+    button.setAttribute('title', buttonLabel);
     button.disabled = !controller.supported || state === 'processing';
-    if (reviewButton) { reviewButton.hidden = state !== 'recording'; reviewButton.disabled = state !== 'recording'; }
+    if (reviewButton) { reviewButton.hidden = true; reviewButton.disabled = true; }
     if (sendNowButton) { sendNowButton.hidden = state !== 'recording'; sendNowButton.disabled = state !== 'recording'; }
 
     if (statusTarget) {

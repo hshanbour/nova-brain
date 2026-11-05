@@ -9,8 +9,14 @@ test("voice conversation entry is beside composer and immersive/integrated modes
   const composer = html.slice(html.indexOf('<form class="composer"'), html.indexOf("</form>", html.indexOf('<form class="composer"')));
   assert.doesNotMatch(topbar, /id="voiceModeButton"/);
   assert.match(composer, /id="voiceButton"[\s\S]*id="voiceModeButton"/);
+  assert.doesNotMatch(composer, /composerVoiceReviewButton|endVoiceButton/);
+  assert.match(html, /id="voiceWorkspaceDock"/);
   assert.match(html, /id="voiceExperience"[\s\S]*id="voiceMuteButton"[\s\S]*id="voiceExperienceEnd"/);
+  assert.match(html, /id="voiceAvatarCanvas"[\s\S]*id="avatarGalleryDialog"/);
+  assert.match(html, /data-avatar-option="particle"[\s\S]*data-avatar-option="wireframe"[\s\S]*data-avatar-option="entity"/);
   assert.match(html, /value="separate"[\s\S]*value="integrated"/);
   assert.doesNotMatch(consoleSource, /onTranscript\(text\)\{input\.value=text/);
   assert.match(consoleSource, /persistRealtimeTurn/);
+  assert.match(consoleSource, /voiceSessionDesired/);
+  assert.match(consoleSource, /onInputLevel\(level\)/);
 });

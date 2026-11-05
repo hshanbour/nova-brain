@@ -119,7 +119,7 @@ test('composer server transcription automatically accepts mixed Arabic and Engli
   assert.equal(input.dir, 'rtl');
 });
 
-test('composer exposes separate review and immediate-send dictation endings', async () => {
+test('composer transforms its microphone into stop-and-review while preserving immediate send', async () => {
   let recorder;
   class Recorder {
     static isTypeSupported() { return true; }
@@ -138,9 +138,10 @@ test('composer exposes separate review and immediate-send dictation endings', as
   });
 
   await button.click();
-  assert.equal(reviewButton.hidden, false);
+  assert.equal(reviewButton.hidden, true);
   assert.equal(sendNowButton.hidden, false);
-  reviewButton.click();
+  assert.equal(button.attributes['aria-label'], 'Stop and review dictation');
+  button.click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(input.value, 'Book Sharp Cuts');
   assert.deepEqual(sent, []);
