@@ -59,7 +59,7 @@ test("OpenAI streaming STT shape uses PCM24k, client endpoint commits and item-i
   assert.equal(sent.filter(({ type }) => type === "input_audio_buffer.commit").length, 2);
 });
 
-test("Nova's existing ElevenLabs voice/model is preserved in a mock-only ulaw_8000 request", async () => {
+test("Nova's low-latency ElevenLabs voice/model is preserved in a mock-only ulaw_8000 request", async () => {
   const calls = [];
   const config = readConfig({ NOVA_BRAIN_MODEL_PROVIDER: "mock", ELEVENLABS_API_KEY: "never-live-secret", ELEVENLABS_VOICE_ID: "owner-selected-voice" });
   const tts = createPhase0ElevenLabsTelephonyTts({ config, fetchImpl: async (url, options) => {
@@ -71,8 +71,8 @@ test("Nova's existing ElevenLabs voice/model is preserved in a mock-only ulaw_80
   assert.equal(Buffer.concat(chunks).length, 160);
   assert.match(calls[0].url, /owner-selected-voice\/stream\?output_format=ulaw_8000$/);
   assert.equal(calls[0].options.headers["xi-api-key"], "never-live-secret");
-  assert.deepEqual(JSON.parse(calls[0].options.body), { text: "مرحبا Mohammad", model_id: "eleven_v3_conversational", voice_settings: { stability: 0.75 } });
-  assert.deepEqual(tts.contract(), { provider: "elevenlabs", model: "eleven_v3_conversational", voice: "owner-selected", outputFormat: "ulaw_8000", rawAudioPolicy: "ephemeral-only" });
+  assert.deepEqual(JSON.parse(calls[0].options.body), { text: "مرحبا Mohammad", model_id: "eleven_flash_v2_5", voice_settings: { stability: 0.75 } });
+  assert.deepEqual(tts.contract(), { provider: "elevenlabs", model: "eleven_flash_v2_5", voice: "owner-selected", outputFormat: "ulaw_8000", rawAudioPolicy: "ephemeral-only" });
 });
 
 test("English, Arabic and mixed transcripts cross Twilio to the existing Nova agent and back as telephony audio", async () => {

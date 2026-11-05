@@ -88,6 +88,16 @@ test("unauthenticated GPT-Live may use only bounded project_list and never priva
   assert.equal(projectCalls,1);assert.equal(result.message,"Nova Brain is the verified project.");assert.deepEqual(observed[0].tools.map(tool=>tool.name),["project_list"]);assert.doesNotMatch(observed[0].systemContext,/PRIVATE OWNER SECRET/);assert.match(observed[0].systemContext,/speaker is not authenticated/i);
 });
 
+test("restricted browser voice describes Nova accurately without private context or unsolicited identity disclaimers",async()=>{
+  const storage=testStorage(),observed=[];
+  await storage.createMemory({id:"private-voice-secret",ownerId:OWNER_ID,category:"fact",content:"PRIVATE OWNER SECRET",provenance:"owner",privacy:"private",sensitivity:"high",scope:"global",status:"active"});
+  const provider=scriptedProvider([{type:"final",message:"أنا Nova، شريكتك الرقمية لإدارة المشاريع والأعمال."}],input=>observed.push(input));
+  const agent=createTestAgent({storage,toolRegistry:createToolRegistry(),modelProvider:provider,verifySpeakerAssertion:()=>null,validateSpeakerProfile:async()=>true,validateAnonymousSpeaker:async()=>true});
+  const first=await agent.run({message:"مين إنتي؟ عرفيني حالك.",conversationId:"restricted-voice-continuity",context:{voice:true,speaker:{}}});
+  assert.match(first.message,/Nova/);assert.doesNotMatch(first.message,/ما قدرت أتحقق|verify/i);
+  assert.deepEqual(observed[0].conversationHistory,[]);assert.match(observed[0].systemContext,/digital executive partner/);assert.doesNotMatch(observed[0].systemContext,/PRIVATE OWNER SECRET/);assert.deepEqual(observed[0].tools,[]);
+});
+
 test("a failed turn persists and exposes exact request run user-message correlation without inventing an assistant message",async()=>{
   const storage=testStorage(),agent=createTestAgent({storage,toolRegistry:createToolRegistry(),modelProvider:{name:"broken",async generate(){throw new Error("safe test failure");}}});
   let failure;try{await agent.run({message:"Ordinary failed turn",conversationId:"failed-correlation",requestId:"request-failed"});}catch(error){failure=error;}

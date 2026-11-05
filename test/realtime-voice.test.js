@@ -21,9 +21,41 @@ test("realtime service mints a short-lived, delegated, bilingual WebRTC session"
   assert.equal(request.body.session.model, "gpt-realtime-2.1");
   assert.equal(request.body.session.audio.input.turn_detection.interrupt_response, true);
   assert.equal(request.body.session.tools[0].name, "nova_turn");
-  assert.equal(request.body.session.tool_choice, "required");
+  assert.equal(request.body.session.tool_choice, "auto");
   assert.match(request.body.session.instructions, /Arabic-English/);
-  assert.match(request.body.session.instructions, /call nova_turn exactly once/);
+  assert.match(request.body.session.instructions, /Call nova_turn exactly once/);
+  assert.match(request.body.session.instructions, /questions about who Nova is/);
+  assert.match(request.body.session.instructions, /Do not volunteer an identity-verification disclaimer/);
+});
+
+test("realtime browser always requests audio and recovers a stale selected microphone once", async () => {
+  const channel = new FakeChannel(), peer = new FakePeer(channel), constraints = [], fallbacks = [];
+  const stream = { getTracks: () => [{ stop() {} }] };
+  const voice = createRealtimeVoice({
+    mediaDevices: { async getUserMedia(value) { constraints.push(value); if (constraints.length === 1) throw Object.assign(new Error("missing device"), { name: "OverconstrainedError" }); return stream; } },
+    RTCPeerConnectionImpl: class { constructor() { return peer; } },
+    MediaRecorderImpl: null,
+    AudioImpl: class { play() { return Promise.resolve(); } pause() {} },
+    getAudioConstraints: () => ({ deviceId: { exact: "stale-owner-mic" }, echoCancellation: true }),
+    onMicrophoneFallback: (value) => fallbacks.push(value),
+    fetchImpl: async (url) => url === "/api/voice/realtime/session" ? new Response(JSON.stringify({ clientSecret: "ek_test" }), { status: 201, headers: { "Content-Type": "application/json" } }) : new Response("answer-sdp", { status: 200 }),
+  });
+  assert.equal(await voice.start(), true);
+  assert.deepEqual(constraints[0], { audio: { deviceId: { exact: "stale-owner-mic" }, echoCancellation: true }, video: false });
+  assert.deepEqual(constraints[1], { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+  assert.deepEqual(fallbacks, [{ reason: "selected_device_unavailable" }]);
+  voice.end();
+});
+
+test("realtime microphone denial is surfaced before minting a paid session and is not reclassified as provider failure", async () => {
+  let fetches=0;
+  const voice=createRealtimeVoice({
+    mediaDevices:{async getUserMedia(){throw Object.assign(new Error("Permission denied"),{name:"NotAllowedError"});}},
+    RTCPeerConnectionImpl:class{},
+    fetchImpl:async()=>{fetches+=1;throw new Error("must not fetch");},
+  });
+  await assert.rejects(()=>voice.start(),error=>error.name==="NotAllowedError"&&error.novaVoiceStage==="microphone"&&/Permission denied/.test(error.message));
+  assert.equal(fetches,0);
 });
 
 test("realtime browser delegates the exact transcript to Nova and returns the authoritative result", async () => {

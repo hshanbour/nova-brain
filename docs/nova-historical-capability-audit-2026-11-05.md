@@ -16,10 +16,10 @@ This inventory is evidence-led. `verified` means supported by current code plus 
 | Capability | Status before this release | Restored/current status |
 | --- | --- | --- |
 | Browser conversational voice | regressed | The active browser path was a serial MediaRecorder → `gpt-transcribe` → Nova Brain → ElevenLabs Flash 2.5 chain. That path remains as recovery; the primary path is now WebRTC Realtime audio with server VAD and interruption. |
-| Authoritative Nova reasoning | working | Realtime is only the conversational presentation layer. Each user turn must call `nova_turn`; Nova Brain still owns memory, business facts, tools, permissions, and approvals. |
+| Authoritative Nova reasoning | working | Realtime handles ordinary conversational turns directly for low latency. Business facts, project work, private context, tools, permissions, approvals, and consequential actions delegate through `nova_turn`; Nova Brain remains authoritative for them. |
 | Bilingual English/Arabic | working in deterministic coverage; real microphone verification pending | Realtime and fallback both use automatic multilingual transcription. No language selector is required. |
 | Barge-in/interruption | working in deterministic coverage; real microphone verification pending | Realtime uses provider interruption plus explicit cancel/clear. The older recovery path retains its checkpointed barge-in implementation. |
-| Speaker identification | implemented and fail-closed | Historical ECAPA profiles remain server-side. Realtime submits an ephemeral per-turn sample for matching; a browser claim cannot assert owner identity. Sensitive actions remain approval-gated. |
+| Speaker identification | implemented, currently unavailable in the deployed runtime, and fail-closed | Historical ECAPA profiles remain server-side. The latest deployed readiness read-back reported `Warming` / `readiness_budget_exceeded`, so owner identity cannot currently be claimed from voice. Realtime submits an ephemeral per-turn sample when the matcher is available; a browser claim cannot assert owner identity. Sensitive actions remain approval-gated. |
 | Owner enrolment | verified historical state, not recreated | Two encrypted active owner profiles were previously observed. Phone enrolment has two completed three-sample sessions (six accepted samples). This is separate from phone voice-selection samples. |
 | Dictation | verified | Separate Stop & Review and Send Immediately controls, editable transcript, mixed Arabic/English server transcription, and stale-event fencing are covered by focused tests. |
 | Phone control plane | verified but externally disabled | Immutable call envelopes, approval binding, one-call fencing, Twilio signatures, Fly bridge, and bounded GPT-Live prototype are present. No call was placed. |
@@ -28,7 +28,7 @@ This inventory is evidence-led. `verified` means supported by current code plus 
 
 ## Sales agent
 
-Historical code contained a safe phone envelope and conversational phone prompt, but no evidence-backed consultative/balanced/assertive sales policy, objection policy, or approved-offer boundary. This release adds those three styles to the immutable call envelope and prompt. All styles must use only approved prices, services, evidence, offers, and next steps; refusals and do-not-contact requests end pressure immediately. This is verified by deterministic simulations only. Real outbound sales calls remain disabled and require separate owner approval and provider readiness.
+Historical code contains a safe phone envelope, conversational phone prompt, consultative/balanced/assertive sales modes, objection handling, and approved-offer boundaries. All styles must use only approved prices, services, evidence, offers, and next steps; refusals and do-not-contact requests end pressure immediately. This is verified by deterministic simulations only. Real outbound sales calls remain disabled and require separate owner approval and provider readiness.
 
 ## Business integrations
 

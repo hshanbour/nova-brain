@@ -6,7 +6,8 @@ export function createRealtimeVoice({
   MediaRecorderImpl = globalThis.MediaRecorder,
   AudioImpl = globalThis.Audio,
   fetchImpl = globalThis.fetch,
-  getAudioConstraints = () => ({ audio: true }),
+  getAudioConstraints = () => true,
+  onMicrophoneFallback = () => {},
   sendTurn,
   getConversationId = () => null,
   onTranscript = () => {},
@@ -31,13 +32,12 @@ export function createRealtimeVoice({
     const current = ++generation;
     publish("connecting");
     try {
+      stream = await requestMicrophone();
+      if (!valid(current)) { stopTracks(stream); return false; }
       const sessionResponse = await fetchImpl("/api/voice/realtime/session", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" });
       const session = await sessionResponse.json().catch(() => null);
       if (!sessionResponse.ok || typeof session?.clientSecret !== "string") throw new Error(session?.error || "Nova could not prepare Realtime Voice.");
       if (!valid(current)) return false;
-
-      stream = await mediaDevices.getUserMedia(getAudioConstraints());
-      if (!valid(current)) { stopTracks(stream); return false; }
       pc = new RTCPeerConnectionImpl();
       remoteAudio = new AudioImpl();
       remoteAudio.autoplay = true;
@@ -63,6 +63,17 @@ export function createRealtimeVoice({
       publish("error");
       onError(error?.message || "Realtime Voice could not start.");
       throw error;
+    }
+  }
+
+  async function requestMicrophone() {
+    const preferred = normaliseAudioConstraints(getAudioConstraints());
+    try { return await mediaDevices.getUserMedia({ audio: preferred, video: false }); }
+    catch (error) {
+      if (!hasExplicitDevice(preferred) || !isStaleDeviceError(error)) throw microphoneAccessError(error);
+      onMicrophoneFallback({ reason: "selected_device_unavailable" });
+      try { return await mediaDevices.getUserMedia({ audio: defaultAudioConstraints(), video: false }); }
+      catch (fallbackError) { throw microphoneAccessError(fallbackError); }
     }
   }
 
@@ -225,6 +236,19 @@ export function createRealtimeVoice({
 }
 
 function stopTracks(stream) { for (const track of stream?.getTracks?.() || []) track.stop?.(); }
+function defaultAudioConstraints() { return { echoCancellation: true, noiseSuppression: true, autoGainControl: true }; }
+function normaliseAudioConstraints(value) {
+  if (value === true) return true;
+  if (!value || value === false || typeof value !== "object" || Array.isArray(value)) return defaultAudioConstraints();
+  if (Object.prototype.hasOwnProperty.call(value, "audio") || Object.prototype.hasOwnProperty.call(value, "video")) {
+    const nested = value.audio;
+    return nested === true ? true : nested && typeof nested === "object" && !Array.isArray(nested) ? nested : defaultAudioConstraints();
+  }
+  return value;
+}
+function hasExplicitDevice(value) { return Boolean(value && typeof value === "object" && value.deviceId); }
+function isStaleDeviceError(error) { return ["OverconstrainedError", "NotFoundError", "DevicesNotFoundError"].includes(String(error?.name || "")); }
+function microphoneAccessError(cause) { const error=new Error(cause?.message||"Nova could not access the microphone.");error.name=cause?.name||"MicrophoneAccessError";error.novaVoiceStage="microphone";return error; }
 function safeParse(value) { try { return JSON.parse(String(value || "")); } catch { return null; } }
 function safeProviderError(event) { const code = String(event?.error?.code || "realtime_error").slice(0, 80); return `Realtime Voice error (${code}).`; }
 function bytesToBase64(bytes) { let binary = ""; for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)); return btoa(binary); }
