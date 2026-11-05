@@ -24,6 +24,9 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(consoleJs, /value \? "Stop" : "Send"/);
   assert.match(consoleJs, /composerVoiceWaveform/);
   assert.match(consoleJs, /window\.navigator\?\.mediaDevices/);
+  assert.match(consoleJs, /composer_dictation:true/);
+  assert.match(consoleJs, /automatically handles English, Arabic and mixed speech/);
+  assert.doesNotMatch(html, /microphoneLanguage/);
   assert.doesNotMatch(consoleJs, /requestAnimationFrame\.bind|cancelAnimationFrame\.bind/);
   assert.match(voice, /recording.*processing.*complete.*error/s);
   assert.match(html, /id="composerVoiceWaveform"/);

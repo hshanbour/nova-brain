@@ -16,7 +16,7 @@ class Target {
   removeEventListener(name) { delete this.listeners[name]; }
   setAttribute(key, value) { this.attributes[key] = value; }
   replaceChildren(...children) { this.children = children; }
-  click() { this.listeners.click?.(); }
+  click() { return this.listeners.click?.(); }
 }
 
 const documentRef = {
@@ -90,4 +90,30 @@ test('committing a recording for send prevents late recognition events from rest
   assert.equal(waveform.dataset.voiceState, 'complete');
   assert.equal(input.value, '');
   assert.equal(voiceControl.commit(), false);
+});
+
+test('composer server transcription automatically accepts mixed Arabic and English without a locale selector', async () => {
+  let recorder;
+  class Recorder {
+    static isTypeSupported(type) { return type.startsWith('audio/webm'); }
+    constructor() { recorder = this; this.state = 'inactive'; this.mimeType = 'audio/webm'; this.listeners = {}; }
+    addEventListener(name, listener) { this.listeners[name] = listener; }
+    start() { this.state = 'recording'; }
+    stop() { this.state = 'inactive'; this.listeners.dataavailable?.({ data: new Blob(['voice']) }); this.listeners.stop?.(); }
+  }
+  const input = new Target(), button = new Target(), status = new Target();
+  input.value = 'Draft';
+  const control = createComposerVoiceControl({
+    input, button, statusTarget: status,
+    transcribe: async ({ audio }) => { assert.equal(await audio.text(), 'voice'); return { transcript: 'مرحبا Sharp Cuts' }; },
+    dependencies: { MediaRecorder: Recorder, mediaDevices: { async getUserMedia() { return { getTracks: () => [{ stop() {} }] }; } } }
+  });
+  await button.click();
+  assert.equal(control.getLanguage(), 'auto');
+  assert.equal(control.getState(), 'recording');
+  await button.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(control.getState(), 'complete');
+  assert.equal(input.value, 'Draft مرحبا Sharp Cuts');
+  assert.equal(input.dir, 'rtl');
 });

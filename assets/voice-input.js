@@ -5,7 +5,7 @@ export const MICROPHONE_LANGUAGES = Object.freeze([
 ]);
 
 const languages = new Set(MICROPHONE_LANGUAGES.map(({ code }) => code));
-const states = new Set(['idle', 'recording', 'processing', 'complete', 'error']);
+const states = new Set(['idle', 'connecting', 'recording', 'processing', 'complete', 'error']);
 const root = typeof window === 'undefined' ? {} : window;
 const WAVEFORM_BAR_COUNT = 64;
 
@@ -13,7 +13,10 @@ const base = (dependencies = {}) => ({
   SpeechRecognition: root.SpeechRecognition || root.webkitSpeechRecognition,
   storage: root.localStorage,
   mediaDevices: root.navigator?.mediaDevices,
+  MediaRecorder: root.MediaRecorder,
   AudioContext: root.AudioContext || root.webkitAudioContext,
+  schedule: root.setTimeout?.bind(root) || setTimeout,
+  cancelSchedule: root.clearTimeout?.bind(root) || clearTimeout,
   requestAnimationFrame: root.requestAnimationFrame?.bind(root) || ((callback) => setTimeout(callback, 16)),
   cancelAnimationFrame: root.cancelAnimationFrame?.bind(root) || clearTimeout,
   ...dependencies
@@ -250,6 +253,43 @@ export function createVoiceInput(options = {}) {
   };
 }
 
+export function createServerVoiceInput(options = {}) {
+  const dependencies=base(options.dependencies),callbacks={onState:options.onState||(()=>{}),onText:options.onText||(()=>{}),onError:options.onError||(()=>{}),onAmplitude:options.onAmplitude||(()=>{}),onSpectrum:options.onSpectrum||(()=>{})};
+  let state='idle',draft='',stream,recorder,chunks=[],startedAt=0,token=0,accessTimer,maxTimer;
+  const supported=Boolean(dependencies.mediaDevices?.getUserMedia&&dependencies.MediaRecorder&&typeof options.transcribe==='function');
+  const setState=next=>{if(states.has(next)){state=next;callbacks.onState(next);}};
+  const clean=()=>{if(accessTimer!==undefined)dependencies.cancelSchedule(accessTimer);if(maxTimer!==undefined)dependencies.cancelSchedule(maxTimer);accessTimer=maxTimer=undefined;for(const track of stream?.getTracks?.()||[])track.stop();stream=undefined;callbacks.onAmplitude(0);callbacks.onSpectrum([]);};
+  const fail=(id,error)=>{if(id!==token)return;clean();callbacks.onText(draft,metadata(draft),false);callbacks.onError({code:error?.code||'transcription-error',message:error?.message||'Microphone transcription failed. Your draft was restored.',recoverable:true});setState('error');};
+  const start=async(value='')=>{
+    if(!supported||state==='connecting'||state==='recording'||state==='processing')return false;
+    clean();draft=value;chunks=[];const id=++token;setState('connecting');
+    try{
+      const access=Promise.resolve(dependencies.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false})).then(candidate=>{if(id!==token){for(const track of candidate?.getTracks?.()||[])track.stop();throw new Error('Microphone request was cancelled.');}return candidate;});
+      stream=await Promise.race([access,new Promise((_,reject)=>{accessTimer=dependencies.schedule(()=>reject(new Error('Microphone access timed out. Allow microphone access in the browser, then try again.')),20_000);})]);
+      if(accessTimer!==undefined)dependencies.cancelSchedule(accessTimer);accessTimer=undefined;
+      recorder=new dependencies.MediaRecorder(stream,preferredOptions(dependencies.MediaRecorder));
+      recorder.addEventListener('dataavailable',event=>{if(id===token&&event.data?.size)chunks.push(event.data);});
+      recorder.addEventListener('error',event=>fail(id,event.error||new Error('Microphone recording failed.')));
+      recorder.addEventListener('stop',async()=>{
+        if(id!==token)return;clean();setState('processing');
+        try{
+          if(!chunks.length)throw new Error('No speech audio was captured. Please try again.');
+          const audio=new Blob(chunks,{type:recorder.mimeType||'audio/webm'}),result=await options.transcribe({audio,mimeType:audio.type,durationSeconds:Math.max(.1,(Date.now()-startedAt)/1000)});
+          if(id!==token)return;const transcript=String(result?.transcript||result?.text||'').trim();if(!transcript)throw new Error('No speech was detected. Please try again.');
+          const spacer=draft&&!/\s$/.test(draft)?' ':'';const text=`${draft}${spacer}${transcript}`;callbacks.onText(text,metadata(text),false);setState('complete');
+        }catch(error){fail(id,error);}
+      });
+      startedAt=Date.now();recorder.start(250);setState('recording');maxTimer=dependencies.schedule(()=>{if(id===token&&recorder?.state==='recording')recorder.stop();},30_000);return true;
+    }catch(error){fail(id,error);return false;}
+  };
+  return{supported,start,stop(){if(state!=='recording')return false;setState('processing');if(recorder?.state==='recording')recorder.stop();else fail(token,new Error('Microphone recorder is unavailable.'));return true;},commit(){if(!['connecting','recording','processing'].includes(state))return false;token+=1;try{recorder?.stop?.();}catch{}clean();setState('complete');return true;},getState:()=>state,getLanguage:()=> 'auto',setLanguage(){},destroy(){token+=1;try{recorder?.stop?.();}catch{}clean();}};
+}
+
+function preferredOptions(MediaRecorder){
+  for(const mimeType of ['audio/webm;codecs=opus','audio/webm','audio/mp4'])if(MediaRecorder.isTypeSupported?.(mimeType))return{mimeType,audioBitsPerSecond:64_000};
+  return{audioBitsPerSecond:64_000};
+}
+
 export function createComposerVoiceControl(options = {}) {
   const { input, button, statusTarget, errorTarget, waveformTarget, resizeInput } = options;
   if (!input || !button) throw new Error('Composer voice control requires input and button');
@@ -288,7 +328,8 @@ export function createComposerVoiceControl(options = {}) {
       statusTarget.textContent = !controller.supported
         ? 'Microphone is unavailable in this browser.'
         : ({
-            idle: 'Microphone ready',
+            idle: 'Microphone ready · Arabic + English auto-detect',
+            connecting: 'Connecting microphone…',
             recording: 'Listening…',
             processing: 'Processing dictation…',
             complete: 'Dictation complete',
@@ -304,7 +345,7 @@ export function createComposerVoiceControl(options = {}) {
     }
   };
 
-  controller = createVoiceInput({
+  const controllerOptions={
     language: options.language,
     dependencies: options.dependencies,
     onState: (state) => render(state, state === 'recording' ? '' : lastError),
@@ -319,11 +360,12 @@ export function createComposerVoiceControl(options = {}) {
       spectrum = levels;
       render(controller.getState(), lastError);
     }
-  });
+  };
+  controller = typeof options.transcribe==='function'?createServerVoiceInput({...controllerOptions,transcribe:options.transcribe}):createVoiceInput(controllerOptions);
 
-  const click = () => {
+  const click = async () => {
     if (controller.getState() === 'recording') controller.stop();
-    else controller.start(input.value);
+    else await controller.start(input.value);
   };
 
   button.addEventListener('click', click);

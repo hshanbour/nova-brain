@@ -2,7 +2,7 @@ import { createNovaClient, durableTaskRecordsFromMessages, isDurableTaskId, term
 import { ownerMemoryClient } from "./memory-client.js";
 import { selectWorkspace } from "./workspace-navigation.js";
 import { conversationTitle, createConversationBindingState, createConversationHistory } from "./conversation-history.js";
-import { MICROPHONE_LANGUAGES, createComposerVoiceControl } from "./voice-input.js";
+import { createComposerVoiceControl } from "./voice-input.js";
 import { createVoiceOutput, hasLanguageVoice } from "./voice-output.js";
 import { createVoiceV2Client } from "./voice-v2-client.js";
 import { createAudioPlayback, createMediaVoiceCapture } from "./voice-capture.js";
@@ -661,7 +661,6 @@ async function loadCallDetail(id){
 messages.addEventListener("click",(event)=>{const button=event.target.closest(".speak-response");if(!button)return;if(voiceOutput.activeId()===button.dataset.voiceId)voiceOutput.stop();else voiceOutput.speak(button.dataset.speechText,{id:button.dataset.voiceId});});
 
 const voiceSettingsDialog=document.querySelector("#voiceSettingsDialog");
-const microphoneLanguage=document.querySelector("#microphoneLanguage");
 const preferredVoice=document.querySelector("#preferredVoice");
 const autoSpeak=document.querySelector("#autoSpeak");
 function populateVoiceChoices(voices=voiceOutput.getVoices()) {
@@ -679,17 +678,14 @@ autoSpeak.addEventListener("change",()=>voiceOutput.setAutoSpeak(autoSpeak.check
 document.querySelector("#testVoiceButton").addEventListener("click",()=>{showVoiceDiagnostic("Starting local browser voice test…");voiceOutput.speak("Nova voice test.",{id:"test-voice",onComplete(){showVoiceDiagnostic("Test Voice completed. Did you hear it?");},onError(reason){showVoiceDiagnostic(`Test Voice failed: ${reason}. Choose another voice and retry.`);}});});
 
 const voiceButton=document.querySelector("#voiceButton");
-const voiceControl=createComposerVoiceControl({input,button:voiceButton,statusTarget:document.querySelector("#composerVoiceStatus"),errorTarget:document.querySelector("#composerVoiceError"),waveformTarget:document.querySelector("#composerVoiceWaveform"),resizeInput,dependencies:{SpeechRecognition:window.SpeechRecognition||window.webkitSpeechRecognition,storage:window.localStorage,mediaDevices:window.navigator?.mediaDevices,AudioContext:window.AudioContext||window.webkitAudioContext}});
-function setMicrophoneLanguage(value){voiceControl.setLanguage(value);microphoneLanguage.value=voiceControl.getLanguage();}
-for(const {label,code} of MICROPHONE_LANGUAGES){const option=document.createElement("option");option.value=code;option.textContent=`${label} · ${code}`;microphoneLanguage.append(option);}
-setMicrophoneLanguage(voiceControl.getLanguage());
-microphoneLanguage.addEventListener("change",()=>setMicrophoneLanguage(microphoneLanguage.value));
-document.querySelector("#voiceInputSupport").textContent=voiceControl.controller.supported?"Browser recognition uses this primary locale for every listen and restart; it does not reliably auto-detect Arabic and English together.":"Speech recognition is unavailable in this browser.";
+const voiceClient=createVoiceV2Client({getFamiliarityConsent:()=>speakerFamiliarity.getConsentToken()});
+const voiceControl=createComposerVoiceControl({input,button:voiceButton,statusTarget:document.querySelector("#composerVoiceStatus"),errorTarget:document.querySelector("#composerVoiceError"),waveformTarget:document.querySelector("#composerVoiceWaveform"),resizeInput,transcribe:({audio,mimeType,durationSeconds})=>voiceClient.transcribe({audio,mimeType,durationSeconds,relevanceContext:{voice_session_engaged:false,composer_dictation:true}}),dependencies:{mediaDevices:window.navigator?.mediaDevices,MediaRecorder:window.MediaRecorder,storage:window.localStorage}});
+document.querySelector("#voiceInputSupport").textContent=voiceControl.controller.supported?"Nova records locally, then its server transcription automatically handles English, Arabic and mixed speech.":"Microphone recording is unavailable in this browser.";
 if(!voiceControl.controller.supported){voiceButton.classList.add("unsupported");voiceButton.title="Voice input is not supported in this browser";}
 const voiceModeButton=document.querySelector("#voiceModeButton");const endVoiceButton=document.querySelector("#endVoiceButton");const voiceModeStatus=document.querySelector("#voiceModeStatus");
 const voiceModeLabels={idle:"Voice idle",connecting:"Connecting microphone…",getting_ready:"Getting ready…",listening:"Voice ready · speak to Nova",barge_candidate:"Nova speaking… · speak to interrupt",barge_verifying:"Nova speaking… · speak to interrupt",paused_waiting_for_user:"Nova paused · say continue when ready",transcribing:"Nova heard you · processing…",thinking:"Nova thinking…",speaking:"Nova speaking… · speak to interrupt",interrupted:"Interrupted · getting ready…",retrying:"Voice ready · retrying quietly…",error:"Voice needs attention"};
 const capture=createMediaVoiceCapture({mediaDevices:navigator.mediaDevices,MediaRecorder:window.MediaRecorder,AudioContext:window.AudioContext||window.webkitAudioContext});
-const voiceClient=createVoiceV2Client({getFamiliarityConsent:()=>speakerFamiliarity.getConsentToken()});const playback=createAudioPlayback({Audio:window.Audio,URL});const interruptionPlayback=createAudioPlayback({Audio:window.Audio,URL});
+const playback=createAudioPlayback({Audio:window.Audio,URL});const interruptionPlayback=createAudioPlayback({Audio:window.Audio,URL});
 voiceV2=createVoiceV2({capture,client:voiceClient,playback,interruptionPlayback,getConversationId:()=>client.conversationId,sendTurn:(text,{signal,prepareAssistant,speaker})=>{input.value="";resizeInput();return sendMessage(text,{autoSpeakResponse:false,throwOnError:true,signal,prepareAssistant,context:{voice:true,speaker}});},onTranscript(text){input.value=text;resizeInput();},onState({active,state}){voiceModeStatus.dataset.state=state;voiceModeStatus.textContent=voiceModeLabels[state]||state;voiceModeButton.classList.toggle("active",active);voiceModeButton.disabled=active;endVoiceButton.disabled=!active;voiceButton.disabled=active&&state!=="speaking";voiceButton.setAttribute("aria-label",active&&state==="speaking"?"Interrupt Nova and speak":"Dictate message");},onTiming(timing){console.info("[nova-voice-timing]",timing);void voiceClient.telemetry(timing).catch(()=>{});showVoiceDiagnostic(`Voice turn ${timing.turnId}: ${timing.stage}. ${Object.entries(timing.measurements).map(([name,value])=>`${name} ${value} ms`).join(" · ")}`);},onNotice(message){voiceModeStatus.textContent=message;},onError(message){requestError.textContent=message;requestError.hidden=false;}});
 voiceModeButton.addEventListener("click",async()=>{requestError.hidden=true;if(!capture.supported){requestError.textContent="Start Voice requires MediaRecorder, microphone access, and Web Audio support.";requestError.hidden=false;return;}try{const readinessPromise=voiceClient.readiness();const startPromise=voiceV2.start();const [readiness,started]=await Promise.all([readinessPromise,startPromise]);if(!readiness.available){if(started)voiceV2.end();throw new Error("Voice V2 providers are not fully configured in this Preview.");}}catch(error){voiceV2.end();requestError.textContent=error.message||"Voice V2 could not start.";requestError.hidden=false;}});
 endVoiceButton.addEventListener("click",()=>voiceV2.end());

@@ -4,7 +4,8 @@ export function createMediaVoiceCapture({
   now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 1_500, shortFragmentSilenceMs = 1_900,
   longUtteranceSilenceMs = 1_300, resumedSpeechBonusMs = 100, maxEndpointSilenceMs = 2_200,
   noSpeechMs = 8_000, maxDurationMs = 30_000, calibrationMs = 400,
-  speechThreshold = 0.035, bargeThreshold = 0.025, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 3
+  speechThreshold = 0.035, bargeThreshold = 0.025, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 3,
+  connectTimeoutMs = 20_000
 }) {
   let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false; let primedCapture;let audioSettings={};
   const supported = Boolean(mediaDevices?.getUserMedia && MediaRecorder && AudioContext);
@@ -14,7 +15,15 @@ export function createMediaVoiceCapture({
 
   async function connect() {
     if (!supported) throw new Error("Voice V2 requires microphone recording and audio analysis support.");
-    stream = await mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    const requestGeneration=++generation;
+    let accessTimer;
+    const access=Promise.resolve(mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false })).then(candidate=>{
+      if(requestGeneration!==generation){for(const track of candidate?.getTracks?.()||[])track.stop();throw new Error("Microphone request was cancelled.");}
+      return candidate;
+    });
+    try{
+      stream=await Promise.race([access,new Promise((_,reject)=>{accessTimer=schedule(()=>{if(requestGeneration===generation)generation+=1;reject(new Error("Microphone access timed out. Allow microphone access in the browser, then try again."));},connectTimeoutMs);})]);
+    }finally{if(accessTimer!==undefined)cancelSchedule(accessTimer);}
     const audioTrack=stream.getAudioTracks?.()[0]||stream.getTracks?.().find?.((track)=>track.kind==="audio")||stream.getTracks?.()[0];const reported=audioTrack?.getSettings?.()||{};audioSettings={...(typeof reported.echoCancellation==="boolean"?{echoCancellation:reported.echoCancellation}:{}),...(typeof reported.noiseSuppression==="boolean"?{noiseSuppression:reported.noiseSuppression}:{}),...(typeof reported.autoGainControl==="boolean"?{autoGainControl:reported.autoGainControl}:{}),...(Number.isFinite(reported.sampleRate)?{sampleRate:reported.sampleRate}:{}),...(Number.isFinite(reported.channelCount)?{channelCount:reported.channelCount}:{})};
     if(!audioTrack||audioTrack.readyState==="ended"||audioTrack.enabled===false||stream.active===false)throw new Error("Microphone stream is not live and enabled.");
     audioSettings={...audioSettings,trackLive:audioTrack.readyState!=="ended",trackEnabled:audioTrack.enabled!==false};
