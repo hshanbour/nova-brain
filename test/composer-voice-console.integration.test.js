@@ -93,7 +93,7 @@ test('committing a recording for send prevents late recognition events from rest
 });
 
 test('composer server transcription automatically accepts mixed Arabic and English without a locale selector', async () => {
-  let recorder;
+  let recorder,requestedConstraints;
   class Recorder {
     static isTypeSupported(type) { return type.startsWith('audio/webm'); }
     constructor() { recorder = this; this.state = 'inactive'; this.mimeType = 'audio/webm'; this.listeners = {}; }
@@ -106,11 +106,12 @@ test('composer server transcription automatically accepts mixed Arabic and Engli
   const control = createComposerVoiceControl({
     input, button, statusTarget: status,
     transcribe: async ({ audio }) => { assert.equal(await audio.text(), 'voice'); return { transcript: 'مرحبا Sharp Cuts' }; },
-    dependencies: { MediaRecorder: Recorder, mediaDevices: { async getUserMedia() { return { getTracks: () => [{ stop() {} }] }; } } }
+    dependencies: { MediaRecorder: Recorder, getAudioConstraints:()=>({deviceId:{exact:'owner-mic'},echoCancellation:true}),mediaDevices: { async getUserMedia(value) { requestedConstraints=value;return { getTracks: () => [{ stop() {} }] }; } } }
   });
   await button.click();
   assert.equal(control.getLanguage(), 'auto');
   assert.equal(control.getState(), 'recording');
+  assert.deepEqual(requestedConstraints,{audio:{deviceId:{exact:'owner-mic'},echoCancellation:true},video:false});
   await button.click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(control.getState(), 'complete');

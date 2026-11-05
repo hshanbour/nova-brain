@@ -255,16 +255,18 @@ export function createVoiceInput(options = {}) {
 
 export function createServerVoiceInput(options = {}) {
   const dependencies=base(options.dependencies),callbacks={onState:options.onState||(()=>{}),onText:options.onText||(()=>{}),onError:options.onError||(()=>{}),onAmplitude:options.onAmplitude||(()=>{}),onSpectrum:options.onSpectrum||(()=>{})};
-  let state='idle',draft='',stream,recorder,chunks=[],startedAt=0,token=0,accessTimer,maxTimer;
+  let state='idle',draft='',stream,recorder,chunks=[],startedAt=0,token=0,accessTimer,maxTimer,context,source,analyser,frame;
   const supported=Boolean(dependencies.mediaDevices?.getUserMedia&&dependencies.MediaRecorder&&typeof options.transcribe==='function');
   const setState=next=>{if(states.has(next)){state=next;callbacks.onState(next);}};
-  const clean=()=>{if(accessTimer!==undefined)dependencies.cancelSchedule(accessTimer);if(maxTimer!==undefined)dependencies.cancelSchedule(maxTimer);accessTimer=maxTimer=undefined;for(const track of stream?.getTracks?.()||[])track.stop();stream=undefined;callbacks.onAmplitude(0);callbacks.onSpectrum([]);};
+  const clean=()=>{if(accessTimer!==undefined)dependencies.cancelSchedule(accessTimer);if(maxTimer!==undefined)dependencies.cancelSchedule(maxTimer);if(frame!==undefined)dependencies.cancelAnimationFrame(frame);accessTimer=maxTimer=frame=undefined;source?.disconnect?.();analyser?.disconnect?.();context?.close?.();for(const track of stream?.getTracks?.()||[])track.stop();stream=context=source=analyser=undefined;callbacks.onAmplitude(0);callbacks.onSpectrum([]);};
+  const startMeter=id=>{if(!dependencies.AudioContext)return;context=new dependencies.AudioContext();source=context.createMediaStreamSource(stream);analyser=context.createAnalyser();analyser.fftSize=256;analyser.smoothingTimeConstant=.62;source.connect(analyser);const samples=new Uint8Array(analyser.fftSize),frequencies=new Uint8Array(analyser.frequencyBinCount),smoothed=Array.from({length:WAVEFORM_BAR_COUNT},()=>0);const tick=()=>{if(id!==token||state!=="recording")return;analyser.getByteTimeDomainData(samples);analyser.getByteFrequencyData(frequencies);let sum=0;for(const value of samples){const normalized=(value-128)/128;sum+=normalized*normalized;}const rms=Math.sqrt(sum/samples.length),amplitude=rms<.004?0:Math.min(1,rms*8);callbacks.onAmplitude(amplitude);callbacks.onSpectrum(smoothed.map((previous,index)=>{const start=Math.floor(index/WAVEFORM_BAR_COUNT*frequencies.length),end=Math.max(start+1,Math.floor((index+1)/WAVEFORM_BAR_COUNT*frequencies.length));let peak=0;for(let bin=start;bin<end;bin+=1)peak=Math.max(peak,frequencies[bin]||0);const measured=peak/255,next=previous+(measured-previous)*(measured>previous ? .46 : .18);smoothed[index]=next<.012?0:next;return smoothed[index];}));frame=dependencies.requestAnimationFrame(tick);};void context.resume?.();tick();};
   const fail=(id,error)=>{if(id!==token)return;clean();callbacks.onText(draft,metadata(draft),false);callbacks.onError({code:error?.code||'transcription-error',message:error?.message||'Microphone transcription failed. Your draft was restored.',recoverable:true});setState('error');};
   const start=async(value='')=>{
     if(!supported||state==='connecting'||state==='recording'||state==='processing')return false;
     clean();draft=value;chunks=[];const id=++token;setState('connecting');
     try{
-      const access=Promise.resolve(dependencies.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false})).then(candidate=>{if(id!==token){for(const track of candidate?.getTracks?.()||[])track.stop();throw new Error('Microphone request was cancelled.');}return candidate;});
+      const audioConstraints=typeof dependencies.getAudioConstraints==='function'?dependencies.getAudioConstraints():{echoCancellation:true,noiseSuppression:true,autoGainControl:true};
+      const access=Promise.resolve(dependencies.mediaDevices.getUserMedia({audio:audioConstraints,video:false})).then(candidate=>{if(id!==token){for(const track of candidate?.getTracks?.()||[])track.stop();throw new Error('Microphone request was cancelled.');}return candidate;});
       stream=await Promise.race([access,new Promise((_,reject)=>{accessTimer=dependencies.schedule(()=>reject(new Error('Microphone access timed out. Allow microphone access in the browser, then try again.')),20_000);})]);
       if(accessTimer!==undefined)dependencies.cancelSchedule(accessTimer);accessTimer=undefined;
       recorder=new dependencies.MediaRecorder(stream,preferredOptions(dependencies.MediaRecorder));
@@ -279,7 +281,7 @@ export function createServerVoiceInput(options = {}) {
           const spacer=draft&&!/\s$/.test(draft)?' ':'';const text=`${draft}${spacer}${transcript}`;callbacks.onText(text,metadata(text),false);setState('complete');
         }catch(error){fail(id,error);}
       });
-      startedAt=Date.now();recorder.start(250);setState('recording');maxTimer=dependencies.schedule(()=>{if(id===token&&recorder?.state==='recording')recorder.stop();},30_000);return true;
+      startedAt=Date.now();recorder.start(250);setState('recording');startMeter(id);maxTimer=dependencies.schedule(()=>{if(id===token&&recorder?.state==='recording')recorder.stop();},30_000);return true;
     }catch(error){fail(id,error);return false;}
   };
   return{supported,start,stop(){if(state!=='recording')return false;setState('processing');if(recorder?.state==='recording')recorder.stop();else fail(token,new Error('Microphone recorder is unavailable.'));return true;},commit(){if(!['connecting','recording','processing'].includes(state))return false;token+=1;try{recorder?.stop?.();}catch{}clean();setState('complete');return true;},getState:()=>state,getLanguage:()=> 'auto',setLanguage(){},destroy(){token+=1;try{recorder?.stop?.();}catch{}clean();}};

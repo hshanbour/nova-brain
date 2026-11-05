@@ -2,7 +2,7 @@ import {createVoiceControl} from "./voice-control.js";
 
 export function createVoiceV2({
   capture, client, playback, interruptionPlayback = playback, sendTurn, getConversationId,
-  onTranscript = () => {}, onState = () => {}, onError = () => {}, onNotice = () => {}, onTiming = () => {},
+  onTranscript = () => {}, onState = () => {}, onError = () => {}, onNotice = () => {}, onTiming = () => {}, onInputLevel = () => {},
   schedule = (callback, delay) => setTimeout(callback, delay), cancelSchedule = (timer) => clearTimeout(timer),
   now = () => globalThis.performance?.now?.() ?? Date.now(), retryDelayMs = 900, ttsRecoveryDelayMs = 250, checkpointTtlMs = 120_000, provisionalDuckMs = 350
 }) {
@@ -35,6 +35,7 @@ export function createVoiceV2({
       onAudio: (recording) => processRecording(recording,{interruptionProbe}),
       onNoSpeech: () => interruptionProbe?(pausedWaiting()?listen({interruptionProbe:true}):rejectCandidate("no_speech")):retry("No speech detected."),
       onError: (error) => fatal(error?.message || "Microphone recording failed."),
+      onLevel: (detail) => onInputLevel(detail),
       onEndpoint: ({ phase, graceMs }) => { if (valid(current)) publish(pausedWaiting()?"paused_waiting_for_user":interruptionProbe?"barge_verifying":"listening", { phase: phase === "possible-end" ? "endpoint-grace" : "speech-resumed", graceMs }); }
     });
   }

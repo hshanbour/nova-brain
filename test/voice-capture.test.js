@@ -41,6 +41,13 @@ test("microphone connection fails clearly instead of remaining stuck when browse
   await assert.rejects(pending,/Microphone access timed out/);
 });
 
+test("the owner-selected microphone is used and live input levels are exposed without changing language",async()=>{
+  const levels=[];const flow=setup({getAudioConstraints:()=>({deviceId:{exact:"owner-mic"},echoCancellation:true,noiseSuppression:true,autoGainControl:true}),onInputLevel:value=>levels.push(value)});
+  await flow.capture.connect();flow.capture.listen({});flow.setLevel(.12);flow.run();flow.run();
+  assert.deepEqual(flow.constraints(),{audio:{deviceId:{exact:"owner-mic"},echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false});
+  assert.ok(levels.some(item=>item.level>=.1));assert.ok(levels.every(item=>Number.isFinite(item.threshold)));
+});
+
 test("capture readiness is emitted only after the recorder and acoustic sampler are armed",async()=>{const flow=setup();await flow.capture.connect();let ready;let recording;flow.capture.listen({onReady:value=>{ready=value;assert.equal(flow.recorder().state,"recording");},onAudio:value=>{recording=value;}});assert.deepEqual({recorderReady:ready.recorderReady,acousticDetectorReady:ready.acousticDetectorReady},{recorderReady:true,acousticDetectorReady:true});flow.speakFor(500);flow.pauseFor(2_000);assert.ok(recording?.audio instanceof Blob);});
 
 test("MediaRecorder VAD reports bounded no-speech without producing an audio turn", async () => {

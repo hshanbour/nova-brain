@@ -26,9 +26,16 @@ test('console uses the canonical composer voice contract', async () => {
   assert.match(consoleJs, /window\.navigator\?\.mediaDevices/);
   assert.match(consoleJs, /composer_dictation:true/);
   assert.match(consoleJs, /automatically handles English, Arabic and mixed speech/);
+  assert.match(consoleJs, /microphoneStorageKey="nova-microphone-device-id"/);
+  assert.match(consoleJs, /getAudioConstraints:microphoneConstraints/);
+  assert.match(consoleJs, /renderUsableCalendarSection/);
+  assert.match(consoleJs, /No playable media attached/);
+  assert.match(consoleJs, /scrollIntoView/);
   assert.match(consoleJs, /approveNinetyDayPlan/);
   assert.match(consoleJs, /No publication, message, provider write or spend was released/);
   assert.doesNotMatch(html, /microphoneLanguage/);
+  assert.match(html, /id="microphoneDevice"/);
+  assert.match(html, /id="microphoneLevel"/);
   assert.doesNotMatch(consoleJs, /requestAnimationFrame\.bind|cancelAnimationFrame\.bind/);
   assert.match(voice, /recording.*processing.*complete.*error/s);
   assert.match(html, /id="composerVoiceWaveform"/);

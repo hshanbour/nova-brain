@@ -144,10 +144,10 @@
   </template>
   <section id="voiceSettingsDialog" class="memory-dialog voice-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="voiceSettingsTitle" hidden>
     <form method="dialog">
-      <div class="dialog-heading"><div><p class="eyebrow">Secondary legacy controls</p><h2 id="voiceSettingsTitle">Browser voice settings</h2></div><button type="button" class="dialog-close" data-close-voice-settings aria-label="Close voice settings">×</button></div>
-      <fieldset><legend>Voice input</legend><p id="voiceInputSupport" class="privacy-note"></p></fieldset>
+      <div class="dialog-heading"><div><p class="eyebrow">Input and output</p><h2 id="voiceSettingsTitle">Voice settings</h2></div><button type="button" class="dialog-close" data-close-voice-settings aria-label="Close voice settings">×</button></div>
+      <fieldset><legend>Voice input</legend><label>Microphone<select id="microphoneDevice"><option value="">System default microphone</option></select></label><meter id="microphoneLevel" min="0" max="1" low="0.02" high="0.08" optimum="0.12" value="0" aria-label="Live microphone level"></meter><p id="microphoneDiagnostic" class="privacy-note" role="status">Choose the microphone that moves the level meter when you speak.</p><p id="voiceInputSupport" class="privacy-note"></p></fieldset>
       <fieldset><legend>Voice output</legend><label>Preferred browser voice<select id="preferredVoice"></select></label><label class="toggle-label"><input id="autoSpeak" type="checkbox"> Automatically speak new Nova responses</label><div class="voice-test-row"><button type="button" class="secondary-button" id="testVoiceButton">Test Voice</button><span id="voiceDiagnostic" role="status">Ready to test browser speech.</span></div><p id="voiceOutputSupport" class="privacy-note"></p></fieldset>
-      <p class="privacy-note">These browser-native controls are separate from premium Start Voice. Preferences stay in this browser and are not saved to Nova memory.</p>
+      <p class="privacy-note">Microphone and browser voice preferences stay in this browser and are not saved to Nova memory.</p>
       <div class="dialog-actions"><button type="button" class="secondary-button" data-close-voice-settings>Done</button></div>
     </form>
   </section>

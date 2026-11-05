@@ -5,7 +5,9 @@ export function createMediaVoiceCapture({
   longUtteranceSilenceMs = 1_300, resumedSpeechBonusMs = 100, maxEndpointSilenceMs = 2_200,
   noSpeechMs = 8_000, maxDurationMs = 30_000, calibrationMs = 400,
   speechThreshold = 0.035, bargeThreshold = 0.025, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 3,
-  connectTimeoutMs = 20_000
+  connectTimeoutMs = 20_000,
+  getAudioConstraints = () => ({ echoCancellation: true, noiseSuppression: true, autoGainControl: true }),
+  onInputLevel = () => {}
 }) {
   let stream; let context; let analyser; let source; let recorder; let timer; let generation = 0; let listening = false; let primedCapture;let audioSettings={};
   const supported = Boolean(mediaDevices?.getUserMedia && MediaRecorder && AudioContext);
@@ -17,7 +19,7 @@ export function createMediaVoiceCapture({
     if (!supported) throw new Error("Voice V2 requires microphone recording and audio analysis support.");
     const requestGeneration=++generation;
     let accessTimer;
-    const access=Promise.resolve(mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false })).then(candidate=>{
+    const access=Promise.resolve(mediaDevices.getUserMedia({ audio: getAudioConstraints(), video: false })).then(candidate=>{
       if(requestGeneration!==generation){for(const track of candidate?.getTracks?.()||[])track.stop();throw new Error("Microphone request was cancelled.");}
       return candidate;
     });
@@ -32,7 +34,7 @@ export function createMediaVoiceCapture({
     return Object.freeze({...audioSettings});
   }
 
-  function listen({ onReady, onAudio, onNoSpeech, onError, onEndpoint, interruptionProbe = false, reuseCandidateCapture = false }) {
+  function listen({ onReady, onAudio, onNoSpeech, onError, onEndpoint, onLevel, interruptionProbe = false, reuseCandidateCapture = false }) {
     clearTimer(); const primed = interruptionProbe && reuseCandidateCapture ? primedCapture : undefined; if (!primed) stopRecorder(); primedCapture = undefined; const current = ++generation;
     const activeCalibrationMs = interruptionProbe ? 0 : calibrationMs;
     const activeEndpointSilenceMs = interruptionProbe ? Math.min(endpointSilenceMs, 700) : endpointSilenceMs;
@@ -65,10 +67,10 @@ export function createMediaVoiceCapture({
     if (!listening) { onError?.(new Error("Microphone recorder did not become ready.")); return; }
     const sample = () => {
       if (current !== generation || !listening) return;
-      const elapsed = now() - startedAt; const level = rms();
+      const elapsed = now() - startedAt; const level = rms(); const threshold=Math.max(speechThreshold,noiseFloor*3);const levelDetail={level,noiseFloor,threshold};onInputLevel(levelDetail);onLevel?.(levelDetail);
       if(elapsed<activeCalibrationMs&&level<Math.max(0.065,noiseFloor*4)){noiseFloor=Math.min(0.03,noiseFloor*0.75+level*0.25);timer=schedule(sample,sampleIntervalMs);return;}
       if (!heardSpeech) noiseFloor = Math.min(0.03, noiseFloor * 0.92 + level * 0.08);
-      if (level >= Math.max(speechThreshold, noiseFloor * 3)) {
+      if (level >= threshold) {
         if (endpointStartedAt) {
           resumedEndpoints += 1;
           onEndpoint?.({ phase: "resumed", at: now(), pendingSince: endpointStartedAt, graceMs: endpointGraceMs, resumedEndpoints });
