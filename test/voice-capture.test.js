@@ -25,11 +25,11 @@ function setup(options = {}) {
   return { capture, setLevel(value) { level = value; }, run, runFor, speakFor, pauseFor, now: () => clock, tracks, recorder: () => activeRecorder, recorders, constraints: () => constraints };
 }
 
-test("MediaRecorder VAD finalizes substantial speech after a patient bounded endpoint", async () => {
+test("MediaRecorder VAD finalizes substantial speech after a low-latency bounded endpoint", async () => {
   const flow = setup(); const settings=await flow.capture.connect(); let recording;
-  flow.capture.listen({ onAudio: (value) => { recording = value; } }); flow.speakFor(1_500); flow.pauseFor(1_950);
-  assert.ok(recording.audio instanceof Blob); assert.match(recording.mimeType, /^audio\/webm/); assert.ok(recording.durationSeconds >= 3.0 && recording.durationSeconds <= 3.55);
-  assert.ok(recording.endpointGraceMs >= 1_450 && recording.endpointGraceMs <= 1_550);
+  flow.capture.listen({ onAudio: (value) => { recording = value; } }); flow.speakFor(1_500); flow.pauseFor(1_100);
+  assert.ok(recording.audio instanceof Blob); assert.match(recording.mimeType, /^audio\/webm/); assert.ok(recording.durationSeconds >= 2.25 && recording.durationSeconds <= 2.55);
+  assert.ok(recording.endpointGraceMs >= 850 && recording.endpointGraceMs <= 950);
   assert.deepEqual(flow.constraints(), { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
   assert.deepEqual(settings,{echoCancellation:true,noiseSuppression:true,autoGainControl:true,sampleRate:48000,channelCount:1,trackLive:true,trackEnabled:true});
 });
@@ -101,7 +101,7 @@ test("100 ms capture retains the complete WebM stream and initialization header"
   assert.equal("preRollMs" in recording, false);
 });
 
-for (const hesitationMs of [500, 700, 1_000, 1_300]) {
+for (const hesitationMs of [500, 700]) {
   test(`${hesitationMs} ms natural hesitation resumes the same recording and turn`, async () => {
     const flow = setup(); await flow.capture.connect(); const endpointEvents = []; const recordings = [];
     flow.capture.listen({ onAudio: (value) => recordings.push(value), onEndpoint: (value) => endpointEvents.push(value) });
@@ -113,7 +113,7 @@ for (const hesitationMs of [500, 700, 1_000, 1_300]) {
   });
 }
 
-test("1,500 ms pause after a short fragment remains the same turn",async()=>{const flow=setup();await flow.capture.connect();const recordings=[];flow.capture.listen({onAudio:(value)=>recordings.push(value)});flow.recorder().emit(new Uint8Array([0x1a,0x45,0xdf,0xa3]));flow.speakFor(500);flow.recorder().emit("before");flow.pauseFor(1_500);assert.equal(recordings.length,0);flow.speakFor(300);flow.recorder().emit("after");flow.pauseFor(2_000);assert.equal(recordings.length,1);assert.match(await recordings[0].audio.text(),/beforeafter/);});
+test("1,000 ms pause after a short fragment remains the same turn",async()=>{const flow=setup();await flow.capture.connect();const recordings=[];flow.capture.listen({onAudio:(value)=>recordings.push(value)});flow.recorder().emit(new Uint8Array([0x1a,0x45,0xdf,0xa3]));flow.speakFor(500);flow.recorder().emit("before");flow.pauseFor(1_000);assert.equal(recordings.length,0);flow.speakFor(300);flow.recorder().emit("after");flow.pauseFor(1_400);assert.equal(recordings.length,1);assert.match(await recordings[0].audio.text(),/beforeafter/);});
 
 test("several pauses in one long Arabic utterance remain one complete turn", async () => {
   const flow = setup(); await flow.capture.connect(); const recordings = [];

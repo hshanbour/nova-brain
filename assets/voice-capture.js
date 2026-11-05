@@ -1,8 +1,8 @@
 export function createMediaVoiceCapture({
   mediaDevices, MediaRecorder, AudioContext,
   schedule = (callback, delay) => setTimeout(callback, delay), cancelSchedule = (timer) => clearTimeout(timer),
-  now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 1_500, shortFragmentSilenceMs = 1_900,
-  longUtteranceSilenceMs = 1_300, resumedSpeechBonusMs = 100, maxEndpointSilenceMs = 2_200,
+  now = () => Date.now(), sampleIntervalMs = 50, endpointSilenceMs = 900, shortFragmentSilenceMs = 1_250,
+  longUtteranceSilenceMs = 800, resumedSpeechBonusMs = 100, maxEndpointSilenceMs = 1_500,
   noSpeechMs = 8_000, maxDurationMs = 30_000, calibrationMs = 400,
   speechThreshold = 0.035, bargeThreshold = 0.025, recorderTimesliceMs = 100, bargeAcousticFrames = 2, bargeSpeechFrames = 3,
   connectTimeoutMs = 20_000,

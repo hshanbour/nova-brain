@@ -35,6 +35,7 @@ export function classifyConversationalRelevance({ transcript, speaker, context =
   if (!owner && context.voice_session_engaged === true && (selfIdentityClaim || identityQuestion)) return decision(AUDIO_RELEVANCE.ADDRESSED, true, "restricted_identity_conversation_in_active_session", .84);
   if (context.interruption === true && owner && (directQuestion || novaDirectedLanguage)) return decision(AUDIO_RELEVANCE.INTERRUPTION, true, "verified_owner_direct_interruption", .86);
   if (context.interruption === true) return decision(AUDIO_RELEVANCE.BACKGROUND, false, "speech_not_directed_to_nova_during_playback", .78);
+  if (context.voice_session_engaged === true && (directQuestion || novaDirectedLanguage || conversationalGreeting)) return decision(AUDIO_RELEVANCE.ADDRESSED, true, "conversational_turn_in_active_voice_session", .84);
   if (owner && directQuestion) return decision(AUDIO_RELEVANCE.ADDRESSED, true, "verified_owner_question_in_listening_window", .82);
   if (owner && context.voice_session_engaged === true && ownerNovaImperative) return decision(AUDIO_RELEVANCE.ADDRESSED, true, "verified_owner_nova_imperative_in_active_session", .8);
   if (owner) return decision(AUDIO_RELEVANCE.BACKGROUND, false, "owner_speech_not_addressed_to_nova", .76);
