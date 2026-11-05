@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createSpeakerEngineCoordinator, createSpeakerEngineResult, speakerFromAuthoritativeResult, SPEAKER_ENGINE_EVIDENCE } from "../src/voice/speaker-engine.js";
 import { createEagleShadowEngine } from "../src/voice/eagle-speaker-engine.js";
 import { createSpeakerAssertions } from "../src/voice/speaker-assertion.js";
+import { createEcapaSpeakerEngine } from "../src/voice/ecapa-speaker-engine.js";
 
 const engine=(id,result,{authoritative=false,fail=false}={})=>({id,version:`${id}-v1`,authoritative,configured:true,async readiness(){return{available:true};},async recognize(){if(fail)throw Object.assign(new Error("secret raw audio YXVkaW8="),{code:"failed"});return createSpeakerEngineResult({engineId:id,engineVersion:`${id}-v1`,...result});}});
 
@@ -17,3 +18,13 @@ test("shadow failure is isolated while authoritative failure fails closed",async
 test("comparison telemetry and serialized contracts exclude audio and biometric evidence",async()=>{const logs=[];const result=createSpeakerEngineResult({engineId:"ecapa",engineVersion:"v1",status:"unknown",representationId:"vad_v3",diagnostics:{voicedDurationSeconds:2,embedding:[1,2],audioBase64:"YXVkaW8="},evidence:{representation:[1,2],audioBase64:"YXVkaW8="}});const coordinator=createSpeakerEngineCoordinator({authoritativeEngine:{...engine("ecapa",result,{authoritative:true}),async recognize(){return result;}},logger:{info(...args){logs.push(args);}}});const report=await coordinator.recognize({audioBase64:"YXVkaW8="},{});assert.equal(report.authoritative[SPEAKER_ENGINE_EVIDENCE].representation.length,2);assert.equal(report.authoritative.representationId,"vad_v3");assert.doesNotMatch(JSON.stringify({report,logs}),/YXVkaW8|embedding|\[1,2\]/);});
 
 test("Eagle adapter is disabled without key runtime and independent profiles",async()=>{const eagle=createEagleShadowEngine();assert.equal(eagle.authoritative,false);assert.equal((await eagle.readiness()).status,"Disabled");assert.equal((await eagle.recognize()).error.code,"not_configured");});
+
+test("ECAPA passes server calibration into multi-variant owner matching",async()=>{
+  let calibration;
+  const extractor={configured:true,async readiness(){return{available:true};},async extract(){return{sufficient:true,representation:[1,0],representationVariants:[{label:"vad_v3",representation:[1,0]}],extractorVersion:"ecapa-v1",quality:"accepted",latencyMs:12};}};
+  const identity={async recognizeMany(_representations,value){calibration=value;return{state:"confirmed",speakerProfileId:"owner",relation:"owner",confidence:.9,candidateCount:1,threshold:.35,ambiguityMargin:.05};}};
+  const result=await createEcapaSpeakerEngine({extractor,identity}).recognize({durationSeconds:2},{requestId:"request",transcriptPromise:Promise.resolve({transcript:"Hello Nova"}),readyPromise:Promise.resolve(),speakerCalibration:{threshold:.35,ambiguityMargin:.05}});
+  assert.deepEqual(calibration,{threshold:.35,ambiguityMargin:.05});
+  assert.equal(result.status,"confirmed");
+  assert.equal(result.candidateProfileId,"owner");
+});

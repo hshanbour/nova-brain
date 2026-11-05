@@ -1,9 +1,9 @@
-export const ELEVENLABS_DEFAULT_TTS_MODEL = "eleven_v3_conversational";
+export const ELEVENLABS_DEFAULT_TTS_MODEL = "eleven_flash_v2_5";
 export const ELEVENLABS_OUTPUT_FORMAT = "mp3_44100_128";
 
 const MODEL_POLICY = Object.freeze([
-  Object.freeze({ id: "eleven_v3_conversational", multilingual: true, continuityText: false, reason: "expressive-realtime" }),
-  Object.freeze({ id: "eleven_flash_v2_5", multilingual: true, continuityText: true, reason: "low-latency-multilingual-fallback" }),
+  Object.freeze({ id: "eleven_flash_v2_5", multilingual: true, continuityText: true, reason: "low-latency-multilingual" }),
+  Object.freeze({ id: "eleven_v3_conversational", multilingual: true, continuityText: false, reason: "expressive-fallback" }),
   Object.freeze({ id: "eleven_multilingual_v2", multilingual: true, continuityText: true, reason: "stable-multilingual-fallback" })
 ]);
 

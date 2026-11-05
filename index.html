@@ -67,6 +67,8 @@
             <textarea id="messageInput" name="message" rows="1" maxlength="12000" placeholder="Tell Nova what you want to accomplish…" required></textarea>
             <span id="composerVoiceWaveform" data-voice-state="idle" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></span>
             <div class="composer-actions">
+                <button class="dictation-action" id="composerVoiceReviewButton" type="button" hidden>Stop &amp; review</button>
+                <button class="dictation-action dictation-send" id="composerVoiceSendButton" type="button" hidden>Send immediately</button>
               <button class="icon-button voice-button" id="voiceButton" type="button" data-voice-state="idle" aria-pressed="false" aria-describedby="composerVoiceStatus" aria-label="Dictate message" title="Dictate message"><span></span></button>
               <button class="send-button" id="sendButton" type="submit" aria-label="Send message"><span>Send</span><span class="send-arrow">↑</span></button>
             </div>

@@ -118,3 +118,40 @@ test('composer server transcription automatically accepts mixed Arabic and Engli
   assert.equal(input.value, 'Draft مرحبا Sharp Cuts');
   assert.equal(input.dir, 'rtl');
 });
+
+test('composer exposes separate review and immediate-send dictation endings', async () => {
+  let recorder;
+  class Recorder {
+    static isTypeSupported() { return true; }
+    constructor() { recorder = this; this.state = 'inactive'; this.mimeType = 'audio/webm'; this.listeners = {}; }
+    addEventListener(name, listener) { this.listeners[name] = listener; }
+    start() { this.state = 'recording'; }
+    stop() { this.state = 'inactive'; this.listeners.dataavailable?.({ data: new Blob(['voice']) }); this.listeners.stop?.(); }
+  }
+  const input = new Target(), button = new Target(), reviewButton = new Target(), sendNowButton = new Target();
+  const sent = [];
+  const control = createComposerVoiceControl({
+    input, button, reviewButton, sendNowButton,
+    onSendImmediately: (text) => sent.push(text),
+    transcribe: async () => ({ transcript: 'Book Sharp Cuts' }),
+    dependencies: { MediaRecorder: Recorder, mediaDevices: { async getUserMedia() { return { getTracks: () => [{ stop() {} }] }; } } }
+  });
+
+  await button.click();
+  assert.equal(reviewButton.hidden, false);
+  assert.equal(sendNowButton.hidden, false);
+  reviewButton.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(input.value, 'Book Sharp Cuts');
+  assert.deepEqual(sent, []);
+
+  input.value = '';
+  await button.click();
+  sendNowButton.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(sent, ['Book Sharp Cuts']);
+  assert.equal(reviewButton.hidden, true);
+  assert.equal(sendNowButton.hidden, true);
+  assert.equal(recorder.state, 'inactive');
+  control.destroy();
+});

@@ -23,7 +23,7 @@ async function api(app, options) { const res = response(); await app.handle(requ
 
 test("Voice V2 readiness exposes models and limits without exposing credentials or the voice id", async () => {
   const app = createApp({ environment, voiceFetchImpl: withCapabilities() }); const result = await api(app, { url: "/api/voice/readiness" }); assert.equal(result.status, 200); assert.equal(result.body.available, true);
-  assert.equal(result.body.stt.model, "gpt-transcribe"); assert.equal(result.body.tts.model, "eleven_v3_conversational"); assert.equal(result.body.rawAudioPolicy, "ephemeral-request-only");
+  assert.equal(result.body.stt.model, "gpt-transcribe"); assert.equal(result.body.tts.model, "eleven_flash_v2_5"); assert.equal(result.body.rawAudioPolicy, "ephemeral-request-only");
   assert.equal(result.body.tts.status, "Verified"); assert.equal(result.body.tts.capability, "account-model-and-voice-access-verified"); assert.equal(result.body.tts.fallbackUsed, false);
   assert.equal(result.body.tts.voiceName, "Nova Female V1");
   const serialized = JSON.stringify(result.body); for (const secret of Object.values(environment)) assert.equal(serialized.includes(secret), false);
@@ -101,17 +101,17 @@ test("Voice V2 validates mime type, duration and audio size before provider call
   await assert.rejects(service.transcribe({ audioBase64: Buffer.alloc(2 * 1024 * 1024 + 1).toString("base64"), mimeType: "audio/webm", durationSeconds: 1 }), VoiceValidationError); assert.equal(calls, 0);
 });
 
-test("ElevenLabs uses the owner-selected voice and conversational multilingual model with sanitised natural text", async () => {
+test("ElevenLabs uses the owner-selected voice and low-latency multilingual model with sanitised natural text", async () => {
   let call; const fetchImpl = async (url, options) => { call = { url, options }; return new Response(Buffer.from("mp3"), { status: 200, headers: { "content-type": "audio/mpeg" } }); };
   const service = createVoiceService({ config: readConfig(environment), fetchImpl: withCapabilities(fetchImpl) }); const result = await service.synthesise({ text: "## Hello 😊 [Mohammad](https://example.com)\n```json\n{\"tool\":true}\n```\nTool trace: hidden" });
   assert.match(call.url, /owner-voice-id\/stream/); assert.equal(call.options.headers["xi-api-key"], environment.ELEVENLABS_API_KEY);
-  const payload = JSON.parse(call.options.body); assert.equal(payload.model_id, "eleven_v3_conversational"); assert.equal(payload.text, "Hello Mohammad"); assert.equal(result.spokenText, "Hello Mohammad");
+  const payload = JSON.parse(call.options.body); assert.equal(payload.model_id, "eleven_flash_v2_5"); assert.equal(payload.text, "Hello Mohammad"); assert.equal(result.spokenText, "Hello Mohammad");
 });
 
 test("capability preflight selects only an account-supported TTS model and exposes a visible fallback", async () => {
   const service = createVoiceService({ config: readConfig(environment), fetchImpl: withCapabilities(undefined, { availableModels: [{ model_id: "eleven_flash_v2_5", can_do_text_to_speech: true }] }) });
   const readiness = await service.readiness();
-  assert.equal(readiness.available, true); assert.equal(readiness.tts.model, "eleven_flash_v2_5"); assert.equal(readiness.tts.fallbackUsed, true); assert.equal(readiness.tts.selection, "low-latency-multilingual-fallback");
+  assert.equal(readiness.available, true); assert.equal(readiness.tts.model, "eleven_flash_v2_5"); assert.equal(readiness.tts.fallbackUsed, false); assert.equal(readiness.tts.selection, "low-latency-multilingual");
 });
 
 test("scoped TTS keys verify the owner voice through a bounded direct speech probe when metadata reads are denied", async () => {
@@ -124,10 +124,10 @@ test("scoped TTS keys verify the owner voice through a bounded direct speech pro
     return new Response(Buffer.from("verified-mp3"), { status: 200, headers: { "content-type": "audio/mpeg" } });
   } });
   const readiness = await service.readiness();
-  assert.equal(readiness.available, true); assert.equal(readiness.tts.model, "eleven_v3_conversational");
+  assert.equal(readiness.available, true); assert.equal(readiness.tts.model, "eleven_flash_v2_5");
   assert.equal(readiness.tts.capability, "direct-speech-generation-verified"); assert.equal(readiness.tts.voiceCompatibility, "owner-voice-generation-verified");
   assert.equal(speechRequests.length, 1); assert.match(speechRequests[0].url, /owner-voice-id\/stream\?output_format=mp3_44100_128/);
-  assert.deepEqual(speechRequests[0].body, { text: "Nova is ready.", model_id: "eleven_v3_conversational", voice_settings:{stability:0.75} });
+  assert.deepEqual(speechRequests[0].body, { text: "Nova is ready.", model_id: "eleven_flash_v2_5", voice_settings:{stability:0.75} });
 });
 
 test("capability preflight catches an unavailable model set before a paid speech request", async () => {
@@ -157,7 +157,7 @@ test("ElevenLabs 401 is safely categorized and never retried", async () => {
   let calls = 0; const service = createVoiceService({ config: readConfig(environment), fetchImpl: withCapabilities(async () => { calls += 1; return new Response(JSON.stringify({ detail: { status: "invalid_api_key", message: "Invalid API key eleven-super-secret" } }), { status: 401, headers: { "content-type": "application/json", "request-id": "el-safe-request-1" } }); }) });
   await assert.rejects(service.synthesise({ text: "Hello" }), (error) => {
     assert.ok(error instanceof VoiceProviderError); assert.equal(error.upstreamStatus, 401); assert.equal(error.category, "authentication"); assert.equal(error.providerCode, "invalid_api_key");
-    assert.deepEqual(error.safeDetail, { operation: "synthesise", model: "eleven_v3_conversational", textCharacters: 5, chunkIndex: 0, chunkCount: 1, attempt: 1, retryCount: 0, providerRequestId: "el-safe-request-1", phase: "authentication" });
+    assert.deepEqual(error.safeDetail, { operation: "synthesise", model: "eleven_flash_v2_5", textCharacters: 5, chunkIndex: 0, chunkCount: 1, attempt: 1, retryCount: 0, providerRequestId: "el-safe-request-1", phase: "authentication" });
     assert.doesNotMatch(JSON.stringify(error), /eleven-super-secret|Invalid API key/); return true;
   });
   assert.equal(calls, 1);
@@ -222,6 +222,14 @@ test("Voice V2 API logs safe provider category while keeping its 502 generic", a
 });
 
 test("real Voice transcribe invokes speaker extraction in parallel and returns a signed verified owner",async()=>{const entries=[];let extractorOptions;const handler=createApi({config:readConfig({}),agent:{},storage:{},initialize:async()=>{},ownerId:"owner",voiceBenchmark:{},voiceService:{async transcribe(){await Promise.resolve();return{transcript:"مرحبا Nova، كيفك؟"};}},speakerExtractor:{configured:true,async extract(input,options){extractorOptions=options;assert.equal(input.durationSeconds,2.4);return{sufficient:true,representation:[1,0,0],extractorVersion:"ecapa-v1",latencyMs:37,totalDurationSeconds:2.4,speechSeconds:1.9,silenceRatio:.21,sampleRate:48000,channelCount:1,preprocessingVersion:"decode-mono-16k-rms-vad-v2",quality:"accepted"};}},speakerIdentity:{async recognize(){return{state:"confirmed",speakerProfileId:"owner-profile",relation:"owner",confidence:.913,candidateCount:1,threshold:.35,ambiguityMargin:.05,scoreMargin:null,bestCandidateCategory:"owner"};},async candidateCount(){return 1;}},speakerAssertions:{issue(speaker){return speaker.match_status==="confirmed"?"signed-owner":null;}},logger:{info(...args){entries.push(args);},error(...args){entries.push(args);}}});const result=await api(handler,{method:"POST",url:"/api/voice/transcribe",headers:{"content-type":"application/json"},body:JSON.stringify({audioBase64:"YXVkaW8=",mimeType:"audio/webm",durationSeconds:2.4})});assert.equal(result.status,200);assert.equal(result.body.transcript,"مرحبا Nova، كيفك؟");assert.deepEqual(result.body.speaker,{speaker_profile_id:"owner-profile",speaker_label:"owner",confidence:.913,extractor_version:"ecapa-v1",match_status:"confirmed",authenticated_identity:"owner",speaker_familiarity:"none",anonymous_speaker_id:null,assertion:"signed-owner"});assert.equal(result.body.relevance.category,"addressed_to_nova");assert.equal(result.body.relevance.accepted_as_turn,true);assert.match(extractorOptions.requestId,/^[0-9a-f-]{36}$/);assert.equal(entries.find(([message])=>message==="Nova speaker recognition started")[1].extractorConfigured,true);const relevance=entries.find(([message])=>message==="Nova voice relevance completed")[1];assert.deepEqual({category:relevance.relevanceCategory,accepted:relevance.acceptedAsTurn,speaker:relevance.speakerCategory},{category:"addressed_to_nova",accepted:true,speaker:"owner"});assert.equal(JSON.stringify(relevance).includes("مرحبا"),false);const completed=entries.find(([message])=>message==="Nova speaker recognition completed")[1];assert.equal(completed.candidateCount,1);assert.equal(completed.matchStatus,"confirmed");assert.equal(completed.recognizedProfileId,"owner-profile");assert.equal(completed.threshold,.35);assert.equal(completed.bestCandidateCategory,"owner");assert.equal(completed.voicedDurationSeconds,1.9);assert.equal(completed.silenceRatio,.21);assert.equal(completed.preprocessingVersion,"decode-mono-16k-rms-vad-v2");assert.equal(completed.qualityGateResult,"accepted");});
+
+test("slow biometric matching cannot hold a conversational transcript beyond its live-turn budget",async()=>{
+  const base=readConfig({}),config={...base,speakerRecognition:{...base.speakerRecognition,liveTurnBudgetMs:5}};
+  let aborted=false;
+  const handler=createApi({config,agent:{},storage:{},initialize:async()=>{},ownerId:"owner",voiceBenchmark:{},voiceService:{async transcribe(){return{transcript:"Hello Nova"};}},speakerEngines:{configured:true,authoritativeEngineId:"ecapa",async recognize(_input,{signal}){signal.addEventListener("abort",()=>{aborted=true;},{once:true});return new Promise(()=>{});}},speakerIdentity:{},speakerAssertions:{issue(){return null;}},logger:{info(){},error(){}}});
+  const started=Date.now(),result=await api(handler,{method:"POST",url:"/api/voice/transcribe",headers:{"content-type":"application/json"},body:JSON.stringify({audioBase64:"YXVkaW8=",mimeType:"audio/webm",durationSeconds:2})});
+  assert.equal(result.status,200);assert.equal(result.body.transcript,"Hello Nova");assert.equal(result.body.speaker.authenticated_identity,"none");assert.equal(result.body.speaker.match_status,"unknown");assert.equal(aborted,true);assert.ok(Date.now()-started<500);
+});
 
 test("owner authentication always takes precedence over anonymous familiarity consent",async()=>{let familiarityCalls=0;const handler=createApi({config:readConfig({}),agent:{},storage:{},initialize:async()=>{},ownerId:"owner",voiceBenchmark:{},voiceService:{async transcribe(){return{transcript:"hello"};}},speakerExtractor:{configured:true,async extract(){return{sufficient:true,representation:[1,0,0],extractorVersion:"ecapa",latencyMs:10};}},speakerIdentity:{async recognize(){return{state:"confirmed",speakerProfileId:"owner-profile",relation:"owner",confidence:.9,candidateCount:1};},async rememberAnonymous(){familiarityCalls++;}},speakerAssertions:{issue(){return"signed";}},familiarityConsent:{verify(){return{consent_actor:"Guest"};}},logger:{info(){},error(){}}});const result=await api(handler,{method:"POST",url:"/api/voice/transcribe",headers:{"content-type":"application/json"},body:JSON.stringify({audioBase64:"YXVkaW8=",mimeType:"audio/webm",durationSeconds:2,familiarityConsent:"valid"})});assert.equal(result.status,200);assert.equal(result.body.speaker.authenticated_identity,"owner");assert.equal(result.body.speaker.speaker_familiarity,"none");assert.equal(familiarityCalls,0);});
 

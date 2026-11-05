@@ -523,6 +523,8 @@ export function readConfig(environment = process.env) {
         "speechbrain/spkrec-ecapa-voxceleb@ecapa-v1",
       minSpeechSeconds: 1.0,
       maxAudioBytes: 2 * 1024 * 1024,
+        liveTurnBudgetMs: 2_500,
+        readinessBudgetMs: 900,
       threshold: 0.35,
       ambiguityMargin: 0.05,
       familiarityThreshold: 0.55,

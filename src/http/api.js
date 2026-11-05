@@ -36,6 +36,7 @@ import {
 } from "../voice/voice-service.js";
 import {
   createSpeakerEngineCoordinator,
+  createSpeakerEngineResult,
   speakerFromAuthoritativeResult,
 } from "../voice/speaker-engine.js";
 import {
@@ -688,11 +689,23 @@ export function createApi({
         }
 
         if (request.method === "GET" && pathname === "/api/voice/readiness") {
+          const speakerReadiness =
+            recognitionEngines?.readiness?.() ||
+            speakerExtractor?.readiness?.() ||
+            Promise.resolve({ status: "Missing", available: false });
           const [readiness, speaker] = await Promise.all([
             voiceService.readiness(),
-            recognitionEngines?.readiness?.() ||
-              speakerExtractor?.readiness?.() ||
-              Promise.resolve({ status: "Missing", available: false }),
+            withinBudget(
+              speakerReadiness,
+              config.speakerRecognition.readinessBudgetMs,
+              () => ({
+                status: "Warming",
+                available: false,
+                model: config.speakerRecognition.modelVersion,
+                reason: "readiness_budget_exceeded",
+                rawAudioPolicy: "ephemeral-request-only",
+              }),
+            ),
           ]);
           logger.info("Nova voice readiness", {
             available: readiness.available,
@@ -722,6 +735,35 @@ export function createApi({
               return value;
             });
           const readyPromise = ready();
+          const speakerController = new AbortController();
+          const speakerRecognition = recognitionEngines?.recognize?.(input, {
+            requestId,
+            transcriptPromise: transcriptionPromise,
+            readyPromise,
+            signal: speakerController.signal,
+            speakerCalibration: config.speakerRecognition,
+          }) || Promise.reject(new Error("not configured"));
+          const boundedRecognition = withinBudget(
+            speakerRecognition,
+            config.speakerRecognition.liveTurnBudgetMs,
+            () => {
+              speakerController.abort();
+              return {
+                authoritative: createSpeakerEngineResult({
+                  engineId: recognitionEngines?.authoritativeEngineId || "ecapa",
+                  engineVersion: config.speakerRecognition.modelVersion,
+                  qualityState: "deadline_exceeded",
+                  status: "failure",
+                  error: {
+                    code: "recognition_deadline_exceeded",
+                    stage: "speaker_embedding",
+                  },
+                }),
+                shadow: [],
+                comparison: [],
+              };
+            },
+          );
           logger.info?.("Nova speaker recognition started", {
             requestId,
             durationSeconds: Number(input?.durationSeconds) || 0,
@@ -732,11 +774,7 @@ export function createApi({
           const [transcription, recognition, storageReady] =
             await Promise.allSettled([
               transcriptionPromise,
-              recognitionEngines?.recognize?.(input, {
-                requestId,
-                transcriptPromise: transcriptionPromise,
-                readyPromise,
-              }) || Promise.reject(new Error("not configured")),
+              boundedRecognition,
               readyPromise,
             ]);
           if (transcription.status === "rejected") throw transcription.reason;
@@ -2591,4 +2629,17 @@ function safeRelevanceContext(value) {
     awaiting_nova_reply: value?.awaiting_nova_reply === true,
     voice_session_engaged: value?.voice_session_engaged === true,
   };
+}
+
+function withinBudget(promise, milliseconds, onTimeout) {
+  const budget = Number(milliseconds);
+  if (!Number.isFinite(budget) || budget <= 0) return Promise.resolve(promise);
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(onTimeout()), budget);
+      timer.unref?.();
+    }),
+  ]).finally(() => clearTimeout(timer));
 }

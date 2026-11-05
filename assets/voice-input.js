@@ -293,12 +293,13 @@ function preferredOptions(MediaRecorder){
 }
 
 export function createComposerVoiceControl(options = {}) {
-  const { input, button, statusTarget, errorTarget, waveformTarget, resizeInput } = options;
+  const { input, button, reviewButton, sendNowButton, statusTarget, errorTarget, waveformTarget, resizeInput } = options;
   if (!input || !button) throw new Error('Composer voice control requires input and button');
 
   let controller;
   let lastError = '';
   let spectrum = [];
+  let sendAfterTranscript = false;
 
   const ensureWaveformBars = () => {
     const documentRef = waveformTarget?.ownerDocument;
@@ -325,6 +326,8 @@ export function createComposerVoiceControl(options = {}) {
     button.dataset.voiceState = state;
     button.setAttribute('aria-pressed', String(state === 'recording'));
     button.disabled = !controller.supported || state === 'processing';
+    if (reviewButton) { reviewButton.hidden = state !== 'recording'; reviewButton.disabled = state !== 'recording'; }
+    if (sendNowButton) { sendNowButton.hidden = state !== 'recording'; sendNowButton.disabled = state !== 'recording'; }
 
     if (statusTarget) {
       statusTarget.textContent = !controller.supported
@@ -350,7 +353,13 @@ export function createComposerVoiceControl(options = {}) {
   const controllerOptions={
     language: options.language,
     dependencies: options.dependencies,
-    onState: (state) => render(state, state === 'recording' ? '' : lastError),
+    onState: (state) => {
+      render(state, state === 'recording' ? '' : lastError);
+      if (state === 'complete' && sendAfterTranscript) {
+        sendAfterTranscript = false;
+        queueMicrotask(() => options.onSendImmediately?.(input.value));
+      }
+    },
     onText: (text, info) => {
       input.value = text;
       input.dir = info.direction;
@@ -366,21 +375,29 @@ export function createComposerVoiceControl(options = {}) {
   controller = typeof options.transcribe==='function'?createServerVoiceInput({...controllerOptions,transcribe:options.transcribe}):createVoiceInput(controllerOptions);
 
   const click = async () => {
-    if (controller.getState() === 'recording') controller.stop();
+    if (controller.getState() === 'recording') { sendAfterTranscript = false; controller.stop(); }
     else await controller.start(input.value);
   };
+  const stopForReview = () => { sendAfterTranscript = false; return controller.stop(); };
+  const stopAndSend = () => { if (controller.getState() !== 'recording') return false; sendAfterTranscript = true; return controller.stop(); };
 
   button.addEventListener('click', click);
+  reviewButton?.addEventListener('click', stopForReview);
+  sendNowButton?.addEventListener('click', stopAndSend);
   render('idle');
 
   return {
     controller,
+    stopForReview,
+    stopAndSend,
     commit: controller.commit,
     getState: controller.getState,
     getLanguage: controller.getLanguage,
     setLanguage: controller.setLanguage,
     destroy() {
       button.removeEventListener('click', click);
+      reviewButton?.removeEventListener('click', stopForReview);
+      sendNowButton?.removeEventListener('click', stopAndSend);
       controller.destroy();
     }
   };
