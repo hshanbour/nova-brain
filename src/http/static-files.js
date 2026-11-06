@@ -8,6 +8,7 @@ const ASSETS = Object.freeze({
   "/assets/console.js": { file: "../../assets/console.js", type: "text/javascript; charset=utf-8" },
   "/assets/matrix-avatar.js": { file: "../../assets/matrix-avatar.js", type: "text/javascript; charset=utf-8" },
   "/assets/premium-avatar.js": { file: "../../assets/premium-avatar.js", type: "text/javascript; charset=utf-8" },
+  "/assets/models/prism-shard-bloom.png": { file: "../../assets/models/prism-shard-bloom.png", type: "image/png" },
   "/assets/vendor/three.module.min.js": { file: "../../assets/vendor/three.module.min.js", type: "text/javascript; charset=utf-8" },
   "/assets/vendor/three.core.min.js": { file: "../../assets/vendor/three.core.min.js", type: "text/javascript; charset=utf-8" },
   "/assets/vendor/loaders/GLTFLoader.js": { file: "../../assets/vendor/loaders/GLTFLoader.js", type: "text/javascript; charset=utf-8" },

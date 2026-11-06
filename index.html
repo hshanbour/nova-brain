@@ -63,7 +63,7 @@
         <div class="composer-wrap">
           <div class="request-error" id="requestError" role="alert" hidden></div>
           <section class="voice-workspace-dock" id="voiceWorkspaceDock" aria-label="Active Nova voice conversation" hidden>
-            <span class="voice-workspace-pulse" aria-hidden="true"></span><div><strong id="voiceWorkspaceState">Voice conversation active</strong><small>Conversation continues while you work</small></div>
+            <span id="workspaceAvatarSlot"></span><div><strong id="voiceWorkspaceState">Voice conversation active</strong><small>Conversation continues while you work</small></div>
             <button type="button" class="secondary-button" id="voiceWorkspaceOpen">Open voice</button><button type="button" class="secondary-button" id="voiceWorkspaceMute">Mute</button><button type="button" class="danger-button" id="voiceWorkspaceEnd">End</button>
           </section>
           <form class="composer" id="composer">
@@ -162,24 +162,21 @@
     <div class="voice-experience-backdrop"></div>
     <div class="voice-experience-shell">
       <div class="voice-experience-heading"><div><p class="eyebrow">Nova Realtime Voice</p><h2 id="voiceExperienceTitle">Conversation</h2></div><button type="button" class="secondary-button" id="voiceContinueWorkspace">Continue in workspace</button></div>
-      <div class="voice-presence"><canvas id="voiceAvatarCanvas" aria-label="Nova Prism live three-dimensional digital intelligence"></canvas><div class="avatar-fallback" aria-hidden="true"></div></div>
+      <div class="voice-presence" id="immersiveAvatarSlot"><canvas id="voiceAvatarCanvas" class="prism-portrait" aria-label="Prism Shard Bloom responding to Nova Voice"></canvas></div>
       <p id="voiceExperienceStatus" class="voice-experience-status" role="status" aria-live="polite">Connecting…</p>
       <div id="voiceExperienceTranscript" class="voice-experience-transcript" aria-live="polite"><p data-voice-user hidden></p><p data-voice-assistant hidden></p></div>
       <div class="voice-experience-controls"><button type="button" class="secondary-button" id="voiceMuteButton" aria-pressed="false">Mute</button><button type="button" class="secondary-button" id="voiceTranscriptButton" aria-pressed="true">Hide transcript</button><button type="button" class="send-button" id="voiceExperienceEnd">End conversation</button></div>
-      <p class="privacy-note">Live Prism Shard Bloom prototype · audio-reactive · camera remains disabled.</p>
     </div>
   </section>
   <section id="avatarGalleryDialog" class="avatar-gallery-dialog" role="dialog" aria-modal="true" aria-labelledby="avatarGalleryTitle" hidden>
     <div class="avatar-gallery-shell">
-      <div class="dialog-heading"><div><p class="eyebrow">Approved visual direction · Phase 1</p><h2 id="avatarGalleryTitle">Nova Prism Shard Bloom</h2><p>One live three-dimensional prototype for owner review before camera or business-workspace phases.</p></div><button type="button" class="dialog-close" id="closeAvatarGallery" aria-label="Close avatar prototype">×</button></div>
+      <div class="dialog-heading"><h2 id="avatarGalleryTitle">Nova Prism Shard Bloom</h2><button type="button" class="dialog-close" id="closeAvatarGallery" aria-label="Close avatar">×</button></div>
       <article class="aether-prototype">
-        <div class="aether-stage"><canvas id="novaAetherCanvas" aria-label="Nova Prism interactive three-dimensional non-human feminine digital head"></canvas><div class="aether-stage-vignette" aria-hidden="true"></div><div class="aether-live-badge"><span></span><strong>Live WebGL</strong><small id="aetherSignalStatus">Simulated state preview</small></div></div>
+        <div class="aether-stage prism-stage"><canvas class="prism-portrait" id="novaAetherCanvas" aria-label="Prism Shard Bloom motion preview"></canvas></div>
         <aside class="aether-controls">
-          <div><p class="eyebrow">Design language</p><h3>Prismatic intelligence · crystalline bloom</h3><p>License-verified CC0 anatomy supplies proportion only. Faceted iridescent planes, asymmetric shard-ribbon hair and synthetic contours form Nova's visible non-human identity.</p></div>
-          <fieldset><legend>Intelligence state</legend><div class="aether-button-grid"><button type="button" data-aether-state="listening">Listening</button><button type="button" data-aether-state="thinking">Thinking</button><button type="button" data-aether-state="speaking">Speaking</button><button type="button" data-aether-state="executing">Executing</button></div></fieldset>
-          <fieldset><legend>Inspection angle</legend><div class="aether-button-grid"><button type="button" data-aether-view="front">Front</button><button type="button" data-aether-view="three-quarter">Three-quarter</button><button type="button" data-aether-view="profile">Profile</button></div></fieldset>
-          <p class="aether-note">Move the pointer over the character for subtle parallax. During an active voice session, listening and speaking energy follows the real input/output analyser signals.</p>
-          <div class="aether-metrics" id="avatarPerformanceStatus">Preparing WebGL diagnostics…</div>
+          <fieldset><legend>Motion preview</legend><div class="aether-button-grid"><button type="button" data-aether-state="idle">Original</button><button type="button" data-aether-state="listening">Listening</button><button type="button" data-aether-state="thinking">Thinking</button><button type="button" data-aether-state="speaking">Speaking</button><button type="button" data-aether-state="executing">Executing</button></div></fieldset>
+          <p id="aetherSignalStatus" role="status">Original artwork</p>
+          <button type="button" id="prismVoiceLaunch" class="send-button">Talk to Nova</button>
         </aside>
       </article>
     </div>

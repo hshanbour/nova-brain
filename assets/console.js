@@ -698,7 +698,16 @@ const voiceWorkspaceDock=document.querySelector("#voiceWorkspaceDock"),voiceWork
 let voiceSessionDesired=false,voiceInputLevel=0,voiceOutputLevel=0,premiumAvatar=null,currentVoiceVisualState="idle";
 const avatar=createNovaPrismAvatar({canvas:document.querySelector("#voiceAvatarCanvas"),inputLevel:()=>voiceInputLevel,outputLevel:()=>voiceOutputLevel,maxFps:36});
 const voiceExperienceStorageKey="nova.voice.experience.v1";voiceExperienceMode.value=localStorage.getItem(voiceExperienceStorageKey)==="integrated"?"integrated":"separate";
-const syncVoiceSurface=()=>{const active=Boolean(voiceSessionDesired||voiceV2?.isActive?.()),immersive=active&&voiceExperienceMode.value==="separate";voiceExperience.hidden=!immersive;voiceWorkspaceDock.hidden=!(active&&!immersive);if(immersive)avatar.start();else avatar.stop();};
+function syncVoiceSurface() {
+  const active=Boolean(voiceSessionDesired || voiceV2?.isActive?.());
+  const immersive=active && voiceExperienceMode.value==="separate";
+  voiceExperience.hidden=!immersive;
+  voiceWorkspaceDock.hidden=!(active && !immersive);
+  const slot=document.querySelector(active && !immersive?"#workspaceAvatarSlot":"#immersiveAvatarSlot");
+  const canvas=document.querySelector("#voiceAvatarCanvas");
+  if(canvas.parentElement!==slot) slot.append(canvas);
+  if(active) avatar.start(); else avatar.stop();
+}
 voiceExperienceMode.addEventListener("change",()=>{localStorage.setItem(voiceExperienceStorageKey,voiceExperienceMode.value);syncVoiceSurface();});
 const voiceModeLabels={idle:"Voice idle",connecting:"Connecting microphone…",getting_ready:"Getting ready…",listening:"Voice ready · speak to Nova",muted:"Microphone muted",barge_candidate:"Nova speaking… · speak to interrupt",barge_verifying:"Nova speaking… · speak to interrupt",paused_waiting_for_user:"Nova paused · say continue when ready",transcribing:"Nova heard you · processing…",thinking:"Nova thinking…",speaking:"Nova speaking… · speak to interrupt",interrupted:"Interrupted · getting ready…",retrying:"Voice ready · retrying quietly…",error:"Voice needs attention"};
 const capture=createMediaVoiceCapture({mediaDevices:navigator.mediaDevices,MediaRecorder:window.MediaRecorder,AudioContext:window.AudioContext||window.webkitAudioContext,getAudioConstraints:microphoneConstraints,onInputLevel:({level,threshold})=>{microphoneLevel.value=Math.min(1,level*8);if(voiceV2?.isActive?.())microphoneDiagnostic.textContent=level>=threshold?"Voice signal detected.":"Listening — speak close to the selected microphone.";}});
@@ -724,15 +733,63 @@ document.querySelector("#voiceTranscriptButton").addEventListener("click",(event
 const toggleVoiceMute=()=>{const muted=voiceV2?.setMuted?.(!voiceV2.isMuted?.());for(const button of [voiceMuteButton,voiceWorkspaceMute]){button.setAttribute("aria-pressed",String(Boolean(muted)));button.textContent=muted?"Unmute":"Mute";}};
 voiceMuteButton.addEventListener("click",toggleVoiceMute);voiceWorkspaceMute.addEventListener("click",toggleVoiceMute);
 
-const avatarGallery=document.querySelector("#avatarGalleryDialog");let galleryState="listening",galleryLevel=.28,galleryMetricsTimer=0;
-premiumAvatar=createNovaPrismAvatar({canvas:document.querySelector("#novaAetherCanvas"),inputLevel:()=>voiceV2?.isActive?.()?voiceInputLevel:galleryState==="listening"?galleryLevel:0,outputLevel:()=>voiceV2?.isActive?.()?voiceOutputLevel:galleryState==="speaking"?galleryLevel:0,maxFps:36});
-const refreshAetherMetrics=()=>{if(avatarGallery.hidden)return;const metrics=premiumAvatar.metrics();document.querySelector("#avatarPerformanceStatus").textContent=metrics.webgl?`${metrics.fps||"warming"} fps · ${Number(metrics.triangles||0).toLocaleString()} triangles · ${metrics.calls||0} GPU draw calls · DPR capped at 1.5`:`WebGL fallback required · ${metrics.error||"hardware acceleration unavailable"}`;document.querySelector("#aetherSignalStatus").textContent=voiceV2?.isActive?.()?"Responding to live Nova audio":"Simulated state preview";galleryMetricsTimer=window.setTimeout(refreshAetherMetrics,1000);};
-const openAvatarGallery=()=>{avatarGallery.hidden=false;document.body.classList.add("dialog-open");premiumAvatar.setState(voiceV2?.isActive?.()?currentVoiceVisualState:galleryState).start();window.clearTimeout(galleryMetricsTimer);refreshAetherMetrics();history.replaceState(null,"","#voice-avatar-gallery");};
-const closeAvatarGallery=()=>{avatarGallery.hidden=true;document.body.classList.remove("dialog-open");premiumAvatar.stop();window.clearTimeout(galleryMetricsTimer);history.replaceState(null,"","#chat");};
-document.querySelector("#openAvatarGallery").addEventListener("click",()=>{voiceSettingsDialog.hidden=true;openAvatarGallery();});document.querySelector("#closeAvatarGallery").addEventListener("click",closeAvatarGallery);
-avatarGallery.querySelectorAll("[data-aether-state]").forEach(button=>button.addEventListener("click",()=>{galleryState=button.dataset.aetherState;galleryLevel=galleryState==="speaking"?.62:.34;if(!voiceV2?.isActive?.())premiumAvatar.setState(galleryState);avatarGallery.querySelectorAll("[data-aether-state]").forEach(item=>item.classList.toggle("active",item===button));}));
-avatarGallery.querySelectorAll("[data-aether-view]").forEach(button=>button.addEventListener("click",()=>{premiumAvatar.setView(button.dataset.aetherView);avatarGallery.querySelectorAll("[data-aether-view]").forEach(item=>item.classList.toggle("active",item===button));}));
-if(location.hash==="#voice-avatar-gallery")openAvatarGallery();
+const avatarGallery=document.querySelector("#avatarGalleryDialog");
+let galleryState="listening", galleryMetricsTimer=0;
+
+function exampleSignal() {
+  const t=performance.now()/1000;
+  return Math.max(0,Math.sin(t*3.2)+.25)*(.22+.65*Math.abs(Math.sin(t*10.4)));
+}
+premiumAvatar=createNovaPrismAvatar({
+  canvas:document.querySelector("#novaAetherCanvas"),
+  inputLevel:()=>voiceV2?.isActive?.()?voiceInputLevel:exampleSignal(),
+  outputLevel:()=>voiceV2?.isActive?.()?voiceOutputLevel:exampleSignal()
+});
+const galleryButtons=[...avatarGallery.querySelectorAll("[data-aether-state]")];
+function updateGallery() {
+  const live=Boolean(voiceV2?.isActive?.());
+  const state=live?currentVoiceVisualState:galleryState;
+  premiumAvatar.setState(state);
+  for(const button of galleryButtons) {
+    const selected=button.dataset.aetherState===state;
+    button.disabled=live;
+    button.classList.toggle("active",selected);
+    button.setAttribute("aria-pressed",String(selected));
+  }
+  const metrics=premiumAvatar.metrics();
+  const label=live?"Nova Voice":state==="idle"?"Original artwork":"Motion demonstration";
+  document.querySelector("#aetherSignalStatus").textContent=metrics.failed?"Animation unavailable on this device · showing original artwork":label+(state==="idle"?"":" · "+state);
+  document.querySelector("#prismVoiceLaunch").textContent=live?"Return to conversation":"Talk to Nova";
+}
+function openAvatarGallery() {
+  avatarGallery.hidden=false;
+  document.body.classList.add("dialog-open");
+  updateGallery();
+  premiumAvatar.start();
+  clearInterval(galleryMetricsTimer);
+  galleryMetricsTimer=setInterval(updateGallery,800);
+  history.replaceState(null,"","#voice-avatar-gallery");
+}
+function closeAvatarGallery() {
+  avatarGallery.hidden=true;
+  document.body.classList.remove("dialog-open");
+  premiumAvatar.stop();
+  clearInterval(galleryMetricsTimer);
+  history.replaceState(null,"","#chat");
+}
+document.querySelector("#openAvatarGallery").addEventListener("click",()=>{voiceSettingsDialog.hidden=true;openAvatarGallery();});
+document.querySelector("#closeAvatarGallery").addEventListener("click",closeAvatarGallery);
+for(const button of galleryButtons) button.addEventListener("click",()=>{
+  galleryState=button.dataset.aetherState;
+  updateGallery();
+});
+document.querySelector("#prismVoiceLaunch").addEventListener("click",()=>{
+  closeAvatarGallery();
+  document.querySelector('a[href="#chat"]')?.click();
+  voiceExperienceMode.value="separate";
+  voiceModeButton.click();
+});
+if(location.hash==="#voice-avatar-gallery") openAvatarGallery();
 
 setPending(false);
 await restoreConversation();

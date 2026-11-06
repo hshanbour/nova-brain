@@ -94,4 +94,11 @@
 .aether-stage-vignette{z-index:1;background:linear-gradient(180deg,transparent 0,transparent 55%,rgba(2,6,10,.58) 72%,rgba(2,6,10,.98) 94%)}
 @media(max-width:900px){.aether-prototype{grid-template-columns:1fr}.aether-stage{min-height:62vh}.aether-controls{display:grid;grid-template-columns:1fr 1fr}.aether-controls>div,.aether-controls>.aether-note,.aether-controls>.aether-metrics{grid-column:1/-1}}
 @media(max-width:600px){.aether-stage{min-height:56vh;border-radius:15px}.aether-controls{display:flex;padding:14px}.avatar-gallery-shell{padding:14px}.aether-button-grid{grid-template-columns:repeat(2,1fr)}}
+.prism-portrait{display:block;background:url("/assets/models/prism-shard-bloom.png") center/contain no-repeat}
+.aether-stage.prism-stage{min-height:0;aspect-ratio:1312/1199;background:#090910;box-shadow:none}
+.prism-stage:before{display:none}
+#immersiveAvatarSlot{width:min(540px,78vw,52vh);aspect-ratio:1312/1199;filter:none}
+#workspaceAvatarSlot{display:block;width:56px;aspect-ratio:1312/1199}
+#workspaceAvatarSlot canvas{width:100%;height:100%}
+.aether-controls #aetherSignalStatus{font-size:.86rem;color:var(--muted)}
 .voice-experience-backdrop{background:radial-gradient(circle at 50% 38%,#261342 0,#0b0a18 44%,#030307 100%)}.voice-experience-shell{border-color:rgba(184,128,255,.16);background:linear-gradient(160deg,rgba(17,12,30,.92),rgba(5,5,11,.84))}.voice-presence{filter:drop-shadow(-18px 0 38px rgba(105,96,255,.24)) drop-shadow(18px 0 34px rgba(255,84,205,.18))}.aether-stage{border-color:rgba(190,132,255,.2);background:radial-gradient(circle at 48% 40%,rgba(92,42,148,.3),rgba(9,7,20,.88) 48%,#020207 80%);box-shadow:inset 0 0 90px rgba(0,0,0,.66),0 26px 75px rgba(0,0,0,.4),0 0 60px rgba(112,65,255,.09)}
