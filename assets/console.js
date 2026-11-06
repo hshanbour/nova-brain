@@ -8,8 +8,7 @@ import { createVoiceV2Client } from "./voice-v2-client.js";
 import { createAudioPlayback, createMediaVoiceCapture } from "./voice-capture.js";
 import { createVoiceV2 } from "./voice-v2.js";
 import { createRealtimeVoice } from "./realtime-voice.js";
-import { createMatrixAvatar } from "./matrix-avatar.js";
-import { createNovaAetherAvatar } from "./premium-avatar.js";
+import { createNovaPrismAvatar } from "./premium-avatar.js";
 import { initialiseVoiceBenchmark } from "./voice-benchmark.js";
 import { initialiseSpeakerEnrollment } from "./speaker-enrollment.js";
 import { initialiseSpeakerFamiliarity } from "./speaker-familiarity.js";
@@ -697,7 +696,7 @@ const voiceModeButton=document.querySelector("#voiceModeButton");const voiceMode
 const voiceExperience=document.querySelector("#voiceExperience"),voiceExperienceStatus=document.querySelector("#voiceExperienceStatus"),voiceExperienceTranscript=document.querySelector("#voiceExperienceTranscript"),voiceExperienceUser=voiceExperienceTranscript.querySelector("[data-voice-user]"),voiceExperienceAssistant=voiceExperienceTranscript.querySelector("[data-voice-assistant]"),voiceExperienceMode=document.querySelector("#voiceExperienceMode"),voiceMuteButton=document.querySelector("#voiceMuteButton");
 const voiceWorkspaceDock=document.querySelector("#voiceWorkspaceDock"),voiceWorkspaceState=document.querySelector("#voiceWorkspaceState"),voiceWorkspaceMute=document.querySelector("#voiceWorkspaceMute");
 let voiceSessionDesired=false,voiceInputLevel=0,voiceOutputLevel=0,premiumAvatar=null,currentVoiceVisualState="idle";
-const avatar=createMatrixAvatar({canvas:document.querySelector("#voiceAvatarCanvas"),inputLevel:()=>voiceInputLevel,outputLevel:()=>voiceOutputLevel});
+const avatar=createNovaPrismAvatar({canvas:document.querySelector("#voiceAvatarCanvas"),inputLevel:()=>voiceInputLevel,outputLevel:()=>voiceOutputLevel,maxFps:36});
 const voiceExperienceStorageKey="nova.voice.experience.v1";voiceExperienceMode.value=localStorage.getItem(voiceExperienceStorageKey)==="integrated"?"integrated":"separate";
 const syncVoiceSurface=()=>{const active=Boolean(voiceSessionDesired||voiceV2?.isActive?.()),immersive=active&&voiceExperienceMode.value==="separate";voiceExperience.hidden=!immersive;voiceWorkspaceDock.hidden=!(active&&!immersive);if(immersive)avatar.start();else avatar.stop();};
 voiceExperienceMode.addEventListener("change",()=>{localStorage.setItem(voiceExperienceStorageKey,voiceExperienceMode.value);syncVoiceSurface();});
@@ -726,7 +725,7 @@ const toggleVoiceMute=()=>{const muted=voiceV2?.setMuted?.(!voiceV2.isMuted?.())
 voiceMuteButton.addEventListener("click",toggleVoiceMute);voiceWorkspaceMute.addEventListener("click",toggleVoiceMute);
 
 const avatarGallery=document.querySelector("#avatarGalleryDialog");let galleryState="listening",galleryLevel=.28,galleryMetricsTimer=0;
-premiumAvatar=createNovaAetherAvatar({canvas:document.querySelector("#novaAetherCanvas"),inputLevel:()=>voiceV2?.isActive?.()?voiceInputLevel:galleryState==="listening"?galleryLevel:0,outputLevel:()=>voiceV2?.isActive?.()?voiceOutputLevel:galleryState==="speaking"?galleryLevel:0,maxFps:36});
+premiumAvatar=createNovaPrismAvatar({canvas:document.querySelector("#novaAetherCanvas"),inputLevel:()=>voiceV2?.isActive?.()?voiceInputLevel:galleryState==="listening"?galleryLevel:0,outputLevel:()=>voiceV2?.isActive?.()?voiceOutputLevel:galleryState==="speaking"?galleryLevel:0,maxFps:36});
 const refreshAetherMetrics=()=>{if(avatarGallery.hidden)return;const metrics=premiumAvatar.metrics();document.querySelector("#avatarPerformanceStatus").textContent=metrics.webgl?`${metrics.fps||"warming"} fps · ${Number(metrics.triangles||0).toLocaleString()} triangles · ${metrics.calls||0} GPU draw calls · DPR capped at 1.5`:`WebGL fallback required · ${metrics.error||"hardware acceleration unavailable"}`;document.querySelector("#aetherSignalStatus").textContent=voiceV2?.isActive?.()?"Responding to live Nova audio":"Simulated state preview";galleryMetricsTimer=window.setTimeout(refreshAetherMetrics,1000);};
 const openAvatarGallery=()=>{avatarGallery.hidden=false;document.body.classList.add("dialog-open");premiumAvatar.setState(voiceV2?.isActive?.()?currentVoiceVisualState:galleryState).start();window.clearTimeout(galleryMetricsTimer);refreshAetherMetrics();history.replaceState(null,"","#voice-avatar-gallery");};
 const closeAvatarGallery=()=>{avatarGallery.hidden=true;document.body.classList.remove("dialog-open");premiumAvatar.stop();window.clearTimeout(galleryMetricsTimer);history.replaceState(null,"","#chat");};

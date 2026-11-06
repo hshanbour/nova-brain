@@ -152,7 +152,7 @@
     <form method="dialog">
       <div class="dialog-heading"><div><p class="eyebrow">Input and output</p><h2 id="voiceSettingsTitle">Voice settings</h2></div><button type="button" class="dialog-close" data-close-voice-settings aria-label="Close voice settings">×</button></div>
       <fieldset><legend>Voice input</legend><label>Microphone<select id="microphoneDevice"><option value="">System default microphone</option></select></label><meter id="microphoneLevel" min="0" max="1" low="0.02" high="0.08" optimum="0.12" value="0" aria-label="Live microphone level"></meter><p id="microphoneDiagnostic" class="privacy-note" role="status">Choose the microphone that moves the level meter when you speak.</p><p id="voiceInputSupport" class="privacy-note"></p></fieldset>
-      <fieldset><legend>Conversation experience</legend><label>Voice Mode<select id="voiceExperienceMode"><option value="separate">Separate immersive screen (recommended)</option><option value="integrated">Integrated with workspace</option></select></label><button type="button" class="secondary-button avatar-gallery-launch" id="openAvatarGallery">Preview Matrix avatars</button><p class="privacy-note">Switching views never ends the active conversation. Dictation remains a separate control.</p></fieldset>
+      <fieldset><legend>Conversation experience</legend><label>Voice Mode<select id="voiceExperienceMode"><option value="separate">Separate immersive screen (recommended)</option><option value="integrated">Integrated with workspace</option></select></label><button type="button" class="secondary-button avatar-gallery-launch" id="openAvatarGallery">Inspect Nova Prism</button><p class="privacy-note">Switching views never ends the active conversation. Dictation remains a separate control.</p></fieldset>
       <fieldset><legend>Voice output</legend><label>Preferred browser voice<select id="preferredVoice"></select></label><label class="toggle-label"><input id="autoSpeak" type="checkbox"> Automatically speak new Nova responses</label><div class="voice-test-row"><button type="button" class="secondary-button" id="testVoiceButton">Test Voice</button><span id="voiceDiagnostic" role="status">Ready to test browser speech.</span></div><p id="voiceOutputSupport" class="privacy-note"></p></fieldset>
       <p class="privacy-note">Microphone and browser voice preferences stay in this browser and are not saved to Nova memory.</p>
       <div class="dialog-actions"><button type="button" class="secondary-button" data-close-voice-settings>Done</button></div>
@@ -162,20 +162,20 @@
     <div class="voice-experience-backdrop"></div>
     <div class="voice-experience-shell">
       <div class="voice-experience-heading"><div><p class="eyebrow">Nova Realtime Voice</p><h2 id="voiceExperienceTitle">Conversation</h2></div><button type="button" class="secondary-button" id="voiceContinueWorkspace">Continue in workspace</button></div>
-      <div class="voice-presence"><canvas id="voiceAvatarCanvas" aria-label="Live abstract Nova digital presence"></canvas><div class="avatar-fallback" aria-hidden="true"></div></div>
+      <div class="voice-presence"><canvas id="voiceAvatarCanvas" aria-label="Nova Prism live three-dimensional digital intelligence"></canvas><div class="avatar-fallback" aria-hidden="true"></div></div>
       <p id="voiceExperienceStatus" class="voice-experience-status" role="status" aria-live="polite">Connecting…</p>
       <div id="voiceExperienceTranscript" class="voice-experience-transcript" aria-live="polite"><p data-voice-user hidden></p><p data-voice-assistant hidden></p></div>
       <div class="voice-experience-controls"><button type="button" class="secondary-button" id="voiceMuteButton" aria-pressed="false">Mute</button><button type="button" class="secondary-button" id="voiceTranscriptButton" aria-pressed="true">Hide transcript</button><button type="button" class="send-button" id="voiceExperienceEnd">End conversation</button></div>
-      <p class="privacy-note">Live procedural preview · no camera, identity or generated face · permanent style awaits owner selection.</p>
+      <p class="privacy-note">Live Prism Shard Bloom prototype · audio-reactive · camera remains disabled.</p>
     </div>
   </section>
   <section id="avatarGalleryDialog" class="avatar-gallery-dialog" role="dialog" aria-modal="true" aria-labelledby="avatarGalleryTitle" hidden>
     <div class="avatar-gallery-shell">
-      <div class="dialog-heading"><div><p class="eyebrow">Premium identity prototype</p><h2 id="avatarGalleryTitle">Nova Aether · Candidate 01</h2><p>One authored digital character for owner review. This prototype is not the permanent Voice avatar.</p></div><button type="button" class="dialog-close" id="closeAvatarGallery" aria-label="Close avatar prototype">×</button></div>
+      <div class="dialog-heading"><div><p class="eyebrow">Approved visual direction · Phase 1</p><h2 id="avatarGalleryTitle">Nova Prism Shard Bloom</h2><p>One live three-dimensional prototype for owner review before camera or business-workspace phases.</p></div><button type="button" class="dialog-close" id="closeAvatarGallery" aria-label="Close avatar prototype">×</button></div>
       <article class="aether-prototype">
-        <div class="aether-stage"><canvas id="novaAetherCanvas" aria-label="Nova Aether interactive three-dimensional digital female head"></canvas><div class="aether-stage-vignette" aria-hidden="true"></div><div class="aether-live-badge"><span></span><strong>Live WebGL</strong><small id="aetherSignalStatus">Simulated state preview</small></div></div>
+        <div class="aether-stage"><canvas id="novaAetherCanvas" aria-label="Nova Prism interactive three-dimensional non-human feminine digital head"></canvas><div class="aether-stage-vignette" aria-hidden="true"></div><div class="aether-live-badge"><span></span><strong>Live WebGL</strong><small id="aetherSignalStatus">Simulated state preview</small></div></div>
         <aside class="aether-controls">
-          <div><p class="eyebrow">Design language</p><h3>Neural glass · authored anatomy</h3><p>License-verified CC0 facial anatomy provides the proportions, orbital sockets, nose bridge, cheek planes, mouth and jaw. Nova's topology, energy, halo and data-hair treatments create the artificial identity.</p></div>
+          <div><p class="eyebrow">Design language</p><h3>Prismatic intelligence · crystalline bloom</h3><p>License-verified CC0 anatomy supplies proportion only. Faceted iridescent planes, asymmetric shard-ribbon hair and synthetic contours form Nova's visible non-human identity.</p></div>
           <fieldset><legend>Intelligence state</legend><div class="aether-button-grid"><button type="button" data-aether-state="listening">Listening</button><button type="button" data-aether-state="thinking">Thinking</button><button type="button" data-aether-state="speaking">Speaking</button><button type="button" data-aether-state="executing">Executing</button></div></fieldset>
           <fieldset><legend>Inspection angle</legend><div class="aether-button-grid"><button type="button" data-aether-view="front">Front</button><button type="button" data-aether-view="three-quarter">Three-quarter</button><button type="button" data-aether-view="profile">Profile</button></div></fieldset>
           <p class="aether-note">Move the pointer over the character for subtle parallax. During an active voice session, listening and speaking energy follows the real input/output analyser signals.</p>
@@ -214,6 +214,6 @@
     </form>
   </section>
   <section id="socialDetailDialog" class="memory-dialog social-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="socialDetailTitle" hidden><div class="social-detail-shell"><div class="dialog-heading"><div><p class="eyebrow" id="socialDetailEyebrow">Project content</p><h2 id="socialDetailTitle">Social content</h2></div><button type="button" class="dialog-close" data-close-social-detail aria-label="Close">×</button></div><div id="socialDetailBody"></div></div></section>
-  <script type="module" src="/assets/console.js?v=sharp-cuts-media-v1"></script>
+  <script type="module" src="/assets/console.js?v=nova-prism-phase1"></script>
 </body>
 </html>
