@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import historicalLock from "./historical-workspace-lock.json" with { type: "json" };
 import { resolve, relative, sep } from "node:path";
 import { createDeveloperSessionAdapter } from "./developer-session-adapter.js";
 import { createAgentsApiDeveloperProvider } from "../providers/developer-session-providers.js";
@@ -457,12 +458,16 @@ export function createDeveloperWorkspaceHandoff({ environment = process.env, sto
     async materializeDependencies(sessionId, input) {
       assertPreview();
       await boundTask();
-      const { record } = await assertBoundRealSession(sessionId);
+      const { record, contract } = await assertBoundRealSession(sessionId);
       const environmentId = record.evidence?.environmentId;
       if (typeof environmentId !== "string" || !environmentId) {
         fail("developer_workspace_environment_binding_missing", "The existing provider environment identity is unavailable.");
       }
-      const expectedPackageLock = await readFile(new URL("../../package-lock.json", import.meta.url));
+      // All three pinned revisions contain Git blob 25d2ab7d730023a80d809df3c2fe481bd81f8a7b.
+      // The Preview application's dependencies may advance independently of those workspaces.
+      if (![REAL_DEVELOPER_BASE_SHA, REAL_DEVELOPER_RECOVERY_BASE_SHA, REAL_DEVELOPER_ORIGINAL_CONSOLE_RECOVERY_BASE_SHA].includes(contract.baseSha))
+        fail("developer_workspace_dependency_pin_missing", "No trusted lock for this workspace revision.");
+      const expectedPackageLock = Buffer.from(JSON.stringify(historicalLock));
       const bundle = validateDeveloperDependencyHandoffBundle(input, { expectedPackageLock });
       const files = createDeveloperDependencyHostedFiles(bundle);
       const existingCount = Number(record.policy?.metadata?.hostedFileCount || 0);
