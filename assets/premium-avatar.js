@@ -50,7 +50,7 @@ export const createNovaAetherAvatar=createNovaPrismAvatar;
 function prismIdentity(root,p){
   const group=new THREE.Group();group.position.y=-12.6;group.scale.setScalar(9);root.add(group);
   const clip=new THREE.Plane(new THREE.Vector3(0,1,0),.92);
-  const face=new THREE.MeshPhysicalMaterial({color:0x090617,emissive:0x260850,emissiveIntensity:.28,metalness:.48,roughness:.24,clearcoat:1,clearcoatRoughness:.1,transmission:.02,thickness:.18,iridescence:.55,iridescenceIOR:1.3,iridescenceThicknessRange:[180,520],transparent:true,opacity:.34,side:THREE.DoubleSide,flatShading:true,clippingPlanes:[clip]});
+  const face=new THREE.MeshPhysicalMaterial({color:0x090617,emissive:0x260850,emissiveIntensity:.28,metalness:.48,roughness:.24,clearcoat:1,clearcoatRoughness:.1,transmission:.02,thickness:.18,iridescence:.55,iridescenceIOR:1.3,iridescenceThicknessRange:[180,520],transparent:true,opacity:.34,side:THREE.DoubleSide,flatShading:true,depthWrite:false,clippingPlanes:[clip]});
   const edge=new THREE.LineBasicMaterial({color:p.ice,transparent:true,opacity:.24,blending:THREE.AdditiveBlending,depthWrite:false,clippingPlanes:[clip]});
   const inner=new THREE.MeshBasicMaterial({color:p.magenta,transparent:true,opacity:.018,wireframe:true,blending:THREE.AdditiveBlending,depthWrite:false,clippingPlanes:[clip]});
   const controller={group,face,edge,inner,loaded:false};
