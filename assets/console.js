@@ -11,7 +11,6 @@ import {createPrismBust} from "./prism-bust.js";
 import {rest} from "./prism-articulation.js";
 import {attachCamera} from "./vision/camera.js";
 import { createRealtimeVoice } from "./realtime-voice.js";
-import { createNovaPrismAvatar } from "./premium-avatar.js";
 import { initialiseVoiceBenchmark } from "./voice-benchmark.js";
 import { initialiseSpeakerEnrollment } from "./speaker-enrollment.js";
 import { initialiseSpeakerFamiliarity } from "./speaker-familiarity.js";
@@ -707,7 +706,8 @@ const voiceExperience=document.querySelector("#voiceExperience"),voiceExperience
 const voiceWorkspaceDock=document.querySelector("#voiceWorkspaceDock"),voiceWorkspaceState=document.querySelector("#voiceWorkspaceState"),voiceWorkspaceMute=document.querySelector("#voiceWorkspaceMute");
 let voiceSessionDesired=false,voiceInputLevel=0,voiceOutputLevel=0,premiumAvatar=null,currentVoiceVisualState="idle";
 let voiceMouth=rest;
-const portrait=createNovaPrismAvatar({canvas:document.querySelector("#voiceAvatarCanvas"),inputLevel:()=>voiceInputLevel,outputLevel:()=>voiceOutputLevel,maxFps:36});
+// The unrigged portrait is the exact approved still. Never deform it to simulate a turn.
+const portrait={start(){},stop(){},setState(){}};
 const camera=attachCamera(document.querySelector("#novaCamera"));
 const bustCanvas=document.createElement("canvas");bustCanvas.className="prism-portrait";bustCanvas.setAttribute("aria-label","Prism articulated bust preview");
 const bust=createPrismBust({canvas:bustCanvas,mouth:()=>voiceMouth,outputLevel:()=>voiceOutputLevel,attention:()=>camera.position()});
@@ -773,7 +773,7 @@ function updateGallery() {
   const live=Boolean(voiceV2?.isActive?.());
   const state=live?currentVoiceVisualState:galleryState;
   premiumAvatar.setState(state);
-  const original=!live&&state==="idle";document.querySelector("#prismGalleryOriginal").hidden=!original;document.querySelector("#novaAetherCanvas").hidden=original;
+  const original=(!live&&state==="idle")||premiumAvatar.metrics().failed;if(original)premiumAvatar.stop();else premiumAvatar.start();document.querySelector("#prismGalleryOriginal").hidden=!original;document.querySelector("#novaAetherCanvas").hidden=original;
   for(const button of galleryButtons) {
     const selected=button.dataset.aetherState===state;
     button.disabled=live;
@@ -789,7 +789,6 @@ function openAvatarGallery() {
   avatarGallery.hidden=false;camera.stop();document.querySelector("#prismCameraSlot").append(document.querySelector("#novaCamera"));
   document.body.classList.add("dialog-open");
   updateGallery();
-  premiumAvatar.start();
   clearInterval(galleryMetricsTimer);
   galleryMetricsTimer=setInterval(updateGallery,800);
   history.replaceState(null,"","#voice-avatar-gallery");
@@ -808,7 +807,7 @@ for(const button of galleryButtons) button.addEventListener("click",()=>{
   updateGallery();
 });
 document.querySelector("#prismVoiceLaunch").addEventListener("click",()=>{
-  closeAvatarGallery();
+  closeAvatarGallery();bustSelection.checked=true;avatar.stop();avatar=bust;
   document.querySelector('a[href="#chat"]')?.click();
   voiceExperienceMode.value="separate";
   voiceModeButton.click();

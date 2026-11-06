@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 const ASSETS = Object.freeze({
+  "/assets/models/prism-edge.jpg":{file:"../../assets/models/prism-edge.jpg",type:"image/jpeg"},
   "/assets/prism-locks.js":{file:"../../assets/prism-locks.js",type:"text/javascript; charset=utf-8"},
   "/assets/prism-bust.js":{file:"../../assets/prism-bust.js",type:"text/javascript; charset=utf-8"},
   "/assets/prism-articulation.js":{file:"../../assets/prism-articulation.js",type:"text/javascript; charset=utf-8"},

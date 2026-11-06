@@ -103,9 +103,9 @@ export function createRealtimeVoice({
 
   function interrupt() {
     if (!active || channel?.readyState !== "open") return false;
+    if(responseOpen)sendEvent({type:"response.cancel"});
+    if(playbackActive)sendEvent({type:"output_audio_buffer.clear"});
     playbackActive=false;onArticulation(rest);
-    sendEvent({ type: "response.cancel" });
-    sendEvent({ type: "output_audio_buffer.clear" });
     publish("listening");
     return true;
   }
@@ -133,8 +133,8 @@ export function createRealtimeVoice({
       return;
     }
     if (event.type === "conversation.item.input_audio_transcription.completed") {
-      lastTranscript = String(event.transcript || "").trim();
-      const utterance=turns.get(event.item_id)||latestTurn;if(utterance)utterance.transcript=lastTranscript;
+      const text=String(event.transcript||"").trim();const utterance=turns.get(event.item_id)||latestTurn;if(utterance)utterance.transcript=text;
+      if(utterance&&utterance!==latestTurn)return;lastTranscript=text;
       if (lastTranscript) onTranscript(lastTranscript);
       return;
     }
@@ -180,7 +180,7 @@ export function createRealtimeVoice({
       if (!toolInFlight) publish("listening");
       return;
     }
-    if (event.type === "error") fail(safeProviderError(event));
+    if (event.type === "error" && event.error?.code!=="response_cancel_not_active") fail(safeProviderError(event));
   }
 
   async function handleNovaTurn(call, current, utterance) {
