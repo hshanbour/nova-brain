@@ -27,6 +27,7 @@
     "fflate": "0.8.3",
     "pdfjs-dist": "6.4.299",
     "playwright-core": "1.63.0",
+    "three": "^0.181.2",
     "ws": "^8.21.0"
   }
 }

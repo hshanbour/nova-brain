@@ -13,7 +13,8 @@ test("voice conversation entry is beside composer and immersive/integrated modes
   assert.match(html, /id="voiceWorkspaceDock"/);
   assert.match(html, /id="voiceExperience"[\s\S]*id="voiceMuteButton"[\s\S]*id="voiceExperienceEnd"/);
   assert.match(html, /id="voiceAvatarCanvas"[\s\S]*id="avatarGalleryDialog"/);
-  assert.match(html, /data-avatar-option="particle"[\s\S]*data-avatar-option="wireframe"[\s\S]*data-avatar-option="entity"/);
+  assert.match(html, /id="novaAetherCanvas"[\s\S]*data-aether-state="listening"[\s\S]*data-aether-view="profile"/);
+  assert.doesNotMatch(html, /data-avatar-option=/);
   assert.match(html, /value="separate"[\s\S]*value="integrated"/);
   assert.doesNotMatch(consoleSource, /onTranscript\(text\)\{input\.value=text/);
   assert.match(consoleSource, /persistRealtimeTurn/);

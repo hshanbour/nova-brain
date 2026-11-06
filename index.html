@@ -171,13 +171,17 @@
   </section>
   <section id="avatarGalleryDialog" class="avatar-gallery-dialog" role="dialog" aria-modal="true" aria-labelledby="avatarGalleryTitle" hidden>
     <div class="avatar-gallery-shell">
-      <div class="dialog-heading"><div><p class="eyebrow">Live Matrix presence</p><h2 id="avatarGalleryTitle">Avatar Gallery</h2><p>Three genuinely animated directions. Preview states here; no permanent choice is saved.</p></div><button type="button" class="dialog-close" id="closeAvatarGallery" aria-label="Close avatar gallery">×</button></div>
-      <div class="avatar-gallery-grid">
-        <article class="avatar-option" data-avatar-option="particle"><canvas aria-label="Particle Matrix live preview"></canvas><h3>A · Particle Matrix</h3><p>Feminine particle silhouette, data-strand hair and luminous depth.</p><button type="button" class="secondary-button" data-preview-avatar="particle">Preview in voice</button></article>
-        <article class="avatar-option" data-avatar-option="wireframe"><canvas aria-label="Neural Wireframe live preview"></canvas><h3>B · Neural Wireframe</h3><p>Calm neural topology with flowing connections and precise state changes.</p><button type="button" class="secondary-button" data-preview-avatar="wireframe">Preview in voice</button></article>
-        <article class="avatar-option" data-avatar-option="entity"><canvas aria-label="Data Entity live preview"></canvas><h3>C · Data Entity</h3><p>Abstract intelligence that assembles, dissolves and reforms in three dimensions.</p><button type="button" class="secondary-button" data-preview-avatar="entity">Preview in voice</button></article>
-      </div>
-      <div class="avatar-state-demo" aria-label="Avatar state demonstration"><span>Simulate:</span><button type="button" data-avatar-state="listening">Listening</button><button type="button" data-avatar-state="thinking">Thinking</button><button type="button" data-avatar-state="speaking">Speaking</button><button type="button" data-avatar-state="executing">Executing</button><small id="avatarPerformanceStatus">Animation sleeps when this gallery closes.</small></div>
+      <div class="dialog-heading"><div><p class="eyebrow">Premium identity prototype</p><h2 id="avatarGalleryTitle">Nova Aether · Candidate 01</h2><p>One authored digital character for owner review. This prototype is not the permanent Voice avatar.</p></div><button type="button" class="dialog-close" id="closeAvatarGallery" aria-label="Close avatar prototype">×</button></div>
+      <article class="aether-prototype">
+        <div class="aether-stage"><canvas id="novaAetherCanvas" aria-label="Nova Aether interactive three-dimensional digital female head"></canvas><div class="aether-stage-vignette" aria-hidden="true"></div><div class="aether-live-badge"><span></span><strong>Live WebGL</strong><small id="aetherSignalStatus">Simulated state preview</small></div></div>
+        <aside class="aether-controls">
+          <div><p class="eyebrow">Design language</p><h3>Neural glass · authored anatomy</h3><p>License-verified CC0 facial anatomy provides the proportions, orbital sockets, nose bridge, cheek planes, mouth and jaw. Nova's topology, energy, halo and data-hair treatments create the artificial identity.</p></div>
+          <fieldset><legend>Intelligence state</legend><div class="aether-button-grid"><button type="button" data-aether-state="listening">Listening</button><button type="button" data-aether-state="thinking">Thinking</button><button type="button" data-aether-state="speaking">Speaking</button><button type="button" data-aether-state="executing">Executing</button></div></fieldset>
+          <fieldset><legend>Inspection angle</legend><div class="aether-button-grid"><button type="button" data-aether-view="front">Front</button><button type="button" data-aether-view="three-quarter">Three-quarter</button><button type="button" data-aether-view="profile">Profile</button></div></fieldset>
+          <p class="aether-note">Move the pointer over the character for subtle parallax. During an active voice session, listening and speaking energy follows the real input/output analyser signals.</p>
+          <div class="aether-metrics" id="avatarPerformanceStatus">Preparing WebGL diagnostics…</div>
+        </aside>
+      </article>
     </div>
   </section>
   <section id="speakerEnrollmentDialog" class="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="speakerEnrollmentTitle" hidden>

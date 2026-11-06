@@ -70,3 +70,24 @@ test("the local Console server exposes the owned first-Reel media with safe MIME
   }
   assert.equal(requests.length, 2);
 });
+
+test("the owner-review avatar serves its authored model and loader graph with explicit MIME types", async () => {
+  const serveStatic = createStaticFileHandler();
+  for (const [url, expectedType] of [
+    ["/assets/premium-avatar.js", "text/javascript; charset=utf-8"],
+    ["/assets/vendor/three.module.min.js", "text/javascript; charset=utf-8"],
+    ["/assets/vendor/three.core.min.js", "text/javascript; charset=utf-8"],
+    ["/assets/vendor/loaders/GLTFLoader.js", "text/javascript; charset=utf-8"],
+    ["/assets/vendor/utils/BufferGeometryUtils.js", "text/javascript; charset=utf-8"],
+    ["/assets/models/nova-female-base.glb", "model/gltf-binary"],
+    ["/assets/models/nova-hair-bob.glb", "model/gltf-binary"],
+    ["/assets/models/asset_licenses.json", "application/json; charset=utf-8"]
+  ]) {
+    const response = { headers: {}, setHeader(name, value) { this.headers[name] = value; }, end(body) { this.body = body; } };
+    assert.equal(await serveStatic({ method: "GET", url }, response), true, `${url} must be served`);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers["Content-Type"], expectedType);
+    assert.equal(response.headers["X-Content-Type-Options"], "nosniff");
+    assert.ok(response.body.length > 0);
+  }
+});
