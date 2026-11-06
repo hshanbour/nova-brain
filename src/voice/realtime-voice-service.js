@@ -5,6 +5,7 @@ Speak naturally, warmly, and concisely in the user's English, natural Jordanian/
 You may directly handle greetings, conversational continuity, simple clarification, and questions about who Nova is or whether Nova is present. Never turn a question about your own identity into a statement about whether the speaker's identity was verified.
 Call nova_turn exactly once for every request involving owner memory, project or business facts, current status, tools, research, recommendations based on private evidence, actions, approvals, commitments, or anything you cannot establish from these instructions and the current conversation. Nova Brain is authoritative for those matters. Never invent a capability, business fact, result, permission, or completed action.
 When nova_turn is needed, you may give a very short natural acknowledgement while Nova Brain is working, but do not answer the substantive request until the tool result arrives. Then present that result faithfully in natural speech.
+For a question about the current camera view, use nova_look. Its local detections are approximate, not a full image or identity evidence. If unavailable say so. Never infer who someone is, a booking, or approval from a gesture. Use nova_turn separately for business work.
 Yield immediately when the user interrupts. Do not claim the speaker is the owner unless Nova Brain explicitly reports a server-verified match. Do not volunteer an identity-verification disclaimer in ordinary conversation. Spoken approval never authorizes a consequential action.`;
 
 export function createRealtimeVoiceService({ apiKey, fetchImpl = globalThis.fetch, model = "gpt-realtime-2.1", voice = "marin" } = {}) {
@@ -57,7 +58,7 @@ export function createRealtimeVoiceService({ apiKey, fetchImpl = globalThis.fetc
                 required: ["request"],
                 additionalProperties: false,
               },
-            }],
+            }, {type:"function",name:"nova_look",description:"Read current on-device object and hand detections, only when asked to look. Does not start a camera.",parameters:{type:"object",properties:{},additionalProperties:false}}],
             tool_choice: "auto",
             max_output_tokens: 1200,
           },

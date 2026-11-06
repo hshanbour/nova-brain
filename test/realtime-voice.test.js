@@ -132,3 +132,34 @@ class FakePeer extends EventTarget {
   async setRemoteDescription(value) { this.remote = value; }
   close() { this.connectionState = "closed"; }
 }
+
+test("12 interrupted English/Arabic turns preserve queued Brain calls, camera freshness and playback state",async()=>{
+  const channel=new FakeChannel(),peer=new FakePeer(channel),observed=[],turns=[];
+  let unlock,look={observed:false};
+  const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return {getTracks:()=>[]};}},
+    RTCPeerConnectionImpl:class{constructor(){return peer}},AudioImpl:class{pause(){}},MediaRecorderImpl:null,
+    fetchImpl:async url=>url.includes("session")?Response.json({clientSecret:"ek_test"}):new Response("answer"),
+    getConversationId:()=>"c1",readScene:()=>look,onState:e=>observed.push(e),
+    sendTurn:async t=>{turns.push(t);if(turns.length===1)await new Promise(r=>unlock=r);return {message:"Local result: "+t};}});
+  await voice.start();channel.open();
+  for(let i=0;i<12;i++){
+    const item_id="i"+i,id="r"+i,request=i%2?"تابع المهمة "+i:"Review task "+i;
+    channel.message({type:"input_audio_buffer.speech_started",item_id});
+    channel.message({type:"input_audio_buffer.speech_stopped",item_id});
+    channel.message({type:"conversation.item.input_audio_transcription.completed",item_id,transcript:request});
+    channel.message({type:"response.created",response:{id}});
+    channel.message({type:"response.done",response:{id,output:[{type:"function_call",name:"nova_turn",call_id:"c"+i,arguments:"{}"}]}});
+    await new Promise(r=>setTimeout(r,0));
+  }
+  unlock();await new Promise(r=>setTimeout(r,10));
+  assert.equal(turns.length,12);assert.equal(new Set(turns).size,12);assert.equal(turns[1],"تابع المهمة 1");
+  const outputs=()=>channel.sent.filter(x=>x.item?.type==="function_call_output");
+  assert.equal(outputs().length,12);assert.equal(outputs()[11].item.call_id,"c11");
+  look={observed:true,objects:[{label:"cup",position:"centre"}]};
+  channel.message({type:"response.done",response:{output:[{type:"function_call",name:"nova_look",call_id:"l1"}]}});
+  assert.deepEqual(JSON.parse(outputs().at(-1).item.output),look);
+  channel.message({type:"output_audio_buffer.started"});channel.message({type:"response.done",response:{output:[]}});
+  assert.equal(observed.at(-1).state,"speaking");voice.interrupt();assert.equal(observed.at(-1).state,"listening");
+  assert.equal(voice.explainReport({conversationId:"other",text:"private"}),false);
+  voice.end();assert.equal(voice.explainReport({conversationId:"c1",text:"private"}),false);
+});

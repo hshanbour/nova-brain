@@ -102,3 +102,9 @@
 #workspaceAvatarSlot canvas{width:100%;height:100%}
 .aether-controls #aetherSignalStatus{font-size:.86rem;color:var(--muted)}
 .voice-experience-backdrop{background:radial-gradient(circle at 50% 38%,#261342 0,#0b0a18 44%,#030307 100%)}.voice-experience-shell{border-color:rgba(184,128,255,.16);background:linear-gradient(160deg,rgba(17,12,30,.92),rgba(5,5,11,.84))}.voice-presence{filter:drop-shadow(-18px 0 38px rgba(105,96,255,.24)) drop-shadow(18px 0 34px rgba(255,84,205,.18))}.aether-stage{border-color:rgba(190,132,255,.2);background:radial-gradient(circle at 48% 40%,rgba(92,42,148,.3),rgba(9,7,20,.88) 48%,#020207 80%);box-shadow:inset 0 0 90px rgba(0,0,0,.66),0 26px 75px rgba(0,0,0,.4),0 0 60px rgba(112,65,255,.09)}
+
+#novaCamera{width:min(100%,32rem);margin:auto;padding:.55rem .8rem;text-align:left;border:1px solid #665d755e;border-radius:12px;background:#16121c;color:#f6f1ff}#novaCamera small{display:block;color:#c5b9d1;margin-top:.3rem}#novaCamera video:not([hidden]){width:96px;height:66px;object-fit:contain;transform:scaleX(-1);display:block;margin-top:.25rem}#novaCamera[data-person=true]{background-image:radial-gradient(at var(--attention-x) 0%,#524366,transparent 62%)}
+
+#immersiveAvatarSlot>canvas:not([hidden]),#workspaceAvatarSlot>canvas:not([hidden]){width:100%;height:100%;display:block}#voiceExperience .voice-experience-shell{overflow-y:auto;max-height:100dvh}#novaCamera button{white-space:nowrap}
+
+#prismGalleryOriginal:not([hidden]){display:block;width:100%;height:100%;object-fit:contain}

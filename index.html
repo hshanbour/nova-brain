@@ -164,6 +164,8 @@
       <div class="voice-experience-heading"><div><p class="eyebrow">Nova Realtime Voice</p><h2 id="voiceExperienceTitle">Conversation</h2></div><button type="button" class="secondary-button" id="voiceContinueWorkspace">Continue in workspace</button></div>
       <div class="voice-presence" id="immersiveAvatarSlot"><canvas id="voiceAvatarCanvas" class="prism-portrait" aria-label="Prism Shard Bloom responding to Nova Voice"></canvas></div>
       <p id="voiceExperienceStatus" class="voice-experience-status" role="status" aria-live="polite">Connecting…</p>
+      <section id="novaCamera" aria-label="Visual context"><div><button type="button" class="secondary-button" aria-pressed="false">Enable camera</button> <output>Camera off</output></div><small>Frames stay on this device. When you ask Nova to look, only detected labels and gestures are shared with your active voice session.</small><video autoplay muted playsinline hidden></video></section>
+      <label><input type="checkbox" id="usePrismBust"> Use interactive Prism bust (Preview)</label>
       <div id="voiceExperienceTranscript" class="voice-experience-transcript" aria-live="polite"><p data-voice-user hidden></p><p data-voice-assistant hidden></p></div>
       <div class="voice-experience-controls"><button type="button" class="secondary-button" id="voiceMuteButton" aria-pressed="false">Mute</button><button type="button" class="secondary-button" id="voiceTranscriptButton" aria-pressed="true">Hide transcript</button><button type="button" class="send-button" id="voiceExperienceEnd">End conversation</button></div>
     </div>
@@ -172,10 +174,10 @@
     <div class="avatar-gallery-shell">
       <div class="dialog-heading"><h2 id="avatarGalleryTitle">Nova Prism Shard Bloom</h2><button type="button" class="dialog-close" id="closeAvatarGallery" aria-label="Close avatar">×</button></div>
       <article class="aether-prototype">
-        <div class="aether-stage prism-stage"><canvas class="prism-portrait" id="novaAetherCanvas" aria-label="Prism Shard Bloom motion preview"></canvas></div>
+        <div class="aether-stage prism-stage"><img id="prismGalleryOriginal" hidden src="/assets/models/prism-shard-bloom.png" alt="Approved original Prism Shard Bloom artwork"><canvas class="prism-portrait" id="novaAetherCanvas" aria-label="Prism Shard Bloom motion preview"></canvas></div>
         <aside class="aether-controls">
           <fieldset><legend>Motion preview</legend><div class="aether-button-grid"><button type="button" data-aether-state="idle">Original</button><button type="button" data-aether-state="listening">Listening</button><button type="button" data-aether-state="thinking">Thinking</button><button type="button" data-aether-state="speaking">Speaking</button><button type="button" data-aether-state="executing">Executing</button></div></fieldset>
-          <p id="aetherSignalStatus" role="status">Original artwork</p>
+          <div><label>Turn <input id="prismAngle" type="range" min="-16" max="34" value="34"></label> <output id="prismAngleValue">Automatic</output> <button type="button" id="prismAuto">Follow attention</button></div><div id="prismCameraSlot"></div><p id="aetherSignalStatus" role="status">Original artwork</p>
           <button type="button" id="prismVoiceLaunch" class="send-button">Talk to Nova</button>
         </aside>
       </article>

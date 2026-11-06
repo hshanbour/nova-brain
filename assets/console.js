@@ -7,6 +7,9 @@ import { createVoiceOutput, hasLanguageVoice } from "./voice-output.js";
 import { createVoiceV2Client } from "./voice-v2-client.js";
 import { createAudioPlayback, createMediaVoiceCapture } from "./voice-capture.js";
 import { createVoiceV2 } from "./voice-v2.js";
+import {createPrismBust} from "./prism-bust.js";
+import {rest} from "./prism-articulation.js";
+import {attachCamera} from "./vision/camera.js";
 import { createRealtimeVoice } from "./realtime-voice.js";
 import { createNovaPrismAvatar } from "./premium-avatar.js";
 import { initialiseVoiceBenchmark } from "./voice-benchmark.js";
@@ -152,7 +155,13 @@ async function syncTerminalTaskReport(record,task){
   try{
     const result=await ownerMemoryClient.messages(record.conversationId,{limit:100}),report=await terminalTaskReportFromMessages(result.messages||[],task);
     if(record.conversationId!==client.conversationId)return;
-    if(report){addMessage({id:report.id,role:report.role,text:report.content,sequence:report.sequence,createdAt:report.createdAt});record.reportDelivered=true;return;}
+    if(report){addMessage({id:report.id,role:report.role,text:report.content,sequence:report.sequence,createdAt:report.createdAt});record.reportDelivered=true;
+      if(record.fromVoice && voiceV2===realtimeVoice && realtimeVoice?.isActive?.()){
+        const ask=document.createElement("button");ask.type="button";ask.className="live-activity-secondary";ask.textContent="Explain this result aloud";
+        ask.onclick=()=>{if(record.conversationId!==client.conversationId)return;
+          if(!realtimeVoice.explainReport({conversationId:record.conversationId,text:report.content}))showLiveActivityError(record,"Wait for the current voice turn to finish, then try again.");};
+        record.node.querySelector(".live-activity-card")?.append(ask);
+      }return;}
   }catch{}
   record.reportAttempts=(record.reportAttempts||0)+1;if(record.reportAttempts<10)record.reportTimer=setTimeout(()=>syncTerminalTaskReport(record),2000);
 }
@@ -352,6 +361,7 @@ async function sendMessage(message,{autoSpeakResponse=true,throwOnError=false,si
     }
     document.querySelector("#thinkingMessage")?.remove();
     const liveActivity=result.durableTask?.id?ensureLiveActivity(result.durableTask):null;
+    if(liveActivity && context?.voice && voiceSessionDesired){liveActivity.fromVoice=true;voiceExperienceMode.value="integrated";syncVoiceSurface();}
     if(!liveActivity){const assistant=addMessage({ id:result.id,role: "assistant", text: result.message, metadata: result, autoSpeak: autoSpeakResponse });if(result.approval)await approvalPresenter.upsert(result.approval,{conversationId:result.conversationId,assistantMessageId:assistant.dataset.messageId||result.id});await restorePhoneCalls(result.conversationId).catch(()=>{});}
     providerStatus.textContent = `${result.provider || "Agent"} provider · Ready`;
     void refreshRecents(); return { ...result, preparedAssistant, preparationError };
@@ -696,16 +706,26 @@ const voiceModeButton=document.querySelector("#voiceModeButton");const voiceMode
 const voiceExperience=document.querySelector("#voiceExperience"),voiceExperienceStatus=document.querySelector("#voiceExperienceStatus"),voiceExperienceTranscript=document.querySelector("#voiceExperienceTranscript"),voiceExperienceUser=voiceExperienceTranscript.querySelector("[data-voice-user]"),voiceExperienceAssistant=voiceExperienceTranscript.querySelector("[data-voice-assistant]"),voiceExperienceMode=document.querySelector("#voiceExperienceMode"),voiceMuteButton=document.querySelector("#voiceMuteButton");
 const voiceWorkspaceDock=document.querySelector("#voiceWorkspaceDock"),voiceWorkspaceState=document.querySelector("#voiceWorkspaceState"),voiceWorkspaceMute=document.querySelector("#voiceWorkspaceMute");
 let voiceSessionDesired=false,voiceInputLevel=0,voiceOutputLevel=0,premiumAvatar=null,currentVoiceVisualState="idle";
-const avatar=createNovaPrismAvatar({canvas:document.querySelector("#voiceAvatarCanvas"),inputLevel:()=>voiceInputLevel,outputLevel:()=>voiceOutputLevel,maxFps:36});
+let voiceMouth=rest;
+const portrait=createNovaPrismAvatar({canvas:document.querySelector("#voiceAvatarCanvas"),inputLevel:()=>voiceInputLevel,outputLevel:()=>voiceOutputLevel,maxFps:36});
+const camera=attachCamera(document.querySelector("#novaCamera"));
+const bustCanvas=document.createElement("canvas");bustCanvas.className="prism-portrait";bustCanvas.setAttribute("aria-label","Prism articulated bust preview");
+const bust=createPrismBust({canvas:bustCanvas,mouth:()=>voiceMouth,outputLevel:()=>voiceOutputLevel,attention:()=>camera.position()});
+const bustSelection=document.querySelector("#usePrismBust");
+let avatar=portrait;
+bustSelection.addEventListener("change",()=>{avatar.stop();avatar=bustSelection.checked?bust:portrait;avatar.setState(currentVoiceVisualState);syncVoiceSurface();});
 const voiceExperienceStorageKey="nova.voice.experience.v1";voiceExperienceMode.value=localStorage.getItem(voiceExperienceStorageKey)==="integrated"?"integrated":"separate";
 function syncVoiceSurface() {
   const active=Boolean(voiceSessionDesired || voiceV2?.isActive?.());
   const immersive=active && voiceExperienceMode.value==="separate";
   voiceExperience.hidden=!immersive;
+  if(!immersive && document.querySelector("#avatarGalleryDialog").hidden)camera.stop();
   voiceWorkspaceDock.hidden=!(active && !immersive);
   const slot=document.querySelector(active && !immersive?"#workspaceAvatarSlot":"#immersiveAvatarSlot");
   const canvas=document.querySelector("#voiceAvatarCanvas");
-  if(canvas.parentElement!==slot) slot.append(canvas);
+  const use=bustSelection.checked?bustCanvas:canvas;
+  canvas.hidden=use!==canvas;bustCanvas.hidden=use!==bustCanvas;
+  if(use.parentElement!==slot)slot.append(use);
   if(active) avatar.start(); else avatar.stop();
 }
 voiceExperienceMode.addEventListener("change",()=>{localStorage.setItem(voiceExperienceStorageKey,voiceExperienceMode.value);syncVoiceSurface();});
@@ -721,7 +741,7 @@ const voiceCallbacks={
   onError(message){requestError.textContent=message;requestError.hidden=false;},
 };
 batchVoice=createVoiceV2({capture,client:voiceClient,playback,interruptionPlayback,...voiceCallbacks,onNotice(message){voiceModeStatus.textContent=message;}});
-try{realtimeVoice=createRealtimeVoice({mediaDevices:navigator.mediaDevices,RTCPeerConnectionImpl:window.RTCPeerConnection,MediaRecorderImpl:window.MediaRecorder,AudioImpl:window.Audio,AudioContextImpl:window.AudioContext||window.webkitAudioContext,fetchImpl:window.fetch.bind(window),getAudioConstraints:microphoneConstraints,onInputLevel(level){voiceInputLevel=level;},onOutputLevel(level){voiceOutputLevel=level;},onMicrophoneFallback(){localStorage.removeItem(microphoneStorageKey);microphoneDevice.value="";microphoneDiagnostic.textContent="The saved microphone was unavailable, so Nova safely switched to the system default.";},...voiceCallbacks,onAssistantTranscript(text){voiceExperienceAssistant.textContent=`Nova: ${text}`;voiceExperienceAssistant.dir="auto";voiceExperienceAssistant.hidden=false;voiceExperienceTranscript.scrollTop=voiceExperienceTranscript.scrollHeight;showVoiceDiagnostic(`Realtime response: ${text.slice(0,140)}`);},async onDirectTurn(turn){const saved=await voiceClient.persistRealtimeTurn(turn);client.resume(saved.conversationId);localStorage.setItem(conversationKey,saved.conversationId);conversationBinding.display(saved.conversationId);addMessage({id:saved.user.id,role:"user",text:saved.user.content,sequence:saved.user.sequence,createdAt:saved.user.createdAt});addMessage({id:saved.assistant.id,role:"assistant",text:saved.assistant.content,sequence:saved.assistant.sequence,createdAt:saved.assistant.createdAt});void refreshRecents();},onSpeaker(speaker){const verified=speaker?.authenticated_identity==="owner"&&speaker?.match_status==="confirmed";showVoiceDiagnostic(verified?"Owner voice matched by the enrolled ECAPA profile.":speaker?.match_status==="confirmed"?"Enrolled speaker matched; only that speaker's permitted context is available.":"Voice identity was not matched; ordinary conversation continues, while private actions remain approval-gated.");}});}catch{realtimeVoice=null;}
+try{realtimeVoice=createRealtimeVoice({readScene:()=>camera.read(),onArticulation:s=>{voiceMouth=s;},mediaDevices:navigator.mediaDevices,RTCPeerConnectionImpl:window.RTCPeerConnection,MediaRecorderImpl:window.MediaRecorder,AudioImpl:window.Audio,AudioContextImpl:window.AudioContext||window.webkitAudioContext,fetchImpl:window.fetch.bind(window),getAudioConstraints:microphoneConstraints,onInputLevel(level){voiceInputLevel=level;},onOutputLevel(level){voiceOutputLevel=level;},onMicrophoneFallback(){localStorage.removeItem(microphoneStorageKey);microphoneDevice.value="";microphoneDiagnostic.textContent="The saved microphone was unavailable, so Nova safely switched to the system default.";},...voiceCallbacks,onAssistantTranscript(text){voiceExperienceAssistant.textContent=`Nova: ${text}`;voiceExperienceAssistant.dir="auto";voiceExperienceAssistant.hidden=false;voiceExperienceTranscript.scrollTop=voiceExperienceTranscript.scrollHeight;showVoiceDiagnostic(`Realtime response: ${text.slice(0,140)}`);},async onDirectTurn(turn){const saved=await voiceClient.persistRealtimeTurn(turn);client.resume(saved.conversationId);localStorage.setItem(conversationKey,saved.conversationId);conversationBinding.display(saved.conversationId);addMessage({id:saved.user.id,role:"user",text:saved.user.content,sequence:saved.user.sequence,createdAt:saved.user.createdAt});addMessage({id:saved.assistant.id,role:"assistant",text:saved.assistant.content,sequence:saved.assistant.sequence,createdAt:saved.assistant.createdAt});void refreshRecents();},onSpeaker(speaker){const verified=speaker?.authenticated_identity==="owner"&&speaker?.match_status==="confirmed";showVoiceDiagnostic(verified?"Owner voice matched by the enrolled ECAPA profile.":speaker?.match_status==="confirmed"?"Enrolled speaker matched; only that speaker's permitted context is available.":"Voice identity was not matched; ordinary conversation continues, while private actions remain approval-gated.");}});}catch{realtimeVoice=null;}
 voiceV2=realtimeVoice||batchVoice;
 voiceModeButton.addEventListener("click",async()=>{if(voiceSessionDesired||voiceV2?.isActive?.()){voiceExperienceMode.value="separate";localStorage.setItem(voiceExperienceStorageKey,"separate");syncVoiceSurface();return;}requestError.hidden=true;voiceExperienceUser.hidden=true;voiceExperienceAssistant.hidden=true;voiceSessionDesired=true;syncVoiceSurface();if(!capture.supported){voiceSessionDesired=false;syncVoiceSurface();requestError.textContent="Start Voice requires MediaRecorder, microphone access, and Web Audio support.";requestError.hidden=false;return;}try{const readiness=await voiceClient.readiness();if(readiness.realtime?.available&&realtimeVoice){voiceV2=realtimeVoice;try{await voiceV2.start();return;}catch(error){if(error?.novaVoiceStage==="microphone")throw error;showVoiceDiagnostic("Realtime Voice was unavailable; Nova switched to the proven recovery voice path.");}}if(!readiness.available)throw new Error("Voice providers are not fully configured in this Preview.");voiceV2=batchVoice;await voiceV2.start();requestError.hidden=true;}catch(error){voiceSessionDesired=false;voiceV2?.end?.();syncVoiceSurface();requestError.textContent=error.message||"Voice could not start.";requestError.hidden=false;}});
 const endVoiceSession=()=>{voiceSessionDesired=false;voiceV2?.end?.();voiceInputLevel=0;voiceOutputLevel=0;avatar.setState("idle");syncVoiceSurface();};
@@ -740,16 +760,20 @@ function exampleSignal() {
   const t=performance.now()/1000;
   return Math.max(0,Math.sin(t*3.2)+.25)*(.22+.65*Math.abs(Math.sin(t*10.4)));
 }
-premiumAvatar=createNovaPrismAvatar({
+premiumAvatar=createPrismBust({
+  mouth:()=>voiceV2?.isActive?.()?voiceMouth:{open:exampleSignal(),wide:0,round:0,seal:0},attention:()=>camera.position(),
   canvas:document.querySelector("#novaAetherCanvas"),
   inputLevel:()=>voiceV2?.isActive?.()?voiceInputLevel:exampleSignal(),
   outputLevel:()=>voiceV2?.isActive?.()?voiceOutputLevel:exampleSignal()
 });
+const angleControl=document.querySelector("#prismAngle");angleControl.oninput=()=>{premiumAvatar.setAngle(Number(angleControl.value));document.querySelector("#prismAngleValue").textContent=angleControl.value+"°";};
+document.querySelector("#prismAuto").onclick=()=>{premiumAvatar.setAngle(null);document.querySelector("#prismAngleValue").textContent="Automatic";};
 const galleryButtons=[...avatarGallery.querySelectorAll("[data-aether-state]")];
 function updateGallery() {
   const live=Boolean(voiceV2?.isActive?.());
   const state=live?currentVoiceVisualState:galleryState;
   premiumAvatar.setState(state);
+  const original=!live&&state==="idle";document.querySelector("#prismGalleryOriginal").hidden=!original;document.querySelector("#novaAetherCanvas").hidden=original;
   for(const button of galleryButtons) {
     const selected=button.dataset.aetherState===state;
     button.disabled=live;
@@ -762,7 +786,7 @@ function updateGallery() {
   document.querySelector("#prismVoiceLaunch").textContent=live?"Return to conversation":"Talk to Nova";
 }
 function openAvatarGallery() {
-  avatarGallery.hidden=false;
+  avatarGallery.hidden=false;camera.stop();document.querySelector("#prismCameraSlot").append(document.querySelector("#novaCamera"));
   document.body.classList.add("dialog-open");
   updateGallery();
   premiumAvatar.start();
@@ -771,7 +795,7 @@ function openAvatarGallery() {
   history.replaceState(null,"","#voice-avatar-gallery");
 }
 function closeAvatarGallery() {
-  avatarGallery.hidden=true;
+  avatarGallery.hidden=true;camera.stop();document.querySelector("#voiceExperienceTranscript").before(document.querySelector("#novaCamera"));
   document.body.classList.remove("dialog-open");
   premiumAvatar.stop();
   clearInterval(galleryMetricsTimer);

@@ -1,6 +1,20 @@
 import { readFile } from "node:fs/promises";
 
 const ASSETS = Object.freeze({
+  "/assets/prism-locks.js":{file:"../../assets/prism-locks.js",type:"text/javascript; charset=utf-8"},
+  "/assets/prism-bust.js":{file:"../../assets/prism-bust.js",type:"text/javascript; charset=utf-8"},
+  "/assets/prism-articulation.js":{file:"../../assets/prism-articulation.js",type:"text/javascript; charset=utf-8"},
+  "/assets/models/prism-bust.glb":{file:"../../assets/models/prism-bust.glb",type:"model/gltf-binary"},
+  "/assets/vision/camera.js": {"file":"../../assets/vision/camera.js","type":"text/javascript; charset=utf-8"},
+  "/assets/vision/hand.task": {"file":"../../assets/vision/hand.task","type":"application/octet-stream"},
+  "/assets/vision/object.tflite": {"file":"../../assets/vision/object.tflite","type":"application/octet-stream"},
+  "/assets/vision/observation.js": {"file":"../../assets/vision/observation.js","type":"text/javascript; charset=utf-8"},
+  "/assets/vision/perception-worker.js": {"file":"../../assets/vision/perception-worker.js","type":"text/javascript; charset=utf-8"},
+  "/assets/vision/vision_bundle.mjs": {"file":"../../assets/vision/vision_bundle.mjs","type":"text/javascript; charset=utf-8"},
+  "/assets/vision/wasm/vision_wasm_internal.js": {"file":"../../assets/vision/wasm/vision_wasm_internal.js","type":"text/javascript; charset=utf-8"},
+  "/assets/vision/wasm/vision_wasm_internal.wasm": {"file":"../../assets/vision/wasm/vision_wasm_internal.wasm","type":"application/wasm"},
+  "/assets/vision/wasm/vision_wasm_nosimd_internal.js": {"file":"../../assets/vision/wasm/vision_wasm_nosimd_internal.js","type":"text/javascript; charset=utf-8"},
+  "/assets/vision/wasm/vision_wasm_nosimd_internal.wasm": {"file":"../../assets/vision/wasm/vision_wasm_nosimd_internal.wasm","type":"application/wasm"},
   "/": { file: "../../index.html", type: "text/html; charset=utf-8" },
   "/manifest.webmanifest": { file: "../../manifest.webmanifest", type: "application/manifest+json; charset=utf-8" },
   "/assets/console.css": { file: "../../assets/console.css", type: "text/css; charset=utf-8" },

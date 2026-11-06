@@ -1,0 +1,13 @@
+On-device perception assets
+Google MediaPipe Tasks Vision 0.10.32, Apache-2.0:
+https://www.npmjs.com/package/@mediapipe/tasks-vision/v/0.10.32
+https://github.com/google-ai-edge/mediapipe/blob/master/LICENSE
+The unmodified browser bundle and both original WebAssembly builds are lazy-loaded in a dedicated worker. No external CDN is used at runtime.
+Google hand landmark model:
+https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+SHA-256 fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1
+Google EfficientDet Lite0 object model:
+https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite
+SHA-256 0720bf247bd76e6594ea28fa9c6f7c5242be774818997dbbeffc4da460c723bb
+Model information and limitations: https://ai.google.dev/edge/mediapipe/solutions/vision
+Local object/gesture observations are not a biometric identifier, approval signal or general scene description.
