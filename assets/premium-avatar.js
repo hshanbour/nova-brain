@@ -1,417 +1,113 @@
 import * as THREE from "./vendor/three.module.min.js";
 import { GLTFLoader } from "./vendor/loaders/GLTFLoader.js";
 
-const VALID_STATES = new Set(["idle", "connecting", "listening", "thinking", "speaking", "executing", "muted", "error"]);
+const STATES=new Set(["idle","connecting","listening","thinking","speaking","executing","muted","error"]);
+const VIEWS={front:0,"three-quarter":.52,profile:1.02};
 
-export function createNovaAetherAvatar({ canvas, inputLevel = () => 0, outputLevel = () => 0, maxFps = 36, reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches } = {}) {
-  if (!canvas) throw new TypeError("Nova Aether requires a canvas.");
-  let renderer;
-  try {
-    renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: true });
-  } catch (error) {
-    canvas.dataset.avatarFallback = "webgl-unavailable";
-    return fallbackController(error);
-  }
-
-  renderer.setClearColor(0x02060a, 0);
-  renderer.setPixelRatio(Math.min(1.5, globalThis.devicePixelRatio || 1));
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.18;
-  renderer.localClippingEnabled = true;
-
-  const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x03080d, .082);
-  const camera = new THREE.PerspectiveCamera(28, 1, .1, 40);
-  camera.position.set(0, .03, 7.35);
-  const root = new THREE.Group();
-  root.position.y = -.04;
-  scene.add(root);
-
-  const palette = { cyan: 0x68e7f2, ice: 0xd8fcff, teal: 0x1597a7, navy: 0x061821, mint: 0x72f0cf, rose: 0xff7892 };
-  scene.add(new THREE.HemisphereLight(0x9defff, 0x020508, 1.45));
-  const key = new THREE.DirectionalLight(0xc8faff, 3.2); key.position.set(3.5, 4.5, 5); scene.add(key);
-  const rim = new THREE.PointLight(palette.cyan, 12, 14, 2); rim.position.set(-3.4, 1.2, -1.5); scene.add(rim);
-  const warm = new THREE.PointLight(0x7d70ff, 7, 10, 2); warm.position.set(2.5, -1.8, 2); scene.add(warm);
-
-  const faceGeometry = buildFaceGeometry(62, 48);
-  const faceMaterial = new THREE.MeshPhysicalMaterial({ color: 0x061c27, emissive: 0x087384, emissiveIntensity: .3, metalness: .58, roughness: .34, clearcoat: .82, clearcoatRoughness: .18, transparent: true, opacity: .58, side: THREE.DoubleSide, flatShading: false });
-  const face = new THREE.Mesh(faceGeometry, faceMaterial);
-  face.scale.set(.98, 1, 1);
-  root.add(face);
-
-  const wireMaterial = new THREE.MeshBasicMaterial({ color: palette.cyan, transparent: true, opacity: .055, wireframe: true, depthWrite: false, blending: THREE.AdditiveBlending });
-  const topology = new THREE.Mesh(faceGeometry, wireMaterial);
-  topology.scale.set(1.002, 1.002, 1.002);
-  root.add(topology);
-
-  const pointUniforms = { uTime: { value: 0 }, uEnergy: { value: 0 }, uOpacity: { value: .42 }, uColor: { value: new THREE.Color(palette.cyan) } };
-  const pointMaterial = new THREE.ShaderMaterial({
-    uniforms: pointUniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-    vertexShader: `uniform float uTime; uniform float uEnergy; varying float vPulse; void main(){vec3 p=position;float ripple=sin(uTime*1.7+position.y*5.0+position.x*4.0)*(.006+uEnergy*.018);p+=normal*ripple;vec4 mv=modelViewMatrix*vec4(p,1.0);gl_Position=projectionMatrix*mv;gl_PointSize=(1.4+uEnergy*2.7)*(11.0/-mv.z);vPulse=.62+.38*sin(uTime*2.2+position.y*7.0);}`,
-    fragmentShader: `uniform vec3 uColor;uniform float uOpacity;varying float vPulse;void main(){vec2 p=gl_PointCoord-.5;float d=dot(p,p);if(d>.25)discard;float glow=smoothstep(.25,0.0,d);gl_FragColor=vec4(uColor,glow*uOpacity*vPulse);}`
-  });
-  const facePoints = new THREE.Points(faceGeometry, pointMaterial);
-  facePoints.scale.set(1.006, 1.006, 1.006);
-  root.add(facePoints);
-
-  const contourGroup = buildFaceContours(palette);
-  root.add(contourGroup);
-  const features = buildFacialFeatures(palette);
-  root.add(features.group);
-  const hair = buildDataHair(palette);
-  root.add(hair.group);
-  const neural = buildNeuralHalo(palette);
-  root.add(neural.group);
-  const ambient = buildAmbientField(palette);
-  scene.add(ambient.group);
-
-  const authored = createAuthoredIdentity({ root, palette });
-  authored.ready.then(() => {
-    face.visible = false;
-    topology.visible = false;
-    facePoints.visible = false;
-    contourGroup.visible = false;
-    features.group.visible = false;
-  }).catch(() => {});
-
-  const scanMaterial = new THREE.MeshBasicMaterial({ color: palette.mint, transparent: true, opacity: 0, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false });
-  const scan = new THREE.Mesh(new THREE.PlaneGeometry(3.5, .018), scanMaterial);
-  scan.position.z = 1.65; root.add(scan);
-
-  let state = "idle", running = false, disposed = false, frame = 0, lastFrame = 0, measuredAt = performance.now(), measuredFrames = 0, measuredFps = 0;
-  let targetYaw = 0, targetPitch = 0, pointerYaw = 0, pointerPitch = 0, viewAngle = "front";
-  const interval = 1000 / (reducedMotion ? 18 : Math.max(24, Math.min(48, maxFps)));
-
-  function resize() {
-    const rect = canvas.getBoundingClientRect();
-    const width = Math.max(260, Math.round(rect.width || 700)), height = Math.max(340, Math.round(rect.height || 760));
-    if (canvas.width !== Math.round(width * renderer.getPixelRatio()) || canvas.height !== Math.round(height * renderer.getPixelRatio())) renderer.setSize(width, height, false);
-    camera.aspect = width / height; camera.updateProjectionMatrix();
-  }
-
-  function render(timestamp) {
-    if (!running || disposed) return;
-    frame = requestAnimationFrame(render);
-    if (timestamp - lastFrame < interval) return;
-    lastFrame = timestamp; resize();
-    const t = timestamp / 1000, input = clamp(inputLevel()), output = clamp(outputLevel());
-    const energy = state === "speaking" ? output : state === "listening" ? input : state === "thinking" ? .24 : state === "executing" ? .34 : .07;
-    const viewTarget = viewAngle === "profile" ? .98 : viewAngle === "three-quarter" ? .55 : 0;
-    targetYaw = viewTarget + pointerYaw + (state === "thinking" ? Math.sin(t * .42) * .09 : Math.sin(t * .2) * .025);
-    targetPitch = pointerPitch + Math.sin(t * .31) * .018;
-    root.rotation.y += (targetYaw - root.rotation.y) * .055;
-    root.rotation.x += (targetPitch - root.rotation.x) * .06;
-    root.position.y = -.04 + Math.sin(t * 1.05) * .018;
-    const breath = 1 + Math.sin(t * 1.35) * .004;
-    root.scale.setScalar(breath);
-
-    pointUniforms.uTime.value = t; pointUniforms.uEnergy.value = energy;
-    pointUniforms.uOpacity.value = state === "muted" ? .16 : .34 + energy * .22;
-    faceMaterial.emissiveIntensity = .26 + energy * .72;
-    wireMaterial.opacity = state === "thinking" ? .11 : state === "executing" ? .14 : .045 + energy * .07;
-    features.primary.opacity = .62 + energy * .32;
-    features.secondary.opacity = .16 + energy * .2;
-    features.speechGroup.scale.y = 1 + (state === "speaking" ? output * .1 : 0);
-    features.speechGroup.position.y = state === "speaking" ? -output * .026 : 0;
-    hair.hero.opacity = .48 + energy * .24;
-    hair.fine.opacity = .18 + energy * .18;
-    hair.group.children.forEach((line, index) => { line.position.z = Math.sin(t * .72 + index * .41) * (.004 + energy * .012); });
-    authored.group.position.y = -12.6 + Math.sin(t * .9) * .012;
-    authored.faceMaterial.emissiveIntensity = .34 + energy * .72;
-    authored.hairMaterial.emissiveIntensity = .42 + energy * .88;
-    authored.hairMaterial.opacity = .3 + energy * .14;
-    authored.eyeMaterial.emissiveIntensity = .9 + energy * 1.4;
-    authored.meshes.forEach(mesh => {
-      const left = mesh.morphTargetDictionary?.blink_left;
-      const right = mesh.morphTargetDictionary?.blink_right;
-      if (left !== undefined && right !== undefined) {
-        const blink = Math.max(0, Math.sin(t * .74 - 1.2) - .985) * 66;
-        mesh.morphTargetInfluences[left] = blink;
-        mesh.morphTargetInfluences[right] = blink;
-      }
-    });
-    neural.group.rotation.z = t * (state === "thinking" ? .105 : .025);
-    neural.nodes.rotation.y = t * (state === "executing" ? .52 : .13);
-    neural.material.opacity = .14 + energy * .4;
-    ambient.group.rotation.y = t * .018; ambient.material.opacity = .13 + energy * .18;
-    scanMaterial.opacity = state === "executing" ? .45 : Math.max(0, scanMaterial.opacity - .04);
-    scan.position.y = state === "executing" ? 1.55 - ((t * .78) % 3.2) : -2;
-    rim.intensity = 9 + energy * 18;
-    renderer.render(scene, camera);
-    measuredFrames += 1;
-    if (timestamp - measuredAt >= 1000) { measuredFps = Math.round(measuredFrames * 1000 / (timestamp - measuredAt)); measuredFrames = 0; measuredAt = timestamp; }
-  }
-
-  function onPointerMove(event) {
-    if (!running) return;
-    const rect = canvas.getBoundingClientRect();
-    pointerYaw = ((event.clientX - rect.left) / rect.width - .5) * .24;
-    pointerPitch = ((event.clientY - rect.top) / rect.height - .5) * .1;
-  }
-  function onPointerLeave() { pointerYaw = 0; pointerPitch = 0; }
-  canvas.addEventListener("pointermove", onPointerMove, { passive: true });
-  canvas.addEventListener("pointerleave", onPointerLeave, { passive: true });
-
-  const api = Object.freeze({
-    start() { if (!running && !disposed) { running = true; measuredAt = performance.now(); frame = requestAnimationFrame(render); } return api; },
-    stop() { running = false; if (frame) cancelAnimationFrame(frame); frame = 0; return api; },
-    setState(next) { if (VALID_STATES.has(next)) state = next; return api; },
-    setView(next) { if (["front", "three-quarter", "profile"].includes(next)) viewAngle = next; return api; },
-    getState: () => state,
-    metrics: () => ({ fps: measuredFps, triangles: renderer.info.render.triangles, calls: renderer.info.render.calls, webgl: true, authored: authored.loaded, view: viewAngle }),
-    capture: () => canvas.toDataURL("image/png"),
-    dispose() { api.stop(); disposed = true; canvas.removeEventListener("pointermove", onPointerMove); canvas.removeEventListener("pointerleave", onPointerLeave); scene.traverse(object => { object.geometry?.dispose?.(); if (Array.isArray(object.material)) object.material.forEach(material => material.dispose?.()); else object.material?.dispose?.(); }); renderer.dispose(); }
-  });
+// Nova Prism Shard Bloom. The CC0 mesh supplies proportion only; all visible
+// skin, eyes and hair are replaced by Nova's non-human prismatic treatment.
+export function createNovaPrismAvatar({canvas,inputLevel=()=>0,outputLevel=()=>0,maxFps=36,reducedMotion=globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches}={}){
+  if(!canvas)throw new TypeError("Nova Prism requires a canvas.");
+  let renderer;try{renderer=new THREE.WebGLRenderer({canvas,alpha:true,antialias:true,powerPreference:"high-performance",preserveDrawingBuffer:true});}catch(error){canvas.dataset.avatarFallback="webgl-unavailable";return fallback(error);}
+  renderer.setClearColor(0x020208,0);renderer.setPixelRatio(Math.min(1.5,globalThis.devicePixelRatio||1));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.08;renderer.localClippingEnabled=true;
+  const scene=new THREE.Scene();scene.fog=new THREE.FogExp2(0x020208,.065);
+  const camera=new THREE.PerspectiveCamera(27,1,.1,35);camera.position.set(0,.05,7.45);
+  const root=new THREE.Group();root.position.y=-.06;scene.add(root);
+  const p={ice:0xe9fbff,cyan:0x58e8ff,violet:0x8f68ff,magenta:0xff66d7,rose:0xff8fb7,amber:0xffc46a};
+  scene.add(new THREE.HemisphereLight(0xb8efff,0x080313,.58));
+  const key=new THREE.DirectionalLight(0xdafaff,1.85);key.position.set(3.7,4.4,5.5);scene.add(key);
+  const violet=new THREE.PointLight(p.violet,20,14,2);violet.position.set(-3.7,1.4,.1);scene.add(violet);
+  const rose=new THREE.PointLight(p.magenta,15,12,2);rose.position.set(3.1,-.4,1.2);scene.add(rose);
+  const warm=new THREE.PointLight(p.amber,9,10,2);warm.position.set(-.4,-2.2,2.8);scene.add(warm);
+  const identity=prismIdentity(root,p),facets=faceFacets(p),hair=prismHair(p),features=syntheticFeatures(p),halo=makeHalo(p),field=ambient(p);
+  root.add(facets.group,hair.group,features.group,halo.group);scene.add(field.points);
+  const scanMat=new THREE.MeshBasicMaterial({color:p.cyan,transparent:true,opacity:0,side:THREE.DoubleSide,blending:THREE.AdditiveBlending,depthWrite:false});
+  const scan=new THREE.Mesh(new THREE.PlaneGeometry(3.9,.022),scanMat);scan.position.z=1.54;root.add(scan);
+  let state="idle",running=false,disposed=false,frame=0,last=0,measuredAt=performance.now(),frames=0,fps=0,py=0,pp=0,view="front";
+  const interval=1000/(reducedMotion?18:Math.max(24,Math.min(48,maxFps)));
+  const resize=()=>{const r=canvas.getBoundingClientRect(),w=Math.max(260,Math.round(r.width||700)),h=Math.max(340,Math.round(r.height||760)),d=renderer.getPixelRatio();if(canvas.width!==Math.round(w*d)||canvas.height!==Math.round(h*d))renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();};
+  const render=timestamp=>{if(!running||disposed)return;frame=requestAnimationFrame(render);if(timestamp-last<interval)return;last=timestamp;resize();
+    const t=timestamp/1000,input=clamp(inputLevel()),output=clamp(outputLevel()),energy=state==="speaking"?output:state==="listening"?input:state==="thinking"?.28:state==="executing"?.38:.065;
+    root.rotation.y+=(VIEWS[view]+py+(state==="thinking"?Math.sin(t*.48)*.075:Math.sin(t*.18)*.018)-root.rotation.y)*.052;root.rotation.x+=(pp+Math.sin(t*.3)*.014-root.rotation.x)*.06;root.position.y=-.06+Math.sin(t*.9)*.018;
+    identity.group.position.y=-12.6+Math.sin(t*.9)*.012;identity.face.emissiveIntensity=.22+energy*.7;identity.face.opacity=state==="muted"?.1:.16+energy*.05;identity.edge.opacity=.05+energy*.1;identity.inner.opacity=.008+energy*.018;
+    facets.materials.forEach((m,i)=>{m.emissiveIntensity=.56+energy*(i%3===0?1.25:.82);m.opacity=.62+energy*.14;});facets.group.rotation.z=Math.sin(t*.18)*.004;
+    hair.materials.forEach((m,i)=>{m.emissiveIntensity=.62+energy*(i%3===0?1.15:.72);m.opacity=.76+energy*.12;});hair.line.opacity=.24+energy*.3;
+    hair.ribbons.forEach((r,i)=>{r.rotation.z=Math.sin(t*(.22+i%4*.025)+i*.7)*(.006+energy*.018);r.position.z=Math.sin(t*.42+i*.8)*(.004+energy*.012);});
+    hair.shards.forEach((s,i)=>s.scale.setScalar(1+Math.sin(t*1.1+i*.85)*.018+energy*.045));
+    hair.crystals.forEach((s,i)=>{s.rotation.z=Math.sin(t*.24+i*.71)*(.006+energy*.012);s.position.z=.12+Math.sin(t*.38+i)*.012;});
+    features.primary.opacity=.54+energy*.38;features.secondary.opacity=.16+energy*.26;features.speech.position.y=state==="speaking"?-output*.022:0;features.speech.scale.y=1+(state==="speaking"?output*.13:0);
+    halo.group.rotation.z=t*(state==="thinking"?.105:.018);halo.material.opacity=.075+energy*.22;field.points.rotation.y=t*.012;field.material.opacity=.08+energy*.12;
+    scanMat.opacity=state==="executing"?.42:Math.max(0,scanMat.opacity-.035);scan.position.y=state==="executing"?1.65-((t*.8)%3.35):-2;violet.intensity=17+energy*24;rose.intensity=12+energy*20;
+    renderer.render(scene,camera);frames++;if(timestamp-measuredAt>=1000){fps=Math.round(frames*1000/(timestamp-measuredAt));frames=0;measuredAt=timestamp;}
+  };
+  const move=e=>{if(!running)return;const r=canvas.getBoundingClientRect();py=((e.clientX-r.left)/r.width-.5)*.2;pp=((e.clientY-r.top)/r.height-.5)*.075;},leave=()=>{py=0;pp=0;};
+  canvas.addEventListener("pointermove",move,{passive:true});canvas.addEventListener("pointerleave",leave,{passive:true});
+  const api=Object.freeze({start(){if(!running&&!disposed){running=true;measuredAt=performance.now();frame=requestAnimationFrame(render);}return api;},stop(){running=false;if(frame)cancelAnimationFrame(frame);frame=0;return api;},setState(next){if(STATES.has(next))state=next;return api;},setView(next){if(Object.hasOwn(VIEWS,next))view=next;return api;},getState:()=>state,metrics:()=>({fps,triangles:renderer.info.render.triangles,calls:renderer.info.render.calls,webgl:true,authored:identity.loaded,view}),capture:()=>canvas.toDataURL("image/png"),dispose(){api.stop();disposed=true;canvas.removeEventListener("pointermove",move);canvas.removeEventListener("pointerleave",leave);scene.traverse(o=>{o.geometry?.dispose?.();if(Array.isArray(o.material))o.material.forEach(m=>m.dispose?.());else o.material?.dispose?.();});renderer.dispose();}});
   return api;
 }
+export const createNovaAetherAvatar=createNovaPrismAvatar;
 
-function createAuthoredIdentity({ root, palette }) {
-  const group = new THREE.Group();
-  group.position.y = -12.6;
-  group.scale.setScalar(9);
-  group.rotation.y = 0;
-  root.add(group);
-
-  const clip = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1.28);
-  const faceMaterial = new THREE.MeshPhysicalMaterial({
-    color: 0x04141d, emissive: 0x087789, emissiveIntensity: .38,
-    metalness: .48, roughness: .27, clearcoat: 1, clearcoatRoughness: .14,
-    transparent: true, opacity: .72, side: THREE.DoubleSide, clippingPlanes: [clip]
-  });
-  const featureMaterial = new THREE.MeshPhysicalMaterial({
-    color: palette.cyan, emissive: palette.teal, emissiveIntensity: .72,
-    metalness: .35, roughness: .24, transparent: true, opacity: .78,
-    side: THREE.DoubleSide, clippingPlanes: [clip]
-  });
-  const eyeMaterial = new THREE.MeshPhysicalMaterial({
-    color: palette.mint, emissive: palette.mint, emissiveIntensity: 1.1,
-    metalness: .18, roughness: .16, transparent: true, opacity: .92,
-    side: THREE.DoubleSide, clippingPlanes: [clip]
-  });
-  const eyeBaseMaterial = new THREE.MeshPhysicalMaterial({
-    color: 0x071c25, emissive: 0x0b4e5a, emissiveIntensity: .42,
-    metalness: .32, roughness: .2, clearcoat: 1, transparent: true, opacity: .9,
-    side: THREE.DoubleSide, clippingPlanes: [clip]
-  });
-  const corneaMaterial = new THREE.MeshPhysicalMaterial({
-    color: palette.ice, emissive: palette.teal, emissiveIntensity: .12,
-    metalness: 0, roughness: .05, transmission: .25, transparent: true, opacity: .18,
-    side: THREE.DoubleSide, clippingPlanes: [clip], depthWrite: false
-  });
-  const topologyMaterial = new THREE.MeshBasicMaterial({
-    color: palette.cyan, transparent: true, opacity: .07, wireframe: true,
-    blending: THREE.AdditiveBlending, depthWrite: false, clippingPlanes: [clip]
-  });
-  const hairMaterial = new THREE.MeshPhysicalMaterial({
-    color: 0x062e3c, emissive: palette.cyan, emissiveIntensity: .48,
-    metalness: .7, roughness: .24, clearcoat: .8, clearcoatRoughness: .2,
-    transparent: true, opacity: .34, side: THREE.DoubleSide,
-    blending: THREE.AdditiveBlending, depthWrite: false, clippingPlanes: [clip]
-  });
-  const loader = new GLTFLoader();
-  const meshes = [];
-  const load = path => new Promise((resolve, reject) => loader.load(path, resolve, undefined, reject));
-  const controller = { group, meshes, faceMaterial, featureMaterial, eyeMaterial, hairMaterial, loaded: false, ready: null };
-  controller.ready = Promise.all([
-    load("/assets/models/nova-female-base.glb"),
-    load("/assets/models/nova-hair-bob.glb")
-  ]).then(([body, hair]) => {
-    const configure = (scene, isHair = false) => {
-      const overlays = [];
-      scene.traverse(object => {
-        if (!object.isMesh && !object.isSkinnedMesh) return;
-        meshes.push(object);
-        const dictionary = object.morphTargetDictionary || {};
-        const influence = object.morphTargetInfluences || [];
-        const setMorph = (name, value) => { if (dictionary[name] !== undefined) influence[dictionary[name]] = value; };
-        setMorph("gender_female", 1);
-        setMorph("gender_male", 0);
-        setMorph("face_cheekbones_incr", .16);
-        setMorph("face_eye_size_incr", .08);
-        setMorph("face_eye_tilt_incr", .08);
-        setMorph("face_jaw_width_decr", .1);
-        setMorph("face_lips_incr", .08);
-        const materialName = object.material?.name || "";
-        if (isHair) object.material = hairMaterial;
-        else if (materialName === "Skin") object.material = faceMaterial;
-        else if (materialName === "Iris") object.material = eyeMaterial;
-        else if (materialName === "Eye") object.material = eyeBaseMaterial;
-        else if (materialName === "Cornea") object.material = corneaMaterial;
-        else if (["Eyebrow", "Eyelash"].includes(materialName)) object.material = featureMaterial;
-        else object.visible = false;
-        object.frustumCulled = false;
-        if (!isHair && materialName === "Skin") {
-          const overlay = object.clone();
-          overlay.material = topologyMaterial;
-          overlay.renderOrder = object.renderOrder + 1;
-          overlays.push(overlay);
-        }
-      });
-      overlays.forEach(overlay => scene.add(overlay));
-      group.add(scene);
-    };
-    configure(body.scene);
-    configure(hair.scene, true);
-    controller.loaded = true;
-    return controller;
-  });
+function prismIdentity(root,p){
+  const group=new THREE.Group();group.position.y=-12.6;group.scale.setScalar(9);root.add(group);
+  const clip=new THREE.Plane(new THREE.Vector3(0,1,0),.92);
+  const face=new THREE.MeshPhysicalMaterial({color:0x090617,emissive:0x260850,emissiveIntensity:.28,metalness:.48,roughness:.24,clearcoat:1,clearcoatRoughness:.1,transmission:.02,thickness:.18,iridescence:.55,iridescenceIOR:1.3,iridescenceThicknessRange:[180,520],transparent:true,opacity:.34,side:THREE.DoubleSide,flatShading:true,clippingPlanes:[clip]});
+  const edge=new THREE.LineBasicMaterial({color:p.ice,transparent:true,opacity:.24,blending:THREE.AdditiveBlending,depthWrite:false,clippingPlanes:[clip]});
+  const inner=new THREE.MeshBasicMaterial({color:p.magenta,transparent:true,opacity:.018,wireframe:true,blending:THREE.AdditiveBlending,depthWrite:false,clippingPlanes:[clip]});
+  const controller={group,face,edge,inner,loaded:false};
+  new GLTFLoader().load("/assets/models/nova-female-base.glb",body=>{const overlays=[];body.scene.traverse(o=>{if(!o.isMesh&&!o.isSkinnedMesh)return;if((o.material?.name||"")!=="Skin"){o.visible=false;return;}o.material=face;o.frustumCulled=false;const d=o.morphTargetDictionary||{},v=o.morphTargetInfluences||[],m=(n,x)=>{if(d[n]!==undefined)v[d[n]]=x;};m("gender_female",1);m("gender_male",0);m("face_cheekbones_incr",.2);m("face_jaw_width_decr",.11);m("face_eye_tilt_incr",.07);const wire=o.clone();wire.material=inner;wire.renderOrder=2;overlays.push(wire);if(!o.isSkinnedMesh){const e=new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry,28),edge);e.renderOrder=3;o.add(e);}});overlays.forEach(x=>body.scene.add(x));group.add(body.scene);controller.loaded=true;},undefined,()=>{canvasFallback(root,p);});
   return controller;
 }
 
-function facePatchPoint(u, v) {
-  const y = 1.34 - v * 2.67;
-  const width = faceWidth(y);
-  const x = u * width;
-  let z = .62 - .23 * u * u;
-  const eyeSockets = gaussian(x, y, -.31, .38, .19, .13) + gaussian(x, y, .31, .38, .19, .13);
-  const brows = gaussian(x, y, -.31, .56, .24, .1) + gaussian(x, y, .31, .56, .24, .1);
-  const temples = gaussian(x, y, -.68, .46, .2, .3) + gaussian(x, y, .68, .46, .2, .3);
-  const cheeks = gaussian(x, y, -.43, -.04, .26, .25) + gaussian(x, y, .43, -.04, .26, .25);
-  const noseBridge = gaussian(x, y, 0, .3, .115, .43);
-  const noseTip = gaussian(x, y, 0, -.08, .17, .14);
-  const philtrum = gaussian(x, y, 0, -.34, .11, .12);
-  const lips = gaussian(x, y, 0, -.51, .29, .07);
-  const chin = gaussian(x, y, 0, -1.02, .3, .24);
-  z += -eyeSockets * .14 + brows * .055 - temples * .055 + cheeks * .13 + noseBridge * .48 + noseTip * .28 - philtrum * .055 + lips * .14 + chin * .12;
-  return new THREE.Vector3(x, y, z);
-}
-
-function faceWidth(y) {
-  const profile = [
-    [1.34,.43],[1.12,.64],[.72,.78],[.2,.82],[-.24,.78],[-.62,.68],[-.98,.5],[-1.22,.29],[-1.33,.08]
+function prismHair(p){
+  const group=new THREE.Group(),ribbons=[],shards=[],crystals=[],materials=[];
+  const paths=[
+    [[-.08,1.52,.08],[-.48,1.54,.18],[-1.08,1.22,.2],[-1.62,.63,.08],[-1.9,.06,-.18]],[[-.02,1.56,.02],[-.32,1.7,.02],[-.98,1.66,-.08],[-1.72,1.35,-.28],[-2.18,.95,-.48]],
+    [[.02,1.54,.04],[.43,1.62,.2],[1.02,1.45,.27],[1.54,.93,.15],[1.79,.19,-.06]],[[.08,1.48,.06],[.66,1.52,.12],[1.42,1.23,-.02],[2.02,.68,-.26],[2.34,.05,-.54]],
+    [[-.18,1.46,.04],[-.72,1.24,.26],[-1.26,.69,.3],[-1.5,-.06,.1],[-1.42,-.78,-.2]],[[.18,1.44,.07],[.78,1.18,.35],[1.24,.55,.31],[1.35,-.19,.09],[1.22,-.94,-.24]],
+    [[-.27,1.42,-.04],[-.98,1.16,-.18],[-1.51,.54,-.34],[-1.76,-.32,-.51],[-1.7,-1.18,-.64]],[[.31,1.39,-.06],[1.02,1.11,-.16],[1.56,.42,-.33],[1.78,-.45,-.5],[1.62,-1.35,-.62]],
+    [[-.36,1.35,-.22],[-1.2,1.16,-.48],[-1.82,.48,-.7],[-2.03,-.4,-.79],[-1.78,-1.5,-.75]],[[.42,1.34,-.22],[1.24,1.04,-.48],[1.91,.3,-.71],[2.08,-.61,-.78],[1.82,-1.5,-.7]],
+    [[-.03,1.57,-.14],[-.52,1.82,-.34],[-1.22,1.83,-.58],[-1.86,1.55,-.8],[-2.36,1.12,-.96]],[[.07,1.58,-.13],[.64,1.8,-.34],[1.38,1.72,-.58],[2.02,1.34,-.82],[2.5,.84,-1.02]]
   ];
-  for (let index = 0; index < profile.length - 1; index += 1) {
-    const [topY, topWidth] = profile[index], [bottomY, bottomWidth] = profile[index + 1];
-    if (y <= topY && y >= bottomY) {
-      const amount = (topY - y) / (topY - bottomY);
-      return THREE.MathUtils.lerp(topWidth, bottomWidth, amount);
-    }
-  }
-  return y > profile[0][0] ? profile[0][1] : profile.at(-1)[1];
+  paths.forEach((points,i)=>{const colors=[p.violet,p.magenta,p.cyan,p.rose],m=new THREE.MeshPhysicalMaterial({color:colors[i%4],emissive:colors[i%4],emissiveIntensity:.62,metalness:.42,roughness:.18,clearcoat:1,clearcoatRoughness:.08,transmission:0,thickness:.1,iridescence:.5,iridescenceIOR:1.3,iridescenceThicknessRange:[160,580],transparent:true,opacity:.28,side:THREE.DoubleSide,depthWrite:false});materials.push(m);const r=new THREE.Mesh(ribbon(points,.2+i%3*.045,36),m);r.renderOrder=3;ribbons.push(r);group.add(r);});
+  const crystalTriangles=[
+    [[-.08,1.42,.12],[-.88,1.86,.08],[-1.7,2.28,-.18]],[[-.12,1.44,.14],[-1.18,1.58,.12],[-2.2,1.83,-.32]],[[-.2,1.38,.14],[-1.35,1.2,.18],[-2.34,1.28,-.3]],
+    [[-.28,1.28,.18],[-1.38,.78,.25],[-2.25,.62,-.24]],[[-.4,1.12,.2],[-1.42,.26,.28],[-2.08,-.1,-.2]],[[-.52,.86,.18],[-1.36,-.34,.17],[-1.84,-.78,-.28]],
+    [[.02,1.46,.16],[.72,1.92,.12],[1.48,2.16,-.12]],[[.06,1.43,.16],[1.1,1.66,.16],[2.02,1.8,-.28]],[[.16,1.38,.18],[1.28,1.28,.22],[2.22,1.34,-.32]],
+    [[.28,1.24,.2],[1.38,.82,.3],[2.18,.66,-.24]],[[.4,1.04,.2],[1.42,.28,.28],[2.05,-.02,-.24]],[[.52,.78,.18],[1.34,-.4,.18],[1.78,-.92,-.3]],
+    [[-.64,.15,.2],[-1.26,-.86,.12],[-1.42,-1.58,-.2]],[[.66,.1,.2],[1.23,-.92,.12],[1.35,-1.62,-.2]]
+  ];
+  const crystalColors=[p.magenta,p.violet,p.cyan,p.rose,p.amber];
+  const crown=coloredTriangles(crystalTriangles,crystalColors,.82);crown.mesh.renderOrder=6;crystals.push(crown.mesh);materials.push(crown.material);group.add(crown.mesh);
+  const shardMat=new THREE.MeshPhysicalMaterial({color:p.magenta,emissive:p.violet,emissiveIntensity:.7,metalness:.46,roughness:.13,transmission:0,transparent:true,opacity:.74,side:THREE.DoubleSide,depthWrite:false});
+  [[-1.48,1.34,.06,-.42],[1.58,1.23,.02,.38],[-1.94,.75,-.35,-.55],[2.02,.46,-.39,.52],[-1.83,-.34,-.42,-.3],[1.73,-.63,-.45,.25],[-1.31,-1.22,-.36,-.18],[1.35,-1.3,-.38,.2]].forEach(([x,y,z,a],i)=>{const s=new THREE.Mesh(new THREE.ConeGeometry(.16+i%2*.05,.72+i%3*.12,3,1,false),shardMat);s.position.set(x,y,z);s.rotation.set(.2,a,a);shards.push(s);group.add(s);});
+  const line=new THREE.LineBasicMaterial({color:p.ice,transparent:true,opacity:.24,blending:THREE.AdditiveBlending,depthWrite:false});
+  for(let i=0;i<22;i++){const side=i%2?1:-1,lane=i/21,c=new THREE.CatmullRomCurve3(vec([[side*.06,1.54,.1],[side*(.5+lane*.34),1.48-lane*.2,.25],[side*(1.08+lane*.52),.72-lane*.35,.08],[side*(1.18+lane*.58),-.42-lane*.7,-.32]]));group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(c.getPoints(46)),line));}
+  return{group,ribbons,shards,crystals,materials,line};
 }
 
-function buildFaceGeometry(rows, columns) {
-  const positions = [], indices = [];
-  for (let row = 0; row <= rows; row += 1) for (let column = 0; column <= columns; column += 1) {
-    const point = facePatchPoint(column / columns * 2 - 1, row / rows);
-    positions.push(point.x, point.y, point.z);
-  }
-  for (let row = 0; row < rows; row += 1) for (let column = 0; column < columns; column += 1) {
-    const a = row * (columns + 1) + column, b = a + columns + 1;
-    indices.push(a, b, a + 1, b, b + 1, a + 1);
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3)); geometry.setIndex(indices); geometry.computeVertexNormals(); geometry.computeBoundingSphere();
-  return geometry;
+function faceFacets(p){
+  const group=new THREE.Group(),materials=[];
+  const vertices=[
+    [-.72,1.13,.7],[-.22,1.5,.72],[.08,1.48,.76],[.7,1.08,.72],
+    [-.82,.58,.88],[-.36,.72,1.16],[0,.84,1.2],[.38,.72,1.15],[.82,.58,.87],
+    [-.78,.05,.96],[-.42,.18,1.25],[0,.28,1.42],[.44,.18,1.24],[.78,.05,.96],
+    [-.66,-.46,.96],[-.34,-.36,1.24],[0,-.28,1.38],[.35,-.36,1.23],[.66,-.46,.95],
+    [-.48,-.94,.88],[0,-1.2,1.03],[.5,-.94,.87]
+  ];
+  const tris=[[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,8,7],[4,5,10],[4,10,9],[5,6,11],[5,11,10],[6,7,12],[6,12,11],[7,8,13],[7,13,12],[9,10,15],[9,15,14],[10,11,16],[10,16,15],[11,12,17],[11,17,16],[12,13,18],[12,18,17],[14,15,19],[15,16,20],[15,20,19],[16,17,20],[17,18,21],[17,21,20]];
+  const colors=[p.violet,p.magenta,p.cyan,p.rose,p.amber];
+  const panels=tris.map(tri=>tri.map(index=>vertices[index])),merged=coloredTriangles(panels,colors,.7);merged.mesh.renderOrder=5;materials.push(merged.material);group.add(merged.mesh);return{group,materials};
 }
 
-function buildFaceContours(palette) {
-  const group = new THREE.Group();
-  const material = new THREE.LineBasicMaterial({ color: palette.cyan, transparent: true, opacity: .16, depthWrite: false, blending: THREE.AdditiveBlending });
-  for (const row of [3, 10, 17, 24, 31, 38, 45, 52, 59]) {
-    const points = [];
-    for (let column = 0; column <= 42; column += 1) points.push(facePatchPoint(column / 21 - 1, row / 62));
-    group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), material));
-  }
-  for (const column of [4, 10, 16, 21, 26, 32, 38]) {
-    const points = [];
-    for (let row = 0; row <= 62; row += 1) points.push(facePatchPoint(column / 21 - 1, row / 62));
-    group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), material));
-  }
-  return group;
-}
-
-function buildFacialFeatures(palette) {
-  const group = new THREE.Group(), speechGroup = new THREE.Group(); group.add(speechGroup);
-  const primary = new THREE.LineBasicMaterial({ color: palette.ice, transparent: true, opacity: .76, depthWrite: false, blending: THREE.AdditiveBlending });
-  const secondary = new THREE.LineBasicMaterial({ color: palette.cyan, transparent: true, opacity: .28, depthWrite: false, blending: THREE.AdditiveBlending });
-  const add = (points, material = primary, parent = group) => parent.add(curveLine(points, material));
-  add([[-.54,.42,.78],[-.43,.36,1.03],[-.28,.34,1.13],[-.16,.4,1.01]],primary);
-  add([[.54,.42,.78],[.43,.36,1.03],[.28,.34,1.13],[.16,.4,1.01]],primary);
-  add([[-.52,.4,.8],[-.4,.31,1.01],[-.27,.31,1.09],[-.17,.39,1.0]],secondary);
-  add([[.52,.4,.8],[.4,.31,1.01],[.27,.31,1.09],[.17,.39,1.0]],secondary);
-  add([[-.55,.55,.72],[-.38,.61,.94],[-.18,.57,.95]],secondary);
-  add([[.55,.55,.72],[.38,.61,.94],[.18,.57,.95]],secondary);
-  add([[0,.78,.82],[-.035,.46,1.12],[-.02,.13,1.34],[-.13,-.04,1.22],[0,-.09,1.3],[.14,-.04,1.2]],primary);
-  add([[-.31,-.43,1.02],[-.16,-.49,1.18],[0,-.46,1.25],[.16,-.49,1.18],[.31,-.43,1.02]],primary,speechGroup);
-  add([[-.27,-.51,1.03],[-.13,-.57,1.15],[0,-.58,1.18],[.13,-.57,1.15],[.27,-.51,1.03]],secondary,speechGroup);
-  add([[-.7,-.08,.77],[-.55,-.02,.96],[-.38,-.08,1.08]],secondary);
-  add([[.7,-.08,.77],[.55,-.02,.96],[.38,-.08,1.08]],secondary);
-  add([[-.7,-.3,.78],[-.58,-.66,.84],[-.36,-.99,.91],[0,-1.16,.99],[.36,-.99,.91],[.58,-.66,.84],[.7,-.3,.78]],primary);
-  const irisMaterial = new THREE.MeshBasicMaterial({ color: palette.mint, transparent: true, opacity: .7, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-  for (const side of [-1, 1]) {
-    const iris = new THREE.Mesh(new THREE.RingGeometry(.026, .044, 28), irisMaterial);
-    iris.position.set(side * .335, .365, 1.125);
-    group.add(iris);
-  }
-  return { group, speechGroup, primary, secondary };
-}
-
-function buildDataHair(palette) {
-  const group = new THREE.Group();
-  const fine = new THREE.LineBasicMaterial({ color: palette.teal, transparent: true, opacity: .18, blending: THREE.AdditiveBlending, depthWrite: false });
-  const hero = new THREE.LineBasicMaterial({ color: palette.cyan, transparent: true, opacity: .52, blending: THREE.AdditiveBlending, depthWrite: false });
-  const part = -.13;
-  for (let index = 0; index < 26; index += 1) {
-    const side = index < 12 ? -1 : 1, lane = index < 12 ? index : index - 12;
-    const count = side < 0 ? 11 : 13, p = lane / count;
-    const length = side < 0 ? 1.16 + p * .42 : 1.34 + p * .5;
-    const sweep = side < 0 ? -.18 - p * .45 : .22 + p * .62;
-    const startX = part + side * (.025 + p * .34);
-    const endX = side * (.72 + p * .34) + (side > 0 ? .12 : -.02);
-    const points = [
-      [startX,1.43-p*.08,.18],
-      [sweep,1.24-p*.04,.38+p*.08],
-      [side*(.72+p*.18),.7,.28+p*.05],
-      [side*(.86+p*.2),.05,.15-p*.08],
-      [endX,1.3-length,-.02-p*.16]
-    ];
-    group.add(curveLine(points, index % 4 === 0 ? hero : fine, 44));
-  }
-  for (const side of [-1,1]) for (let index = 0; index < 3; index += 1) {
-    const p = index / 2;
-    const curve = new THREE.CatmullRomCurve3(vectors([
-      [part + side*(.04+p*.2),1.43,.2],
-      [side*(.48+p*.16),1.18,.5],
-      [side*(.82+p*.12),.48,.4],
-      [side*(.88+p*.18),-.35,.22],
-      [side*(.76+p*.25),-1.28-(side>0?.18:0),-.08]
-    ]));
-    const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 64, .008 + index * .002, 6, false), new THREE.MeshBasicMaterial({ color: index === 1 ? palette.ice : palette.cyan, transparent: true, opacity: .26 + index * .08, blending: THREE.AdditiveBlending, depthWrite: false }));
-    group.add(tube);
-  }
-  const crown = curveLine([[-.72,.96,.05],[-.58,1.35,-.06],[-.14,1.55,-.12],[.34,1.48,-.1],[.74,1.08,.03]], hero, 54);
-  group.add(crown);
-  return { group, fine, hero };
-}
-
-function buildNeuralHalo(palette) {
-  const group = new THREE.Group();
-  const material = new THREE.LineBasicMaterial({ color: palette.cyan, transparent: true, opacity: .2, blending: THREE.AdditiveBlending, depthWrite: false });
-  for (let index = 0; index < 5; index += 1) {
-    const curve = new THREE.EllipseCurve(0, 0, 1.38 + index * .13, 1.7 + index * .11, 0, Math.PI * 2, false, index * .22);
-    const points = curve.getPoints(120).map(point => new THREE.Vector3(point.x, point.y, -.68-index*.05));
-    const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), material); line.rotation.y = (index - 2) * .1; group.add(line);
-  }
-  const nodes = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(.022, 0), new THREE.MeshBasicMaterial({ color: palette.mint, transparent: true, opacity: .78 }), 22); group.add(nodes);
-  const nodeTransform = new THREE.Object3D();
-  for (let index = 0; index < 22; index += 1) { const angle = index / 22 * Math.PI * 2; nodeTransform.position.set(Math.cos(angle)*(1.4+index%3*.12),Math.sin(angle)*(1.7+index%2*.1),-.58+Math.sin(index*2.1)*.18); nodeTransform.updateMatrix(); nodes.setMatrixAt(index, nodeTransform.matrix); }
-  return { group, nodes, material };
-}
-
-function buildAmbientField(palette) {
-  const positions = [];
-  const random = seededRandom(9017);
-  for (let index = 0; index < 560; index += 1) { const radius = 2.1 + random() * 3.7, angle = random() * Math.PI * 2; positions.push(Math.cos(angle)*radius,(random()-.5)*5.8,Math.sin(angle)*radius-1.8); }
-  const geometry = new THREE.BufferGeometry(); geometry.setAttribute("position",new THREE.Float32BufferAttribute(positions,3));
-  const material = new THREE.PointsMaterial({ color: palette.cyan, size: .012, transparent: true, opacity: .16, depthWrite: false, blending: THREE.AdditiveBlending });
-  return { group: new THREE.Points(geometry, material), material };
-}
-
-function curveLine(points, material, divisions = 28) { const curve = new THREE.CatmullRomCurve3(vectors(points)); return new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(divisions)), material); }
-function vectors(points) { return points.map(([x,y,z]) => new THREE.Vector3(x,y,z)); }
-function gaussian(x,y,cx,cy,sx,sy) { return Math.exp(-(((x-cx)/sx)**2+((y-cy)/sy)**2)); }
-function clamp(value) { return Math.max(0,Math.min(1,Number(value)||0)); }
-function seededRandom(seed) { let value=seed>>>0; return()=>{value=(value*1664525+1013904223)>>>0;return value/4294967296;}; }
-function fallbackController(error) { const api=Object.freeze({start:()=>api,stop:()=>api,setState:()=>api,setView:()=>api,getState:()=>"error",metrics:()=>({fps:0,triangles:0,calls:0,webgl:false,error:error?.message||"WebGL unavailable"}),capture:()=>null,dispose(){}});return api; }
+function syntheticFeatures(p){const group=new THREE.Group(),speech=new THREE.Group();group.add(speech);const primary=new THREE.LineBasicMaterial({color:p.ice,transparent:true,opacity:.64,blending:THREE.AdditiveBlending,depthWrite:false}),secondary=new THREE.LineBasicMaterial({color:p.magenta,transparent:true,opacity:.2,blending:THREE.AdditiveBlending,depthWrite:false}),add=(points,m=primary,parent=group)=>parent.add(curve(points,m));
+  add([[-.54,.43,1.03],[-.39,.37,1.18],[-.19,.4,1.09]]);add([[.54,.43,1.03],[.39,.37,1.18],[.19,.4,1.09]]);add([[-.58,.55,.9],[-.38,.64,1.04],[-.18,.59,1.03]],secondary);add([[.58,.55,.9],[.38,.64,1.04],[.18,.59,1.03]],secondary);
+  add([[0,.82,.96],[-.03,.5,1.22],[-.03,.13,1.37],[-.14,-.04,1.27],[0,-.09,1.33],[.14,-.04,1.26]]);add([[-.31,-.45,1.1],[-.15,-.5,1.25],[0,-.48,1.3],[.15,-.5,1.25],[.31,-.45,1.1]],primary,speech);add([[-.27,-.52,1.09],[-.12,-.58,1.21],[0,-.59,1.24],[.12,-.58,1.21],[.27,-.52,1.09]],secondary,speech);add([[-.67,-.31,.87],[-.55,-.7,.94],[-.32,-1.02,1],[0,-1.17,1.05],[.32,-1.02,1],[.55,-.7,.94],[.67,-.31,.87]]);
+  return{group,speech,primary,secondary};}
+function makeHalo(p){const group=new THREE.Group(),material=new THREE.LineBasicMaterial({color:p.violet,transparent:true,opacity:.11,blending:THREE.AdditiveBlending,depthWrite:false});for(let i=0;i<4;i++){const e=new THREE.EllipseCurve(0,0,1.65+i*.18,1.86+i*.14,0,Math.PI*2,false,i*.32),points=e.getPoints(130).map(q=>new THREE.Vector3(q.x,q.y,-.72-i*.1)),line=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points),material);line.rotation.y=(i-1.5)*.13;group.add(line);}return{group,material};}
+function ambient(p){const positions=[],random=rng(1106);for(let i=0;i<430;i++){const radius=2.2+random()*3.5,a=random()*Math.PI*2;positions.push(Math.cos(a)*radius,(random()-.5)*5.6,Math.sin(a)*radius-1.5);}const g=new THREE.BufferGeometry();g.setAttribute("position",new THREE.Float32BufferAttribute(positions,3));const material=new THREE.PointsMaterial({color:p.cyan,size:.012,transparent:true,opacity:.1,depthWrite:false,blending:THREE.AdditiveBlending});return{points:new THREE.Points(g,material),material};}
+function ribbon(points,width,divisions){const c=new THREE.CatmullRomCurve3(vec(points)),positions=[],uvs=[],indices=[];for(let i=0;i<=divisions;i++){const t=i/divisions,q=c.getPoint(t),tangent=c.getTangent(t).normalize();let side=new THREE.Vector3().crossVectors(tangent,new THREE.Vector3(0,0,1)).normalize();if(side.lengthSq()<.1)side.set(1,0,0);const half=width*(Math.sin(Math.PI*Math.pow(t,.82))*.82+.08)*(1+Math.sin(t*Math.PI*3)*.14);positions.push(q.x+side.x*half,q.y+side.y*half,q.z+side.z*half,q.x-side.x*half,q.y-side.y*half,q.z-side.z*half);uvs.push(t,0,t,1);if(i<divisions){const a=i*2;indices.push(a,a+2,a+1,a+2,a+3,a+1);}}const g=new THREE.BufferGeometry();g.setAttribute("position",new THREE.Float32BufferAttribute(positions,3));g.setAttribute("uv",new THREE.Float32BufferAttribute(uvs,2));g.setIndex(indices);g.computeVertexNormals();return g;}
+function coloredTriangles(triangles,colors,opacity){const positions=[],vertexColors=[];triangles.forEach((tri,i)=>{const c=new THREE.Color(colors[i%colors.length]);tri.forEach(point=>{positions.push(...point);vertexColors.push(c.r,c.g,c.b);});});const geometry=new THREE.BufferGeometry();geometry.setAttribute("position",new THREE.Float32BufferAttribute(positions,3));geometry.setAttribute("color",new THREE.Float32BufferAttribute(vertexColors,3));geometry.computeVertexNormals();const material=new THREE.MeshBasicMaterial({vertexColors:true,transparent:true,opacity,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending});return{mesh:new THREE.Mesh(geometry,material),material};}
+function curve(points,material){const c=new THREE.CatmullRomCurve3(vec(points));return new THREE.Line(new THREE.BufferGeometry().setFromPoints(c.getPoints(34)),material);}
+function canvasFallback(root,p){const m=new THREE.MeshPhysicalMaterial({color:p.violet,emissive:p.magenta,transparent:true,opacity:.62,flatShading:true,wireframe:false});const head=new THREE.Mesh(new THREE.IcosahedronGeometry(1.1,3),m);head.scale.set(.76,1.16,.82);root.add(head);}
+function vec(points){return points.map(([x,y,z])=>new THREE.Vector3(x,y,z));}function clamp(x){return Math.max(0,Math.min(1,Number(x)||0));}function rng(seed){let v=seed>>>0;return()=>{v=(v*1664525+1013904223)>>>0;return v/4294967296;};}
+function fallback(error){const api=Object.freeze({start:()=>api,stop:()=>api,setState:()=>api,setView:()=>api,getState:()=>"error",metrics:()=>({fps:0,triangles:0,calls:0,webgl:false,error:error?.message||"WebGL unavailable"}),capture:()=>null,dispose(){}});return api;}
