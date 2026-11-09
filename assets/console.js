@@ -709,6 +709,7 @@ const voiceWorkspaceDock=document.querySelector("#voiceWorkspaceDock"),voiceWork
 let voiceSessionDesired=false,voiceInputLevel=0,voiceOutputLevel=0,premiumAvatar=null,currentVoiceVisualState="idle";
 let voiceMouth=rest;
 const glassPreview=new URLSearchParams(location.search).get('avatar')==='current-glass';
+let glassPreviewOpen=glassPreview;
 const glassSignal=createGlassSignal();
 const glassAvatar=createCurrentGlassAvatar({readSignal:()=>glassSignal.read()});
 if(glassPreview){document.body.classList.add('current-glass-preview');voiceExperienceStatus.textContent='Current Glass preview · start Nova Voice';}
@@ -724,7 +725,7 @@ bustSelection.addEventListener("change",()=>{avatar.stop();avatar=glassPreview?g
 const voiceExperienceStorageKey="nova.voice.experience.v1";voiceExperienceMode.value=localStorage.getItem(voiceExperienceStorageKey)==="integrated"?"integrated":"separate";
 function syncVoiceSurface() {
   const active=Boolean(voiceSessionDesired || voiceV2?.isActive?.());
-  const immersive=active && voiceExperienceMode.value==="separate";
+  const immersive=(active||glassPreviewOpen) && voiceExperienceMode.value==="separate";
   voiceExperience.hidden=!immersive;
   if(!immersive && document.querySelector("#avatarGalleryDialog").hidden)camera.stop();
   voiceWorkspaceDock.hidden=!(active && !immersive);
@@ -733,7 +734,8 @@ function syncVoiceSurface() {
   const use=glassPreview?glassAvatar.element:bustSelection.checked?bustCanvas:canvas;
   canvas.hidden=use!==canvas;bustCanvas.hidden=use!==bustCanvas;
   if(use.parentElement!==slot)slot.append(use);
-  if(active) avatar.start(); else avatar.stop();
+  if(active||glassPreviewOpen) avatar.start(); else avatar.stop();
+  const glassStart=document.querySelector('#currentGlassStart');if(glassStart)glassStart.hidden=active;
 }
 voiceExperienceMode.addEventListener("change",()=>{localStorage.setItem(voiceExperienceStorageKey,voiceExperienceMode.value);syncVoiceSurface();});
 const voiceModeLabels={idle:"Voice idle",connecting:"Connecting microphone…",getting_ready:"Getting ready…",listening:"Voice ready · speak to Nova",muted:"Microphone muted",barge_candidate:"Nova speaking… · speak to interrupt",barge_verifying:"Nova speaking… · speak to interrupt",paused_waiting_for_user:"Nova paused · say continue when ready",transcribing:"Nova heard you · processing…",thinking:"Nova thinking…",speaking:"Nova speaking… · speak to interrupt",interrupted:"Interrupted · getting ready…",retrying:"Voice ready · retrying quietly…",error:"Voice needs attention"};
@@ -751,7 +753,7 @@ batchVoice=createVoiceV2({capture,client:voiceClient,playback,interruptionPlayba
 try{realtimeVoice=createRealtimeVoice({readScene:()=>camera.read(),onArticulation:s=>{voiceMouth=s;},mediaDevices:navigator.mediaDevices,RTCPeerConnectionImpl:window.RTCPeerConnection,MediaRecorderImpl:window.MediaRecorder,AudioImpl:window.Audio,AudioContextImpl:window.AudioContext||window.webkitAudioContext,fetchImpl:window.fetch.bind(window),getAudioConstraints:microphoneConstraints,onInputLevel(level){voiceInputLevel=level;glassSignal.input(level);},onOutputLevel(level){voiceOutputLevel=level;},onAudibleLevel(level){glassSignal.output(level);},onMicrophoneFallback(){localStorage.removeItem(microphoneStorageKey);microphoneDevice.value="";microphoneDiagnostic.textContent="The saved microphone was unavailable, so Nova safely switched to the system default.";},...voiceCallbacks,onAssistantTranscript(text){voiceExperienceAssistant.textContent=`Nova: ${text}`;voiceExperienceAssistant.dir="auto";voiceExperienceAssistant.hidden=false;voiceExperienceTranscript.scrollTop=voiceExperienceTranscript.scrollHeight;showVoiceDiagnostic(`Realtime response: ${text.slice(0,140)}`);},async onDirectTurn(turn){const saved=await voiceClient.persistRealtimeTurn(turn);client.resume(saved.conversationId);localStorage.setItem(conversationKey,saved.conversationId);conversationBinding.display(saved.conversationId);addMessage({id:saved.user.id,role:"user",text:saved.user.content,sequence:saved.user.sequence,createdAt:saved.user.createdAt});addMessage({id:saved.assistant.id,role:"assistant",text:saved.assistant.content,sequence:saved.assistant.sequence,createdAt:saved.assistant.createdAt});void refreshRecents();},onSpeaker(speaker){const verified=speaker?.authenticated_identity==="owner"&&speaker?.match_status==="confirmed";showVoiceDiagnostic(verified?"Owner voice matched by the enrolled ECAPA profile.":speaker?.match_status==="confirmed"?"Enrolled speaker matched; only that speaker's permitted context is available.":"Voice identity was not matched; ordinary conversation continues, while private actions remain approval-gated.");}});}catch{realtimeVoice=null;}
 voiceV2=realtimeVoice||batchVoice;
 voiceModeButton.addEventListener("click",async()=>{if(voiceSessionDesired||voiceV2?.isActive?.()){voiceExperienceMode.value="separate";localStorage.setItem(voiceExperienceStorageKey,"separate");syncVoiceSurface();return;}requestError.hidden=true;voiceExperienceUser.hidden=true;voiceExperienceAssistant.hidden=true;voiceSessionDesired=true;syncVoiceSurface();if(!capture.supported){voiceSessionDesired=false;syncVoiceSurface();requestError.textContent="Start Voice requires MediaRecorder, microphone access, and Web Audio support.";requestError.hidden=false;return;}try{const readiness=await voiceClient.readiness();if(readiness.realtime?.available&&realtimeVoice){voiceV2=realtimeVoice;try{await voiceV2.start();return;}catch(error){if(error?.novaVoiceStage==="microphone")throw error;showVoiceDiagnostic("Realtime Voice was unavailable; Nova switched to the proven recovery voice path.");}}if(!readiness.available)throw new Error("Voice providers are not fully configured in this Preview.");voiceV2=batchVoice;await voiceV2.start();requestError.hidden=true;}catch(error){voiceSessionDesired=false;voiceV2?.end?.();syncVoiceSurface();requestError.textContent=error.message||"Voice could not start.";requestError.hidden=false;}});
-const endVoiceSession=()=>{glassSignal.reset();voiceSessionDesired=false;voiceV2?.end?.();voiceInputLevel=0;voiceOutputLevel=0;avatar.setState("idle");syncVoiceSurface();};
+const endVoiceSession=()=>{glassPreviewOpen=false;glassSignal.reset();voiceSessionDesired=false;voiceV2?.end?.();voiceInputLevel=0;voiceOutputLevel=0;avatar.setState("idle");syncVoiceSurface();};
 document.querySelector("#voiceExperienceEnd").addEventListener("click",endVoiceSession);
 document.querySelector("#voiceWorkspaceEnd").addEventListener("click",endVoiceSession);
 document.querySelector("#voiceContinueWorkspace").addEventListener("click",()=>{voiceExperience.hidden=true;voiceExperienceMode.value="integrated";localStorage.setItem(voiceExperienceStorageKey,"integrated");syncVoiceSurface();});
@@ -760,6 +762,11 @@ document.querySelector("#voiceTranscriptButton").addEventListener("click",(event
 const toggleVoiceMute=()=>{const muted=voiceV2?.setMuted?.(!voiceV2.isMuted?.());for(const button of [voiceMuteButton,voiceWorkspaceMute]){button.setAttribute("aria-pressed",String(Boolean(muted)));button.textContent=muted?"Unmute":"Mute";}};
 voiceMuteButton.addEventListener("click",toggleVoiceMute);voiceWorkspaceMute.addEventListener("click",toggleVoiceMute);
 
+if(glassPreview){
+ const start=document.createElement('button');start.id='currentGlassStart';start.type='button';start.className='send-button';start.textContent='Start Nova conversation';start.onclick=()=>voiceModeButton.click();
+ document.querySelector('.voice-experience-controls').prepend(start);
+ voiceExperienceMode.value='separate';syncVoiceSurface();
+}
 const avatarGallery=document.querySelector("#avatarGalleryDialog");
 let galleryState="listening", galleryMetricsTimer=0;
 
