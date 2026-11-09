@@ -769,6 +769,10 @@ export function createApi({
             model: session.model,
             voice: session.voice,
             transport: "webrtc",
+            contextAuthority: accountContext?.authority || "delegated_only",
+            purposeMemoryIds: accountContext?.purpose?.map(m => m.id) || [],
+            projectIds: accountContext?.projects?.map(p => p.id) || [],
+            replyLanguage: accountContext?.replyLanguage || null,
           });
           sendJson(response, 201, session);
           return;

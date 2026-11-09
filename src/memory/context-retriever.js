@@ -72,7 +72,7 @@ function selectRecentWork({runs=[],activity=[],message,projectId}){
 }
 
 export function buildSystemContext(retrieved) {
-  return `${NOVA_COMMUNICATION_POLICY}\n\nThe following is minimal private owner context selected for this request. Use it internally to assist the owner. Do not repeat private details unless relevant to the owner's request.\n${JSON.stringify(retrieved)}`;
+  return `${NOVA_COMMUNICATION_POLICY}\n\nThe following is minimal private owner context selected for this request. Use it internally to assist the owner. Do not repeat private details unless relevant to the owner's request. When asked why the owner built you (including ليش عملتك), explain the purpose recorded in the system-scoped project_context memories below. Do not substitute a generic list of assistant capabilities or speculate about the owner's motives. Distinguish the recorded vision from features actually verified as operational.\n${JSON.stringify(retrieved)}`;
 }
 
 export function buildSpeakerSafeSystemContext(speaker, scopedContext = null) {
