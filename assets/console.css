@@ -98,6 +98,7 @@
 .current-glass-preview .voice-experience-backdrop{background:#020706;backdrop-filter:none}
 .current-glass-preview .voice-experience-shell{background:#020706;border-color:#183b2c;min-height:0;max-height:96dvh;overflow:auto;gap:10px}
 .current-glass-preview #immersiveAvatarSlot{width:min(620px,80vw);height:clamp(260px,53vh,580px);aspect-ratio:auto;filter:none}
+.current-glass-preview .prism-portrait[hidden]{display:none!important}
 .nova-current-glass{position:relative;width:100%;height:100%;min-height:0;background:#020706}
 .nova-current-glass-stage{position:absolute;inset:0}
 .nova-current-glass-status{position:absolute;top:6px;left:10px;color:#86a998;font-size:11px}

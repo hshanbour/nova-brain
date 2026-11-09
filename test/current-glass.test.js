@@ -6,9 +6,10 @@ test('glass follows only active realtime playback; interruption and next turn do
  const signal=createGlassSignal();signal.output(.9);assert.equal(signal.read().playback,0);
  signal.state({active:true,mode:'realtime',state:'listening'});signal.input(.3);assert.equal(signal.read().microphone,.3);
  signal.state({active:true,mode:'realtime',state:'speaking'});signal.output(.7);assert.equal(signal.read().playback,.7);
- signal.state({active:true,mode:'realtime',state:'listening'});signal.output(.8);assert.equal(signal.read().playback,0);
+ signal.state({active:true,mode:'realtime',state:'listening'});signal.output(0);assert.equal(signal.read().playback,0);
  signal.state({active:true,mode:'realtime',state:'thinking'});assert.equal(signal.read().phase,'preparing');
  signal.state({active:true,mode:'realtime',state:'speaking'});assert.equal(signal.read().playback,0);signal.output(.4);assert.equal(signal.read().playback,.4);
+ signal.state({active:true,mode:'realtime',state:'muted'});signal.output(.4);assert.equal(signal.read().playback,.4);assert.equal(signal.read().microphone,0);
  signal.reset();assert.equal(signal.read().playback,0);assert.equal(signal.read().speaking,false);
  signal.state({active:true,mode:'batch',state:'speaking'});signal.output(.9);assert.equal(signal.read().playback,0);
 });
