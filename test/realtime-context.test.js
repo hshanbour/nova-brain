@@ -41,6 +41,16 @@ test("language continuity ignores noise/project names and only reads this owner'
   await f.storage.ensureConversation({id:"not-mine",ownerId:"someone-else"});
   await f.storage.appendMessage({conversationId:"not-mine",ownerId:"someone-else",role:"user",content:"Please speak English"});
   assert.equal((await readRealtimeContext({...f,conversationId:"not-mine"})).replyLanguage,"ar");
+  assert.deepEqual((await readRealtimeContext({...f,conversationId:"not-mine"})).conversation,[]);
+  assert.equal((await readRealtimeContext({...f,conversationId:"mine"})).conversation[0].content,"Please continue in English");
+});
+
+test("Arabic project pronunciation uses a catalogue ID but cannot cross owner boundaries",async()=>{
+  const f=await fixture();
+  const result=await readRealtimeContext({...f,message:"شو بتتذكري عن بلامر غروث كيت؟",lookupProjectId:"pgk"});
+  assert.equal(result.resolution,"resolved");assert.ok(result.memories.some(m=>m.id==="pgk-memory"));
+  const absent=await readRealtimeContext({...f,message:"tell me",lookupProjectId:"another-owner-project"});
+  assert.equal(absent.resolution,"missing");assert.deepEqual(absent.projects,[]);assert.ok(!absent.memories.some(m=>m.projectId));
 });
 
 function response(){return {statusCode:200,headers:{},body:"",setHeader(k,v){this.headers[k]=v},end(v=""){this.body+=v}}}
@@ -61,4 +71,8 @@ test("realtime provider receives saved evidence and context tool without changin
   assert.ok(body.session.tools.some(t=>t.name==="nova_context"));
   assert.match(body.session.instructions,/unclear or Latin-script transcriptions are NOT language-change requests/);
   assert.equal(body.session.audio.input.turn_detection.silence_duration_ms,450);
+  assert.deepEqual(body.session.audio.input.transcription.languages,["ar","en"]);
+  assert.ok(body.session.audio.input.transcription.keywords.includes("Plumber Growth Kit"));
+  assert.match(body.session.instructions,/correction replaces the mistaken interpretation/);
+  assert.match(body.session.instructions,/then stop and wait/);
 });

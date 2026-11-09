@@ -1,4 +1,4 @@
-import { NOVA_COMMUNICATION_POLICY } from "../identity/communication-policy.js";
+import { NOVA_COMMUNICATION_POLICY, savedReplyLanguage } from "../identity/communication-policy.js";
 import { buildSalesGuidance } from "../phone/sales-policy.js";
 import { memoryTokens } from "./relevance.js";
 
@@ -15,7 +15,8 @@ function ownerContext(profile, message) {
     languages: facts.languages,
     profession: facts.profession,
     education: facts.education,
-    communicationPreferences: profile.preferences
+    communicationPreferences: profile.preferences,
+    defaultReplyLanguage: savedReplyLanguage(profile.preferences)
   };
   if (/family|background|palestin|أصل|عائل|فلسطين/i.test(query)) context.familyBackground = facts.familyBackground;
   if (/born|birth|jordan|مولود|الأردن/i.test(query)) context.bornIn = facts.bornIn;
@@ -33,7 +34,7 @@ export async function retrieveAgentContext({ storage, ownerId, message, projectI
     storage.retrieveMemories(ownerId, message, { projectId:inferredProjectId, limit: memoryLimit }),
     includeRecentWork&&typeof storage.listRuns==="function"?storage.listRuns(ownerId,{limit:30}):[],
     includeRecentWork&&typeof storage.listActivity==="function"?storage.listActivity(ownerId,{limit:30}):[],
-    (includeRecentWork||inferredProjectId)&&typeof storage.listProjects==="function"?storage.listProjects(ownerId):[],
+    typeof storage.listProjects==="function"?storage.listProjects(ownerId):[],
     typeof storage.listMemories==="function"?storage.listMemories(ownerId,{scope:"system",limit:12}):[]
   ]);
   if (!profile) throw new Error("Owner profile is unavailable.");

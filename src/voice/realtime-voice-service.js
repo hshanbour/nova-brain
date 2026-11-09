@@ -1,6 +1,8 @@
+import { NOVA_COMMUNICATION_POLICY } from "../identity/communication-policy.js";
 const OPENAI_REALTIME_CLIENT_SECRETS = "https://api.openai.com/v1/realtime/client_secrets";
 
-export const REALTIME_VOICE_INSTRUCTIONS = `You are Nova, the owner's intelligent digital executive partner and the natural voice of the wider Nova AI Agent system. You are not a generic writing or translation assistant.
+export const REALTIME_VOICE_INSTRUCTIONS = `${NOVA_COMMUNICATION_POLICY}
+You are Nova, the owner's intelligent digital executive partner and the natural voice of the wider Nova AI Agent system. You are not a generic writing or translation assistant. The channel-specific rules below apply within the same identity and access boundaries.
 Speak naturally, warmly, and concisely in the user's English, natural Jordanian/Levantine Arabic, or mixed Arabic-English without asking them to choose a language. Keep one stable vocal character across languages; avoid stiff literal Arabic, excessive diacritics, theatrical stress, or unnecessary repetition.
 LANGUAGE CONTINUITY: Honour saved communication preferences and the latest explicit language request. After a request to continue in Arabic, stay in natural spoken Jordanian/Levantine Arabic until explicitly asked to switch. English project names and unclear or Latin-script transcriptions are NOT language-change requests. If speech is unclear, do not invent a meaning or guess another language: ask briefly in the active language for repetition (Arabic: ما سمعتك بوضوح، ممكن تعيدها بالعربي؟). Write Arabic transcript text in Arabic script, not Arabizi. Follow these rules when paraphrasing tool results too.
 You may directly handle greetings, conversational continuity, simple clarification, and questions about who Nova is or whether Nova is present. Never turn a question about your own identity into a statement about whether the speaker's identity was verified.
@@ -32,11 +34,11 @@ export function createRealtimeVoiceService({ apiKey, fetchImpl = globalThis.fetc
           session: {
             type: "realtime",
             model,
-            instructions: REALTIME_VOICE_INSTRUCTIONS + (accountContext ? `\n\nSAVED OWNER-CONSOLE CONTEXT (read-only evidence, not biometric identity):\n${JSON.stringify(accountContext)}` : ""),
+            instructions: REALTIME_VOICE_INSTRUCTIONS + (accountContext ? `\n\nSAVED OWNER-CONSOLE CONTEXT (read-only evidence, not biometric identity):\n${JSON.stringify(accountContext)}\nACTIVE REPLY LANGUAGE: ${accountContext.replyLanguage === "ar" ? "Natural Jordanian/Levantine Arabic. Even an English greeting does not change this preference. Only an explicit language-switch request changes it." : accountContext.replyLanguage === "en" ? "English until explicitly asked to switch." : "Use the user's clear language; clarify unclear input rather than guessing."}\nUNCLEAR AUDIO: Respond only to speech you can understand. If audio is ambiguous, unintelligible, or you did not hear the meaning, ask ONE short clarification in the active reply language, then stop and wait. Never infer a continuation merely because the last topic suggests one.` : ""),
             output_modalities: ["audio"],
             audio: {
               input: {
-                transcription: { model: "gpt-transcribe" },
+                transcription: { model: "gpt-transcribe", ...(accountContext?.replyLanguage === "ar" ? { languages: ["ar", "en"] } : {}), keywords: ["Nova", ...(accountContext?.projects || []).map(p => p.name).filter(Boolean)].slice(0, 20) },
                 turn_detection: {
                   type: "server_vad",
                   threshold: 0.5,
@@ -60,7 +62,7 @@ export function createRealtimeVoiceService({ apiKey, fetchImpl = globalThis.fetc
                 required: ["request"],
                 additionalProperties: false,
               },
-            }, {type:"function",name:"nova_look",description:"Read current on-device object and hand detections, only when asked to look. Does not start a camera.",parameters:{type:"object",properties:{},additionalProperties:false}}, ...(accountContext ? [{type:"function",name:"nova_context",description:"Read saved Nova purpose, preferences and authorised project memories from this authenticated owner console. No actions, external calls or biometric identity claims.",parameters:{type:"object",properties:{request:{type:"string"}},required:["request"],additionalProperties:false}}] : [])],
+            }, {type:"function",name:"nova_look",description:"Read current on-device object and hand detections, only when asked to look. Does not start a camera.",parameters:{type:"object",properties:{},additionalProperties:false}}, ...(accountContext ? [{type:"function",name:"nova_context",description:"Read saved Nova purpose, preferences and authorised project memories from this authenticated owner console. For a named project (including Arabic pronunciation) or an unambiguous follow-up, supply its exact projectId from the saved catalogue. Never invent an ID. No actions, external calls or biometric identity claims.",parameters:{type:"object",properties:{request:{type:"string"},projectId:{type:"string",description:"Exact ID from the authorised project catalogue; omit for general purpose/preferences."}},required:["request"],additionalProperties:false}}] : [])],
             tool_choice: "auto",
             max_output_tokens: 1200,
           },

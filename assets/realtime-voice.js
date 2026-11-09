@@ -32,7 +32,10 @@ export function createRealtimeVoice({
   let lastTranscript = "", lastSpeechEndedAt = 0, assistantTranscript = "", lastAssistantTranscript = "", toolInFlight = false, muted = false;
   let playbackActive=false, serial=Promise.resolve(),speechTurn=0,inSpeech=false,responseOpen=false,followup=false;
   let replyLanguage = null;
-  const handledCalls=new Set(),turns=new Map(),responses=new Map();let latestTurn=null;
+  const handledCalls=new Set(),turns=new Map(),responses=new Map(),responseTranscripts=new Map();let latestTurn=null;
+  const isCurrentTurn = utterance => !utterance?.superseded && (!utterance || utterance.seq === speechTurn);
+  function supersedeTurn() { if(latestTurn)latestTurn.superseded=true;followup=false; }
+  function finishSuperseded(call) { sendEvent({type:"conversation.item.create",item:{type:"function_call_output",call_id:call.call_id,output:JSON.stringify({status:"superseded",message:"The user interrupted or changed direction. Do not speak this stale result. Follow the latest turn; no new action was authorised."})}}); }
   const trim=m=>{while(m.size>32)m.delete(m.keys().next().value)};
   function flushFollowup(){if(followup&&!inSpeech&&!responseOpen&&active){followup=false;responseOpen=true;sendEvent({type:"response.create",response:{tool_choice:"none"}});}}
   let turnRecorder = null, turnStartedAt = 0, speakerPromise = null;
@@ -107,6 +110,7 @@ export function createRealtimeVoice({
 
   function interrupt() {
     if (!active || channel?.readyState !== "open") return false;
+    supersedeTurn();
     if(responseOpen)sendEvent({type:"response.cancel"});
     if(playbackActive)sendEvent({type:"output_audio_buffer.clear"});
     playbackActive=false;onArticulation(rest);onAudibleLevel(0);
@@ -117,6 +121,7 @@ export function createRealtimeVoice({
   async function handleEvent(event, current) {
     if (!event?.type) return;
     if (event.type === "input_audio_buffer.speech_started") {
+      supersedeTurn();
       playbackActive=false;onArticulation(rest);onAudibleLevel(0); speakerPromise=null;inSpeech=true;++speechTurn;
       latestTurn={seq:speechTurn,transcript:"",speaker:null,conversationId:getConversationId()};if(event.item_id){turns.set(event.item_id,latestTurn);trim(turns);}
       lastTranscript = "";
@@ -151,7 +156,8 @@ export function createRealtimeVoice({
       const text = String(event.transcript || assistantTranscript).trim();
       assistantTranscript = "";
       lastAssistantTranscript = text;
-      if (text) onAssistantTranscript(text);
+      if(event.response_id){responseTranscripts.set(event.response_id,text);trim(responseTranscripts);}
+      if (text && isCurrentTurn(responses.get(event.response_id))) onAssistantTranscript(text);
       return;
     }
     if (event.type === "response.created") {
@@ -168,7 +174,8 @@ export function createRealtimeVoice({
         for(const call of calls){if(!call.call_id||handledCalls.has(call.call_id))continue;handledCalls.add(call.call_id);trim(handledCalls);serial=serial.then(()=>handleNovaTurn(call,current,utterance)).catch(()=>{}); }
       } else if(look.length){followup=true;flushFollowup();
       } else if (lastSpeechEndedAt && event.response?.metadata?.purpose!=="explain_task_report" && event.response?.status!=="cancelled") {
-        if (lastTranscript && lastAssistantTranscript) void Promise.resolve(onDirectTurn({ turnId: String(event.response?.id || `turn-${Math.round(lastSpeechEndedAt)}`), userText: lastTranscript, assistantText: lastAssistantTranscript, conversationId: getConversationId() })).catch(() => {});
+        const userText=utterance.transcript, assistantText=responseTranscripts.get(event.response?.id)||lastAssistantTranscript;
+        if (isCurrentTurn(utterance) && userText && assistantText) void Promise.resolve(onDirectTurn({ turnId: String(event.response?.id || `turn-${Math.round(lastSpeechEndedAt)}`), userText, assistantText, conversationId: getConversationId() })).catch(() => {});
         onTiming({ stage: "realtime-response-done", measurements: { speechEndToResponseDoneMs: Math.max(0, now() - lastSpeechEndedAt) } });
         if(!playbackActive&&!toolInFlight)publish("listening");
       }
@@ -190,6 +197,7 @@ export function createRealtimeVoice({
 
   async function handleNovaTurn(call, current, utterance) {
     if (!valid(current))return;
+    if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
     toolInFlight = true;
     publish("thinking", { phase: "nova-brain" });
     try {
@@ -197,10 +205,11 @@ export function createRealtimeVoice({
       const request = utterance.transcript || String(args.request || "").trim();
       if (!request) throw new Error("Nova could not recover the spoken request.");
       if (call.name === "nova_context") {
-        const response = await fetchImpl("/api/voice/realtime/context", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: request, conversationId: getConversationId() || undefined }) });
+        const response = await fetchImpl("/api/voice/realtime/context", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: request, conversationId: getConversationId() || undefined, ...(args.projectId ? {context:{lookupProjectId:args.projectId}} : {}) }) });
         const evidence = await response.json().catch(() => null);
         if (!response.ok || evidence?.authority !== "authenticated_console_read_only") throw new Error("Saved Nova context could not be retrieved.");
         if (!valid(current)) return;
+        if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
         if (utterance.conversationId && utterance.conversationId !== getConversationId()) throw new Error("Conversation changed.");
         sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify(evidence) } });
         onTiming({ stage: "realtime-context-read", measurements: { projects: evidence.projects?.length || 0, memories: evidence.memories?.length || 0 } });
@@ -209,13 +218,16 @@ export function createRealtimeVoice({
       }
       const speaker = await boundedSpeaker(utterance.speaker, 750);
       if(!valid(current))return;
+      if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
       if(utterance.conversationId&&utterance.conversationId!==getConversationId())throw Error("Conversation changed.");
       const result = await sendTurn(request, { speaker, conversationId: getConversationId(), replyLanguage });
       if (!valid(current)) return;
+      if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
       sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ message: result?.message || "Nova could not complete that request.", approvalRequired: Boolean(result?.approval), conversationId: result?.conversationId || null }) } });
       followup=true;flushFollowup();
     } catch (error) {
       if (valid(current)) {
+        if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
         sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ error: "Nova Brain could not complete this turn safely." }) } });
         followup=true;flushFollowup();
         onError(error?.message || "Nova Brain could not complete this voice turn.");
@@ -277,7 +289,7 @@ export function createRealtimeVoice({
     stopTracks(stream);
     if (remoteAudio) { try { remoteAudio.pause?.(); remoteAudio.srcObject = null; } catch {} }
     inputMeter?.dispose?.(); outputMeter?.dispose?.(); onInputLevel(0); onOutputLevel(0);onAudibleLevel(0);
-    serial=Promise.resolve();turns.clear();responses.clear();handledCalls.clear();latestTurn=null;inSpeech=false;responseOpen=false;followup=false;
+    serial=Promise.resolve();turns.clear();responses.clear();responseTranscripts.clear();handledCalls.clear();latestTurn=null;inSpeech=false;responseOpen=false;followup=false;
     playbackActive=false;onArticulation(rest); lastTranscript=""; assistantTranscript="";lastAssistantTranscript="";lastSpeechEndedAt=0; muted=false;
     inputMeter = null; outputMeter = null;
     channel = null; pc = null; stream = null; remoteAudio = null; speakerPromise = null; toolInFlight = false;

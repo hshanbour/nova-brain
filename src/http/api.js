@@ -782,7 +782,7 @@ export function createApi({
           if (!sameOriginRequest(request)) { sendJson(response, 403, { error: "Voice context requires a same-origin owner console request." }); return; }
           await ready();
           const input = validateAgentRequest(await readJsonBody(request, config.maxBodyBytes));
-          const evidence = await readRealtimeContext({ storage, projectService, ownerId, message: input.message, conversationId: input.conversationId });
+          const evidence = await readRealtimeContext({ storage, projectService, ownerId, message: input.message, conversationId: input.conversationId, lookupProjectId: typeof input.context?.lookupProjectId === "string" ? input.context.lookupProjectId : null });
           logger.info("Nova realtime context retrieved", { requestId, authority: evidence.authority, projectIds: evidence.projects.map(p => p.id), memoryIds: evidence.memories.map(m => m.id) });
           sendJson(response, 200, evidence);
           return;

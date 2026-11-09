@@ -173,7 +173,7 @@ class FakePeer extends EventTarget {
   close() { this.connectionState = "closed"; }
 }
 
-test("12 interrupted English/Arabic turns preserve queued Brain calls, camera freshness and playback state",async()=>{
+test("12 interrupted English/Arabic turns suppress stale queued work and preserve latest turn, camera and playback",async()=>{
   const channel=new FakeChannel(),peer=new FakePeer(channel),observed=[],turns=[];
   let unlock,look={observed:false};
   const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return {getTracks:()=>[]};}},
@@ -192,9 +192,11 @@ test("12 interrupted English/Arabic turns preserve queued Brain calls, camera fr
     await new Promise(r=>setTimeout(r,0));
   }
   unlock();await new Promise(r=>setTimeout(r,10));
-  assert.equal(turns.length,12);assert.equal(new Set(turns).size,12);assert.equal(turns[1],"تابع المهمة 1");
+  assert.equal(turns.length,2);assert.equal(new Set(turns).size,2);assert.equal(turns[1],"تابع المهمة 11");
   const outputs=()=>channel.sent.filter(x=>x.item?.type==="function_call_output");
   assert.equal(outputs().length,12);assert.equal(outputs()[11].item.call_id,"c11");
+  assert.ok(outputs().slice(0,11).every(x=>JSON.parse(x.item.output).status==="superseded"));
+  assert.equal(channel.sent.filter(x=>x.type==="response.create").length,1);
   look={observed:true,objects:[{label:"cup",position:"centre"}]};
   channel.message({type:"response.done",response:{output:[{type:"function_call",name:"nova_look",call_id:"l1"}]}});
   assert.deepEqual(JSON.parse(outputs().at(-1).item.output),look);
