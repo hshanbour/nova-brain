@@ -122,6 +122,29 @@ class FakeChannel extends EventTarget {
   message(value) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
 }
 
+test('audible visual meter gates paused/muted output, clears on interruption, and resumes on the next reply',async()=>{
+ const oldRaf=globalThis.requestAnimationFrame,oldCancel=globalThis.cancelAnimationFrame;
+ let frameId=0;const frames=new Map();
+ globalThis.requestAnimationFrame=fn=>{frames.set(++frameId,fn);return frameId;};
+ globalThis.cancelAnimationFrame=id=>frames.delete(id);
+ const tick=()=>{const work=[...frames.values()];frames.clear();work.forEach(fn=>fn());};
+ const channel=new FakeChannel(),peer=new FakePeer(channel),levels=[];let audio;
+ class Audio{paused=true;muted=false;volume=1;ended=false;constructor(){audio=this;}play(){this.paused=false;return Promise.resolve();}pause(){this.paused=true;}}
+ class Context{state='running';createMediaStreamSource(){return{connect(){},disconnect(){}};}createAnalyser(){return{fftSize:256,getByteTimeDomainData:a=>a.fill(144)};}close(){return Promise.resolve();}resume(){return Promise.resolve();}}
+ const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return{getTracks:()=>[]};}},RTCPeerConnectionImpl:class{constructor(){return peer;}},AudioImpl:Audio,AudioContextImpl:Context,MediaRecorderImpl:null,onAudibleLevel:n=>levels.push(n),fetchImpl:async url=>url.includes('session')?Response.json({clientSecret:'ek_test'}):new Response('answer')});
+ try{
+  await voice.start();channel.open();peer.ontrack({streams:[{getTracks:()=>[]}]});
+  tick();assert.equal(levels.at(-1),0);
+  channel.message({type:'output_audio_buffer.started'});tick();assert.ok(levels.at(-1)>0);
+  audio.muted=true;tick();assert.equal(levels.at(-1),0);audio.muted=false;
+  audio.paused=true;tick();assert.equal(levels.at(-1),0);audio.paused=false;
+  voice.interrupt();assert.equal(levels.at(-1),0);tick();assert.equal(levels.at(-1),0);
+  channel.message({type:'output_audio_buffer.started'});tick();assert.ok(levels.at(-1)>0);
+  channel.message({type:'output_audio_buffer.stopped'});assert.equal(levels.at(-1),0);
+  voice.end();assert.equal(levels.at(-1),0);
+ }finally{voice.end();globalThis.requestAnimationFrame=oldRaf;globalThis.cancelAnimationFrame=oldCancel;}
+});
+
 class FakePeer extends EventTarget {
   connectionState = "new";
   constructor(channel) { super(); this.channel = channel; }

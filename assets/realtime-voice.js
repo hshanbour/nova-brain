@@ -21,6 +21,7 @@ export function createRealtimeVoice({
   onTiming = () => {},
   onInputLevel = () => {},
   onOutputLevel = () => {},
+  onAudibleLevel = () => {},
   onArticulation=()=>{},
   onError = () => {},
   now = () => globalThis.performance?.now?.() ?? Date.now(),
@@ -55,7 +56,7 @@ export function createRealtimeVoice({
       pc = new RTCPeerConnectionImpl();
       remoteAudio = new AudioImpl();
       remoteAudio.autoplay = true;
-      pc.ontrack = (event) => { const remoteStream = event.streams?.[0] || new MediaStream([event.track]); remoteAudio.srcObject = remoteStream; outputMeter?.dispose?.(); outputMeter = createAudioMeter({ AudioContextImpl, stream: remoteStream, onLevel: onOutputLevel,onShape:shape=>onArticulation(playbackActive?shape:rest) }); void remoteAudio.play?.().catch?.(() => {}); };
+      pc.ontrack = (event) => { const remoteStream = event.streams?.[0] || new MediaStream([event.track]); remoteAudio.srcObject = remoteStream; outputMeter?.dispose?.(); outputMeter = createAudioMeter({ AudioContextImpl, stream: remoteStream, onLevel: level=>{onOutputLevel(level);onAudibleLevel(playbackActive&&remoteAudio&&!remoteAudio.paused&&!remoteAudio.ended&&!remoteAudio.muted&&remoteAudio.volume>0?level*remoteAudio.volume:0);},onShape:shape=>onArticulation(playbackActive?shape:rest) }); void remoteAudio.play?.().catch?.(() => {}); };
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       channel = pc.createDataChannel("oai-events");
       channel.addEventListener("open", () => { if (valid(current)) publish("listening"); });
@@ -105,7 +106,7 @@ export function createRealtimeVoice({
     if (!active || channel?.readyState !== "open") return false;
     if(responseOpen)sendEvent({type:"response.cancel"});
     if(playbackActive)sendEvent({type:"output_audio_buffer.clear"});
-    playbackActive=false;onArticulation(rest);
+    playbackActive=false;onArticulation(rest);onAudibleLevel(0);
     publish("listening");
     return true;
   }
@@ -113,7 +114,7 @@ export function createRealtimeVoice({
   async function handleEvent(event, current) {
     if (!event?.type) return;
     if (event.type === "input_audio_buffer.speech_started") {
-      playbackActive=false;onArticulation(rest); speakerPromise=null;inSpeech=true;++speechTurn;
+      playbackActive=false;onArticulation(rest);onAudibleLevel(0); speakerPromise=null;inSpeech=true;++speechTurn;
       latestTurn={seq:speechTurn,transcript:"",speaker:null,conversationId:getConversationId()};if(event.item_id){turns.set(event.item_id,latestTurn);trim(turns);}
       lastTranscript = "";
       lastAssistantTranscript = "";
@@ -176,7 +177,7 @@ export function createRealtimeVoice({
       return;
     }
     if (event.type === "output_audio_buffer.stopped" || event.type === "output_audio_buffer.cleared") {
-      playbackActive=false;onArticulation(rest);
+      playbackActive=false;onArticulation(rest);onAudibleLevel(0);
       if (!toolInFlight) publish("listening");
       return;
     }
@@ -260,7 +261,7 @@ export function createRealtimeVoice({
     try { pc?.close?.(); } catch {}
     stopTracks(stream);
     if (remoteAudio) { try { remoteAudio.pause?.(); remoteAudio.srcObject = null; } catch {} }
-    inputMeter?.dispose?.(); outputMeter?.dispose?.(); onInputLevel(0); onOutputLevel(0);
+    inputMeter?.dispose?.(); outputMeter?.dispose?.(); onInputLevel(0); onOutputLevel(0);onAudibleLevel(0);
     serial=Promise.resolve();turns.clear();responses.clear();handledCalls.clear();latestTurn=null;inSpeech=false;responseOpen=false;followup=false;
     playbackActive=false;onArticulation(rest); lastTranscript=""; assistantTranscript="";lastAssistantTranscript="";lastSpeechEndedAt=0; muted=false;
     inputMeter = null; outputMeter = null;

@@ -95,6 +95,16 @@
 @media(max-width:900px){.aether-prototype{grid-template-columns:1fr}.aether-stage{min-height:62vh}.aether-controls{display:grid;grid-template-columns:1fr 1fr}.aether-controls>div,.aether-controls>.aether-note,.aether-controls>.aether-metrics{grid-column:1/-1}}
 @media(max-width:600px){.aether-stage{min-height:56vh;border-radius:15px}.aether-controls{display:flex;padding:14px}.avatar-gallery-shell{padding:14px}.aether-button-grid{grid-template-columns:repeat(2,1fr)}}
 .prism-portrait{display:block;background:url("/assets/models/prism-shard-bloom.png") center/contain no-repeat}
+.current-glass-preview .voice-experience-backdrop{background:#020706;backdrop-filter:none}
+.current-glass-preview .voice-experience-shell{background:#020706;border-color:#183b2c;min-height:0;max-height:96dvh;overflow:auto;gap:10px}
+.current-glass-preview #immersiveAvatarSlot{width:min(620px,80vw);height:clamp(260px,53vh,580px);aspect-ratio:auto;filter:none}
+.nova-current-glass{position:relative;width:100%;height:100%;min-height:0;background:#020706}
+.nova-current-glass-stage{position:absolute;inset:0}
+.nova-current-glass-status{position:absolute;top:6px;left:10px;color:#86a998;font-size:11px}
+.nova-current-glass nav{position:absolute;bottom:5px;left:0;right:0;display:flex;gap:7px;justify-content:center}
+.nova-current-glass nav button{padding:6px 9px;background:#061b12;border:1px solid #28533e;border-radius:7px;color:#bdcfbf;font-size:11px;cursor:pointer}
+.nova-current-glass nav button[aria-pressed=true]{border-color:#aa9054;color:#e7d3a6}
+#workspaceAvatarSlot .nova-current-glass-status,#workspaceAvatarSlot .nova-current-glass nav{display:none}
 .aether-stage.prism-stage{min-height:0;aspect-ratio:1312/1199;background:#090910;box-shadow:none}
 .prism-stage:before{display:none}
 #immersiveAvatarSlot{width:min(540px,78vw,52vh);aspect-ratio:1312/1199;filter:none}
