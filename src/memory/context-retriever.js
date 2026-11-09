@@ -28,17 +28,19 @@ function ownerContext(profile, message) {
 export async function retrieveAgentContext({ storage, ownerId, message, projectId, memoryLimit = 6 }) {
   const inferredProjectId=projectId||inferProject(message);
   const includeRecentWork=wantsRecentWork(message);
-  const [profile,memories,runs,activity,projects] = await Promise.all([
+  const [profile,memories,runs,activity,projects,systemMemories] = await Promise.all([
     storage.getOwner(ownerId),
     storage.retrieveMemories(ownerId, message, { projectId:inferredProjectId, limit: memoryLimit }),
     includeRecentWork&&typeof storage.listRuns==="function"?storage.listRuns(ownerId,{limit:30}):[],
     includeRecentWork&&typeof storage.listActivity==="function"?storage.listActivity(ownerId,{limit:30}):[],
-    (includeRecentWork||inferredProjectId)&&typeof storage.listProjects==="function"?storage.listProjects(ownerId):[]
+    (includeRecentWork||inferredProjectId)&&typeof storage.listProjects==="function"?storage.listProjects(ownerId):[],
+    typeof storage.listMemories==="function"?storage.listMemories(ownerId,{scope:"system",limit:12}):[]
   ]);
   if (!profile) throw new Error("Owner profile is unavailable.");
   return {
     owner: ownerContext(profile, message),
-    memories: memories.map(({ id, category, content, privacy, sensitivity, scope, projectId: memoryProjectId, provenance }) => ({ id, category, content, privacy, sensitivity, scope, projectId: memoryProjectId, provenance })),
+    // Approved system purpose must survive cross-language queries with zero lexical overlap.
+    memories: [...new Map([...systemMemories.filter(m=>m.status==="active"&&["project_context","reusable_instruction"].includes(m.category)).slice(0,4),...memories].map(m=>[m.id,m])).values()].map(({ id, category, content, privacy, sensitivity, scope, projectId: memoryProjectId, provenance }) => ({ id, category, content, privacy, sensitivity, scope, projectId: memoryProjectId, provenance })),
     projects:projects.filter((project)=>!inferredProjectId||project.id===inferredProjectId).map(({id,name,description})=>({id,name,description})),
     recentWork:selectRecentWork({runs,activity,message,projectId:inferredProjectId})
   };

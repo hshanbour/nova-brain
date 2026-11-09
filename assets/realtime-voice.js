@@ -1,4 +1,5 @@
 import {articulation,rest} from "./prism-articulation.js";
+import {explicitVoiceLanguage} from "./voice-language.js";
 const OPENAI_REALTIME_CALLS = "https://api.openai.com/v1/realtime/calls";
 
 export function createRealtimeVoice({
@@ -30,6 +31,7 @@ export function createRealtimeVoice({
   let active = false, generation = 0, pc, channel, stream, remoteAudio, inputMeter, outputMeter;
   let lastTranscript = "", lastSpeechEndedAt = 0, assistantTranscript = "", lastAssistantTranscript = "", toolInFlight = false, muted = false;
   let playbackActive=false, serial=Promise.resolve(),speechTurn=0,inSpeech=false,responseOpen=false,followup=false;
+  let replyLanguage = null;
   const handledCalls=new Set(),turns=new Map(),responses=new Map();let latestTurn=null;
   const trim=m=>{while(m.size>32)m.delete(m.keys().next().value)};
   function flushFollowup(){if(followup&&!inSpeech&&!responseOpen&&active){followup=false;responseOpen=true;sendEvent({type:"response.create",response:{tool_choice:"none"}});}}
@@ -49,9 +51,10 @@ export function createRealtimeVoice({
       stream=acquired;
       inputMeter = createAudioMeter({ AudioContextImpl, stream, onLevel: onInputLevel });
       void fetchImpl("/api/voice/speaker/readiness", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
-      const sessionResponse = await fetchImpl("/api/voice/realtime/session", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const sessionResponse = await fetchImpl("/api/voice/realtime/session", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: getConversationId() }) });
       const session = await sessionResponse.json().catch(() => null);
       if (!sessionResponse.ok || typeof session?.clientSecret !== "string") throw new Error(session?.error || "Nova could not prepare Realtime Voice.");
+      replyLanguage = ["ar", "en"].includes(session.replyLanguage) ? session.replyLanguage : null;
       if (!valid(current)) return false;
       pc = new RTCPeerConnectionImpl();
       remoteAudio = new AudioImpl();
@@ -136,6 +139,7 @@ export function createRealtimeVoice({
     if (event.type === "conversation.item.input_audio_transcription.completed") {
       const text=String(event.transcript||"").trim();const utterance=turns.get(event.item_id)||latestTurn;if(utterance)utterance.transcript=text;
       if(utterance&&utterance!==latestTurn)return;lastTranscript=text;
+      replyLanguage = explicitVoiceLanguage(text) || replyLanguage;
       if (lastTranscript) onTranscript(lastTranscript);
       return;
     }
@@ -159,7 +163,7 @@ export function createRealtimeVoice({
       responseOpen=false;const utterance=responses.get(event.response?.id)||latestTurn||{seq:speechTurn,transcript:lastTranscript,speaker:speakerPromise,conversationId:getConversationId()};
       const look=event.response?.output?.filter?.(i=>i.type==="function_call"&&i.name==="nova_look")||[];
       for(const call of look)sendEvent({type:"conversation.item.create",item:{type:"function_call_output",call_id:call.call_id,output:JSON.stringify(readScene())}});
-      const calls = Array.isArray(event.response?.output) ? event.response.output.filter((item) => item?.type === "function_call" && item.name === "nova_turn") : [];
+      const calls = Array.isArray(event.response?.output) ? event.response.output.filter((item) => item?.type === "function_call" && ["nova_turn", "nova_context"].includes(item.name)) : [];
       if (calls.length) {
         for(const call of calls){if(!call.call_id||handledCalls.has(call.call_id))continue;handledCalls.add(call.call_id);trim(handledCalls);serial=serial.then(()=>handleNovaTurn(call,current,utterance)).catch(()=>{}); }
       } else if(look.length){followup=true;flushFollowup();
@@ -192,10 +196,21 @@ export function createRealtimeVoice({
       const args = safeParse(call.arguments) || {};
       const request = utterance.transcript || String(args.request || "").trim();
       if (!request) throw new Error("Nova could not recover the spoken request.");
+      if (call.name === "nova_context") {
+        const response = await fetchImpl("/api/voice/realtime/context", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: request, conversationId: getConversationId() || undefined }) });
+        const evidence = await response.json().catch(() => null);
+        if (!response.ok || evidence?.authority !== "authenticated_console_read_only") throw new Error("Saved Nova context could not be retrieved.");
+        if (!valid(current)) return;
+        if (utterance.conversationId && utterance.conversationId !== getConversationId()) throw new Error("Conversation changed.");
+        sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify(evidence) } });
+        onTiming({ stage: "realtime-context-read", measurements: { projects: evidence.projects?.length || 0, memories: evidence.memories?.length || 0 } });
+        followup = true; flushFollowup();
+        return;
+      }
       const speaker = await boundedSpeaker(utterance.speaker, 750);
       if(!valid(current))return;
       if(utterance.conversationId&&utterance.conversationId!==getConversationId())throw Error("Conversation changed.");
-      const result = await sendTurn(request, { speaker, conversationId: getConversationId() });
+      const result = await sendTurn(request, { speaker, conversationId: getConversationId(), replyLanguage });
       if (!valid(current)) return;
       sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ message: result?.message || "Nova could not complete that request.", approvalRequired: Boolean(result?.approval), conversationId: result?.conversationId || null }) } });
       followup=true;flushFollowup();

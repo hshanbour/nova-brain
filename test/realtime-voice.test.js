@@ -3,6 +3,23 @@ import assert from "node:assert/strict";
 import { createRealtimeVoiceService } from "../src/voice/realtime-voice-service.js";
 import { createRealtimeVoice } from "../assets/realtime-voice.js";
 
+test("read-only context bypasses neither Brain action checks nor language continuity", async()=>{
+  const channel=new FakeChannel(),peer=new FakePeer(channel),reads=[],actions=[];
+  const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return {getTracks:()=>[]}}},RTCPeerConnectionImpl:class{constructor(){return peer}},MediaRecorderImpl:null,AudioImpl:class{pause(){}},getConversationId:()=>"mine",
+    fetchImpl:async(url,o)=>{if(url.endsWith("/session")){assert.equal(JSON.parse(o.body).conversationId,"mine");return Response.json({clientSecret:"ek_test",replyLanguage:"ar"})}if(url.endsWith("/context")){reads.push(JSON.parse(o.body));return Response.json({authority:"authenticated_console_read_only",projects:[],memories:[],purpose:[{content:"Saved purpose"}]})}return new Response("answer")},
+    sendTurn:async(text,options)=>{actions.push({text,options});return {message:"Safe clarification"}}});
+  await voice.start();channel.open();
+  channel.message({type:"conversation.item.input_audio_transcription.completed",transcript:"شو بتتذكري عن Plumber Growth Kit؟"});
+  channel.message({type:"response.done",response:{output:[{type:"function_call",name:"nova_context",call_id:"context-1",arguments:'{"request":"Wrong paraphrase"}'}]}});
+  await new Promise(r=>setTimeout(r,10));
+  assert.equal(reads[0].message,"شو بتتذكري عن Plumber Growth Kit؟");assert.equal(actions.length,0);
+  channel.message({type:"conversation.item.input_audio_transcription.completed",transcript:"Arfeminana"});
+  channel.message({type:"response.done",response:{output:[{type:"function_call",name:"nova_turn",call_id:"brain-1",arguments:"{}"}]}});
+  await new Promise(r=>setTimeout(r,10));
+  assert.equal(actions[0].options.replyLanguage,"ar");assert.equal(actions[0].options.speaker,null);
+  voice.end();
+});
+
 test("realtime service mints a short-lived, delegated, bilingual WebRTC session", async () => {
   let request;
   const service = createRealtimeVoiceService({

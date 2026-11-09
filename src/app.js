@@ -404,6 +404,7 @@ export function createApp({
   const pstnSpeakerControls=createPstnSpeakerControls({storage,ownerId:OWNER_ID,phoneService,speakerExtractor,speakerIdentity,enabled:environment.VERCEL_ENV==="preview"});
 
   const api = createApi({
+    realtimeAccountContext: environment.VERCEL_ENV === "preview",
     agent,
     config,
     storage,

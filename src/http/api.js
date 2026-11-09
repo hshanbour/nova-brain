@@ -1,4 +1,5 @@
 import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
+import { readRealtimeContext } from "../voice/realtime-context.js";
 import {PROJECT_DOCUMENT_LIMITS,ProjectSourceError} from "../projects/document-extractor.js";
 import {ProjectDiscoveryError} from "../projects/project-discovery.js";
 import {ProjectAutomationControlError} from "../automation/project-automation-controls.js";
@@ -225,6 +226,7 @@ export function createApi({
   voiceBenchmark,
   voiceService,
   realtimeVoiceService,
+  realtimeAccountContext = false,
   speakerIdentity,
   speakerExtractor,
   speakerEngines,
@@ -754,7 +756,14 @@ export function createApi({
             return;
           }
           const safetyIdentifier = createHash("sha256").update(`nova-realtime:${ownerId}`).digest("hex");
-          const session = await realtimeVoiceService.createClientSecret({ safetyIdentifier });
+          let accountContext;
+          if (realtimeAccountContext) {
+            await ready();
+            const input = await readJsonBody(request, config.maxBodyBytes);
+            const conversationId = typeof input?.conversationId === "string" ? input.conversationId.slice(0, 128) : null;
+            accountContext = await readRealtimeContext({ storage, projectService, ownerId, conversationId });
+          }
+          const session = await realtimeVoiceService.createClientSecret({ safetyIdentifier, accountContext });
           logger.info("Nova realtime voice session prepared", {
             requestId,
             model: session.model,
@@ -762,6 +771,16 @@ export function createApi({
             transport: "webrtc",
           });
           sendJson(response, 201, session);
+          return;
+        }
+        if (request.method === "POST" && pathname === "/api/voice/realtime/context") {
+          if (!realtimeAccountContext) { sendJson(response, 404, { error: "Not found." }); return; }
+          if (!sameOriginRequest(request)) { sendJson(response, 403, { error: "Voice context requires a same-origin owner console request." }); return; }
+          await ready();
+          const input = validateAgentRequest(await readJsonBody(request, config.maxBodyBytes));
+          const evidence = await readRealtimeContext({ storage, projectService, ownerId, message: input.message, conversationId: input.conversationId });
+          logger.info("Nova realtime context retrieved", { requestId, authority: evidence.authority, projectIds: evidence.projects.map(p => p.id), memoryIds: evidence.memories.map(m => m.id) });
+          sendJson(response, 200, evidence);
           return;
         }
         if (request.method === "POST" && pathname === "/api/voice/realtime/transcript") {
