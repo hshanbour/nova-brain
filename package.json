@@ -22,6 +22,7 @@
     "db:migrate": "node scripts/migrate.js"
   },
   "dependencies": {
+    "@neon/auth": "0.8.2",
     "@neondatabase/serverless": "^1.1.0",
     "busboy": "1.6.0",
     "fflate": "0.8.3",

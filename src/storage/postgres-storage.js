@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
 import { SCHEMA_STATEMENTS } from "./schema.js";
+import {assertSyntheticDatabase} from '../identity/synthetic-preview.js';
 import { rankRelevantMemories,resolveMemoryProjectIds } from "../memory/relevance.js";
 import {validateRejectedReviewEvidenceEnvelope} from "../autonomy/rejected-review-evidence.js";
 
@@ -340,9 +341,10 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
   const storage = {
     provider: "postgres",
     durable: true,
-    async initialize({ owner, projects = [], memories = [] } = {}) {
+    async initialize({ owner, projects = [], memories = [], syntheticGuard = false } = {}) {
       if (!initialization)
         initialization = (async () => {
+          if(syntheticGuard)await assertSyntheticDatabase(run);
           for (const statement of SCHEMA_STATEMENTS) await run(statement);
           if (owner) {
             await run(

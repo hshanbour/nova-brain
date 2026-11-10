@@ -15,7 +15,7 @@ import {
   INITIAL_MEMORIES,
   INITIAL_OWNER_PROFILE,
   INITIAL_PROJECTS,
-  OWNER_ID,
+  OWNER_ID as DEFAULT_OWNER_ID,
 } from "./identity/initial-context.js";
 import { createBenchmarkProviders } from "./benchmark/providers.js";
 import { createVoiceBenchmark } from "./benchmark/service.js";
@@ -64,6 +64,8 @@ import { createGmailService } from "./email/gmail-service.js";
 import { registerGmailTools } from "./email/gmail-tools.js";
 import { createPhoneSessionAuth } from "./phone/session-auth.js";
 import {createConsoleAccess} from "./identity/console-access.js";
+import {syntheticPreviewEnvironment,SYNTHETIC_SEED,SYNTHETIC_OWNER_ID} from './identity/synthetic-preview.js';
+import {createPreviewAuth} from './identity/preview-auth.js';
 import { createPhoneService } from "./phone/phone-service.js";
 import { registerPhoneTools } from "./phone/phone-tools.js";
 import { createTwilioOutboundClient } from "./phone/twilio-client.js";
@@ -114,6 +116,10 @@ export function createApp({
   projectDiscoveryFetchImpl,
   sharpCutsEmailFetchImpl,
 } = {}) {
+  const preview = syntheticPreviewEnvironment(environment);
+  environment = preview.environment;
+  const OWNER_ID = preview.synthetic ? SYNTHETIC_OWNER_ID : DEFAULT_OWNER_ID;
+  const previewAuth = preview.synthetic ? createPreviewAuth({environment}) : null;
   const config = readConfig(environment);
   let modelProvider;
   const storage = createMultilingualMemoryStorage({storage:storageOverride||createStorage(config),translateQuery:async(query)=>{
@@ -133,7 +139,7 @@ export function createApp({
     : null;
   let approvalReconciliation=null,approvalReconciliationComplete=false;
   const initialize = async () => {
-    await storage.initialize({
+    await storage.initialize(preview.synthetic ? {...SYNTHETIC_SEED,syntheticGuard:true} : {
       owner: INITIAL_OWNER_PROFILE,
       projects: INITIAL_PROJECTS,
       memories: INITIAL_MEMORIES,
@@ -145,7 +151,7 @@ export function createApp({
     ownerId: OWNER_ID,
     approvedBranch: config.developmentBranch,
   });
-  const toolRegistry = createToolRegistry({ policy });
+  const toolRegistry = createToolRegistry({ policy, disabled:preview.synthetic });
   const projectService=createProjectService({storage,ownerId:OWNER_ID});
   const learningService=typeof storage?.createMemoryCandidate==="function"?createMemoryLearningService({storage,ownerId:OWNER_ID}):null;
   const pageReader=createPublicPageReader({fetchImpl:webFetchImpl||globalThis.fetch,...(webResolveHost?{resolveHost:webResolveHost}:{})});
@@ -413,7 +419,9 @@ export function createApp({
   const pstnSpeakerControls=createPstnSpeakerControls({storage,ownerId:OWNER_ID,phoneService,speakerExtractor,speakerIdentity,enabled:environment.VERCEL_ENV==="preview"});
 
   const api = createApi({
-    authorizeConsole:authorizeConsoleOverride||createConsoleAccess({environment,ownerId:OWNER_ID}).authorize,
+    syntheticPreview:preview.synthetic,
+    authorizeConsole:authorizeConsoleOverride||previewAuth?.authorize||createConsoleAccess({environment,ownerId:OWNER_ID}).authorize,
+    previewAuth,
     realtimeAccountContext: environment.VERCEL_ENV === "preview",
     agent,
     config,

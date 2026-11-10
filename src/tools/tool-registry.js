@@ -1,6 +1,6 @@
 import {canonicalSchemaDiagnostic} from "../autonomy/schema-diagnostics.js";
 
-export function createToolRegistry({ policy } = {}) {
+export function createToolRegistry({ policy, disabled = false } = {}) {
   const tools = new Map();
 
   class ToolInputError extends Error {
@@ -66,6 +66,7 @@ export function createToolRegistry({ policy } = {}) {
       }));
     },
     async execute(name, input, context) {
+      if(disabled)throw Object.assign(new Error('External tools and actions are disabled in synthetic Preview.'),{code:'synthetic_actions_disabled',statusCode:403});
       context ||= {};
       const tool = tools.get(name);
 

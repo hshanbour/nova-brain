@@ -1,4 +1,6 @@
 import { createNovaClient, durableTaskRecordsFromMessages, isDurableTaskId, terminalTaskReportFromMessages } from "./api-client.js";
+import {requireSyntheticSession} from './preview-session.js';
+await requireSyntheticSession();
 import { ownerMemoryClient } from "./memory-client.js";
 import { selectWorkspace } from "./workspace-navigation.js";
 import { conversationTitle, createConversationBindingState, createConversationHistory } from "./conversation-history.js";

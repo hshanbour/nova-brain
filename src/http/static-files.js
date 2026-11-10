@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 
 const ASSETS = Object.freeze({
+  '/signin.html':{file:'../../signin.html',type:'text/html; charset=utf-8'},
+  '/assets/preview-signin.js':{file:'../../assets/preview-signin.js',type:'text/javascript; charset=utf-8'},
+  '/assets/preview-session.js':{file:'../../assets/preview-session.js',type:'text/javascript; charset=utf-8'},
   ...Object.fromEntries(['current-glass-avatar.js','current-glass-signal.js',...['coreScene.js','opalInterior.js','moltenInterior.js','contourLighting.js','sceneEnvironment.js','livingField.js','emeraldTide.js','tideTiming.js','visualDemo.js','voice-demo.wav','nova.glb','nova-display.glb'].map(n=>'current-glass/'+n)].map(n=>['/assets/'+n,{file:'../../assets/'+n,type:n.endsWith('.wav')?'audio/wav':n.endsWith('.glb')?'model/gltf-binary':'text/javascript; charset=utf-8'}])),
   "/assets/models/prism-edge.jpg":{file:"../../assets/models/prism-edge.jpg",type:"image/jpeg"},
   "/assets/prism-locks.js":{file:"../../assets/prism-locks.js",type:"text/javascript; charset=utf-8"},

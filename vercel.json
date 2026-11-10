@@ -2,7 +2,10 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
   "framework": null,
+  "buildCommand": "node scripts/build-synthetic-preview.js",
+  "outputDirectory": "preview-public",
   "routes": [
+    {"src":"/(src|test|scripts|deliverables|node_modules|\\.git|\\.env)(/.*)?","status":404},
     {
       "src": "/",
       "has": [

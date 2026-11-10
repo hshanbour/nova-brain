@@ -1,4 +1,5 @@
 node_modules/
+preview-public/
 .npm-cache/
 .env
 .env.local

@@ -1,5 +1,6 @@
 import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
 import {usesServiceAuthentication} from "../identity/console-access.js";
+import {syntheticRouteAllowed} from '../identity/synthetic-preview.js';
 import { readRealtimeContext } from "../voice/realtime-context.js";
 import {PROJECT_DOCUMENT_LIMITS,ProjectSourceError} from "../projects/document-extractor.js";
 import {ProjectDiscoveryError} from "../projects/project-discovery.js";
@@ -261,6 +262,8 @@ export function createApi({
   gptLiveRound2,
   gptLiveRound2Authorization = () => false,
   authorizeConsole = null,
+  syntheticPreview = false,
+  previewAuth = null,
   logger = console,
 }) {
   const recognitionEngines =
@@ -311,6 +314,10 @@ export function createApi({
       };
 
       try {
+        if(previewAuth&&await previewAuth.handle(request,response))return;
+        if(syntheticPreview&&!syntheticRouteAllowed(pathname,request.method)){
+          sendJson(response,403,{error:'This isolated sign-in Preview permits synthetic workspace and memory tests only. External actions, Voice, phone, workers and messaging are disabled.',code:'synthetic_actions_disabled'});return;
+        }
         // Resolve the server-verified actor BEFORE initialize() or any private
         // profile, conversation, project, memory, tool or approval lookup.
         if(authorizeConsole&&pathname.startsWith("/api/")) {
