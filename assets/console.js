@@ -453,7 +453,7 @@ async function loadMemoryWorkspace() {
   list.innerHTML = '<div class="memory-loading">Loading private memory…</div>';candidateList.innerHTML='<div class="memory-loading">Loading evidence candidates…</div>'; error.hidden = true;candidateError.hidden=true;
   try {
     const category = document.querySelector("#memoryFilter").value;
-    const [{ owner }, { memories: loaded },{candidates}] = await Promise.all([ownerMemoryClient.profile(), ownerMemoryClient.list(category),ownerMemoryClient.memoryCandidates()]);
+    const [{ owner }, { memories: loaded }] = await Promise.all([ownerMemoryClient.profile(), ownerMemoryClient.list(category)]);
     currentProfile = owner; memoryRecords = loaded;
     document.querySelector("#ownerProfileHeading").textContent = owner.fullName;
     document.querySelector(".arabic-name").textContent = owner.arabicName || "";
@@ -462,9 +462,14 @@ async function loadMemoryWorkspace() {
     form.elements.communication.value = owner.preferences?.communication || "";
     list.replaceChildren(...loaded.map(memoryCard));
     if (!loaded.length) list.innerHTML = '<div class="empty-memory">No memories in this category.</div>';
+  } catch (cause) { list.replaceChildren();memoryRecords=[];error.textContent = cause.message;error.hidden = false; }
+  // Learning review is optional: its permission or availability must never
+  // clear saved memories that have already loaded successfully.
+  try {
+    const {candidates}=await ownerMemoryClient.memoryCandidates();
     candidateList.replaceChildren(...candidates.map(memoryCandidateCard));
     if(!candidates.length)candidateList.innerHTML='<div class="empty-memory">No learning candidates need review.</div>';
-  } catch (cause) { list.replaceChildren();candidateList.replaceChildren();error.textContent = cause.message;error.hidden = false;candidateError.textContent=cause.message;candidateError.hidden=false; }
+  } catch { candidateList.replaceChildren();candidateError.textContent='Learning candidates are unavailable in this session. Saved memories are loaded separately.';candidateError.hidden=false; }
 }
 
 document.querySelector("#profileForm").addEventListener("submit", async (event) => {
