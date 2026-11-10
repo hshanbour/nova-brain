@@ -6,6 +6,13 @@ const tokens=value=>new Set(normalized(value).split(" ").filter(token=>token.len
 const slug=value=>normalized(value).replace(/\s+/g,"-").slice(0,80).replace(/^-|-$/g,"");
 const phrase=(message,name)=>new RegExp(`(^|[^\\p{L}\\p{N}])${normalized(name).split(" ").map(part=>part.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("[\\s_-]+")}(?=$|[^\\p{L}\\p{N}])`,"iu").test(String(message||""));
 const phraseCount=(message,name)=>{const haystack=` ${normalized(message)} `,needle=` ${normalized(name)} `;let count=0,offset=0;while((offset=haystack.indexOf(needle,offset))>=0){count+=1;offset+=needle.length-1;}return count;};
+const PROJECT_ALIASES=Object.freeze({
+  "plumber-growth":["PGK","بلومبر جروث كيت"],
+  "sharp-cuts-web":["Sharp Cuts website","Sharp Cuts web","شارب كتس","شارب كاتس","موقع شارب كتس"],
+  "nova-digital-services-uk":["Nova Digital Services","NDS UK","نوفا ديجيتال سيرفيسز"],
+  "nova-brain":["Nova Brain","Nova Voice","نوفا برين","صوت نوفا"],
+  "uk-missed-call-recovery":["UK missed call recovery","missed call recovery"]
+});
 const compactProject=project=>({id:project.id,name:project.name,description:project.description||null});
 
 export function createProjectService({storage,ownerId}={}){
@@ -15,6 +22,13 @@ export function createProjectService({storage,ownerId}={}){
     if(projectId){
       const exact=projects.find(project=>project.id===projectId);
       return exact?{status:"resolved",project:compactProject(exact),source:"explicit_id"}:{status:"missing",project:null,source:"explicit_id",message:`Nova could not find the requested project ${clean(projectId,80)}.`};
+    }
+    const aliasMatches=projects.filter(project=>(PROJECT_ALIASES[project.id]||[]).some(alias=>phrase(message,alias)));
+    const namedMatches=projects.filter(project=>phrase(message,project.name)||phrase(message,project.id));
+    if(aliasMatches.length){
+      const matches=[...new Map([...aliasMatches,...namedMatches.filter(p=>!aliasMatches.some(a=>[...(PROJECT_ALIASES[a.id]||[]),a.name,a.id].some(alias=>normalized(alias).includes(normalized(p.name))&&phraseCount(message,p.name)<=phraseCount(message,alias))))].map(p=>[p.id,p])).values()];
+      if(matches.length===1)return{status:"resolved",project:compactProject(matches[0]),source:"registered_alias"};
+      return{status:"multiple",projects:matches.map(compactProject),source:"multiple_references"};
     }
     const exact=projects.filter(project=>phrase(message,project.name)||phrase(message,project.id));
     if(exact.length){

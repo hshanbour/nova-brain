@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createApp } from "../src/app.js";
+import { createApp as createRawApp } from "../src/app.js";
 import { readConfig } from "../src/config/env.js";
 import { createInMemoryStorage } from "../src/storage/in-memory-storage.js";
 import { createVoiceBenchmark, BenchmarkBudgetError, BenchmarkLockedError, BenchmarkUnavailableError } from "../src/benchmark/service.js";
@@ -81,3 +81,6 @@ test("provider adapters use the intended endpoints and never include upstream se
   const providers = createBenchmarkProviders({ config: benchmarkConfig().voiceBenchmark, fetchImpl }); await providers.transcribe("openai", { audio: Buffer.from("audio"), mimeType: "audio/webm", locale: "ar-JO" }); assert.match(calls[0].url, /\/v1\/audio\/transcriptions$/); assert.match(calls[0].options.headers.Authorization, /^Bearer /);
   await assert.rejects(providers.synthesise("openai", { text: "hello", locale: "en-GB" }), (error) => error instanceof BenchmarkProviderError && error.upstreamStatus === 401 && !error.message.includes("secret"));
 });
+
+function createApp(options={}) { return createRawApp({...options,authorizeConsole:async()=>({ownerId:fixtureOwnerId,workspaceId:fixtureOwnerId,role:"owner"})}); }
+import {OWNER_ID as fixtureOwnerId} from "../src/identity/initial-context.js";

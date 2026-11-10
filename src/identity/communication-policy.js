@@ -15,3 +15,6 @@ export function savedReplyLanguage(preferences = {}) {
   return /^(?:ar|Arabic)/i.test(value) ? "ar" : /^(?:en|English)/i.test(value) ? "en" : null;
 }
 
+
+// Public channels share conversational style, not the owner's personal identity/preferences.
+export const NOVA_PUBLIC_COMMUNICATION_POLICY=NOVA_COMMUNICATION_POLICY.split("\n").filter(line=>!line.startsWith("Nova's owner")&&!line.startsWith("With Mohammad")).join("\n");

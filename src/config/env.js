@@ -170,7 +170,8 @@ function parseSharpCutsWhatsAppConfig(environment) {
     mode,
     testRecipients:Object.freeze(testRecipients),
     receiveEnabled: mode !== "disabled",
-    sendEnabled: mode === "owner_test",
+    executionEnabled: environment.NOVA_SHARP_CUTS_WHATSAPP_EXECUTION_ENABLED === "true",
+    sendEnabled: mode === "owner_test" && environment.NOVA_SHARP_CUTS_WHATSAPP_OUTBOUND_ENABLED === "true",
   });
 }
 

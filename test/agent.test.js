@@ -76,7 +76,7 @@ test("GPT-Live information delegation preserves exact message identity and expos
   assert.deepEqual((await storage.listMessages("live-read-only",OWNER_ID)).map(item=>item.id),["livemsg_user","livemsg_assistant"]);
 });
 
-test("unauthenticated GPT-Live may use only bounded project_list and never private memory or external tools",async()=>{
+test("unauthenticated GPT-Live has no owner catalogue, private memory or tools",async()=>{
   const storage=testStorage(),registry=createToolRegistry();let projectCalls=0,observed=[];
   await storage.createMemory({id:"private-live-secret",ownerId:OWNER_ID,category:"fact",content:"PRIVATE OWNER SECRET",provenance:"owner",privacy:"private",sensitivity:"high",scope:"global",status:"active"});
   registry.register({name:"project_list",riskLevel:"READ_ONLY",async execute(){projectCalls+=1;return{projects:[{id:"nova-brain",name:"Nova Brain"}]};}});
@@ -85,7 +85,7 @@ test("unauthenticated GPT-Live may use only bounded project_list and never priva
   const provider=scriptedProvider([{type:"tool_calls",continuationToken:"live-tool",toolCalls:[{id:"call-projects",name:"project_list",arguments:{}}]},{type:"final",message:"Nova Brain is the verified project."}],input=>observed.push(input));
   const agent=createTestAgent({storage,toolRegistry:registry,modelProvider:provider,verifySpeakerAssertion:()=>null,validateSpeakerProfile:async()=>true,validateAnonymousSpeaker:async()=>true});
   const result=await agent.run({message:"شو المشاريع؟",conversationId:"live-unknown-projects",deferConversationPersistence:true,context:{voice:true,speaker:{},gptLiveRound2:{authority:"read_only",speakerAuthenticated:false,trustedResults:[]}}});
-  assert.equal(projectCalls,1);assert.equal(result.message,"Nova Brain is the verified project.");assert.deepEqual(observed[0].tools.map(tool=>tool.name),["project_list"]);assert.doesNotMatch(observed[0].systemContext,/PRIVATE OWNER SECRET/);assert.match(observed[0].systemContext,/speaker is not authenticated/i);
+  assert.equal(projectCalls,0);assert.doesNotMatch(result.message,/Nova Brain is the verified project/);assert.deepEqual(observed[0].tools,[]);assert.doesNotMatch(JSON.stringify(observed),/PRIVATE OWNER SECRET/);
 });
 
 test("restricted browser voice describes Nova accurately without private context or unsolicited identity disclaimers",async()=>{

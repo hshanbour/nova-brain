@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readConfig } from "../src/config/env.js";
 import { createVoiceService, VoiceProviderError, VoiceTimeoutError, VoiceValidationError } from "../src/voice/voice-service.js";
 import { sanitiseSpeechText } from "../src/voice/speech-text.js";
-import { createApp } from "../src/app.js";
+import { createApp as createRawApp } from "../src/app.js";
 import { createApi } from "../src/http/api.js";
 import { createVoiceV2Client } from "../assets/voice-v2-client.js";
 
@@ -237,3 +237,6 @@ test("unknown high-quality voice becomes familiar only with a valid explicit con
 
 test("empty STT result discards the parallel embedding instead of producing a recognition decision",async()=>{let recognitionCalls=0;const handler=createApi({config:readConfig({}),agent:{},storage:{},initialize:async()=>{},ownerId:"owner",voiceBenchmark:{},voiceService:{async transcribe(){return{transcript:""};}},speakerExtractor:{configured:true,async extract(){return{sufficient:true,representation:[1,0,0],representationVariants:[{label:"vad_v3",representation:[1,0,0]}],extractorVersion:"ecapa",latencyMs:10,quality:"accepted"};}},speakerIdentity:{async recognizeMany(){recognitionCalls++;},async candidateCount(){return 1;}},speakerAssertions:{issue(){return"signed-unknown";}},logger:{info(){},error(){}}});const result=await api(handler,{method:"POST",url:"/api/voice/transcribe",headers:{"content-type":"application/json"},body:JSON.stringify({audioBase64:"YXVkaW8=",mimeType:"audio/webm",durationSeconds:4})});assert.equal(result.status,200);assert.equal(result.body.speaker.match_status,"non_speech");assert.equal(result.body.speaker.authenticated_identity,"none");assert.equal(recognitionCalls,0);});
 
+
+function createApp(options={}) { return createRawApp({...options,authorizeConsole:async()=>({ownerId:fixtureOwnerId,workspaceId:fixtureOwnerId,role:"owner"})}); }
+import {OWNER_ID as fixtureOwnerId} from "../src/identity/initial-context.js";

@@ -63,6 +63,7 @@ import {createDurableWebResearchService} from "./web/durable-web-research.js";
 import { createGmailService } from "./email/gmail-service.js";
 import { registerGmailTools } from "./email/gmail-tools.js";
 import { createPhoneSessionAuth } from "./phone/session-auth.js";
+import {createConsoleAccess} from "./identity/console-access.js";
 import { createPhoneService } from "./phone/phone-service.js";
 import { registerPhoneTools } from "./phone/phone-tools.js";
 import { createTwilioOutboundClient } from "./phone/twilio-client.js";
@@ -95,9 +96,12 @@ export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>a
   return blobs;
 };
 
+import {createMultilingualMemoryStorage,MEMORY_QUERY_TRANSLATION_INSTRUCTIONS} from "./memory/multilingual-retrieval.js";
+
 export function createApp({
   environment = process.env,
   storage: storageOverride,
+  authorizeConsole: authorizeConsoleOverride,
   logger = console,
   voiceFetchImpl,
   webFetchImpl,
@@ -111,11 +115,16 @@ export function createApp({
   sharpCutsEmailFetchImpl,
 } = {}) {
   const config = readConfig(environment);
-  const storage = storageOverride || createStorage(config);
+  let modelProvider;
+  const storage = createMultilingualMemoryStorage({storage:storageOverride||createStorage(config),translateQuery:async(query)=>{
+    if(config.modelProvider!=="openai")return "";
+    const result=await modelProvider.generate({message:query,systemContext:MEMORY_QUERY_TRANSLATION_INSTRUCTIONS,tools:[],toolResults:[],conversationHistory:[],stage:"intake",signal:AbortSignal.timeout(4000),responseFormat:{name:"memory_query_translation",schema:{type:"object",properties:{english:{type:"string"},arabic:{type:"string"}},required:["english","arabic"],additionalProperties:false}}});
+    return result.type==="final"?result.message:"";
+  }});
   const modelCostController = config.modelProvider === "openai"
     ? createModelCostController({ storage, ownerId: OWNER_ID, config: config.openAI.budget })
     : null;
-  const modelProvider = createModelProvider(config, { costController: modelCostController });
+  modelProvider = createModelProvider(config, { costController: modelCostController });
   const developerSessionSmoke = storage.saveDeveloperSession && storage.getDeveloperSession
     ? createDeveloperSessionSmoke({ environment, storage, ownerId: OWNER_ID })
     : null;
@@ -173,12 +182,12 @@ export function createApp({
   const phoneService = createPhoneService({ config, storage, ownerId: OWNER_ID, dialProvider: phoneProvider, sessionAuth: phoneSessionAuth, novaTurn: (input) => agent.run(input), ownerContactPolicy, prewarmSpeaker: () => speakerEngines.readiness(), fetchImpl: phoneFetchImpl || globalThis.fetch });
   registerPhoneTools(toolRegistry, { service: phoneService });
   const whatsappService = createWhatsAppService({ config, storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), fetchImpl: whatsappFetchImpl || globalThis.fetch, logger });
-  const sharpCutsWhatsAppService=createSharpCutsWhatsAppCoexistenceService({config,storage,ownerId:OWNER_ID,novaTurn:(input)=>agent.run(input),logger});
+  const projectAutomationControls=createProjectAutomationControls({storage,ownerId:OWNER_ID});
+  const sharpCutsWhatsAppService=createSharpCutsWhatsAppCoexistenceService({config,storage,ownerId:OWNER_ID,automationControls:projectAutomationControls,novaTurn:(input)=>agent.run(input),logger});
   const instagramOAuth=createInstagramOAuthService({config,storage,ownerId:OWNER_ID});
   const privateR2=config.socialMedia.r2Configured?createPrivateR2Store(config.socialMedia):null;
   const r2UsageGuard=createR2UsageGuard({storage,ownerId:OWNER_ID,config:config.socialMedia});
   const mediaUrlResolver=privateR2?async(media,{projectId})=>{const asset=await storage.getSocialMediaAsset(media.assetId,OWNER_ID);if(!asset||asset.projectId!==projectId||asset.storage!=="r2"||asset.state!=="cloud_ready")throw Object.assign(new Error("Approved media is unavailable for this project."),{code:"social_media_project_mismatch"});await r2UsageGuard.reserve(projectId,{classBOperations:10});return privateR2.createReadGrant({key:asset.cloudKey}).url;}:null;
-  const projectAutomationControls=createProjectAutomationControls({storage,ownerId:OWNER_ID});
   const socialService=createSocialService({config,storage,ownerId:OWNER_ID,instagramOAuth,mediaUrlResolver,automationControls:projectAutomationControls});
   const mediaAutomation=createMediaAutomationService({storage,socialService,ownerId:OWNER_ID,cloudStore:privateR2,usageGuard:r2UsageGuard,maxApprovedCloudBytes:config.socialMedia.hardQuotaBytes});
   const footageAnalysis=createFootageAnalysisService({modelProvider,socialService,storage,ownerId:OWNER_ID});
@@ -404,6 +413,7 @@ export function createApp({
   const pstnSpeakerControls=createPstnSpeakerControls({storage,ownerId:OWNER_ID,phoneService,speakerExtractor,speakerIdentity,enabled:environment.VERCEL_ENV==="preview"});
 
   const api = createApi({
+    authorizeConsole:authorizeConsoleOverride||createConsoleAccess({environment,ownerId:OWNER_ID}).authorize,
     realtimeAccountContext: environment.VERCEL_ENV === "preview",
     agent,
     config,

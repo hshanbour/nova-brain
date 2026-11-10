@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { createApp } from "../src/app.js";
+import { createApp as createRawApp } from "../src/app.js";
 import { readConfig } from "../src/config/env.js";
 import { createGmailService, GMAIL_SCOPES } from "../src/email/gmail-service.js";
 import { createTokenCipher, decodeGmailEncryptionKey } from "../src/email/token-crypto.js";
@@ -672,3 +672,6 @@ test("provider OAuth failures expose only a safe category and never the provider
   assert.equal(failed.body.code, "gmail_oauth_exchange_failed");
   assert.doesNotMatch(JSON.stringify({ response: failed.body, logs }), new RegExp(providerSecret));
 });
+
+function createApp(options={}) { return createRawApp({...options,authorizeConsole:async()=>({ownerId:fixtureOwnerId,workspaceId:fixtureOwnerId,role:"owner"})}); }
+import {OWNER_ID as fixtureOwnerId} from "../src/identity/initial-context.js";

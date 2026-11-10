@@ -85,9 +85,10 @@ test("an explicit project strongly boosts rather than gates matching memories", 
   assert.equal(results[0].id, "memory_missed_call_testbed");
 });
 
-test("Postgres candidate selection keeps all active owner memories eligible for ranking", async () => {
+test("Postgres ranks all active owner records within resolved project scope, without a newest-50 cutoff", async () => {
   const source = await import("node:fs/promises").then(({ readFile }) => readFile(new URL("../src/storage/postgres-storage.js", import.meta.url), "utf8"));
-  assert.match(source, /WHERE owner_id=\$1 AND status='active' ORDER BY updated_at DESC, id ASC LIMIT \$2/);
+  assert.ok(source.includes("WHERE owner_id=$1 AND status='active' AND (project_id IS NULL OR scope IN ('global','system') OR project_id=ANY($2::text[]))"));
+  assert.doesNotMatch(source,/candidateLimit = 50/);
   assert.doesNotMatch(source, /project_id IS NULL OR project_id=/);
 });
 

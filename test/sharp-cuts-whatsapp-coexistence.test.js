@@ -4,6 +4,48 @@ import {readConfig} from "../src/config/env.js";
 import {createInMemoryStorage} from "../src/storage/in-memory-storage.js";
 import {createSharpCutsWhatsAppCoexistenceService} from "../src/whatsapp/sharp-cuts-coexistence.js";
 import {createPersistentLocalWorker} from "../src/autonomy/persistent-local-worker.js";
+import {createProjectAutomationControls} from "../src/automation/project-automation-controls.js";
+
+test('actual worker tick holds a paused backlog and processes only an isolated fresh draft with no provider request',async()=>{
+  const storage=createInMemoryStorage();await storage.initialize({owner:{id:OWNER},projects:[{id:'sharp-cuts-web',name:'Sharp Cuts'}]});
+  const controls=createProjectAutomationControls({storage,ownerId:OWNER});let modelCalls=0,providerCalls=0;
+  const service=createSharpCutsWhatsAppCoexistenceService({config:readConfig(ENV),storage,ownerId:OWNER,automationControls:controls,
+    fetchImpl:async()=>{providerCalls++;throw Error('No network allowed');},
+    novaTurn:async input=>{modelCalls++;await storage.appendMessage({id:input.assistantMessageId,ownerId:OWNER,conversationId:input.conversationId,role:'assistant',content:'Synthetic safe draft.'});return{id:input.assistantMessageId,message:'Synthetic safe draft.'};}});
+  await service.receive(payload('Synthetic booking enquiry','wamid.synthetic-held-123'),`Bearer ${TOKEN}`);
+  const worker=createPersistentLocalWorker({registry:{},branch:'codex/combined-nova-preview-d5b5-c5bd',client:{async request(path){
+    if(path==='/api/admin/worker/auto-dispatch/next')return{dispatched:false,channelPolling:['sharp_cuts_whatsapp']};
+    if(path==='/api/admin/worker/sharp-cuts/whatsapp/tick')return service.processNext({workerId:'synthetic-current-worker'});
+    throw Error('Unexpected path '+path);
+  }}});
+  const before=await storage.getWhatsAppInbound('wamid.synthetic-held-123',OWNER);
+  await worker.runOnce();assert.equal(modelCalls,0);assert.equal(providerCalls,0);
+  assert.deepEqual(await storage.getWhatsAppInbound('wamid.synthetic-held-123',OWNER),before,'pause does not claim or mutate queued records');
+  // Separate empty fixture, not replay of the held record.
+  const fresh=await fixture();await fresh.service.receive(payload('Fresh synthetic enquiry','wamid.synthetic-fresh-123'),`Bearer ${TOKEN}`);
+  const freshWorker=createPersistentLocalWorker({registry:{},branch:'codex/combined-nova-preview-d5b5-c5bd',client:{async request(path){
+    if(path==='/api/admin/worker/auto-dispatch/next')return{dispatched:false,channelPolling:['sharp_cuts_whatsapp']};
+    if(path==='/api/admin/worker/sharp-cuts/whatsapp/tick')return fresh.service.processNext({workerId:'fresh-synthetic-worker'});
+    throw Error('Unexpected path');
+  }}});
+  await freshWorker.runOnce();assert.equal((await fresh.storage.getWhatsAppInbound('wamid.synthetic-fresh-123',OWNER)).status,'awaiting_owner_review');
+  assert.equal((await storage.getWhatsAppInbound('wamid.synthetic-held-123',OWNER)).status,before.status);
+  assert.equal(providerCalls,0);assert.equal(fresh.calls.length,1);
+});
+
+test('execution hold defaults closed and pausing during generation prevents outbound even in owner-test mode',async()=>{
+  for(const mode of ['missing_controls','execution_held','pause_during_generation']){
+    const storage=createInMemoryStorage();await storage.initialize({owner:{id:OWNER},projects:[{id:'sharp-cuts-web',name:'Sharp Cuts'}]});let allowed=true,generated=0,sends=0;
+    const config=readConfig({...ENV,NOVA_SHARP_CUTS_WHATSAPP_MODE:'owner_test',NOVA_SHARP_CUTS_WHATSAPP_TEST_RECIPIENTS:'+447700900111',NOVA_SHARP_CUTS_WHATSAPP_OUTBOUND_ENABLED:'true',NOVA_SHARP_CUTS_WHATSAPP_EXECUTION_ENABLED:mode==='execution_held'?undefined:'true'});
+    const service=createSharpCutsWhatsAppCoexistenceService({config,storage,ownerId:OWNER,automationControls:mode==='missing_controls'?null:{async allows(){return allowed;}},fetchImpl:async()=>{sends++;throw Error('No network allowed');},novaTurn:async input=>{generated++;allowed=false;return{id:input.assistantMessageId,message:'Synthetic reply'};}});
+    await service.receive(payload(),`Bearer ${TOKEN}`);
+    const result=await service.processNext();assert.equal(sends,0);assert.equal(result.sent,false);
+    assert.equal(generated,mode==='pause_during_generation'?1:0);
+    assert.equal((await service.status()).sendEnabled,false);
+  }
+  const config=readConfig({...ENV,NOVA_SHARP_CUTS_WHATSAPP_MODE:'owner_test',NOVA_SHARP_CUTS_WHATSAPP_TEST_RECIPIENTS:'+447700900111'});
+  assert.equal(config.sharpCutsWhatsApp.sendEnabled,false,'owner_test alone is not permission to send');
+});
 
 const OWNER="owner-1",TOKEN="w".repeat(40),ENV={
   NOVA_SHARP_CUTS_WHATSAPP_PROVIDER:"gupshup_coexistence",
@@ -16,13 +58,14 @@ const OWNER="owner-1",TOKEN="w".repeat(40),ENV={
   NOVA_SHARP_CUTS_WHATSAPP_API_KEY:"api-"+"a".repeat(32),
   NOVA_SHARP_CUTS_WHATSAPP_WEBHOOK_TOKEN:TOKEN,
   NOVA_SHARP_CUTS_WHATSAPP_IDENTITY_KEY:Buffer.alloc(32,8).toString("base64"),
+  NOVA_SHARP_CUTS_WHATSAPP_EXECUTION_ENABLED:"true",
   NOVA_SHARP_CUTS_WHATSAPP_MODE:"draft_only",
 };
 const payload=(body="Can I book a haircut?",id="wamid.test-123456789")=>({gs_app_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_APP_ID,object:"whatsapp_business_account",entry:[{id:"waba",changes:[{field:"messages",value:{messaging_product:"whatsapp",metadata:{display_phone_number:"441582510565",phone_number_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_PHONE_NUMBER_ID},contacts:[{wa_id:"447700900111"}],messages:[{from:"447700900111",id,timestamp:"1793450000",type:"text",text:{body}}]}}]}]});
 
 async function fixture(){
   const storage=createInMemoryStorage();await storage.initialize({owner:{id:OWNER,fullName:"Owner",preferences:{},facts:{}},projects:[{id:"sharp-cuts-web",name:"Sharp Cuts",description:""}],memories:[]});
-  const calls=[],service=createSharpCutsWhatsAppCoexistenceService({config:readConfig(ENV),storage,ownerId:OWNER,async novaTurn(input){calls.push(input);await storage.appendMessage({id:input.assistantMessageId,conversationId:input.conversationId,ownerId:OWNER,role:"assistant",content:"You can book through the verified Sharp Cuts Fresha page."});return{id:input.assistantMessageId,runId:"run-wa",message:"You can book through the verified Sharp Cuts Fresha page."};},logger:{error(){}}});
+  const calls=[],service=createSharpCutsWhatsAppCoexistenceService({automationControls:{async allows(){return true;}},config:readConfig(ENV),storage,ownerId:OWNER,async novaTurn(input){calls.push(input);await storage.appendMessage({id:input.assistantMessageId,conversationId:input.conversationId,ownerId:OWNER,role:"assistant",content:"You can book through the verified Sharp Cuts Fresha page."});return{id:input.assistantMessageId,runId:"run-wa",message:"You can book through the verified Sharp Cuts Fresha page."};},logger:{error(){}}});
   return{storage,service,calls};
 }
 
@@ -71,8 +114,8 @@ test("Business App echo is monitored without exposing message contents",async()=
 
 test("owner test sends only to the exact allowlisted number and records the provider result",async()=>{
   const sent=[];const storage=createInMemoryStorage();await storage.initialize({owner:{id:OWNER,fullName:"Owner",preferences:{},facts:{}},projects:[{id:"sharp-cuts-web",name:"Sharp Cuts",description:""}],memories:[]});
-  const config=readConfig({...ENV,NOVA_SHARP_CUTS_WHATSAPP_MODE:"owner_test",NOVA_SHARP_CUTS_WHATSAPP_TEST_RECIPIENTS:"+447700900111"});
-  const service=createSharpCutsWhatsAppCoexistenceService({config,storage,ownerId:OWNER,fetchImpl:async(url,options)=>{sent.push({url,options});return{ok:true,status:200,async json(){return{status:"submitted",messageId:"gs-test-message-123"};}};},async novaTurn(input){await storage.appendMessage({id:input.assistantMessageId,conversationId:input.conversationId,ownerId:OWNER,role:"assistant",content:"Book securely through the Sharp Cuts Fresha page."});return{id:input.assistantMessageId,runId:"run-owner-test",message:"Book securely through the Sharp Cuts Fresha page."};},logger:{error(){}}});
+  const config=readConfig({...ENV,NOVA_SHARP_CUTS_WHATSAPP_OUTBOUND_ENABLED:"true",NOVA_SHARP_CUTS_WHATSAPP_MODE:"owner_test",NOVA_SHARP_CUTS_WHATSAPP_TEST_RECIPIENTS:"+447700900111"});
+  const service=createSharpCutsWhatsAppCoexistenceService({automationControls:{async allows(){return true;}},config,storage,ownerId:OWNER,fetchImpl:async(url,options)=>{sent.push({url,options});return{ok:true,status:200,async json(){return{status:"submitted",messageId:"gs-test-message-123"};}};},async novaTurn(input){await storage.appendMessage({id:input.assistantMessageId,conversationId:input.conversationId,ownerId:OWNER,role:"assistant",content:"Book securely through the Sharp Cuts Fresha page."});return{id:input.assistantMessageId,runId:"run-owner-test",message:"Book securely through the Sharp Cuts Fresha page."};},logger:{error(){}}});
   await service.receive(payload(),{sourceIp:"34.202.224.208"});const result=await service.processNext({workerId:"worker-owner-test"});assert.equal(result.status,"replied");assert.equal(result.sent,true);assert.equal(sent.length,1);assert.equal(sent[0].url,"https://api.gupshup.io/wa/api/v1/msg");assert.equal(sent[0].options.headers.apikey,ENV.NOVA_SHARP_CUTS_WHATSAPP_API_KEY);assert.doesNotMatch(JSON.stringify(await storage.listActivity(OWNER,{projectId:"sharp-cuts-web",limit:20})),/447700900111/);
 });
 

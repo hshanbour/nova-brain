@@ -1,4 +1,5 @@
 import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
+import {usesServiceAuthentication} from "../identity/console-access.js";
 import { readRealtimeContext } from "../voice/realtime-context.js";
 import {PROJECT_DOCUMENT_LIMITS,ProjectSourceError} from "../projects/document-extractor.js";
 import {ProjectDiscoveryError} from "../projects/project-discovery.js";
@@ -259,6 +260,7 @@ export function createApi({
   pstnSpeakerControls,
   gptLiveRound2,
   gptLiveRound2Authorization = () => false,
+  authorizeConsole = null,
   logger = console,
 }) {
   const recognitionEngines =
@@ -309,6 +311,21 @@ export function createApi({
       };
 
       try {
+        // Resolve the server-verified actor BEFORE initialize() or any private
+        // profile, conversation, project, memory, tool or approval lookup.
+        if(authorizeConsole&&pathname.startsWith("/api/")) {
+          const service=usesServiceAuthentication(pathname,request.method);
+          if(service==="worker")authorizeLocalWorker(request,config.localWorkerToken);
+          else if(service==="scheduler")authorizeSocialScheduler(request,config.socialSchedulerToken);
+          else if(!service) {
+            try {
+              const actor=await authorizeConsole(request);
+              if(actor?.role!=="owner"||actor.ownerId!==ownerId||actor.workspaceId!==ownerId)throw Object.assign(new Error("Workspace access denied."),{statusCode:403,code:"console_workspace_forbidden"});
+            } catch(error) {
+              sendJson(response,error.statusCode||401,{error:"Verified Nova workspace sign-in is required.",code:error.code||"console_identity_required"});return;
+            }
+          }
+        }
         if (request.method === "POST" && pathname.startsWith("/api/internal/phone/gpt-live-round2/")) {
           if (!gptLiveRound2 || !gptLiveRound2Authorization(request)) {
             sendJson(response, 404, { error: "Not found." });

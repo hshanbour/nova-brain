@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
 import { SCHEMA_STATEMENTS } from "./schema.js";
-import { rankRelevantMemories } from "../memory/relevance.js";
+import { rankRelevantMemories,resolveMemoryProjectIds } from "../memory/relevance.js";
 import {validateRejectedReviewEvidenceEnvelope} from "../autonomy/rejected-review-evidence.js";
 
 const json = (value) => JSON.stringify(value ?? {});
@@ -700,15 +700,16 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
     async retrieveMemories(
       ownerId,
       queryText,
-      { projectId, limit = 6, candidateLimit = 50 } = {},
+      { projectId, scopeQuery=queryText, limit = 6 } = {},
     ) {
+      const projectIds=await resolveMemoryProjectIds(this,ownerId,scopeQuery,projectId);
       const candidates = (
         await run(
-          "SELECT * FROM nova_memories WHERE owner_id=$1 AND status='active' ORDER BY updated_at DESC, id ASC LIMIT $2",
-          [ownerId, candidateLimit],
+          "SELECT * FROM nova_memories WHERE owner_id=$1 AND status='active' AND (project_id IS NULL OR scope IN ('global','system') OR project_id=ANY($2::text[])) ORDER BY updated_at DESC, id ASC",
+          [ownerId, projectIds],
         )
       ).map(memoryRow);
-      return rankRelevantMemories(candidates, queryText, { projectId, limit });
+      return rankRelevantMemories(candidates, queryText, { projectId, projectIds, limit });
     },
     async createSpeakerProfile(input) {
       return speakerProfileRow(

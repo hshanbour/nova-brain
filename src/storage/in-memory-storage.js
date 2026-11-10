@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { rankRelevantMemories } from "../memory/relevance.js";
+import { rankRelevantMemories,resolveMemoryProjectIds } from "../memory/relevance.js";
 import {validateRejectedReviewEvidenceEnvelope} from "../autonomy/rejected-review-evidence.js";
 
 function copy(value) {
@@ -377,11 +377,12 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       }
       const timestamp=now(clock),candidate={...current,status:decision,acceptedMemoryId:memory?.id||null,supersedesMemoryId:supersedesMemoryId||current.supersedesMemoryId||null,decisionReason:decisionReason||null,decidedAt:timestamp,updatedAt:timestamp};memoryCandidates.set(id,candidate);return{candidate:copy(candidate),memory:copy(memory),idempotent:false};
     },
-    async retrieveMemories(ownerId, query, { projectId, limit = 6 } = {}) {
+    async retrieveMemories(ownerId, query, { projectId, scopeQuery=query, limit = 6 } = {}) {
+      const projectIds=await resolveMemoryProjectIds(this,ownerId,scopeQuery,projectId);
       return rankRelevantMemories(
         [...memories.values()].filter((item) => item.ownerId === ownerId),
         query,
-        { projectId, limit },
+        { projectId, projectIds, limit },
       ).map(copy);
     },
     async createSpeakerProfile(input) {

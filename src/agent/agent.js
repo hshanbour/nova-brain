@@ -5,7 +5,7 @@ import {shouldUseDurableWebResearch} from "../web/durable-web-research.js";
 import {ANSWER_PRESENTATION_GUIDANCE,isConversationLocalTransform,retainConversationLinks} from "./answer-presentation.js";
 import {minimalTransformContext,retrieveConversationTransformSource} from "./conversation-transform-source.js";
 import {createTaskContextSnapshot} from "../memory/task-context-snapshot.js";
-import {projectClarification} from "../projects/project-service.js";
+import {projectClarification,createProjectService} from "../projects/project-service.js";
 
 export class AgentStepLimitError extends Error {}
 export class AgentToolCallLimitError extends Error {}
@@ -256,7 +256,8 @@ export function createAgent({
       if(verifiedSpeaker?.match_status==="confirmed"&&!profileValid)verifiedSpeaker=null;
       if(verifiedSpeaker?.anonymous_speaker_id&&!anonymousValid)verifiedSpeaker={...verifiedSpeaker,speaker_familiarity:"none",anonymous_speaker_id:null};
       const externalChannel=context?.channel==="whatsapp",verifiedOwnerVoice=context?.voice===true&&verifiedSpeaker?.match_status==="confirmed"&&verifiedSpeaker?.speaker_label==="owner";
-      const projectResolution=projectService&&(!context?.voice||verifiedOwnerVoice)&&!externalChannel?await projectService.resolve({message,projectId:context.projectId||null}):{status:context.projectId&&!externalChannel?"resolved":"unresolved",project:context.projectId&&!externalChannel?{id:context.projectId}:null,source:context.projectId&&!externalChannel?"explicit_id":"none"};
+      // A caller-supplied project ID is not authority to load an owner's workspace.
+      const projectResolution=(!context?.voice||verifiedOwnerVoice)&&!externalChannel&&context?.phoneCall?.profile!=="bounded_outbound"?await (projectService||createProjectService({storage,ownerId})).resolve({message,projectId:context.projectId||null}):{status:"unresolved",project:null,source:"none"};
       const resolvedProjectId=projectResolution.status==="resolved"?projectResolution.project.id:null;
       context={...context,projectId:resolvedProjectId};
       const contextRetrievalStartedAt=Date.now();
@@ -266,12 +267,13 @@ export function createAgent({
       const speakerScopedContext = speakerProfile ? await retrieveSpeakerContext({ storage, ownerId, speakerProfile, message, memoryLimit }) : null;
       const phoneCallProfile = context?.phoneCall?.profile === "bounded_outbound";
       const liveReadOnly = context?.gptLiveRound2?.authority === "read_only";
-      const trustedContext=context?.voice===true?{...context,speaker:verifiedSpeaker?.match_status==="confirmed"?{speaker_profile_id:verifiedSpeaker.speaker_profile_id,speaker_label:verifiedSpeaker.speaker_label,match_status:"confirmed",authenticated_identity:verifiedSpeaker.speaker_label==="owner"?"owner":"known_member",speaker_familiarity:"none",anonymous_speaker_id:null}:{speaker_profile_id:null,speaker_label:"unknown",match_status:verifiedSpeaker?.match_status||"unknown",authenticated_identity:"none",speaker_familiarity:verifiedSpeaker?.speaker_familiarity||"none",anonymous_speaker_id:verifiedSpeaker?.anonymous_speaker_id||null}}:context;
+      const safeContext=speakerRestricted?{voice:true,channel:context.channel,...(context.gptLiveRound2?{gptLiveRound2:{authority:"read_only"}}:{})}:context;
+      const trustedContext=context?.voice===true?{...safeContext,speaker:verifiedSpeaker?.match_status==="confirmed"?{speaker_profile_id:verifiedSpeaker.speaker_profile_id,speaker_label:verifiedSpeaker.speaker_label,match_status:"confirmed",authenticated_identity:verifiedSpeaker.speaker_label==="owner"?"owner":"known_member",speaker_familiarity:"none",anonymous_speaker_id:null}:{speaker_profile_id:null,speaker_label:"unknown",match_status:verifiedSpeaker?.match_status||"unknown",authenticated_identity:"none",speaker_familiarity:verifiedSpeaker?.speaker_familiarity||"none",anonymous_speaker_id:verifiedSpeaker?.anonymous_speaker_id||null}}:context;
       if(context?.voice===true)logger.info("Nova speaker context verified",{requestId,assertionVerified:Boolean(verifiedSpeaker),matchStatus:trustedContext.speaker.match_status,speakerCategory:trustedContext.speaker.speaker_label,recognizedProfileId:trustedContext.speaker.speaker_profile_id,ownerPrivateContext:!speakerRestricted});
       const transformIntent=!externalChannel&&!speakerRestricted&&!phoneCallProfile&&isConversationLocalTransform(message);
       const [run,conversationHistory,retrieved,transformRetrieval] = await Promise.all([
         storage.createRun({ ownerId, projectId: context.projectId || null, conversationId, goal: message, status: "planning" }),
-        (speakerRestricted&&!context?.gptLiveRound2)||phoneCallProfile ? Promise.resolve([]) : storage.listMessages(conversationId, ownerId, { limit: historyLimit }),
+        speakerRestricted||phoneCallProfile ? Promise.resolve([]) : storage.listMessages(conversationId, ownerId, { limit: historyLimit }),
         externalChannel||speakerRestricted||phoneCallProfile||transformIntent ? Promise.resolve(null) : retrieveAgentContext({ storage, ownerId, message, projectId: context.projectId, memoryLimit }),
         transformIntent?retrieveConversationTransformSource({storage,ownerId,conversationId,request:message,signal:executionSignal}):Promise.resolve(null),
       ]);
@@ -296,7 +298,7 @@ export function createAgent({
       let systemContext = `${context?.voice===true ? `${speakerIdentityContract(trustedContext.speaker)}\n\n${baseSystemContext}` : baseSystemContext}\n\n${ANSWER_PRESENTATION_GUIDANCE}`;
       if(context?.voice===true)systemContext+=`\n\nLIVE VOICE RESPONSE: Reply naturally in the language or Arabic-English mix used by the speaker. Lead with the answer and normally use no more than two short spoken sentences unless the speaker explicitly asks for detail. Do not add headings, tables, citations, or repetitive framing to an ordinary conversational answer.`;
       if(context?.voice===true&&["ar","en"].includes(context.replyLanguage))systemContext+=`\nACTIVE SPOKEN LANGUAGE: ${context.replyLanguage==="ar"?"Natural Jordanian/Levantine Arabic, written in Arabic script":"English"}. Keep this language until an explicit switch request. A foreign project name or unintelligible transcript is not a switch request. If the utterance is unclear, ask for repetition in this active language; never guess its meaning or another language. This preference grants no identity or permissions.`;
-      if(context?.gptLiveRound2)systemContext+=`\n\nGPT-LIVE TRUSTED SERVER CONTEXT: This is an active phone session. ${trustedContext?.speaker?.authenticated_identity==="owner"?"The current turn carries a valid server-signed owner speaker assertion; normal owner-private retrieval policy may apply to this turn.":"The current speaker is not authenticated as the owner. Do not disclose private owner memory or infer identity from the destination."} Same-call canonical messages may be used for conversational continuity. The following bounded prior Nova results are server-recorded and remain authoritative unless a newer successful authoritative result supersedes them: ${JSON.stringify(context.gptLiveRound2.trustedResults||[])}. An unrelated failure does not invalidate an earlier successful result. This information route remains read-only; no write or external-action tools are available.`;
+      if(context?.gptLiveRound2&&!speakerRestricted)systemContext+=`\n\nGPT-LIVE TRUSTED SERVER CONTEXT: This is an active phone session. ${trustedContext?.speaker?.authenticated_identity==="owner"?"The current turn carries a valid server-signed owner speaker assertion; normal owner-private retrieval policy may apply to this turn.":"The current speaker is not authenticated as the owner. Do not disclose private owner memory or infer identity from the destination."} Same-call canonical messages may be used for conversational continuity. The following bounded prior Nova results are server-recorded and remain authoritative unless a newer successful authoritative result supersedes them: ${JSON.stringify(context.gptLiveRound2.trustedResults||[])}. An unrelated failure does not invalidate an earlier successful result. This information route remains read-only; no write or external-action tools are available.`;
       const toolExecutions = [];
       const providerUsage = [];
       const webSources=[];
@@ -459,7 +461,7 @@ export function createAgent({
           context:trustedContext,
           systemContext,
           conversationHistory,
-          tools: externalChannel||phoneCallProfile ? [] : speakerRestricted ? (context?.gptLiveRound2 ? toolRegistry.list({ executableOnly: true }).filter((tool) => tool.name === "project_list" && tool.riskLevel === "READ_ONLY") : []) : toolRegistry.list({ executableOnly: true }).filter(tool=>(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
+          tools: externalChannel||phoneCallProfile ? [] : speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
           toolResults,
           continuationToken,
           signal: executionSignal,
@@ -472,7 +474,7 @@ export function createAgent({
         }
         executionSignal.throwIfAborted();
         validateModelOutput(generated);
-        if(speakerRestricted&&generated.type==="tool_calls"&&!context?.gptLiveRound2)generated={type:"final",message:"I can help with general conversation, but this voice turn is not authorized to use tools or access private owner information."};
+        if(speakerRestricted&&generated.type==="tool_calls")generated={type:"final",message:"I can help with general conversation, but this voice turn is not authorized to use tools or access private owner information."};
         if(externalChannel&&generated.type==="tool_calls")generated={type:"final",message:"I can't take that action in WhatsApp. I can help with general information here."};
         if(phoneCallProfile&&generated.type==="tool_calls")generated={type:"final",message:"I can't take that action during this call. I need the owner's confirmation outside the call."};
         const agentGenerationCompletedAt=Date.now();
@@ -527,6 +529,7 @@ export function createAgent({
 
           try {
             executionSignal.throwIfAborted();
+            if(speakerRestricted||externalChannel||phoneCallProfile)throw Object.assign(new Error("This speaker cannot execute owner tools."),{code:"speaker_tool_forbidden"});
             if(allowedTaskTools&&!allowedTaskTools.has(call.name))throw Object.assign(new Error("Existing-task control cannot invoke this tool."),{code:"task_control_tool_forbidden"});
             if(!allowedTaskTools&&ROUTED_CREATION_TOOLS.has(call.name))throw Object.assign(new Error("Durable creation requires the authoritative turn-routing path."),{code:"task_control_tool_forbidden"});
             if(webEvidenceActive&&!readOnlyToolNames.has(call.name))throw Object.assign(new Error("Untrusted web evidence cannot authorize a write-capable tool in the same run."),{code:"web_evidence_tool_forbidden"});

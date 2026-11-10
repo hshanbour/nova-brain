@@ -23,7 +23,7 @@ test("deterministic authority router covers all four classes",()=>{
 
 test("shared personality policy is reused with a narrow spoken overlay",()=>{
   const instructions=buildRound2LiveInstructions();
-  assert.match(instructions,/Mohammad, is male/);
+  assert.doesNotMatch(instructions,/Mohammad|Shanbour/);
   assert.match(instructions,/PHONE PRESENTATION OVERLAY/);
   assert.match(instructions,/Spoken approval is never authoritative/i);
 });
@@ -54,13 +54,13 @@ test("local GPT-Live answer is gated, canonical, and exactly once",async()=>{
   messages=await storage.listMessages("local",OWNER,{limit:20});assert.deepEqual(messages.map(x=>x.role),["user","assistant"]);assert.equal(messages[1].content,"منيحة، كيف بقدر أساعدك؟");
 });
 
-test("authoritative project question reaches Nova with one canonical context and reintegrates",async()=>{
+test("unverified information delegation omits private prior context and reintegrates a restricted result",async()=>{
   let received;const {storage,service}=await setup({novaTurn:async input=>{received=input;const result={id:input.assistantMessageId,message:"Sharp Cuts Preview is healthy.",provider:"openai",runId:"run-sharp"};await input.commitGuard?.({assistantMessageId:result.id});return result;}});
   const start=await service.start({conversationId:"sharp",rollingSummary:"ناقشنا خطة الموقع",unresolvedState:{unresolvedTopic:"Sharp Cuts"}});
   await service.handleTurn({conversationId:"sharp",turnId:"local",expectedContextVersion:start.contextVersion,utterance:"تمام، خلينا نكمل",localResponse:"أكيد"});
   const answer=await service.handleTurn({conversationId:"sharp",turnId:"info",expectedContextVersion:2,utterance:"شو آخر إشي صار بمشروع Sharp Cuts؟",localResponse:"untrusted invented answer"});
   assert.equal(answer.authority,LIVE_AUTHORITY.NOVA_INFORMATION);assert.equal(answer.message,"Sharp Cuts Preview is healthy.");assert.deepEqual(answer.liveEvent,{type:"session.commentary.append",delegation_id:null,content:"Sharp Cuts Preview is healthy."});
-  assert.equal(received.conversationId,"sharp");assert.equal(received.context.gptLiveRound2.contextVersion,3);assert.equal(received.context.gptLiveRound2.authority,"read_only");assert.equal(received.context.gptLiveRound2.recentTurns.length,1);assert.equal(received.context.voice,true);assert.equal(JSON.stringify(await storage.listMessages("sharp",OWNER,{limit:20})).includes("untrusted invented"),false);
+  assert.equal(received.conversationId,"sharp");assert.equal(received.context.gptLiveRound2.contextVersion,3);assert.equal(received.context.gptLiveRound2.authority,"read_only");assert.equal(received.context.gptLiveRound2.recentTurns.length,0);assert.equal(received.context.voice,true);assert.equal(JSON.stringify(await storage.listMessages("sharp",OWNER,{limit:20})).includes("untrusted invented"),false);
 });
 
 test("30+ Arabic English mixed turns and older references restore from canonical record",async()=>{
