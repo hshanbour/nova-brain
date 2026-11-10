@@ -787,6 +787,9 @@ export function createApi({
           }
           const safetyIdentifier = createHash("sha256").update(`nova-realtime:${ownerId}`).digest("hex");
           const sessionInput=await readJsonBody(request,config.maxBodyBytes);
+          if(continuityPreview&&sessionInput.mode!=='guest'&&(!speakerAssertions?.configured||!config.speakerRecognition?.embeddingKey||!config.speakerRecognition?.token||!config.speakerRecognition?.endpoint)){
+            sendJson(response,503,{code:'private_voice_configuration_required',error:'Private Voice is paused: the existing speaker-verification credentials must be securely bound to this Preview. No voice session was started.'});return;
+          }
           let accountContext;
           if (realtimeAccountContext) {
             await ready();

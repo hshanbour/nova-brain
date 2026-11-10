@@ -4,6 +4,16 @@ import {continuityPreviewEnvironment,continuityRouteAllowed,continuityToolAllowe
 import {PREVIEW_AUTH_URL} from '../src/identity/synthetic-preview.js';
 import {workspaceActor} from '../src/identity/preview-auth.js';
 import {createPostgresStorage} from '../src/storage/postgres-storage.js';
+import {previewSessionLabel} from '../assets/preview-session.js';
+import {createApi} from '../src/http/api.js';
+import {Readable} from 'node:stream';
+test('Preview label distinguishes real authenticated workspace from synthetic sandbox',()=>{
+ assert.match(previewSessionLabel({synthetic:false}),/Existing workspace/);assert.doesNotMatch(previewSessionLabel({synthetic:false}),/synthetic|Live Voice.*disabled/);assert.match(previewSessionLabel({synthetic:true}),/synthetic/);
+});
+test('missing speaker credentials block protected Voice before creating a provider session',async()=>{
+ let minted=0,initialized=0;const api=createApi({ownerId:'owner',continuityPreview:true,realtimeAccountContext:true,config:{allowedOrigins:[],maxBodyBytes:10000,speakerRecognition:{}},initialize:async()=>initialized++,authorizeConsole:async()=>({ownerId:'owner',workspaceId:'owner',role:'owner'}),realtimeVoiceService:{async createClientSecret(){minted++;}}});
+ const req=Readable.from(['{}']);Object.assign(req,{url:'/api/voice/realtime/session',method:'POST',headers:{host:'nova.test',origin:'https://nova.test','content-type':'application/json'}});const res={statusCode:200,setHeader(){},end(body){this.body=body;}};await api.handle(req,res);assert.equal(res.statusCode,503);assert.equal(minted,0);assert.equal(initialized,0);assert.match(res.body,/private_voice_configuration_required/);
+});
 const env={VERCEL_ENV:'preview',VERCEL_GIT_COMMIT_REF:CONTINUITY_BRANCH,NOVA_CONTINUITY_PREVIEW:'true',NEON_AUTH_BASE_URL:PREVIEW_AUTH_URL,NOVA_PREVIEW_OWNER_EMAIL:'owner@example.invalid',NOVA_PREVIEW_OWNER_SUBJECT:'subject-owner',DATABASE_URL:`postgresql://fixture:fixture@${EXISTING_WORKSPACE_ENDPOINT}.c-2.eu-central-1.aws.neon.tech/neondb`};
 test('continuity binds one Preview branch and disables consequential paths',()=>{
  const result=continuityPreviewEnvironment(env);assert.equal(result.continuity,true);assert.equal(result.environment.NOVA_PHONE_PRIVATE_OWNER_ENABLED,'false');assert.equal(result.environment.NOVA_SHARP_CUTS_WHATSAPP_EXECUTION_ENABLED,'false');
