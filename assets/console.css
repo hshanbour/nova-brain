@@ -156,3 +156,4 @@
 
 .current-glass-preview #voiceExperience .voice-experience-controls button{width:auto;min-width:44px;white-space:nowrap;flex:0 0 auto}
 @media(max-width:370px){.current-glass-preview #voiceExperience .voice-experience-controls button{padding:10px 9px;font-size:11px}}
+.current-glass-preview #voiceExperience button[hidden]{display:none!important}
