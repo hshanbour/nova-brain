@@ -1,3 +1,4 @@
+import {TIDE_FIELD_GLSL} from './emeraldTide.js';
 import * as THREE from '../vendor/three.module.min.js';
 
 // Fixed GPU particle sheets: no per-frame allocations or CPU particle simulation.
@@ -60,12 +61,14 @@ export function createAssemblyParticles(geometry,bust){
     const t=low*3;a.fromBufferAttribute(pos,indices?indices[t]:t);b.fromBufferAttribute(pos,indices?indices[t+1]:t+1);c.fromBufferAttribute(pos,indices?indices[t+2]:t+2);
     const r=Math.sqrt(rand()),q=rand();a.multiplyScalar(1-r).addScaledVector(b,r*(1-q)).addScaledVector(c,r*q);targets.set([a.x,a.y,a.z+.008],i*3);seeds[i]=rand();}
   const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(targets,3));g.setAttribute('aSeed',new THREE.BufferAttribute(seeds,1));
-  const uniforms={uProgress:{value:1},uTime:{value:0},uRatio:{value:1}};
+  const uniforms={uProgress:{value:1},uTime:{value:0},uRatio:{value:1},uTide:{value:0},uSpan:{value:4},uInverse:{value:new THREE.Matrix4()}};
   const mat=new THREE.ShaderMaterial({uniforms,transparent:true,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending,
-    vertexShader:`attribute float aSeed;uniform float uProgress,uTime,uRatio;varying float vAlpha,vGold;
+    vertexShader:`attribute float aSeed;uniform float uProgress,uTime,uRatio,uTide,uSpan;uniform mat4 uInverse;varying float vAlpha,vGold;
+      ${TIDE_FIELD_GLSL}
       void main(){float side=position.x<0.?-1.:1.;float delay=position.y*.065+aSeed*.09;
         float gather=smoothstep(delay,.66+delay,uProgress);
         vec3 start=vec3(side*(2.5+aSeed*2.8),.10+fract(aSeed*41.73)*2.8,-.5-fract(aSeed*17.31)*1.4);
+        if(uTide>.5)start=(uInverse*vec4(tidePoint(.12+aSeed*.88,fract(aSeed*17.31),side,0.,uTime,uSpan),1.)).xyz;
         vec3 p=mix(start,position,gather);float arc=sin(gather*3.14159);
         p.y+=arc*(.30+.65*aSeed);p.z+=sin(gather*6.28+aSeed*12.)*arc*.35;
         p.x+=sin(uTime*1.5+aSeed*30.)*(1.-gather)*.12;
@@ -79,5 +82,5 @@ export function createAssemblyParticles(geometry,bust){
       #include <colorspace_fragment>
     }`});
   const points=new THREE.Points(g,mat);points.renderOrder=3;points.frustumCulled=false;points.visible=false;bust.add(points);
-  return {update(progress,time,ratio){points.visible=progress<1;uniforms.uProgress.value=progress;uniforms.uTime.value=time;uniforms.uRatio.value=ratio;}};
+  return {update(progress,time,ratio,tide=false,aspect=1){uniforms.uTide.value=tide?1:0;uniforms.uSpan.value=Math.max(1.85,Math.min(5.8,aspect*3.3));bust.updateMatrixWorld();uniforms.uInverse.value.copy(bust.matrixWorld).invert();points.visible=progress<1;uniforms.uProgress.value=progress;uniforms.uTime.value=time;uniforms.uRatio.value=ratio;}};
 }

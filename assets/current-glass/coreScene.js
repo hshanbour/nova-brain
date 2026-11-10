@@ -1,3 +1,5 @@
+import {createEmeraldTide} from './emeraldTide.js';
+import {createTideClock} from './tideTiming.js';
 import { createLivingField, createAssemblyParticles } from './livingField.js';
 import { createSceneEnvironment } from "./sceneEnvironment.js";
 import * as THREE from "../vendor/three.module.min.js";
@@ -7,7 +9,7 @@ import { CONTOUR_LIGHTING } from "./contourLighting.js";
 import { GLTFLoader } from "../vendor/loaders/GLTFLoader.js";
 // Isolated renderer: the shared GLB is read only; all materials and transforms
 // belong to this preview. No imports from or mutations of Nova's live runtime.
-export function createCoreScene(host, readSignal, readView, onReady, onError, onTelemetry, readVariant = () => "liquid", readInterior = () => false, readInteriorStyle = () => "opal", readAccents = () => ({ hair: false, face: false }), readContours = () => false, readPresence = () => false, readScene = () => "baseline", readEntrance = () => 0) {
+export function createCoreScene(host, readSignal, readView, onReady, onError, onTelemetry, readVariant = () => "liquid", readInterior = () => false, readInteriorStyle = () => "opal", readAccents = () => ({ hair: false, face: false }), readContours = () => false, readPresence = () => false, readScene = () => "baseline", readEntrance = () => 0, readTrace = () => 0) {
     let listeningLight = 0, preparingLight = 0, presenceMix = 0, sceneLight = 0;
     let disposed = false, frame = 0, previous = performance.now(), elapsed = 0;
     let peakPlayback=0,maxWaves=0;
@@ -15,6 +17,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
     const scene = new THREE.Scene();
     scene.background = new THREE.Color("#020706");
     const environment = createSceneEnvironment(scene);
+    const emeraldTide=createEmeraldTide(scene),tideClock=createTideClock();
     const field=createLivingField(scene), depthMeshes=[];let assembly=null,lastEntrance=0,entranceAt=-10,assemblyProgress=1;
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "low-power" });
     let pixelRatio=Math.min(window.devicePixelRatio,1);
@@ -301,7 +304,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         gltf.scene.traverse(object => { if (!(object instanceof THREE.Mesh))
             return; const geometry = object.geometry.clone(); geometry.applyMatrix4(object.matrixWorld); geometry.translate(-center.x, -box.min.y, -center.z); geometry.scale(scale, scale, scale); resources.add(geometry); if (!interior) {
             interior = createOpalInterior(geometry);
-            molten = createMoltenInterior(geometry);
+            molten = createMoltenInterior(geometry);emeraldTide.attach(molten.exits);
             assembly=createAssemblyParticles(geometry,bust);
             const imported = Array.isArray(object.material) ? object.material[0] : object.material;
             const source = imported.map;
@@ -343,13 +346,14 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         previous = now;
         elapsed += dt;
         const s = readSignal();
-        const sceneName=readScene(), enhanced=sceneName==="tides"||sceneName==="aurora";
+        const sceneName=readScene(), tide=sceneName==="emerald", enhanced=tide||sceneName==="tides"||sceneName==="aurora";
         if(assembly && readEntrance()!==lastEntrance){lastEntrance=readEntrance();entranceAt=elapsed;}
         assemblyProgress=Math.min(1,(elapsed-entranceAt)/5.8);
-        assembly?.update(assemblyProgress,elapsed,pixelRatio);shellUniforms.uAssemble.value=assemblyProgress;
+        assembly?.update(assemblyProgress,elapsed,pixelRatio,tide,camera.aspect);shellUniforms.uAssemble.value=assemblyProgress;
         depthMeshes.forEach(m=>m.visible=assemblyProgress>.60);
         coreAnchor.visible=assemblyProgress>.68;coreAnchor.scale.setScalar(Math.min(1,Math.max(0,(assemblyProgress-.68)/.25)));
         const out = s.speaking ? Math.min(1,s.playback*(enhanced?2.4:1)) : 0, mic = s.listening && !s.speaking ? s.microphone : 0;
+        tideClock.update(elapsed,dt,s.speaking,out,readTrace());
         const interiorOn = readInterior();
         const phase = s.speaking ? "speaking" : s.phase ?? (s.listening ? "listening" : "idle");
         const variant = readVariant(), refined = variant !== "baseline", throat = variant === "throat";
@@ -368,7 +372,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         presenceMix += ((readPresence() ? 1 : 0) - presenceMix) * (1 - Math.exp(-dt * 7));
         listeningLight += ((phase === "listening" ? 1 : 0) - listeningLight) * (1 - Math.exp(-dt * 6));
         preparingLight += ((phase === "preparing" ? 1 : 0) - preparingLight) * (1 - Math.exp(-dt * 6));
-        presenceUniforms.uPresence.value = presenceMix;
+        presenceUniforms.uPresence.value = tide?presenceMix*.3:presenceMix;
         presenceUniforms.uListen.value = listeningLight;
         presenceUniforms.uPrepare.value = preparingLight;
         sceneLight += ((sceneName === "baseline" ? 0 : 1) - sceneLight) * (1-Math.exp(-dt*5));
@@ -403,6 +407,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         }
         if (refined) {
             haloMat.opacity += presenceMix * (listeningLight * .035 + preparingLight * .055);
+            if(tide){let origin=0;for(let i=0;i<8;i++)origin+=Math.exp(-Math.pow((elapsed-tideClock.born[i])/.18,2))*tideClock.strength[i];haloMat.opacity+=Math.min(.35,origin*.35);}
         }
         seedMaterial.uniforms.uTime.value = elapsed;
         seedMaterial.uniforms.uEnergy.value = energy;
@@ -460,15 +465,16 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         const yaw = view === "front" ? 0 : view === "quarter" ? -.55 : view === "back" ? Math.PI : Math.sin(elapsed * .24) * .65;
         bust.rotation.y += (yaw - bust.rotation.y) * (1 - Math.exp(-dt * 5));
         interior?.update(elapsed, dt, phase, output, interiorOn && assemblyProgress>.68 && readInteriorStyle() === "opal");
-        molten?.update(elapsed, dt, phase, output, interiorOn && assemblyProgress>.68 && readInteriorStyle() === "molten");
+        molten?.update(elapsed, dt, phase, output, interiorOn && assemblyProgress>.68 && readInteriorStyle() === "molten",tide?tideClock:null);
+        emeraldTide.update(tide,elapsed,dt,camera.aspect,listeningLight*Math.min(1,.3+input*6),1-assemblyProgress,pixelRatio,tideClock,bust);
         // One quiet acknowledgement on arrival; the whole bust moves coherently.
         const arrivalAge = arrivalAt === null ? 10 : elapsed - arrivalAt;
         bust.rotation.x = interiorOn && arrivalAge < 3 ? Math.sin(arrivalAge / 3 * Math.PI) * .018 : 0;
         peakPlayback=Math.max(peakPlayback,output);maxWaves=Math.max(maxWaves,waveCount);
         renderer.render(scene, camera);
         fpsFrames++;
-        if (now - fpsAt > 750) {
-            onTelemetry({ phase, peakPlayback,maxWaves, playback: output, microphone: input, scene: sceneName, entrance:Math.round(assemblyProgress*100), fps: Math.round(fpsFrames * 1000 / (now - fpsAt)), coreEnergy: Math.round(energy * 100), waveCount });
+        if (now - fpsAt > (tide&&readTrace()?200:750)) {
+            onTelemetry({ phase, tidePackets:tideClock.active(elapsed),pulseAge:Math.round((elapsed-tideClock.last())*100)/100,peakPlayback,maxWaves, playback: output, microphone: input, scene: sceneName, entrance:Math.round(assemblyProgress*100), fps: Math.round(fpsFrames * 1000 / (now - fpsAt)), coreEnergy: Math.round(energy * 100), waveCount });
             if(now-fpsAt<5000 && elapsed>3 && fpsFrames*1000/(now-fpsAt)<20 && pixelRatio>.65){pixelRatio=Math.max(.65,pixelRatio-.1);renderer.setPixelRatio(pixelRatio);resize();}
             fpsFrames = 0;
             fpsAt = now;

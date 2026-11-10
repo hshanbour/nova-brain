@@ -1,8 +1,9 @@
+import {TIDE_PULSE_GLSL} from './tideTiming.js';
 import * as THREE from "../vendor/three.module.min.js";
 /** Six shaded, tapered channels inset below the unchanged GLB surface.
  * No fluid simulation, extra render targets, external assets or audio sources. */
 export function createMoltenInterior(geometry) {
-    const group = new THREE.Group();
+    const group = new THREE.Group(), exits=[];
     const positions = geometry.getAttribute("position");
     const grid = new Float32Array(81 * 81).fill(-Infinity);
     for (let i = 0; i < positions.count; i++) {
@@ -30,7 +31,7 @@ export function createMoltenInterior(geometry) {
         return (weight ? total / weight : .2) - .115;
     }
     const uniforms = {
-        uTime: { value: 0 }, uFlow: { value: 0 }, uEnergy: { value: 0 }, uListen: { value: 0 },
+        uTide:{value:0},uTideBorn:{value:new Float32Array(8).fill(-100)},uTideStrength:{value:new Float32Array(8)},uTime: { value: 0 }, uFlow: { value: 0 }, uEnergy: { value: 0 }, uListen: { value: 0 },
         uPrepare: { value: 0 }, uReveal: { value: 0 }, uBreath: { value: 0 },
         uSpeaking: { value: 0 }, uBorn: { value: new THREE.Vector3(-10, -10, -10) },
         uStrength: { value: new THREE.Vector3() },
@@ -44,7 +45,8 @@ export function createMoltenInterior(geometry) {
         fragmentShader: `varying vec2 vUv;varying float vBranch;varying float vInner;varying vec3 vN;varying vec3 vView;
       uniform float uTime;uniform float uFlow;uniform float uEnergy;uniform float uListen;
       uniform float uPrepare;uniform float uReveal;uniform float uBreath;uniform float uSpeaking;
-      uniform vec3 uBorn;uniform vec3 uStrength;
+      uniform vec3 uBorn;uniform vec3 uStrength;uniform float uTide;
+      ${TIDE_PULSE_GLSL}
       float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
       float noise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
         return mix(mix(hash(i),hash(i+vec2(1.,0.)),f.x),mix(hash(i+vec2(0.,1.)),hash(i+1.),f.x),f.y);}
@@ -61,7 +63,7 @@ export function createMoltenInterior(geometry) {
         float pockets=smoothstep(.28,.69,grain*.82+detail*.18);
         float inward=pow(.5+.5*cos(along*19.+uTime*2.9+vBranch*.7),8.)*uListen;
         float gathering=exp(-along*6.)*uPrepare*(.7+.3*sin(uTime*2.+vBranch*.5));
-        float pulse=(surge(uBorn.x,uStrength.x)+surge(uBorn.y,uStrength.y)+surge(uBorn.z,uStrength.z))*uSpeaking;
+        float pulse=mix((surge(uBorn.x,uStrength.x)+surge(uBorn.y,uStrength.y)+surge(uBorn.z,uStrength.z))*uSpeaking,tideAt(.10+along*.95),uTide);
         float heat=clamp(.16+pockets*.69+inward*.25+gathering*.45+pulse*.55,0.,1.);
         vec3 bronze=vec3(.055,.016,.004), amber=vec3(.52,.145,.018), champagne=vec3(1.,.78,.40);
         vec3 molten=mix(amber,champagne,smoothstep(.30,.9,heat));
@@ -72,6 +74,7 @@ export function createMoltenInterior(geometry) {
         float hot=smoothstep(.65,.94,heat)*pow(face,3.);
         colour=mix(colour,vec3(1.,.86,.57),hot*.72);
         colour*=.88+uBreath*.035+gathering*.15+pulse*.25;
+        colour+=uTide*vec3(1.,.65,.23)*pulse*.9;
         colour*=1.-uPrepare*smoothstep(.15,.8,along)*.38;
         float reveal=1.-smoothstep(uReveal-.045,uReveal+.055,along);
         float opacity;
@@ -103,6 +106,7 @@ export function createMoltenInterior(geometry) {
                 return new THREE.Vector3(xx, yy, front(xx, yy) - .018 * Math.sin(p * 6. + branch));
             });
             const curve = new THREE.CatmullRomCurve3(points);
+            exits.push({tip:points.at(-1).clone(),side,index,curve});
             const tubular = 96, radial = 10;
             const tube = new THREE.TubeGeometry(curve, tubular, 1, radial, false);
             const pos = tube.getAttribute("position");
@@ -142,7 +146,8 @@ export function createMoltenInterior(geometry) {
     let age = 0, wasEnabled = false, listen = 0, prepare = 0, speaking = 0, flow = 0;
     let previousEnergy = 0, lastPulse = -10, slot = 0;
     const born = [-10, -10, -10], strength = [0, 0, 0];
-    return { group, material, update(time, dt, phase, energy, enabled) {
+    return { group, material, exits, update(time, dt, phase, energy, enabled, tide=null) {
+            uniforms.uTide.value=tide?1:0;if(tide){uniforms.uTideBorn.value=tide.born;uniforms.uTideStrength.value=tide.strength;}
             group.visible = enabled;
             if (!enabled)
                 wasEnabled = false;

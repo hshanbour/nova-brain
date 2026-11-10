@@ -6,7 +6,7 @@ export function createVisualDemo({onChange=()=>{},AudioClass=globalThis.Audio,Co
  return {
   async choose(next){if(live)return;stop(next==='speaking'?'idle':next);if(next!=='speaking')return;
    const ticket=generation;
-   try{if(!audio){audio=new AudioClass('/assets/current-glass/voice-demo.wav');audio.preload='none';audio.onended=()=>stop();audio.onerror=()=>{stop();notify('Recorded sample unavailable');};ctx=new ContextClass();analyser=ctx.createAnalyser();analyser.fftSize=256;data=new Float32Array(analyser.fftSize);ctx.createMediaElementSource(audio).connect(analyser);analyser.connect(ctx.destination);}
+   try{if(!audio){audio=new AudioClass('/assets/current-glass/voice-demo.wav');audio.preload='none';audio.onended=()=>stop();audio.ontimeupdate=()=>{if(audio.currentTime>=15.4)stop();};audio.onerror=()=>{stop();notify('Recorded sample unavailable');};ctx=new ContextClass();analyser=ctx.createAnalyser();analyser.fftSize=256;data=new Float32Array(analyser.fftSize);ctx.createMediaElementSource(audio).connect(analyser);analyser.connect(ctx.destination);}
     await ctx.resume();if(ticket!==generation||live)return;audio.currentTime=4;await audio.play();if(ticket!==generation||live){audio.pause();return;}mode='speaking';notify('Speaking demo · recorded Nova audio, not a live reply');
    }catch{stop();notify('Audio could not start · try Speaking demo again');}
   },

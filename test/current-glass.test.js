@@ -15,10 +15,10 @@ test('glass follows only active realtime playback; interruption and next turn do
 });
 test('glass static modules and unchanged model have explicit local routes',async()=>{
  const loaded=[];const serve=createStaticFileHandler({loadFile:async p=>{loaded.push(String(p));return Buffer.from('asset');}});
- for(const file of ['current-glass-avatar.js','current-glass-signal.js','current-glass/coreScene.js','current-glass/sceneEnvironment.js','current-glass/livingField.js','current-glass/visualDemo.js','current-glass/voice-demo.wav','current-glass/nova.glb','current-glass/nova-display.glb']){
+ for(const file of ['current-glass-avatar.js','current-glass-signal.js','current-glass/coreScene.js','current-glass/sceneEnvironment.js','current-glass/livingField.js','current-glass/visualDemo.js','current-glass/emeraldTide.js','current-glass/tideTiming.js','current-glass/voice-demo.wav','current-glass/nova.glb','current-glass/nova-display.glb']){
   const response={setHeader(){},end(){}};assert.equal(await serve({method:'GET',url:'/assets/'+file},response),true);assert.equal(response.statusCode,200);
  }
- assert.equal(loaded.length,9);
+ assert.equal(loaded.length,11);
 });
 
 test('display mesh retains the original bounds and embedded artwork while reducing geometry',async()=>{
