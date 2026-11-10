@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { RISK_LEVELS } from "../policy/action-policy.js";
 import { createSpeakerIdentity } from "../voice/speaker-identity.js";
+import {registerConversationRecall} from '../memory/conversation-recall.js';
 import {registerHandsTools} from "./hands-runtime.js";
 
 const runFile = promisify(execFile);
@@ -31,6 +32,7 @@ function registerLegacyDeveloperTools(registry, { root = process.cwd(), environm
 }
 
 export function registerSystemTools(registry,{storage,ownerId,projectService,projectOnboarding}) {
+  registerConversationRecall(registry,{storage,ownerId});
   const speakers=createSpeakerIdentity({storage,ownerId});
   registry.register({name:"project_list",description:"List Nova's durable owner projects.",category:"projects",capability:"read",riskLevel:RISK_LEVELS.READ_ONLY,available:true,configurationStatus:"ready",async execute(){return {projects:await storage.listProjects(ownerId)};}});
   registry.register({name:"project_create",description:"Create one durable owner project only when the owner explicitly asks Nova to create or start that project. Never infer project creation from a general mention.",category:"projects",capability:"write",riskLevel:RISK_LEVELS.LOW_RISK_WRITE,autonomous:true,available:Boolean(projectService),configurationStatus:projectService?"ready":"unavailable",inputSchema:{type:"object",properties:{id:{type:"string"},name:{type:"string"},description:{type:"string"}},required:["name"],additionalProperties:false},validate(input,context){stringArg(input,"name",120);if(input.id!==undefined)stringArg(input,"id",80);if(input.description!==undefined&&typeof input.description!=="string")throw new Error("description must be a string.");if(!/\b(?:create|start|add|open|set up)\b.{0,80}\b(?:project|business)\b|\b(?:new project|new business)\b|(?:أنشئ|انشئ|ابدأ|أضف|اضف).{0,80}(?:مشروع|عمل)/iu.test(String(context?.ownerMessage||"")))throw Object.assign(new Error("Project creation requires an explicit owner request in the current turn."),{code:"project_creation_intent_required"});},async execute(input){return projectService.create(input);}});

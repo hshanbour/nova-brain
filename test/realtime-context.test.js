@@ -59,8 +59,9 @@ test("context endpoint is Preview-only, same-origin, read-only and ignores suppl
   const f=await fixture(); let ran=0;
   const base={...f,agent:{tools:{list(){return[]}},async run(){ran++}},initialize:async()=>{},config:{allowedOrigins:[],maxBodyBytes:10000},logger:{info(){},error(){}}};
   let app=createApi(base),r=response();await app.handle(request("/api/voice/realtime/context",{message:"Plumber Growth Kit"}),r);assert.equal(r.statusCode,404);
-  app=createApi({...base,realtimeAccountContext:true});r=response();await app.handle(request("/api/voice/realtime/context",{message:"Plumber Growth Kit"},"https://evil.test"),r);assert.equal(r.statusCode,403);
-  r=response();await app.handle(request("/api/voice/realtime/context",{message:"Plumber Growth Kit",ownerId:"other-owner",context:{projectId:"other"}}),r);assert.equal(r.statusCode,200);assert.deepEqual(JSON.parse(r.body).projects.map(p=>p.id),["pgk"]);assert.equal(ran,0);
+  app=createApi({...base,realtimeAccountContext:true,speakerAssertions:{verify:a=>a==="signed-owner"?{match_status:"confirmed",speaker_label:"owner",speaker_profile_id:"profile"}:null},speakerIdentity:{get:async()=>({status:"active",relation:"owner"})}});r=response();await app.handle(request("/api/voice/realtime/context",{message:"Plumber Growth Kit"},"https://evil.test"),r);assert.equal(r.statusCode,403);
+  r=response();await app.handle(request("/api/voice/realtime/context",{message:"Plumber Growth Kit",ownerId:"other-owner",context:{projectId:"other",speaker:{assertion:"signed-owner"}}}),r);assert.equal(r.statusCode,200);assert.deepEqual(JSON.parse(r.body).projects.map(p=>p.id),["pgk"]);assert.equal(ran,0);
+  r=response();await app.handle(request("/api/voice/realtime/context",{message:"Plumber Growth Kit"}),r);assert.equal(r.statusCode,403);assert.doesNotMatch(r.body,/private-fact/);
 });
 
 test("realtime provider receives saved evidence and context tool without changing audio configuration",async()=>{

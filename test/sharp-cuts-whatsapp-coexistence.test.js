@@ -5,6 +5,17 @@ import {createInMemoryStorage} from "../src/storage/in-memory-storage.js";
 import {createSharpCutsWhatsAppCoexistenceService} from "../src/whatsapp/sharp-cuts-coexistence.js";
 import {createPersistentLocalWorker} from "../src/autonomy/persistent-local-worker.js";
 import {createProjectAutomationControls} from "../src/automation/project-automation-controls.js";
+import {createAgent} from '../src/agent/agent.js';
+import {createToolRegistry} from '../src/tools/tool-registry.js';
+
+test('actual Brain produces a scoped WhatsApp draft and receipt without private owner context or send',async()=>{
+ const storage=createInMemoryStorage();await storage.initialize({owner:{id:OWNER,facts:{secret:'PRIVATE OWNER FACT'},preferences:{}},projects:[{id:'sharp-cuts-web',name:'Sharp Cuts'},{id:'private',name:'PRIVATE PROJECT'}]});
+ let inputSeen,sends=0;const agent=createAgent({storage,ownerId:OWNER,toolRegistry:createToolRegistry(),modelProvider:{name:'synthetic',async generate(input){inputSeen=input;return{type:'final',message:'Use the official Sharp Cuts team booking page.'};}}});
+ const service=createSharpCutsWhatsAppCoexistenceService({config:readConfig(ENV),storage,ownerId:OWNER,automationControls:{async allows(){return true;}},novaTurn:input=>agent.run(input),fetchImpl:async()=>{sends++;throw Error('Forbidden send');}});
+ await service.receive(payload('Where can I book?','wamid.synthetic-brain-123'),`Bearer ${TOKEN}`);const result=await service.processNext();
+ assert.equal(result.sent,false);assert.equal(result.status,'awaiting_owner_review');assert.equal(sends,0);assert.deepEqual(inputSeen.tools,[]);assert.doesNotMatch(JSON.stringify(inputSeen),/PRIVATE OWNER FACT|PRIVATE PROJECT/);assert.match(JSON.stringify(inputSeen),/fresha/);
+ const runs=await storage.listRuns(OWNER);assert.equal(runs[0].projectId,'sharp-cuts-web');assert.ok(runs[0].id);
+});
 
 test('actual worker tick holds a paused backlog and processes only an isolated fresh draft with no provider request',async()=>{
   const storage=createInMemoryStorage();await storage.initialize({owner:{id:OWNER},projects:[{id:'sharp-cuts-web',name:'Sharp Cuts'}]});

@@ -18,6 +18,7 @@ export function createRealtimeVoice({
   onAssistantTranscript = () => {},
   onDirectTurn = () => {},
   onSpeaker = () => {},
+  onPrivacyPause = () => {},
   onState = () => {},
   onTiming = () => {},
   onInputLevel = () => {},
@@ -31,7 +32,7 @@ export function createRealtimeVoice({
   let active = false, generation = 0, pc, channel, stream, remoteAudio, inputMeter, outputMeter;
   let lastTranscript = "", lastSpeechEndedAt = 0, assistantTranscript = "", lastAssistantTranscript = "", toolInFlight = false, muted = false;
   let playbackActive=false, serial=Promise.resolve(),speechTurn=0,inSpeech=false,responseOpen=false,followup=false;
-  let replyLanguage = null;
+  let replyLanguage = null, privacyGate=false, guestMode=false;
   const handledCalls=new Set(),turns=new Map(),responses=new Map(),responseTranscripts=new Map();let latestTurn=null;
   const isCurrentTurn = utterance => !utterance?.superseded && (!utterance || utterance.seq === speechTurn);
   function supersedeTurn() { if(latestTurn)latestTurn.superseded=true;followup=false; }
@@ -43,7 +44,8 @@ export function createRealtimeVoice({
   const publish = (state, detail = {}) => onState({ active, state, mode: "realtime", ...detail });
   const valid = (current) => active && current === generation;
 
-  async function start() {
+  async function start({guest=false}={}) {
+    guestMode=guest;
     if (active) return false;
     active = true;
     const current = ++generation;
@@ -54,9 +56,10 @@ export function createRealtimeVoice({
       stream=acquired;
       inputMeter = createAudioMeter({ AudioContextImpl, stream, onLevel: onInputLevel });
       void fetchImpl("/api/voice/speaker/readiness", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
-      const sessionResponse = await fetchImpl("/api/voice/realtime/session", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: getConversationId() }) });
+      const sessionResponse = await fetchImpl("/api/voice/realtime/session", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: guestMode ? null : getConversationId(), mode:guestMode?"guest":"owner" }) });
       const session = await sessionResponse.json().catch(() => null);
       if (!sessionResponse.ok || typeof session?.clientSecret !== "string") throw new Error(session?.error || "Nova could not prepare Realtime Voice.");
+      privacyGate=session.privacyGate===true;
       replyLanguage = ["ar", "en"].includes(session.replyLanguage) ? session.replyLanguage : null;
       if (!valid(current)) return false;
       pc = new RTCPeerConnectionImpl();
@@ -121,6 +124,7 @@ export function createRealtimeVoice({
   async function handleEvent(event, current) {
     if (!event?.type) return;
     if (event.type === "input_audio_buffer.speech_started") {
+      if(privacyGate)interrupt();
       supersedeTurn();
       playbackActive=false;onArticulation(rest);onAudibleLevel(0); speakerPromise=null;inSpeech=true;++speechTurn;
       latestTurn={seq:speechTurn,transcript:"",speaker:null,conversationId:getConversationId()};if(event.item_id){turns.set(event.item_id,latestTurn);trim(turns);}
@@ -135,8 +139,16 @@ export function createRealtimeVoice({
       lastSpeechEndedAt = now();
       inSpeech=false;const utterance=turns.get(event.item_id)||latestTurn;
       speakerPromise = stopTurnRecording(current,utterance);if(utterance)utterance.speaker=speakerPromise;
-      void speakerPromise.then((speaker) => {
-        if (speaker&&valid(current)&&(!utterance||utterance===latestTurn)) onSpeaker(speaker);
+      void boundedSpeaker(speakerPromise,6000).then(async speaker => {
+        if(!valid(current)||!isCurrentTurn(utterance))return;
+        if(speaker)onSpeaker(speaker);
+        if(!privacyGate)return;
+        let authorized=false;
+        try { const r=await fetchImpl('/api/voice/realtime/authorize-turn',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker})});authorized=r.ok&&(await r.json()).authorized===true; } catch {}
+        if(!valid(current)||!isCurrentTurn(utterance))return;
+        if(!authorized){end();publish('privacy-paused');onPrivacyPause();return;}
+        if(utterance)utterance.verifiedSpeaker=speaker;
+        sendEvent({type:'response.create'});
       });
       publish("thinking", { phase: "understanding" });
       return;
@@ -175,7 +187,7 @@ export function createRealtimeVoice({
       } else if(look.length){followup=true;flushFollowup();
       } else if (lastSpeechEndedAt && event.response?.metadata?.purpose!=="explain_task_report" && event.response?.status!=="cancelled") {
         const userText=utterance.transcript, assistantText=responseTranscripts.get(event.response?.id)||lastAssistantTranscript;
-        if (isCurrentTurn(utterance) && userText && assistantText) void Promise.resolve(onDirectTurn({ turnId: String(event.response?.id || `turn-${Math.round(lastSpeechEndedAt)}`), userText, assistantText, conversationId: getConversationId() })).catch(() => {});
+        if (!guestMode && isCurrentTurn(utterance) && userText && assistantText) void Promise.resolve(onDirectTurn({ speaker:utterance.verifiedSpeaker || await boundedSpeaker(utterance.speaker,750), turnId: String(event.response?.id || `turn-${Math.round(lastSpeechEndedAt)}`), userText, assistantText, conversationId: getConversationId() })).catch(() => {});
         onTiming({ stage: "realtime-response-done", measurements: { speechEndToResponseDoneMs: Math.max(0, now() - lastSpeechEndedAt) } });
         if(!playbackActive&&!toolInFlight)publish("listening");
       }
@@ -204,8 +216,9 @@ export function createRealtimeVoice({
       const args = safeParse(call.arguments) || {};
       const request = utterance.transcript || String(args.request || "").trim();
       if (!request) throw new Error("Nova could not recover the spoken request.");
+      const currentSpeaker=utterance.verifiedSpeaker || await boundedSpeaker(utterance.speaker,750);
       if (call.name === "nova_context") {
-        const response = await fetchImpl("/api/voice/realtime/context", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: request, conversationId: getConversationId() || undefined, ...(args.projectId ? {context:{lookupProjectId:args.projectId}} : {}) }) });
+        const response = await fetchImpl("/api/voice/realtime/context", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: request, conversationId: getConversationId() || undefined, context:{speaker:currentSpeaker,...(args.projectId?{lookupProjectId:args.projectId}:{})} }) });
         const evidence = await response.json().catch(() => null);
         if (!response.ok || evidence?.authority !== "authenticated_console_read_only") throw new Error("Saved Nova context could not be retrieved.");
         if (!valid(current)) return;
@@ -223,7 +236,7 @@ export function createRealtimeVoice({
       const result = await sendTurn(request, { speaker, conversationId: getConversationId(), replyLanguage });
       if (!valid(current)) return;
       if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
-      sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ message: result?.message || "Nova could not complete that request.", approvalRequired: Boolean(result?.approval), conversationId: result?.conversationId || null }) } });
+      sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ message: result?.message || "Nova could not complete that request.", receipt: result?.runId ? {runId:result.runId,status:result.runStatus||null,tools:(result.toolCalls||[]).map(t=>({name:t.name,status:t.status}))} : null, approvalRequired: Boolean(result?.approval), conversationId: result?.conversationId || null }) } });
       followup=true;flushFollowup();
     } catch (error) {
       if (valid(current)) {

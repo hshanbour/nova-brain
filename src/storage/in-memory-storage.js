@@ -168,6 +168,11 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         .slice(0, limit)
         .map(copy);
     },
+    async searchConversationMessages(ownerId,{terms=[],excludeConversationId=null,limit=12}={}) {
+      if(!terms.length)return [];
+      return [...messages.values()].flat().filter(m=>m.ownerId===ownerId&&m.conversationId!==excludeConversationId&&['user','assistant'].includes(m.role)&&terms.every(term=>m.content.toLowerCase().includes(term.toLowerCase())))
+        .sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.sequence-a.sequence).slice(0,Math.min(20,limit)).map(m=>({...copy(m),content:m.content.slice(0,2400),title:conversations.get(m.conversationId)?.title||null}));
+    },
     async appendMessage({ id = randomUUID(), conversationId, ownerId, role, content }) {
       const conversation = conversations.get(conversationId);
       if (!conversation || conversation.ownerId !== ownerId)

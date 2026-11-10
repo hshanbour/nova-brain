@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import {continuityPreviewEnvironment,continuityToolAllowed,EXISTING_WORKSPACE_BRANCH,EXISTING_WORKSPACE_ENDPOINT} from './identity/continuity-preview.js';
 import { createAgent } from "./agent/agent.js";
 import { readConfig } from "./config/env.js";
 import { createApi } from "./http/api.js";
@@ -116,10 +117,11 @@ export function createApp({
   projectDiscoveryFetchImpl,
   sharpCutsEmailFetchImpl,
 } = {}) {
-  const preview = syntheticPreviewEnvironment(environment);
+  const continuity=continuityPreviewEnvironment(environment);
+  const preview = syntheticPreviewEnvironment(continuity.environment);
   environment = preview.environment;
   const OWNER_ID = preview.synthetic ? SYNTHETIC_OWNER_ID : DEFAULT_OWNER_ID;
-  const previewAuth = preview.synthetic ? createPreviewAuth({environment}) : null;
+  const previewAuth = preview.synthetic||continuity.continuity ? createPreviewAuth({environment,workspaceId:OWNER_ID,synthetic:preview.synthetic}) : null;
   const config = readConfig(environment);
   let modelProvider;
   const storage = createMultilingualMemoryStorage({storage:storageOverride||createStorage(config),translateQuery:async(query)=>{
@@ -139,6 +141,7 @@ export function createApp({
     : null;
   let approvalReconciliation=null,approvalReconciliationComplete=false;
   const initialize = async () => {
+    if(continuity.continuity){await storage.initialize({owner:{id:OWNER_ID},existingWorkspaceOnly:{branch:EXISTING_WORKSPACE_BRANCH,endpoint:EXISTING_WORKSPACE_ENDPOINT}});return;}
     await storage.initialize(preview.synthetic ? {...SYNTHETIC_SEED,syntheticGuard:true} : {
       owner: INITIAL_OWNER_PROFILE,
       projects: INITIAL_PROJECTS,
@@ -151,7 +154,7 @@ export function createApp({
     ownerId: OWNER_ID,
     approvedBranch: config.developmentBranch,
   });
-  const toolRegistry = createToolRegistry({ policy, disabled:preview.synthetic });
+  const toolRegistry = createToolRegistry({ policy, disabled:preview.synthetic, toolAllowed:continuity.continuity?continuityToolAllowed:undefined });
   const projectService=createProjectService({storage,ownerId:OWNER_ID});
   const learningService=typeof storage?.createMemoryCandidate==="function"?createMemoryLearningService({storage,ownerId:OWNER_ID}):null;
   const pageReader=createPublicPageReader({fetchImpl:webFetchImpl||globalThis.fetch,...(webResolveHost?{resolveHost:webResolveHost}:{})});
@@ -319,6 +322,7 @@ export function createApp({
     validateAnonymousSpeaker: speakerIdentity.isActiveAnonymous,
     speakerIdentity,
     routeExistingTaskRequest: async ({message,conversationId}) => {
+      if(continuity.continuity)return null;
       if(isConversationTaskResultQuestion(message)){
         const report=await terminalReporter.latestForConversation(conversationId);
         if(report)return{route:"conversation_task_report",action:"report",...report};
@@ -327,11 +331,12 @@ export function createApp({
       if(!request)return null;
       return validateExistingTaskControlRequest(request,await workerRuntime.get(request.taskId));
     },
-    durableResearchTaskService,
+    durableResearchTaskService:continuity.continuity?null:durableResearchTaskService,
     learningService,
     projectService,
     projectOnboarding,
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
+      if(continuity.continuity)return null;
       if(context?.voice===true)return null;
       const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message),workflowTurn=isConversationWorkflowTurn(message,{implementationSignal,codingSignal});
       let explicitRetry;
@@ -422,6 +427,7 @@ export function createApp({
     syntheticPreview:preview.synthetic,
     authorizeConsole:authorizeConsoleOverride||previewAuth?.authorize||createConsoleAccess({environment,ownerId:OWNER_ID}).authorize,
     previewAuth,
+    continuityPreview:continuity.continuity,
     realtimeAccountContext: environment.VERCEL_ENV === "preview",
     agent,
     config,

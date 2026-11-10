@@ -341,9 +341,14 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
   const storage = {
     provider: "postgres",
     durable: true,
-    async initialize({ owner, projects = [], memories = [], syntheticGuard = false } = {}) {
+    async initialize({ owner, projects = [], memories = [], syntheticGuard = false, existingWorkspaceOnly = null } = {}) {
       if (!initialization)
         initialization = (async () => {
+          if(existingWorkspaceOnly){
+            const rows=await run("SELECT current_setting('neon.branch_id') AS branch, current_setting('neon.endpoint_id') AS endpoint, EXISTS(SELECT 1 FROM nova_owners WHERE id=$1) AS owner_exists",[owner?.id]);
+            if(rows[0]?.branch!==existingWorkspaceOnly.branch||rows[0]?.endpoint!==existingWorkspaceOnly.endpoint||rows[0]?.owner_exists!==true)throw new Error('Existing Preview workspace binding verification failed.');
+            return;
+          }
           if(syntheticGuard)await assertSyntheticDatabase(run);
           for (const statement of SCHEMA_STATEMENTS) await run(statement);
           if (owner) {
@@ -468,6 +473,14 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
           [ownerId, limit],
         )
       ).map(conversationRow);
+    },
+    async searchConversationMessages(ownerId,{terms=[],excludeConversationId=null,limit=12}={}) {
+      if(!terms.length)return [];
+      const rows=await run(`SELECT m.*, c.title FROM nova_messages m JOIN nova_conversations c ON c.id=m.conversation_id AND c.owner_id=m.owner_id
+        WHERE m.owner_id=$1 AND ($2::text IS NULL OR m.conversation_id<>$2) AND m.role IN ('user','assistant')
+        AND NOT EXISTS (SELECT 1 FROM unnest($3::text[]) term WHERE strpos(lower(m.content),lower(term))=0)
+        ORDER BY m.created_at DESC,m.sequence DESC LIMIT $4`,[ownerId,excludeConversationId,terms.slice(0,12),Math.min(20,limit)]);
+      return rows.map(row=>({...messageRow(row),content:row.content.slice(0,2400),title:row.title}));
     },
     async appendMessage({ id = randomUUID(), conversationId, ownerId, role, content }) {
       const rows = await run(

@@ -7,14 +7,14 @@ import {readJsonBody} from '../http/body.js';
 
 const silent={debug(){},info(){},warn(){},error(){}};
 function json(res,status,value){res.statusCode=status;res.setHeader('Cache-Control','no-store');res.setHeader('Content-Type','application/json');res.setHeader('X-Content-Type-Options','nosniff');res.end(JSON.stringify(value));}
-export function workspaceActor(session,environment) {
+export function workspaceActor(session,environment,workspaceId=SYNTHETIC_OWNER_ID) {
   const user=session?.user;
   const expiry=new Date(session?.session?.expiresAt).getTime();
   if(!user?.id||!session?.session||session.session.userId!==user.id||!Number.isFinite(expiry)||expiry<=Date.now())throw new ConsoleAccessError('console_identity_required');
   if(user.emailVerified!==true||!environment.NOVA_PREVIEW_OWNER_EMAIL||String(user.email).toLowerCase()!==environment.NOVA_PREVIEW_OWNER_EMAIL.toLowerCase()||(environment.NOVA_PREVIEW_OWNER_SUBJECT&&user.id!==environment.NOVA_PREVIEW_OWNER_SUBJECT))throw new ConsoleAccessError('console_workspace_forbidden',403);
-  return Object.freeze({ownerId:SYNTHETIC_OWNER_ID,workspaceId:SYNTHETIC_OWNER_ID,subject:user.id,role:'owner',issuer:PREVIEW_AUTH_URL});
+  return Object.freeze({ownerId:workspaceId,workspaceId,subject:user.id,role:'owner',issuer:PREVIEW_AUTH_URL});
 }
-export function createPreviewAuth({environment,serverFactory=createAuthServer,proxy=handleAuthProxyRequest}) {
+export function createPreviewAuth({environment,serverFactory=createAuthServer,proxy=handleAuthProxyRequest,workspaceId=SYNTHETIC_OWNER_ID,synthetic=true}) {
   // Purpose-separated cache-signing key derived from the isolated database's
   // random credential. No shared Production key or new secret-copy workflow.
   const password=new URL(environment.DATABASE_URL).password;
@@ -31,15 +31,16 @@ export function createPreviewAuth({environment,serverFactory=createAuthServer,pr
   const authorize=async req=>{
     if(!req.headers.cookie)throw new ConsoleAccessError('console_identity_required');
     let result;try{result=await server(req).getSession({query:{disableCookieCache:'true'}});}catch{throw new ConsoleAccessError('console_identity_unavailable',503);}
-    return workspaceActor(result?.data,environment);
+    return workspaceActor(result?.data,environment,workspaceId);
   };
   return {authorize,async handle(req,res){
     const pathname=new URL(req.url,'https://preview.invalid').pathname;
     if(pathname==='/api/preview/isolation'&&req.method==='GET'){
+      if(!synthetic){try{await authorize(req);json(res,200,{synthetic:false,existingWorkspace:true,authUrl:PREVIEW_AUTH_URL,gitBranch:environment.VERCEL_GIT_COMMIT_REF,externalActions:false,privatePhone:false,whatsappSending:false});}catch{json(res,401,{error:'Sign-in required.'});}return true;}
       try{const sql=neon(environment.DATABASE_URL);await assertSyntheticDatabase(statement=>sql.query(statement));json(res,200,{synthetic:true,databaseVerified:true,neonBranch:PREVIEW_NEON_BRANCH,authUrl:PREVIEW_AUTH_URL,gitBranch:environment.VERCEL_GIT_COMMIT_REF,externalActions:false,privatePhone:false,whatsappSending:false});}catch{json(res,503,{error:'Preview isolation verification failed.'});}return true;
     }
     if(pathname==='/api/preview/session'){
-      try{const actor=await authorize(req);json(res,200,{workspaceId:actor.workspaceId,synthetic:true,externalActions:false});}catch(e){json(res,e.statusCode||401,{code:e.code||'console_identity_required'});}return true;
+      try{const actor=await authorize(req);json(res,200,{workspaceId:actor.workspaceId,synthetic,externalActions:false});}catch(e){json(res,e.statusCode||401,{code:e.code||'console_identity_required'});}return true;
     }
     if(!pathname.startsWith('/api/auth/'))return false;
     const path=pathname.slice('/api/auth/'.length);

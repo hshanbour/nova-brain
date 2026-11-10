@@ -34,6 +34,14 @@ export function createMemoryLearningService({storage,ownerId}={}){
     const classified=classifyTypedMemoryCandidate(message);if(!classified)return null;
     return create({...classified,projectId:projectId||null,conversationId,sourceMessageId:userMessageId,sourceRunId:runId||null,sourceTaskId:null,sourceKind:"typed_conversation",provenance:"owner-authored typed conversation",evidence:{version:1,userMessageId,assistantMessageId:assistantMessageId||null,runId:runId||null,conversationId,extraction:"deterministic_v1",authoritative:false}});
   }
+  async function observeVoiceTurn({verifiedOwner=false,message,conversationId,userMessageId,assistantMessageId,runId,projectId}={}) {
+    if(!verifiedOwner)return null;
+    const classified=classifyTypedMemoryCandidate(message);
+    if(!classified)return null;
+    // Reuse the existing review table/schema. Provenance and evidence distinguish
+    // voice from typed input; a transcript is never a verified project fact.
+    return create({...classified,projectId:projectId||null,conversationId,sourceMessageId:userMessageId,sourceRunId:runId||null,sourceTaskId:null,sourceKind:'typed_conversation',provenance:'verified-owner voice transcript; pending confirmation',evidence:{version:2,channel:'voice',userMessageId,assistantMessageId:assistantMessageId||null,conversationId,extraction:'deterministic_v1',authoritative:false,requiresOwnerReview:true}});
+  }
   async function observeTaskOutcome(task,report){
     if(!task||!terminalStatus.has(task.status)||!task.id)return null;
     const failed=task.status==="failed",raw=failed?(task.blockedReason||task.errorCode||"The durable task failed safely."):(task.metadata?.researchFinalAnswer||task.resultSummary||report||"The durable task completed."),summary=clean(raw,failed?2000:3500);
@@ -59,5 +67,5 @@ export function createMemoryLearningService({storage,ownerId}={}){
     if(!result.idempotent)await storage.appendActivity({ownerId,projectId:result.candidate.projectId||null,runId:result.candidate.sourceRunId||null,action:`memory_candidate_${decision}`,status:decision,summary:decision==="accepted"?"Owner accepted reviewed evidence into Nova's existing memory.":"Owner rejected a memory candidate; no memory was created.",metadata:{candidateId:id,acceptedMemoryId:result.memory?.id||null,supersedesMemoryId:result.candidate.supersedesMemoryId||null,sourceTaskId:result.candidate.sourceTaskId||null}});
     return result;
   }
-  return Object.freeze({observeConversationTurn,observeTaskOutcome,proposeProjectKnowledge,reviewCandidate});
+  return Object.freeze({observeConversationTurn,observeVoiceTurn,observeTaskOutcome,proposeProjectKnowledge,reviewCandidate});
 }

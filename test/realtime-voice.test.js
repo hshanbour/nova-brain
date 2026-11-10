@@ -3,6 +3,16 @@ import assert from "node:assert/strict";
 import { createRealtimeVoiceService } from "../src/voice/realtime-voice-service.js";
 import { createRealtimeVoice } from "../assets/realtime-voice.js";
 
+test('unknown speaker closes protected session, clears playback, and never launches a reply',async()=>{
+ const channel=new FakeChannel(),peer=new FakePeer(channel),states=[],levels=[];let paused=0,stopped=0;
+ const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){stopped++;}}]};}},RTCPeerConnectionImpl:class{constructor(){return peer;}},MediaRecorderImpl:null,AudioImpl:class{pause(){}},
+ fetchImpl:async url=>url.endsWith('/session')?Response.json({clientSecret:'ek_test',privacyGate:true}):url.endsWith('/authorize-turn')?Response.json({authorized:false},{status:403}):new Response('answer'),onState:s=>states.push(s.state),onPrivacyPause:()=>paused++,onAudibleLevel:v=>levels.push(v)});
+ await voice.start();channel.open();channel.message({type:'response.created',response:{id:'old'}});channel.message({type:'output_audio_buffer.started'});
+ channel.message({type:'input_audio_buffer.speech_started',item_id:'new-speaker'});channel.message({type:'input_audio_buffer.speech_stopped',item_id:'new-speaker'});
+ await new Promise(r=>setTimeout(r,20));
+ assert.equal(paused,1);assert.ok(stopped>0);assert.ok(states.includes('privacy-paused'));assert.equal(levels.at(-1),0);assert.ok(channel.sent.some(e=>e.type==='response.cancel'));assert.equal(channel.sent.filter(e=>e.type==='response.create').length,0);
+});
+
 test("read-only context bypasses neither Brain action checks nor language continuity", async()=>{
   const channel=new FakeChannel(),peer=new FakePeer(channel),reads=[],actions=[];
   const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return {getTracks:()=>[]}}},RTCPeerConnectionImpl:class{constructor(){return peer}},MediaRecorderImpl:null,AudioImpl:class{pause(){}},getConversationId:()=>"mine",
@@ -124,7 +134,7 @@ test("realtime warm-up is non-blocking, direct turns persist, and mute controls 
   channel.message({ type: "response.output_audio_transcript.done", transcript: "أهلاً، كيف أساعدك؟" });
   channel.message({ type: "response.done", response: { id: "response-1", output: [] } });
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(direct, [{ turnId: "response-1", userText: "مرحبا Nova", assistantText: "أهلاً، كيف أساعدك؟", conversationId: null }]);
+  assert.deepEqual(direct, [{ speaker:null, turnId: "response-1", userText: "مرحبا Nova", assistantText: "أهلاً، كيف أساعدك؟", conversationId: null }]);
   assert.equal(voice.setMuted(true), true); assert.equal(audioTrack.enabled, false); assert.equal(voice.isMuted(), true);
   assert.equal(voice.setMuted(false), false); assert.equal(audioTrack.enabled, true);
   voice.end();

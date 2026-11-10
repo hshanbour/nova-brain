@@ -1,6 +1,6 @@
 import {canonicalSchemaDiagnostic} from "../autonomy/schema-diagnostics.js";
 
-export function createToolRegistry({ policy, disabled = false } = {}) {
+export function createToolRegistry({ policy, disabled = false, toolAllowed = () => true } = {}) {
   const tools = new Map();
 
   class ToolInputError extends Error {
@@ -61,7 +61,7 @@ export function createToolRegistry({ policy, disabled = false } = {}) {
       tools.set(tool.name, Object.freeze({ ...tool }));
     },
     list({ executableOnly = false } = {}) {
-      return [...tools.values()].filter((tool) => !executableOnly || tool.available !== false).map(({ execute: _execute, validate: _validate, validateApprovedLegacy: _validateApprovedLegacy, authorizeStandingPolicy: _authorizeStandingPolicy, onApprovalRequired: _onApprovalRequired, onApprovalDecision: _onApprovalDecision, ...tool }) => ({
+      return [...tools.values()].filter((tool) => !executableOnly || (!disabled && tool.available !== false && toolAllowed(tool))).map(({ execute: _execute, validate: _validate, validateApprovedLegacy: _validateApprovedLegacy, authorizeStandingPolicy: _authorizeStandingPolicy, onApprovalRequired: _onApprovalRequired, onApprovalDecision: _onApprovalDecision, ...tool }) => ({
         ...tool
       }));
     },
@@ -74,6 +74,7 @@ export function createToolRegistry({ policy, disabled = false } = {}) {
         throw new Error(`Unknown tool: ${name}`);
       }
 
+      if(!toolAllowed(tool))throw Object.assign(new Error('External writes are disabled in this Preview.'),{code:'preview_action_disabled',statusCode:403});
       if (!input || typeof input !== "object" || Array.isArray(input)) {
         throw new Error(`Tool arguments must be an object: ${name}`);
       }

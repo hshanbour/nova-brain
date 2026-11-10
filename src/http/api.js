@@ -1,5 +1,8 @@
 import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
 import {usesServiceAuthentication} from "../identity/console-access.js";
+import {continuityRouteAllowed} from '../identity/continuity-preview.js';
+import {savedReplyLanguage} from '../identity/communication-policy.js';
+import {requirePrivateVoiceSpeaker} from '../voice/private-context-access.js';
 import {syntheticRouteAllowed} from '../identity/synthetic-preview.js';
 import { readRealtimeContext } from "../voice/realtime-context.js";
 import {PROJECT_DOCUMENT_LIMITS,ProjectSourceError} from "../projects/document-extractor.js";
@@ -229,6 +232,7 @@ export function createApi({
   voiceService,
   realtimeVoiceService,
   realtimeAccountContext = false,
+  continuityPreview = false,
   speakerIdentity,
   speakerExtractor,
   speakerEngines,
@@ -315,6 +319,7 @@ export function createApi({
 
       try {
         if(previewAuth&&await previewAuth.handle(request,response))return;
+        if(continuityPreview&&!continuityRouteAllowed(pathname,request.method)){sendJson(response,403,{error:'Outbound actions, phone and worker routes are disabled in this review Preview.',code:'preview_action_disabled'});return;}
         if(syntheticPreview&&!syntheticRouteAllowed(pathname,request.method)){
           sendJson(response,403,{error:'This isolated sign-in Preview permits synthetic workspace and memory tests only. External actions, Voice, phone, workers and messaging are disabled.',code:'synthetic_actions_disabled'});return;
         }
@@ -759,6 +764,7 @@ export function createApi({
               model: realtimeVoiceService?.model || null,
               voice: realtimeVoiceService?.voice || null,
               authority: "nova_brain_delegated",
+              requiresVerifiedSpeaker: realtimeAccountContext,
             },
             speakerRecognition: speaker,
           });
@@ -780,14 +786,17 @@ export function createApi({
             return;
           }
           const safetyIdentifier = createHash("sha256").update(`nova-realtime:${ownerId}`).digest("hex");
+          const sessionInput=await readJsonBody(request,config.maxBodyBytes);
           let accountContext;
           if (realtimeAccountContext) {
             await ready();
-            const input = await readJsonBody(request, config.maxBodyBytes);
+            const input=sessionInput;
             const conversationId = typeof input?.conversationId === "string" ? input.conversationId.slice(0, 128) : null;
-            accountContext = await readRealtimeContext({ storage, projectService, ownerId, conversationId });
+            // Account sign-in supplies language only, not private context before a voice match.
+            const profile=await storage.getOwner(ownerId);
+            accountContext={replyLanguage:savedReplyLanguage(profile?.preferences||{}),projects:[],purpose:[],memories:[],conversation:[]};
           }
-          const session = await realtimeVoiceService.createClientSecret({ safetyIdentifier, accountContext });
+          const session = await realtimeVoiceService.createClientSecret({ safetyIdentifier, accountContext, privacyGate: realtimeAccountContext, guest: sessionInput.mode === "guest" });
           logger.info("Nova realtime voice session prepared", {
             requestId,
             model: session.model,
@@ -801,11 +810,18 @@ export function createApi({
           sendJson(response, 201, session);
           return;
         }
+        if (request.method === 'POST' && pathname === '/api/voice/realtime/authorize-turn') {
+          if(!sameOriginRequest(request)){sendJson(response,403,{error:'Same-origin voice request required.'});return;}
+          await ready();const input=await readJsonBody(request,config.maxBodyBytes);
+          await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity});
+          sendJson(response,200,{authorized:true});return;
+        }
         if (request.method === "POST" && pathname === "/api/voice/realtime/context") {
           if (!realtimeAccountContext) { sendJson(response, 404, { error: "Not found." }); return; }
           if (!sameOriginRequest(request)) { sendJson(response, 403, { error: "Voice context requires a same-origin owner console request." }); return; }
           await ready();
           const input = validateAgentRequest(await readJsonBody(request, config.maxBodyBytes));
+          await requirePrivateVoiceSpeaker({assertion:input.context?.speaker?.assertion,speakerAssertions,speakerIdentity});
           const evidence = await readRealtimeContext({ storage, projectService, ownerId, message: input.message, conversationId: input.conversationId, lookupProjectId: typeof input.context?.lookupProjectId === "string" ? input.context.lookupProjectId : null });
           logger.info("Nova realtime context retrieved", { requestId, authority: evidence.authority, projectIds: evidence.projects.map(p => p.id), memoryIds: evidence.memories.map(m => m.id) });
           sendJson(response, 200, evidence);
@@ -834,7 +850,11 @@ export function createApi({
           const messageId = (role) => `voice_${createHash("sha256").update(`${ownerId}:${conversationId}:${turnId}:${role}`).digest("hex").slice(0, 48)}`;
           const user = await storage.appendMessage({ id: messageId("user"), conversationId, ownerId, role: "user", content: userText });
           const assistant = await storage.appendMessage({ id: messageId("assistant"), conversationId, ownerId, role: "assistant", content: assistantText });
-          sendJson(response, 201, { conversationId, user, assistant });
+          let learning=null;
+          try { await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity});
+            learning=await learningService?.observeVoiceTurn({verifiedOwner:true,message:userText,conversationId,userMessageId:user.id,assistantMessageId:assistant.id});
+          } catch(error) { if(error?.code!=='voice_owner_verification_required')logger.error('Voice learning unavailable',{requestId,code:'voice_learning_failed'}); }
+          sendJson(response, 201, { conversationId, user, assistant, learning:learning?{candidateId:learning.candidate.id,status:'pending_review'}:null });
           return;
         }
         if (request.method === "POST" && pathname === "/api/voice/speaker/recognize") {
@@ -2553,6 +2573,7 @@ export function createApi({
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "whatsapp_error", requestId });
           return;
         }
+        if(error?.code==='voice_owner_verification_required'){sendJson(response,403,{error:error.message,code:error.code});return;}
         if(error instanceof InstagramOAuthError||error?.code?.startsWith?.("instagram_")){logger.error("Nova Instagram OAuth request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"instagram_oauth_error",requestId});return;}
         if(error instanceof VercelAccountIntegrationError||error?.code?.startsWith?.("vercel_")){logger.error("Nova Vercel account connection request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"vercel_account_integration_error",requestId});return;}
         if(error instanceof SocialError||error?.code?.startsWith?.("social_")){logger.error("Nova Social request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"social_error",requestId});return;}

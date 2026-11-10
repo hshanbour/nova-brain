@@ -258,7 +258,7 @@ export function createAgent({
       const externalChannel=context?.channel==="whatsapp",verifiedOwnerVoice=context?.voice===true&&verifiedSpeaker?.match_status==="confirmed"&&verifiedSpeaker?.speaker_label==="owner";
       // A caller-supplied project ID is not authority to load an owner's workspace.
       const projectResolution=(!context?.voice||verifiedOwnerVoice)&&!externalChannel&&context?.phoneCall?.profile!=="bounded_outbound"?await (projectService||createProjectService({storage,ownerId})).resolve({message,projectId:context.projectId||null}):{status:"unresolved",project:null,source:"none"};
-      const resolvedProjectId=projectResolution.status==="resolved"?projectResolution.project.id:null;
+      const resolvedProjectId=externalChannel&&context.projectId==="sharp-cuts-web"?"sharp-cuts-web":projectResolution.status==="resolved"?projectResolution.project.id:null;
       context={...context,projectId:resolvedProjectId};
       const contextRetrievalStartedAt=Date.now();
       const speakerRestricted = context?.voice === true && !verifiedOwnerVoice;
@@ -290,6 +290,7 @@ export function createAgent({
         response.userMessageId=userMessageId;
         if(!deferConversationPersistence)await storage.appendMessage({id:response.id,conversationId,ownerId,role:"assistant",content:response.message});
         if(!deferConversationPersistence&&!externalChannel&&context?.voice!==true&&learningService?.observeConversationTurn)await learningService.observeConversationTurn({message,conversationId,userMessageId,assistantMessageId:response.id,runId:run.id,projectId:context.projectId||null}).catch(error=>logger.error("Nova memory candidate extraction failed",{requestId,code:error?.code||"memory_candidate_failed"}));
+        if(!deferConversationPersistence&&!externalChannel&&verifiedOwnerVoice&&learningService?.observeVoiceTurn)await learningService.observeVoiceTurn({verifiedOwner:true,message,conversationId,userMessageId,assistantMessageId:response.id,runId:run.id,projectId:context.projectId||null}).catch(error=>logger.error('Nova voice learning failed',{code:error?.code||'voice_learning_failed'}));
         return response;
       };
       const correlatedRunResult=(response,extra={})=>({message:response.message,requestId:requestId||null,userMessageId,assistantMessageId:response.id,...(response.approval?.id?{approvalId:response.approval.id}:{}),...extra});
