@@ -711,7 +711,7 @@ let voiceMouth=rest;
 const glassPreview=new URLSearchParams(location.search).get('avatar')==='current-glass';
 let glassPreviewOpen=glassPreview;
 const glassSignal=createGlassSignal();
-const glassAvatar=createCurrentGlassAvatar({readSignal:()=>glassSignal.read()});
+const glassAvatar=createCurrentGlassAvatar({readSignal:()=>glassSignal.read(),onDemo:message=>{if(glassPreview&&!voiceSessionDesired)voiceExperienceStatus.textContent=message;}});
 if(glassPreview){document.body.classList.add('current-glass-preview');voiceExperienceStatus.textContent='Current Glass preview · start Nova Voice';}
 // The unrigged portrait is the exact approved still. Never deform it to simulate a turn.
 const portrait={start(){},stop(){},setState(){}};
@@ -737,6 +737,7 @@ function syncVoiceSurface() {
   if(active||glassPreviewOpen) avatar.start(); else avatar.stop();
   const glassStart=document.querySelector('#currentGlassStart');if(glassStart)glassStart.hidden=active;
   if(glassPreview){
+    glassAvatar.setSession(active);
     const wasActive=voiceExperience.dataset.sessionActive==='true';voiceExperience.dataset.sessionActive=String(active);
     voiceMuteButton.hidden=!active;
     document.querySelector('#voiceExperienceEnd').textContent=active?'End conversation':'Back to chat';

@@ -5,6 +5,7 @@ import * as THREE from '../vendor/three.module.min.js';
 export const GLASS_SCENES = Object.freeze([
   ['baseline', 'Current Glass'], ['studio', 'Emerald Studio'],
   ['chamber', 'Reflective Chamber'], ['halo', 'Living Halo'],
+  ['tides','Tidal Currents'], ['aurora','Aurora Weave'],
 ]);
 export function createSceneEnvironment(scene) {
   const uniforms = { uTime:{value:0}, uAspect:{value:1}, uWeights:{value:new THREE.Vector3()},
@@ -49,7 +50,7 @@ export function createSceneEnvironment(scene) {
   mesh.frustumCulled=false;mesh.renderOrder=-100;scene.add(mesh);
   const target=new THREE.Vector3();
   return { update(name,time,dt,aspect,listen,speak,prepare){
-    target.set(name==='studio'?1:0,name==='chamber'?1:0,name==='halo'?1:0);
+    target.set(name==='studio'?1:(name==='tides'||name==='aurora'?.16:0),name==='chamber'?1:0,name==='halo'?1:0);
     uniforms.uWeights.value.lerp(target,1-Math.exp(-dt*5));
     uniforms.uTime.value=time;uniforms.uAspect.value=aspect;
     uniforms.uListen.value=listen;uniforms.uSpeak.value=speak;uniforms.uPrepare.value=prepare;

@@ -1,3 +1,4 @@
+import { createLivingField, createAssemblyParticles } from './livingField.js';
 import { createSceneEnvironment } from "./sceneEnvironment.js";
 import * as THREE from "../vendor/three.module.min.js";
 import { createOpalInterior } from "./opalInterior.js";
@@ -6,13 +7,15 @@ import { CONTOUR_LIGHTING } from "./contourLighting.js";
 import { GLTFLoader } from "../vendor/loaders/GLTFLoader.js";
 // Isolated renderer: the shared GLB is read only; all materials and transforms
 // belong to this preview. No imports from or mutations of Nova's live runtime.
-export function createCoreScene(host, readSignal, readView, onReady, onError, onTelemetry, readVariant = () => "liquid", readInterior = () => false, readInteriorStyle = () => "opal", readAccents = () => ({ hair: false, face: false }), readContours = () => false, readPresence = () => false, readScene = () => "baseline") {
+export function createCoreScene(host, readSignal, readView, onReady, onError, onTelemetry, readVariant = () => "liquid", readInterior = () => false, readInteriorStyle = () => "opal", readAccents = () => ({ hair: false, face: false }), readContours = () => false, readPresence = () => false, readScene = () => "baseline", readEntrance = () => 0) {
     let listeningLight = 0, preparingLight = 0, presenceMix = 0, sceneLight = 0;
     let disposed = false, frame = 0, previous = performance.now(), elapsed = 0;
+    let peakPlayback=0,maxWaves=0;
     let energy = 0, input = 0, output = 0, lastWave = -1, fpsFrames = 0, fpsAt = previous;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color("#020706");
     const environment = createSceneEnvironment(scene);
+    const field=createLivingField(scene), depthMeshes=[];let assembly=null,lastEntrance=0,entranceAt=-10,assemblyProgress=1;
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "low-power" });
     let pixelRatio=Math.min(window.devicePixelRatio,1);
     renderer.setPixelRatio(pixelRatio);
@@ -25,7 +28,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
     const bust = new THREE.Group();
     scene.add(bust);
     const trackedTextures = [];
-    const shellUniforms = { uTime: { value: 0 }, uEnergy: { value: 0 }, uRefined: { value: 1 }, uCoreOrigin: { value: new THREE.Vector3(0, 1.91, .19) }, uPlayback: { value: 0 }, uPulseTimes: { value: new THREE.Vector3(-10, -10, -10) }, uPulseStrengths: { value: new THREE.Vector3(0, 0, 0) }, uMolten: { value: 0 }, uHair: { value: 0 }, uFace: { value: 0 }, uHairMap: { value: null }, uContour: { value: 0 } };
+    const shellUniforms = { uAssemble:{value:1}, uTime: { value: 0 }, uEnergy: { value: 0 }, uRefined: { value: 1 }, uCoreOrigin: { value: new THREE.Vector3(0, 1.91, .19) }, uPlayback: { value: 0 }, uPulseTimes: { value: new THREE.Vector3(-10, -10, -10) }, uPulseStrengths: { value: new THREE.Vector3(0, 0, 0) }, uMolten: { value: 0 }, uHair: { value: 0 }, uFace: { value: 0 }, uHairMap: { value: null }, uContour: { value: 0 } };
     const presenceUniforms = { uPresence: { value: 0 }, uListen: { value: 0 }, uPrepare: { value: 0 }, uSceneLight: { value: 0 }, uMic: { value: 0 } };
     const shell = new THREE.ShaderMaterial({
         uniforms: { ...shellUniforms, ...presenceUniforms }, transparent: true, depthWrite: false, side: THREE.FrontSide,
@@ -33,7 +36,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
       void main(){vP=position;vUv=uv;vec4 mv=modelViewMatrix*vec4(position,1.);vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);gl_Position=projectionMatrix*mv;}`,
         fragmentShader: `varying vec3 vP;varying vec3 vN;varying vec3 vV;varying vec2 vUv;uniform float uTime;uniform float uEnergy;uniform float uContour;
       uniform vec3 uCoreOrigin;uniform float uRefined;uniform float uPlayback;uniform vec3 uPulseTimes;uniform vec3 uPulseStrengths;
-      uniform float uMolten;uniform float uHair;uniform float uFace;uniform sampler2D uHairMap;
+      uniform float uAssemble;uniform float uMolten;uniform float uHair;uniform float uFace;uniform sampler2D uHairMap;
       uniform float uPresence;uniform float uListen;uniform float uPrepare;uniform float uSceneLight;uniform float uMic;
       float travelling(float d,float born,float strength){float age=uTime-born;return exp(-pow((d-age*.72)/.055,2.))*strength*(1.-smoothstep(.65,1.15,age))*step(0.,age);}
       float reflection(float t,float born,float strength){float age=uTime-born;return exp(-pow((t-age*1.7)/.24,2.))*strength*step(0.,age)*(1.-smoothstep(.45,.8,age));}
@@ -126,7 +129,8 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         rgb+=uSceneLight*(emerald*quietFill+champagne*warmRim*.045);
         rgb+=uSceneLight*emerald*(rim*.24+key*.075)*uListen*(.25+min(uMic*5.,1.));
         alpha+=uSceneLight*(.065+key*.08);
-        gl_FragColor=vec4(rgb,clamp(alpha,0.,uContour>.5?.98:.84));
+        float reveal=smoothstep(.65+vP.y*.045,.78+vP.y*.065,uAssemble);
+        gl_FragColor=vec4(rgb,clamp(alpha,0.,uContour>.5?.98:.84)*reveal);
         #include <colorspace_fragment>
       }`,
     });
@@ -278,7 +282,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
     base.rotation.x = -Math.PI / 2;
     base.position.y = -.015;
     scene.add(base);
-    const resize = () => { const w = host.clientWidth, h = host.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.position.z = Math.max(6.6, 4.0 / Math.max(.25, w / h)); camera.updateProjectionMatrix(); };
+    const resize = () => { const w = host.clientWidth, h = host.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.position.z = Math.max(6.6, 4.35 / Math.max(.25, w / h)); camera.updateProjectionMatrix(); };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
     resize();
@@ -298,6 +302,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
             return; const geometry = object.geometry.clone(); geometry.applyMatrix4(object.matrixWorld); geometry.translate(-center.x, -box.min.y, -center.z); geometry.scale(scale, scale, scale); resources.add(geometry); if (!interior) {
             interior = createOpalInterior(geometry);
             molten = createMoltenInterior(geometry);
+            assembly=createAssemblyParticles(geometry,bust);
             const imported = Array.isArray(object.material) ? object.material[0] : object.material;
             const source = imported.map;
             if (source) {
@@ -308,7 +313,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
             }
             bust.add(interior.group, molten.group);
             arrivalAt = elapsed;
-        } const depthMesh = new THREE.Mesh(geometry, shellDepth); depthMesh.renderOrder = 1.5; bust.add(depthMesh); const mesh = new THREE.Mesh(geometry, shell); mesh.renderOrder = 2; bust.add(mesh); });
+        } const depthMesh = new THREE.Mesh(geometry, shellDepth); depthMesh.renderOrder = 1.5; depthMeshes.push(depthMesh); bust.add(depthMesh); const mesh = new THREE.Mesh(geometry, shell); mesh.renderOrder = 2; bust.add(mesh); });
         disposeImported(gltf.scene);
         onReady();
     }, undefined, () => onError("The existing nova.glb could not load. Reload this local preview."));
@@ -338,7 +343,13 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         previous = now;
         elapsed += dt;
         const s = readSignal();
-        const out = s.speaking ? s.playback : 0, mic = s.listening && !s.speaking ? s.microphone : 0;
+        const sceneName=readScene(), enhanced=sceneName==="tides"||sceneName==="aurora";
+        if(assembly && readEntrance()!==lastEntrance){lastEntrance=readEntrance();entranceAt=elapsed;}
+        assemblyProgress=Math.min(1,(elapsed-entranceAt)/5.8);
+        assembly?.update(assemblyProgress,elapsed,pixelRatio);shellUniforms.uAssemble.value=assemblyProgress;
+        depthMeshes.forEach(m=>m.visible=assemblyProgress>.60);
+        coreAnchor.visible=assemblyProgress>.68;coreAnchor.scale.setScalar(Math.min(1,Math.max(0,(assemblyProgress-.68)/.25)));
+        const out = s.speaking ? Math.min(1,s.playback*(enhanced?2.4:1)) : 0, mic = s.listening && !s.speaking ? s.microphone : 0;
         const interiorOn = readInterior();
         const phase = s.speaking ? "speaking" : s.phase ?? (s.listening ? "listening" : "idle");
         const variant = readVariant(), refined = variant !== "baseline", throat = variant === "throat";
@@ -351,7 +362,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         liquidMaterial.uniforms.uMolten.value = moltenLook ? 1 : 0;
         output = s.speaking ? output + (out - output) * (1 - Math.exp(-dt * (out > output ? 28 : 14))) : 0;
         input += (mic - input) * (1 - Math.exp(-dt * 9));
-        const sceneName = readScene();
+
         const target = output * .95 + input * .22;
         energy += (target - energy) * (1 - Math.exp(-dt * 12));
         presenceMix += ((readPresence() ? 1 : 0) - presenceMix) * (1 - Math.exp(-dt * 7));
@@ -409,7 +420,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
             wave.strength = output;
             lastWave = elapsed;
         }
-        if (refined && s.speaking && out > .12 && elapsed - lastContourPulse > .55 && (out - previousOut > .045 || elapsed - lastContourPulse > 1.05)) {
+        if (refined && s.speaking && out > (enhanced?.08:.12) && elapsed - lastContourPulse > (enhanced?.28:.55) && (out - previousOut > .025 || elapsed - lastContourPulse > (enhanced?.68:1.05))) {
             pulseTimes[pulseIndex] = elapsed;
             pulseStrengths[pulseIndex] = Math.min(1, out * 1.5);
             pulseIndex = (pulseIndex + 1) % 3;
@@ -419,6 +430,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
             pulseTimes.fill(-10);
             pulseStrengths.fill(0);
         }
+        field.update(sceneName,elapsed,dt,camera.aspect,listeningLight*Math.min(1,.25+input*6),output,pulseTimes,pulseStrengths,1-assemblyProgress,pixelRatio);
         previousOut = out;
         shellUniforms.uRefined.value = refined ? 1 : 0;
         shellUniforms.uPlayback.value = Math.min(1, output * 3);
@@ -447,15 +459,16 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         const view = readView();
         const yaw = view === "front" ? 0 : view === "quarter" ? -.55 : view === "back" ? Math.PI : Math.sin(elapsed * .24) * .65;
         bust.rotation.y += (yaw - bust.rotation.y) * (1 - Math.exp(-dt * 5));
-        interior?.update(elapsed, dt, phase, output, interiorOn && readInteriorStyle() === "opal");
-        molten?.update(elapsed, dt, phase, output, interiorOn && readInteriorStyle() === "molten");
+        interior?.update(elapsed, dt, phase, output, interiorOn && assemblyProgress>.68 && readInteriorStyle() === "opal");
+        molten?.update(elapsed, dt, phase, output, interiorOn && assemblyProgress>.68 && readInteriorStyle() === "molten");
         // One quiet acknowledgement on arrival; the whole bust moves coherently.
         const arrivalAge = arrivalAt === null ? 10 : elapsed - arrivalAt;
         bust.rotation.x = interiorOn && arrivalAge < 3 ? Math.sin(arrivalAge / 3 * Math.PI) * .018 : 0;
+        peakPlayback=Math.max(peakPlayback,output);maxWaves=Math.max(maxWaves,waveCount);
         renderer.render(scene, camera);
         fpsFrames++;
         if (now - fpsAt > 750) {
-            onTelemetry({ phase, playback: output, microphone: input, scene: sceneName, fps: Math.round(fpsFrames * 1000 / (now - fpsAt)), coreEnergy: Math.round(energy * 100), waveCount });
+            onTelemetry({ phase, peakPlayback,maxWaves, playback: output, microphone: input, scene: sceneName, entrance:Math.round(assemblyProgress*100), fps: Math.round(fpsFrames * 1000 / (now - fpsAt)), coreEnergy: Math.round(energy * 100), waveCount });
             if(now-fpsAt<5000 && elapsed>3 && fpsFrames*1000/(now-fpsAt)<20 && pixelRatio>.65){pixelRatio=Math.max(.65,pixelRatio-.1);renderer.setPixelRatio(pixelRatio);resize();}
             fpsFrames = 0;
             fpsAt = now;
