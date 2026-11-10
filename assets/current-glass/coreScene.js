@@ -1,3 +1,4 @@
+import { createSceneEnvironment } from "./sceneEnvironment.js";
 import * as THREE from "../vendor/three.module.min.js";
 import { createOpalInterior } from "./opalInterior.js";
 import { createMoltenInterior } from "./moltenInterior.js";
@@ -5,25 +6,27 @@ import { CONTOUR_LIGHTING } from "./contourLighting.js";
 import { GLTFLoader } from "../vendor/loaders/GLTFLoader.js";
 // Isolated renderer: the shared GLB is read only; all materials and transforms
 // belong to this preview. No imports from or mutations of Nova's live runtime.
-export function createCoreScene(host, readSignal, readView, onReady, onError, onTelemetry, readVariant = () => "liquid", readInterior = () => false, readInteriorStyle = () => "opal", readAccents = () => ({ hair: false, face: false }), readContours = () => false, readPresence = () => false) {
-    let listeningLight = 0, preparingLight = 0, presenceMix = 0;
+export function createCoreScene(host, readSignal, readView, onReady, onError, onTelemetry, readVariant = () => "liquid", readInterior = () => false, readInteriorStyle = () => "opal", readAccents = () => ({ hair: false, face: false }), readContours = () => false, readPresence = () => false, readScene = () => "baseline") {
+    let listeningLight = 0, preparingLight = 0, presenceMix = 0, sceneLight = 0;
     let disposed = false, frame = 0, previous = performance.now(), elapsed = 0;
     let energy = 0, input = 0, output = 0, lastWave = -1, fpsFrames = 0, fpsAt = previous;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color("#020706");
+    const environment = createSceneEnvironment(scene);
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "low-power" });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+    let pixelRatio=Math.min(window.devicePixelRatio,1);
+    renderer.setPixelRatio(pixelRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     host.appendChild(renderer.domElement);
     renderer.domElement.setAttribute("aria-label", "Rotatable emerald Nova hologram with internal golden core");
     const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 40);
-    camera.position.set(0, 1.96, 5.6);
+    camera.position.set(0, 1.96, 6.6);
     camera.lookAt(0, 1.62, 0);
     const bust = new THREE.Group();
     scene.add(bust);
     const trackedTextures = [];
     const shellUniforms = { uTime: { value: 0 }, uEnergy: { value: 0 }, uRefined: { value: 1 }, uCoreOrigin: { value: new THREE.Vector3(0, 1.91, .19) }, uPlayback: { value: 0 }, uPulseTimes: { value: new THREE.Vector3(-10, -10, -10) }, uPulseStrengths: { value: new THREE.Vector3(0, 0, 0) }, uMolten: { value: 0 }, uHair: { value: 0 }, uFace: { value: 0 }, uHairMap: { value: null }, uContour: { value: 0 } };
-    const presenceUniforms = { uPresence: { value: 0 }, uListen: { value: 0 }, uPrepare: { value: 0 } };
+    const presenceUniforms = { uPresence: { value: 0 }, uListen: { value: 0 }, uPrepare: { value: 0 }, uSceneLight: { value: 0 }, uMic: { value: 0 } };
     const shell = new THREE.ShaderMaterial({
         uniforms: { ...shellUniforms, ...presenceUniforms }, transparent: true, depthWrite: false, side: THREE.FrontSide,
         vertexShader: `varying vec3 vP; varying vec3 vN; varying vec3 vV; varying vec2 vUv;
@@ -31,7 +34,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         fragmentShader: `varying vec3 vP;varying vec3 vN;varying vec3 vV;varying vec2 vUv;uniform float uTime;uniform float uEnergy;uniform float uContour;
       uniform vec3 uCoreOrigin;uniform float uRefined;uniform float uPlayback;uniform vec3 uPulseTimes;uniform vec3 uPulseStrengths;
       uniform float uMolten;uniform float uHair;uniform float uFace;uniform sampler2D uHairMap;
-      uniform float uPresence;uniform float uListen;uniform float uPrepare;
+      uniform float uPresence;uniform float uListen;uniform float uPrepare;uniform float uSceneLight;uniform float uMic;
       float travelling(float d,float born,float strength){float age=uTime-born;return exp(-pow((d-age*.72)/.055,2.))*strength*(1.-smoothstep(.65,1.15,age))*step(0.,age);}
       float reflection(float t,float born,float strength){float age=uTime-born;return exp(-pow((t-age*1.7)/.24,2.))*strength*step(0.,age)*(1.-smoothstep(.45,.8,age));}
       void main(){
@@ -116,6 +119,13 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         float attached=surface*.65+rim*.25+.055;
         rgb+=mix(emerald,vec3(1.,.74,.32),clamp(inward*.35+outward*.65+gathering*.5,0.,.75))*lightAmount*(.32+attached*3.);
         alpha+=lightAmount*(.20+attached*.75);
+        // Soft view-space lighting reveals the approved glass without changing geometry.
+        float key=pow(max(0.,dot(n,normalize(vec3(-.75,.35,.8)))),2.);
+        float warmRim=pow(max(0.,dot(n,normalize(vec3(.8,.12,.55)))),4.);
+        float quietFill=.055+key*.14+fill*.055;
+        rgb+=uSceneLight*(emerald*quietFill+champagne*warmRim*.045);
+        rgb+=uSceneLight*emerald*(rim*.24+key*.075)*uListen*(.25+min(uMic*5.,1.));
+        alpha+=uSceneLight*(.065+key*.08);
         gl_FragColor=vec4(rgb,clamp(alpha,0.,uContour>.5?.98:.84));
         #include <colorspace_fragment>
       }`,
@@ -268,7 +278,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
     base.rotation.x = -Math.PI / 2;
     base.position.y = -.015;
     scene.add(base);
-    const resize = () => { const w = host.clientWidth, h = host.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.position.z = w / h < .8 ? 7 : 5.6; camera.updateProjectionMatrix(); };
+    const resize = () => { const w = host.clientWidth, h = host.clientHeight; renderer.setSize(w, h); camera.aspect = w / h; camera.position.z = Math.max(6.6, 4.0 / Math.max(.25, w / h)); camera.updateProjectionMatrix(); };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
     resize();
@@ -277,7 +287,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
     let molten;
     let arrivalAt = null;
     const loader = new GLTFLoader();
-    loader.load("/assets/current-glass/nova.glb", gltf => {
+    loader.load("/assets/current-glass/nova-display.glb", gltf => {
         if (disposed) {
             disposeImported(gltf.scene);
             return;
@@ -319,7 +329,7 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
             return;
         frame = requestAnimationFrame(animate);
         if (document.hidden) {
-            previous = now;
+            previous = now;fpsFrames=0;fpsAt=now;
             return;
         }
         if (now - previous < 1000 / 30)
@@ -339,8 +349,9 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         shellUniforms.uHair.value = accents.hair ? 1 : 0;
         shellUniforms.uFace.value = accents.face ? 1 : 0;
         liquidMaterial.uniforms.uMolten.value = moltenLook ? 1 : 0;
-        output += (out - output) * (1 - Math.exp(-dt * (out > output ? 28 : 10)));
+        output = s.speaking ? output + (out - output) * (1 - Math.exp(-dt * (out > output ? 28 : 14))) : 0;
         input += (mic - input) * (1 - Math.exp(-dt * 9));
+        const sceneName = readScene();
         const target = output * .95 + input * .22;
         energy += (target - energy) * (1 - Math.exp(-dt * 12));
         presenceMix += ((readPresence() ? 1 : 0) - presenceMix) * (1 - Math.exp(-dt * 7));
@@ -349,6 +360,10 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         presenceUniforms.uPresence.value = presenceMix;
         presenceUniforms.uListen.value = listeningLight;
         presenceUniforms.uPrepare.value = preparingLight;
+        sceneLight += ((sceneName === "baseline" ? 0 : 1) - sceneLight) * (1-Math.exp(-dt*5));
+        presenceUniforms.uSceneLight.value = sceneLight;
+        presenceUniforms.uMic.value = input;
+        environment.update(sceneName,elapsed,dt,camera.aspect,listeningLight*(.25+Math.min(input*5,1)),output,preparingLight);
         const breath = (.035 + presenceMix * .018) * Math.sin(elapsed * .85);
         if (refined) {
             // Neck section measured from the actual GLB: front z ≈ .28, rear ≈ -.39.
@@ -440,7 +455,8 @@ export function createCoreScene(host, readSignal, readView, onReady, onError, on
         renderer.render(scene, camera);
         fpsFrames++;
         if (now - fpsAt > 750) {
-            onTelemetry({ fps: Math.round(fpsFrames * 1000 / (now - fpsAt)), coreEnergy: Math.round(energy * 100), waveCount });
+            onTelemetry({ phase, playback: output, microphone: input, scene: sceneName, fps: Math.round(fpsFrames * 1000 / (now - fpsAt)), coreEnergy: Math.round(energy * 100), waveCount });
+            if(now-fpsAt<5000 && elapsed>3 && fpsFrames*1000/(now-fpsAt)<20 && pixelRatio>.65){pixelRatio=Math.max(.65,pixelRatio-.1);renderer.setPixelRatio(pixelRatio);resize();}
             fpsFrames = 0;
             fpsAt = now;
         }

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 const ASSETS = Object.freeze({
-  ...Object.fromEntries(['current-glass-avatar.js','current-glass-signal.js',...['coreScene.js','opalInterior.js','moltenInterior.js','contourLighting.js','nova.glb'].map(n=>'current-glass/'+n)].map(n=>['/assets/'+n,{file:'../../assets/'+n,type:n.endsWith('.glb')?'model/gltf-binary':'text/javascript; charset=utf-8'}])),
+  ...Object.fromEntries(['current-glass-avatar.js','current-glass-signal.js',...['coreScene.js','opalInterior.js','moltenInterior.js','contourLighting.js','sceneEnvironment.js','nova.glb','nova-display.glb'].map(n=>'current-glass/'+n)].map(n=>['/assets/'+n,{file:'../../assets/'+n,type:n.endsWith('.glb')?'model/gltf-binary':'text/javascript; charset=utf-8'}])),
   "/assets/models/prism-edge.jpg":{file:"../../assets/models/prism-edge.jpg",type:"image/jpeg"},
   "/assets/prism-locks.js":{file:"../../assets/prism-locks.js",type:"text/javascript; charset=utf-8"},
   "/assets/prism-bust.js":{file:"../../assets/prism-bust.js",type:"text/javascript; charset=utf-8"},

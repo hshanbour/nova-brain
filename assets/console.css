@@ -119,3 +119,40 @@
 #immersiveAvatarSlot>canvas:not([hidden]),#workspaceAvatarSlot>canvas:not([hidden]){width:100%;height:100%;display:block}#voiceExperience .voice-experience-shell{overflow-y:auto;max-height:100dvh}#novaCamera button{white-space:nowrap}
 
 #prismGalleryOriginal:not([hidden]){display:block;width:100%;height:100%;object-fit:contain}
+
+/* Current Glass scene comparison: visual surface only; shared Voice controls. */
+.current-glass-preview .voice-experience{padding:0;background:#020706}
+.current-glass-preview #voiceExperience .voice-experience-shell{position:relative;width:100%;height:100dvh;min-height:0;max-height:none;padding:0;overflow:hidden;border:0;border-radius:0;background:#020706;box-shadow:none;display:block}
+.current-glass-preview #immersiveAvatarSlot{position:absolute;inset:0;width:100%;height:100%;aspect-ratio:auto;filter:none}
+.current-glass-preview .voice-experience-heading{position:absolute;top:max(24px,env(safe-area-inset-top));left:clamp(20px,4vw,64px);width:auto;z-index:2;pointer-events:none}
+.current-glass-preview .voice-experience-heading h2{font-size:28px;letter-spacing:.08em;font-weight:500;color:#e4d8b8;margin:0}
+.current-glass-preview .voice-experience-heading .eyebrow{font-size:10px;letter-spacing:.22em;color:#8eaf9f;margin-bottom:8px}
+.current-glass-preview .voice-experience-status{position:absolute;bottom:calc(86px + env(safe-area-inset-bottom));left:12px;right:12px;text-align:center;color:#bfd6c9;z-index:2;font-size:13px;text-shadow:0 1px 8px #000}
+.current-glass-preview .voice-experience-status:before{content:'';display:inline-block;width:6px;height:6px;background:#a7c6b6;border-radius:50%;margin:0 9px 2px 0}
+.current-glass-preview [data-state='listening'] .voice-experience-status:before{background:#35e6aa;box-shadow:0 0 10px #35e6aa}
+.current-glass-preview [data-state='speaking'] .voice-experience-status:before{background:#efcb86;box-shadow:0 0 10px #efcb86}
+.current-glass-preview .voice-experience-controls{position:absolute;bottom:calc(20px + env(safe-area-inset-bottom));left:12px;right:12px;z-index:5;gap:8px}
+.current-glass-preview #voiceExperience button,.current-glass-preview #voiceExperience select{min-height:44px;border-radius:24px;border:1px solid #355546;background:rgba(5,22,17,.94);color:#d7dfd3;font:inherit;font-size:13px;padding:10px 17px;cursor:pointer}
+.current-glass-preview #voiceExperience button:hover{border-color:#cab780;background:#102c21}
+.current-glass-preview #voiceExperience button:focus-visible,.current-glass-preview #voiceExperience select:focus-visible{outline:2px solid #e1c48a;outline-offset:3px}
+.current-glass-preview #voiceExperience button[aria-pressed=true]{border-color:#e1c48a;color:#ffe3a7}
+.current-glass-preview #voiceExperience #currentGlassStart{background:#dfc28c;color:#10221a;border-color:#f1d7a6;font-weight:600}
+.current-glass-preview #voiceExperience #voiceExperienceEnd{border-color:#826a4b;color:#e8cfab}
+.current-glass-preview .glass-settings{position:absolute;right:max(20px,env(safe-area-inset-right));bottom:calc(132px + env(safe-area-inset-bottom));z-index:4;width:min(340px,calc(100% - 40px));padding:18px;background:rgba(3,16,12,.97);border:1px solid #355546;border-radius:20px;box-shadow:0 16px 60px #0008;display:grid;gap:12px;max-height:calc(100dvh - 220px);overflow:auto}
+.current-glass-preview .glass-settings[hidden]{display:none}
+.glass-scene-settings{display:grid;gap:14px}.glass-scene-settings label{display:grid;gap:7px;color:#c4cbb8;font-size:12px}.glass-scene-settings nav{display:flex;gap:4px;flex-wrap:wrap}
+.current-glass-preview #voiceExperience .glass-scene-settings nav button{font-size:11px;padding:8px 10px;flex:1;white-space:nowrap}
+.current-glass-preview #novaCamera{font-size:11px;color:#9bb1a5}.current-glass-preview #novaCamera small{display:block;margin-top:8px;line-height:1.5}
+.current-glass-preview .voice-experience-transcript{position:absolute;left:50%;transform:translateX(-50%);bottom:128px;width:min(600px,calc(100% - 32px));max-height:26vh;z-index:3;border-color:#355546;background:#03100cee;color:#d9e5dc;box-sizing:border-box}
+.current-glass-preview .voice-experience-transcript p:last-child{color:#ead3a1}
+.current-glass-preview .nova-current-glass-status{top:100px;left:20px;z-index:2;color:#e5c78d}
+.current-glass-preview .voice-experience[data-state='muted'] .voice-presence{opacity:1;filter:none}
+.current-glass-preview [data-session-active='false'] #voiceMuteButton{display:none}
+@media(max-width:600px){.current-glass-preview .voice-experience-heading{top:max(16px,env(safe-area-inset-top));left:20px}.current-glass-preview .voice-experience-heading h2{font-size:22px}.current-glass-preview .voice-experience-heading .eyebrow{font-size:8px}.current-glass-preview #voiceExperience .voice-experience-controls button{padding:10px 12px;font-size:12px}.current-glass-preview .voice-experience-status{font-size:12px}.current-glass-preview .glass-settings{right:16px;width:calc(100% - 32px);box-sizing:border-box}.current-glass-preview #voiceExperience #currentGlassStart{padding:10px 14px}}
+@media(max-height:500px){.current-glass-preview .voice-experience-heading .eyebrow{display:none}.current-glass-preview .glass-settings{bottom:78px;max-height:calc(100dvh - 100px)}.current-glass-preview .voice-experience-status{bottom:70px}.current-glass-preview .voice-experience-controls{bottom:12px}}
+
+
+.current-glass-preview #immersiveAvatarSlot{inset:0;width:100%;height:100%}
+
+.current-glass-preview #voiceExperience .voice-experience-controls button{width:auto;min-width:44px;white-space:nowrap;flex:0 0 auto}
+@media(max-width:370px){.current-glass-preview #voiceExperience .voice-experience-controls button{padding:10px 9px;font-size:11px}}
