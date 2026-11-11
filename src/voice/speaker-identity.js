@@ -84,6 +84,11 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
     async getByEnrollmentAttempt(enrollmentAttemptId){return publicProfile(await storage.getSpeakerProfileByEnrollmentAttempt(ownerId,enrollmentAttemptId));},
     async isActiveProfile(id) { if(!id)return false;return (await storage.listSpeakerProfiles(ownerId)).some((profile)=>profile.id===id&&profile.status==="active"); },
     async candidateCount() { return (await storage.listSpeakerProfiles(ownerId)).filter((profile)=>profile.status==="active").length; },
+    async enrollmentReadiness() {
+      const profiles=(await storage.listSpeakerProfiles(ownerId,{includeRepresentation:true})).filter(profile=>profile.status==='active');
+      const readable=profiles.filter(profile=>Boolean(reveal(profile.representation)));
+      return {activeProfiles:profiles.length,readableProfiles:readable.length,unreadableProfiles:profiles.length-readable.length,readableOwnerProfiles:readable.filter(profile=>profile.relation==='owner').length};
+    },
     async privacyStatus() { return storage.speakerPrivacyStatus(ownerId); },
     async purgeInvalidOwnerEnrollment() { return storage.purgeInvalidOwnerSpeakerEnrollment(ownerId); },
     async update(id, patch) {

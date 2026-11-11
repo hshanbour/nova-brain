@@ -7,7 +7,10 @@ export function createEcapaSpeakerEngine({ extractor, identity } = {}) {
     version: "speechbrain-ecapa",
     authoritative: true,
     configured: Boolean(extractor.configured),
-    readiness: () => extractor.readiness(),
+    async readiness() {
+      const [worker,enrollment]=await Promise.all([extractor.readiness(),identity.enrollmentReadiness?.()]);
+      return {...worker,...(enrollment?{enrollment}:{})};
+    },
     async recognize(input, { requestId, transcriptPromise, readyPromise, signal, speakerCalibration } = {}) {
       try {
         const [extracted, transcription] = await Promise.all([extractor.extract(input, { requestId, signal }), transcriptPromise, readyPromise]);

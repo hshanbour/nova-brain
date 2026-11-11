@@ -776,7 +776,7 @@ export function createApi({
             return;
           }
           const speaker = await (recognitionEngines?.readiness?.() || speakerExtractor?.readiness?.() || Promise.resolve({ status: "Missing", available: false }));
-          logger.info("Nova speaker worker warm-up completed", { requestId, status: speaker.status, available: speaker.available, latencyMs: speaker.latencyMs });
+          logger.info("Nova speaker worker warm-up completed", { requestId, status: speaker.status, available: speaker.available, latencyMs: speaker.latencyMs, errorCode: speaker.errorCode, enrollment: speaker.enrollment });
           sendJson(response, 200, { speakerRecognition: speaker });
           return;
         }
