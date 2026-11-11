@@ -4,6 +4,7 @@ export function createMultilingualMemoryStorage({storage,translateQuery,clock=Da
   const cache=new Map();
   return Object.freeze({...storage,
     async retrieveMemories(ownerId,query,options={}) {
+      if(options.skipTranslation)return storage.retrieveMemories(ownerId,query,options);
       const text=String(query||'').trim().slice(0,1200),key=JSON.stringify([ownerId,text]);
       let entry=cache.get(key),expansion='';
       if(entry&&entry.expires>clock())expansion=entry.value;

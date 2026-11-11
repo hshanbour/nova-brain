@@ -464,7 +464,7 @@ export function createAgent({
           context:trustedContext,
           systemContext,
           conversationHistory,
-          tools: externalChannel||phoneCallProfile||memoryOnly ? [] : speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>allowsMemoryMutation(tool.name,message)&&(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
+          tools: externalChannel||phoneCallProfile||speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>(!memoryOnly||tool.name==='memory_search')&&allowsMemoryMutation(tool.name,message)&&(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
           toolResults,
           continuationToken,
           signal: executionSignal,
@@ -533,7 +533,7 @@ export function createAgent({
           try {
             executionSignal.throwIfAborted();
             if(speakerRestricted||externalChannel||phoneCallProfile)throw Object.assign(new Error("This speaker cannot execute owner tools."),{code:"speaker_tool_forbidden"});
-            if(memoryOnly)throw Object.assign(new Error('This request is limited to the already retrieved active memory; no external or archive tools are authorized.'),{code:'memory_only_request'});
+            if(memoryOnly&&call.name!=='memory_search')throw Object.assign(new Error('This request is limited to active saved memory; no writes, external or archive tools are authorized.'),{code:'memory_only_request'});
             if(!allowsMemoryMutation(call.name,message))throw Object.assign(new Error('This read-only question does not authorize a memory write. Ask for an explicit save, correction or deletion request.'),{code:'memory_write_request_required'});
             if(allowedTaskTools&&!allowedTaskTools.has(call.name))throw Object.assign(new Error("Existing-task control cannot invoke this tool."),{code:"task_control_tool_forbidden"});
             if(!allowedTaskTools&&ROUTED_CREATION_TOOLS.has(call.name))throw Object.assign(new Error("Durable creation requires the authoritative turn-routing path."),{code:"task_control_tool_forbidden"});
