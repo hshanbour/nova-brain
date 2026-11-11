@@ -20,6 +20,7 @@ export function createRealtimeVoice({
   onResult = () => {},
   onSpeaker = () => {},
   onPrivacyPause = () => {},
+  onVerificationNeeded = () => {},
   onState = () => {},
   onTiming = () => {},
   onInputLevel = () => {},
@@ -33,14 +34,14 @@ export function createRealtimeVoice({
   let active = false, generation = 0, pc, channel, stream, remoteAudio, inputMeter, outputMeter;
   let lastTranscript = "", lastSpeechEndedAt = 0, assistantTranscript = "", lastAssistantTranscript = "", toolInFlight = false, muted = false;
   let playbackActive=false, serial=Promise.resolve(),speechTurn=0,inSpeech=false,responseOpen=false,followup=false;
-  let replyLanguage = null, privacyGate=false, guestMode=false;
+  let replyLanguage = null, privacyGate=false, guestMode=false, privateTurnAuthorized=false;
   const handledCalls=new Set(),turns=new Map(),responses=new Map(),responseTranscripts=new Map();let latestTurn=null;
   const isCurrentTurn = utterance => !utterance?.superseded && (!utterance || utterance.seq === speechTurn);
   function supersedeTurn() { if(latestTurn)latestTurn.superseded=true;followup=false; }
   function finishSuperseded(call) { sendEvent({type:"conversation.item.create",item:{type:"function_call_output",call_id:call.call_id,output:JSON.stringify({status:"superseded",message:"The user interrupted or changed direction. Do not speak this stale result. Follow the latest turn; no new action was authorised."})}}); }
   const trim=m=>{while(m.size>32)m.delete(m.keys().next().value)};
   function flushFollowup(){if(followup&&!inSpeech&&!responseOpen&&active){followup=false;responseOpen=true;sendEvent({type:"response.create",response:{tool_choice:"none"}});}}
-  let turnRecorder = null, turnStartedAt = 0, speakerPromise = null;
+  let turnRecorder = null, turnStartedAt = 0, speakerPromise = null, localSpeechAt=0;
 
   const publish = (state, detail = {}) => onState({ active, state, mode: "realtime", ...detail });
   const valid = (current) => active && current === generation;
@@ -55,7 +56,14 @@ export function createRealtimeVoice({
       const acquired=await requestMicrophone();
       if (!valid(current)) { stopTracks(acquired); return false; }
       stream=acquired;
-      inputMeter = createAudioMeter({ AudioContextImpl, stream, onLevel: onInputLevel });
+      inputMeter = createAudioMeter({ AudioContextImpl, stream, onLevel(level) {
+        onInputLevel(level);
+        // Prime from local microphone energy, not a delayed remote VAD event.
+        // This is capture only: server speech quality and identity still decide access.
+        if(!active||muted||channel?.readyState!=="open")return;
+        if(level>=0.06){localSpeechAt=now();if(!turnRecorder)startTurnRecording();}
+        if(turnRecorder&&!inSpeech&&(now()-localSpeechAt>800||now()-turnStartedAt>4000))discardTurnRecording();
+      } });
       void fetchImpl("/api/voice/speaker/readiness", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
       const sessionResponse = await fetchImpl("/api/voice/realtime/session", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: guestMode ? null : getConversationId(), mode:guestMode?"guest":"owner",...(guestMode?{guestApproval}:{} ) }) });
       const session = await sessionResponse.json().catch(() => null);
@@ -144,10 +152,18 @@ export function createRealtimeVoice({
         if(!valid(current)||!isCurrentTurn(utterance))return;
         if(speaker)onSpeaker(speaker);
         if(!privacyGate)return;
+        // A short first utterance is not an identity mismatch. No private context
+        // has entered this session yet; keep the gate shut and request more speech.
+        if(!privateTurnAuthorized&&['insufficient_speech','non_speech'].includes(speaker?.match_status)){
+          if(event.item_id)sendEvent({type:'conversation.item.delete',item_id:event.item_id});
+          publish('listening',{phase:'verification-needs-speech'});
+          onVerificationNeeded();return;
+        }
         let authorized=false;
         try { const r=await fetchImpl('/api/voice/realtime/authorize-turn',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker})});authorized=r.ok&&(await r.json()).authorized===true; } catch {}
         if(!valid(current)||!isCurrentTurn(utterance))return;
         if(!authorized){end();publish('privacy-paused');onPrivacyPause();return;}
+        privateTurnAuthorized=true;
         if(utterance)utterance.verifiedSpeaker=speaker;
         sendEvent({type:'response.create'});
       });
@@ -264,17 +280,24 @@ export function createRealtimeVoice({
     } catch { turnRecorder = null; }
   }
 
+  function discardTurnRecording(){
+    const recorder=turnRecorder;turnRecorder=null;
+    try{if(recorder&&recorder.state!=="inactive")recorder.stop();}catch{}
+  }
+
   function stopTurnRecording(current,utterance) {
     const recorder = turnRecorder;
     turnRecorder = null;
     if (!recorder || recorder.state === "inactive") return Promise.resolve(null);
-    const durationSeconds=Math.max(.2,(now()-turnStartedAt)/1000);
+    const durationSeconds=Math.max(0,(now()-turnStartedAt)/1000);
     return new Promise((resolve) => {
       recorder.addEventListener("stop", async () => {
         try {
           const audio = new Blob(recorder._novaChunks || [], { type: recorder.mimeType || "audio/webm" });
           if(!valid(current))return resolve(null);
-          if (!audio.size || durationSeconds < 0.8) return resolve(null);
+          onTiming({stage:'speaker-capture',measurements:{capturedAudioMs:Math.round(durationSeconds*1000)}});
+          if (!audio.size) return resolve(null);
+          if (durationSeconds < 0.8) return resolve({match_status:'insufficient_speech',authenticated_identity:'none'});
           const audioBase64 = bytesToBase64(new Uint8Array(await audio.arrayBuffer()));
           await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
           if(!valid(current)||utterance?.conversationId&&utterance.conversationId!==getConversationId())return resolve(null);
@@ -299,7 +322,7 @@ export function createRealtimeVoice({
 
   function cleanup() {
     try { if (turnRecorder && turnRecorder.state !== "inactive") turnRecorder.stop(); } catch {}
-    turnRecorder = null;
+    turnRecorder = null;privateTurnAuthorized=false;localSpeechAt=0;
     try { channel?.close?.(); } catch {}
     try { pc?.close?.(); } catch {}
     stopTracks(stream);

@@ -55,6 +55,6 @@ function compare(authoritative, shadow) {
   return authoritative.status === shadow.status && authoritative.candidateProfileId === shadow.candidateProfileId ? "agree" : "disagree";
 }
 
-function telemetry(result) { return { engineId: result.engineId, status: result.status, confidence: result.confidence, candidateCategory: result.category, latencyMs: result.latencyMs, error: result.error }; }
+function telemetry(result) { return { engineId: result.engineId, status: result.status, confidence: result.confidence, candidateCategory: result.category, latencyMs: result.latencyMs, error: result.error, diagnostics:safeDiagnostics(result.diagnostics) }; }
 const SAFE_DIAGNOSTICS=new Set(["totalAudioDurationSeconds","voicedDurationSeconds","silenceRatio","sampleRate","channelCount","preprocessingVersion","qualityGateReason","voicedSegmentCount","longestVoicedSegmentSeconds","clippingRatio","noiseFloorRms","activeThresholdRms","speechRms","peakRms","peakToNoiseDb"]);
 function safeDiagnostics(value) { const safe = {}; for (const [key, item] of Object.entries(value || {})) if (SAFE_DIAGNOSTICS.has(key) && (item === null || ["string", "number", "boolean"].includes(typeof item))) safe[key] = item; return safe; }

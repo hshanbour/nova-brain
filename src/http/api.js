@@ -332,7 +332,7 @@ export function createApi({
           else if(service==="scheduler")authorizeSocialScheduler(request,config.socialSchedulerToken);
           else if(!service) {
             try {
-              const actor=await authorizeConsole(request);
+              const actor=await authorizeConsole(request,response);
               if(actor?.role!=="owner"||actor.ownerId!==ownerId||actor.workspaceId!==ownerId)throw Object.assign(new Error("Workspace access denied."),{statusCode:403,code:"console_workspace_forbidden"});
             } catch(error) {
               sendJson(response,error.statusCode||401,{error:"Verified Nova workspace sign-in is required.",code:error.code||"console_identity_required"});return;

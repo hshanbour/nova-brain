@@ -30,19 +30,20 @@ export function createPreviewAuth({environment,serverFactory=createAuthServer,pr
       getOrigin:()=>req.headers.origin||'',getFramework:()=> 'nova-node',
     })});
   }
-  const authorize=async req=>{
+  const authorize=async (req,res)=>{
     if(!req.headers.cookie)throw new ConsoleAccessError('console_identity_required');
-    let result;try{result=await server(req).getSession({query:{disableCookieCache:'true'}});}catch{throw new ConsoleAccessError('console_identity_unavailable',503);}
+    let result;try{result=await server(req,res).getSession({query:{disableCookieCache:'true'}});}catch{throw new ConsoleAccessError('console_identity_unavailable',503);}
+    if(result?.error&&!([401,403].includes(result.error.status)))throw new ConsoleAccessError('console_identity_unavailable',503);
     return workspaceActor(result?.data,environment,workspaceId);
   };
   return {authorize,verifyGuestGrant,async handle(req,res){
     const pathname=new URL(req.url,'https://preview.invalid').pathname;
     if(pathname==='/api/preview/isolation'&&req.method==='GET'){
-      if(!synthetic){try{await authorize(req);json(res,200,{synthetic:false,existingWorkspace:true,authUrl:PREVIEW_AUTH_URL,gitBranch:environment.VERCEL_GIT_COMMIT_REF,externalActions:false,privatePhone:false,whatsappSending:false});}catch{json(res,401,{error:'Sign-in required.'});}return true;}
+      if(!synthetic){try{await authorize(req,res);json(res,200,{synthetic:false,existingWorkspace:true,authUrl:PREVIEW_AUTH_URL,gitBranch:environment.VERCEL_GIT_COMMIT_REF,externalActions:false,privatePhone:false,whatsappSending:false});}catch(e){json(res,e.statusCode||401,{error:'Session verification required.'});}return true;}
       try{const sql=neon(environment.DATABASE_URL);await assertSyntheticDatabase(statement=>sql.query(statement));json(res,200,{synthetic:true,databaseVerified:true,neonBranch:PREVIEW_NEON_BRANCH,authUrl:PREVIEW_AUTH_URL,gitBranch:environment.VERCEL_GIT_COMMIT_REF,externalActions:false,privatePhone:false,whatsappSending:false});}catch{json(res,503,{error:'Preview isolation verification failed.'});}return true;
     }
     if(pathname==='/api/preview/session'){
-      try{const actor=await authorize(req);json(res,200,{workspaceId:actor.workspaceId,synthetic,externalActions:false});}catch(e){json(res,e.statusCode||401,{code:e.code||'console_identity_required'});}return true;
+      try{const actor=await authorize(req,res);json(res,200,{workspaceId:actor.workspaceId,synthetic,externalActions:false});}catch(e){json(res,e.statusCode||401,{code:e.code||'console_identity_required'});}return true;
     }
     if(!pathname.startsWith('/api/auth/'))return false;
     const path=pathname.slice('/api/auth/'.length);
@@ -57,6 +58,7 @@ export function createPreviewAuth({environment,serverFactory=createAuthServer,pr
       // Only local return paths; do not forward arbitrary redirects or plugins.
       delete body.callbackURL;delete body.redirectTo;
       const proxyPath=path==='approve-guest'?'sign-in/email':path;
+      if(proxyPath==='sign-in/email')body.rememberMe=true;
       const response=await proxy({...config,path:proxyPath,request:new Request(`${origin}/api/auth/${proxyPath}`,{method:'POST',headers:{'content-type':'application/json',origin,cookie:extractNeonAuthCookies(req.headers.cookie||'')},body:JSON.stringify(body)})});
       const cookies=response.headers.getSetCookie();if(cookies.length)res.setHeader('Set-Cookie',cookies);
       if(path==='approve-guest'){
