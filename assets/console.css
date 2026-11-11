@@ -159,6 +159,7 @@
 .current-glass-preview #voiceExperience button[hidden]{display:none!important}
 
 /* Analysis is independent of the avatar and does not restart the voice session. */
+.voice-results code{white-space:normal;overflow-wrap:anywhere}.voice-results pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .voice-results-toggle{position:absolute;right:20px;top:88px;z-index:7}
 .voice-results{position:absolute;right:18px;top:138px;bottom:125px;width:min(430px,45%);box-sizing:border-box;z-index:8;padding:18px;overflow:auto;background:rgba(4,19,15,.97);border:1px solid #537560;border-radius:16px;color:#e5f3eb;box-shadow:0 12px 38px #0008;overflow-wrap:anywhere}
 .voice-results[hidden]{display:none}.voice-results header{display:flex;align-items:center;justify-content:space-between;gap:12px}.voice-results h2{font-size:20px;margin:0}.voice-results h3{font-size:15px}.voice-results p,.voice-results li{font-size:14px;line-height:1.55}.voice-results small{display:block;color:#b9cbbf;font-size:11px}.voice-results a{color:#eed49e}.voice-results-receipt{color:#c9bb93;font-size:11px!important}.voice-results button{min-height:44px}
