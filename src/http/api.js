@@ -233,6 +233,7 @@ export function createApi({
   realtimeVoiceService,
   realtimeAccountContext = false,
   continuityPreview = false,
+  connectedPreview = false,
   speakerIdentity,
   speakerExtractor,
   speakerEngines,
@@ -319,7 +320,7 @@ export function createApi({
 
       try {
         if(previewAuth&&await previewAuth.handle(request,response))return;
-        if(continuityPreview&&!continuityRouteAllowed(pathname,request.method)){sendJson(response,403,{error:'Outbound actions, phone and worker routes are disabled in this review Preview.',code:'preview_action_disabled'});return;}
+        if(continuityPreview&&!continuityRouteAllowed(pathname,request.method,{connected:connectedPreview})){sendJson(response,403,{error:'Outbound actions, phone and worker execution are held in this Preview.',code:'preview_action_disabled'});return;}
         if(syntheticPreview&&!syntheticRouteAllowed(pathname,request.method)){
           sendJson(response,403,{error:'This isolated sign-in Preview permits synthetic workspace and memory tests only. External actions, Voice, phone, workers and messaging are disabled.',code:'synthetic_actions_disabled'});return;
         }
@@ -337,6 +338,9 @@ export function createApi({
               sendJson(response,error.statusCode||401,{error:"Verified Nova workspace sign-in is required.",code:error.code||"console_identity_required"});return;
             }
           }
+        }
+        if(connectedPreview&&request.method==='POST'&&['/api/admin/worker/auto-dispatch/next','/api/admin/worker/sharp-cuts/whatsapp/tick'].includes(pathname)){
+          sendJson(response,200,{dispatched:false,channels:[],worked:false,held:true,reason:'connected_preview_recovery_hold'});return;
         }
         if (request.method === "POST" && pathname.startsWith("/api/internal/phone/gpt-live-round2/")) {
           if (!gptLiveRound2 || !gptLiveRound2Authorization(request)) {
@@ -787,6 +791,9 @@ export function createApi({
           }
           const safetyIdentifier = createHash("sha256").update(`nova-realtime:${ownerId}`).digest("hex");
           const sessionInput=await readJsonBody(request,config.maxBodyBytes);
+          if(connectedPreview&&sessionInput.mode==='guest'&&!previewAuth?.verifyGuestGrant(sessionInput.guestApproval)){
+            sendJson(response,403,{error:'Owner sign-in approval is required for a public guest session.',code:'guest_owner_approval_required'});return;
+          }
           if(continuityPreview&&sessionInput.mode!=='guest'&&(!speakerAssertions?.configured||!config.speakerRecognition?.embeddingKey||!config.speakerRecognition?.token||!config.speakerRecognition?.endpoint)){
             sendJson(response,503,{code:'private_voice_configuration_required',error:'Private Voice is paused: the existing speaker-verification credentials must be securely bound to this Preview. No voice session was started.'});return;
           }
@@ -1532,7 +1539,12 @@ export function createApi({
             100,
           );
           sendJson(response, 200, {
-            conversations: await storage.listConversations(ownerId, { limit }),
+            ...await (async()=>{
+              const offset=validateListOffset(url.searchParams.get('offset'));
+              const query=String(url.searchParams.get('q')||'').trim().slice(0,160);
+              const records=await storage.listConversations(ownerId,{limit:limit+1,offset,query});
+              return {conversations:records.slice(0,limit),nextOffset:records.length>limit?offset+limit:null};
+            })(),
           });
           return;
         }

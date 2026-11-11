@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {continuityPreviewEnvironment,continuityToolAllowed,EXISTING_WORKSPACE_BRANCH,EXISTING_WORKSPACE_ENDPOINT} from './identity/continuity-preview.js';
+import {registerProjectActivityReport} from './tools/project-activity-report.js';
 import { createAgent } from "./agent/agent.js";
 import { readConfig } from "./config/env.js";
 import { createApi } from "./http/api.js";
@@ -169,6 +170,7 @@ export function createApp({
     logger,
   });
   registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID, projectService, projectOnboarding });
+  registerProjectActivityReport(toolRegistry,{storage,ownerId:OWNER_ID});
   const gmailService = createGmailService({
     config,
     storage,
@@ -428,6 +430,7 @@ export function createApp({
     authorizeConsole:authorizeConsoleOverride||previewAuth?.authorize||createConsoleAccess({environment,ownerId:OWNER_ID}).authorize,
     previewAuth,
     continuityPreview:continuity.continuity,
+    connectedPreview:continuity.connected===true,
     realtimeAccountContext: environment.VERCEL_ENV === "preview",
     agent,
     config,

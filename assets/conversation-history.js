@@ -40,9 +40,22 @@ export function createConversationBindingState() {
 
 export function createConversationHistory({ client, api, storage = localStorage, key = defaultKey } = {}) {
   let conversations = [];
-  async function refresh() {
-    const result = await api.conversations();
+  let query='', nextOffset=null, revision=0;
+  async function refresh(options={}) {
+    if(options.query!==undefined)query=String(options.query).trim().slice(0,160);
+    const current=++revision;
+    const result = await api.conversations({query,offset:0,limit:20});
+    if(current!==revision)return conversations;
+    nextOffset=result.nextOffset??null;
     conversations = newestConversations(Array.isArray(result?.conversations) ? result.conversations : []);
+    return conversations;
+  }
+  async function more(){
+    if(nextOffset===null)return conversations;
+    const current=revision,offset=nextOffset,result=await api.conversations({query,offset,limit:20});
+    if(current!==revision||offset!==nextOffset)return conversations;
+    nextOffset=result.nextOffset??null;
+    conversations=newestConversations([...new Map([...conversations,...(result.conversations||[])].map(c=>[c.id,c])).values()]);
     return conversations;
   }
   async function load(id) {
@@ -74,5 +87,5 @@ export function createConversationHistory({ client, api, storage = localStorage,
     try { return { id, messages: await select(id) }; }
     catch (error) { startNew(); throw error; }
   }
-  return Object.freeze({ refresh, load, select, startNew, restore, get conversations() { return conversations; } });
+  return Object.freeze({ refresh, more, load, select, startNew, restore, get hasMore(){return nextOffset!==null;},get query(){return query;}, get conversations() { return conversations; } });
 }

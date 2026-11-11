@@ -158,14 +158,16 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       messages.set(id, []);
       return copy(conversation);
     },
-    async listConversations(ownerId, { limit = 20 } = {}) {
+    async listConversations(ownerId, { limit = 20, offset = 0, query = '' } = {}) {
+      const term=String(query).trim().toLowerCase();
       return [...conversations.values()]
         .filter((item) => item.ownerId === ownerId)
+        .filter(item=>!term||String(item.title||'').toLowerCase().includes(term)||(messages.get(item.id)||[]).some(m=>m.ownerId===ownerId&&m.content.toLowerCase().includes(term)))
         .sort(
           (a, b) =>
             b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id),
         )
-        .slice(0, limit)
+        .slice(offset, offset + limit)
         .map(copy);
     },
     async searchConversationMessages(ownerId,{terms=[],excludeConversationId=null,limit=12}={}) {

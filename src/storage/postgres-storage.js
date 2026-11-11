@@ -466,11 +466,14 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
       );
       return conversationRow(rows[0]);
     },
-    async listConversations(ownerId, { limit = 20 } = {}) {
+    async listConversations(ownerId, { limit = 20, offset = 0, query = '' } = {}) {
       return (
         await run(
-          "SELECT * FROM nova_conversations WHERE owner_id=$1 ORDER BY updated_at DESC, id ASC LIMIT $2",
-          [ownerId, limit],
+          `SELECT c.* FROM nova_conversations c WHERE c.owner_id=$1
+           AND ($4='' OR strpos(lower(COALESCE(c.title,'')),lower($4))>0
+             OR EXISTS(SELECT 1 FROM nova_messages m WHERE m.conversation_id=c.id AND m.owner_id=$1 AND strpos(lower(m.content),lower($4))>0))
+           ORDER BY c.updated_at DESC, c.id ASC LIMIT $2 OFFSET $3`,
+          [ownerId, limit, offset, String(query).trim().slice(0,160)],
         )
       ).map(conversationRow);
     },

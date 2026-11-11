@@ -1,4 +1,4 @@
-import {hkdfSync} from 'node:crypto';
+import {hkdfSync,createHmac,timingSafeEqual} from 'node:crypto';
 import {neon} from '@neondatabase/serverless';
 import {createAuthServer,handleAuthProxyRequest,extractNeonAuthCookies,serializeSetCookie} from '@neon/auth/server';
 import {PREVIEW_AUTH_URL,SYNTHETIC_OWNER_ID,assertSyntheticDatabase,PREVIEW_NEON_BRANCH} from './synthetic-preview.js';
@@ -20,6 +20,8 @@ export function createPreviewAuth({environment,serverFactory=createAuthServer,pr
   const password=new URL(environment.DATABASE_URL).password;
   const cookieSecret=Buffer.from(hkdfSync('sha256',Buffer.from(password),'nova-preview-auth','session-cache-v1',32)).toString('base64');
   const config={baseUrl:PREVIEW_AUTH_URL,cookieSecret,sessionDataTtl:30,sameSite:'strict',log:silent};
+  function guestGrant(){const payload=Buffer.from(JSON.stringify({workspaceId,subject:environment.NOVA_PREVIEW_OWNER_SUBJECT,expires:Date.now()+90000,purpose:'public-guest-only'})).toString('base64url');return `${payload}.${createHmac('sha256',cookieSecret).update('guest:'+payload).digest('base64url')}`;}
+  function verifyGuestGrant(value){try{const [payload,signature,...extra]=String(value||'').split('.');if(extra.length||!payload||!signature)return false;const actual=Buffer.from(signature,'base64url'),expected=createHmac('sha256',cookieSecret).update('guest:'+payload).digest();if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return false;const data=JSON.parse(Buffer.from(payload,'base64url').toString());return data.workspaceId===workspaceId&&data.subject===environment.NOVA_PREVIEW_OWNER_SUBJECT&&data.purpose==='public-guest-only'&&data.expires>Date.now()&&data.expires<Date.now()+91000;}catch{return false;}}
   function server(req,res){
     return serverFactory({...config,context:()=>({
       getCookies:()=>extractNeonAuthCookies(req.headers.cookie||''),
@@ -33,7 +35,7 @@ export function createPreviewAuth({environment,serverFactory=createAuthServer,pr
     let result;try{result=await server(req).getSession({query:{disableCookieCache:'true'}});}catch{throw new ConsoleAccessError('console_identity_unavailable',503);}
     return workspaceActor(result?.data,environment,workspaceId);
   };
-  return {authorize,async handle(req,res){
+  return {authorize,verifyGuestGrant,async handle(req,res){
     const pathname=new URL(req.url,'https://preview.invalid').pathname;
     if(pathname==='/api/preview/isolation'&&req.method==='GET'){
       if(!synthetic){try{await authorize(req);json(res,200,{synthetic:false,existingWorkspace:true,authUrl:PREVIEW_AUTH_URL,gitBranch:environment.VERCEL_GIT_COMMIT_REF,externalActions:false,privatePhone:false,whatsappSending:false});}catch{json(res,401,{error:'Sign-in required.'});}return true;}
@@ -44,7 +46,7 @@ export function createPreviewAuth({environment,serverFactory=createAuthServer,pr
     }
     if(!pathname.startsWith('/api/auth/'))return false;
     const path=pathname.slice('/api/auth/'.length);
-    if(req.method!=='POST'||!['sign-up/email','sign-in/email','sign-out','email-otp/verify-email','email-otp/send-verification-otp'].includes(path)){json(res,404,{error:'Not found'});return true;}
+    if(req.method!=='POST'||!['sign-up/email','sign-in/email','sign-out','approve-guest','email-otp/verify-email','email-otp/send-verification-otp'].includes(path)){json(res,404,{error:'Not found'});return true;}
     const host=String(req.headers['x-forwarded-host']||req.headers.host||'').split(',')[0].trim();
     const origin=req.headers.origin;
     try{if(!origin||new URL(origin).host!==host)throw new Error();}catch{json(res,403,{error:'Same-origin request required.'});return true;}
@@ -54,8 +56,14 @@ export function createPreviewAuth({environment,serverFactory=createAuthServer,pr
       if(path==='email-otp/send-verification-otp')body.type='email-verification';
       // Only local return paths; do not forward arbitrary redirects or plugins.
       delete body.callbackURL;delete body.redirectTo;
-      const response=await proxy({...config,path,request:new Request(`${origin}${pathname}`,{method:'POST',headers:{'content-type':'application/json',origin,cookie:extractNeonAuthCookies(req.headers.cookie||'')},body:JSON.stringify(body)})});
+      const proxyPath=path==='approve-guest'?'sign-in/email':path;
+      const response=await proxy({...config,path:proxyPath,request:new Request(`${origin}/api/auth/${proxyPath}`,{method:'POST',headers:{'content-type':'application/json',origin,cookie:extractNeonAuthCookies(req.headers.cookie||'')},body:JSON.stringify(body)})});
       const cookies=response.headers.getSetCookie();if(cookies.length)res.setHeader('Set-Cookie',cookies);
+      if(path==='approve-guest'){
+        let data;try{data=await response.json();}catch{}
+        const verified=response.ok&&data?.user?.id===environment.NOVA_PREVIEW_OWNER_SUBJECT&&data.user.emailVerified===true;
+        json(res,verified?200:403,verified?{ok:true,guestApproval:guestGrant()}:{error:'The verified owner must sign in again to approve public guest conversation.'});return true;
+      }
       // Never return the provider's session token, password or raw diagnostics.
       json(res,response.status,{ok:response.ok,...(!response.ok?{error:response.status===403?'Verify your email code before signing in.':'Sign-in could not be completed. Check your details or retry.'}:{})});
     }catch{json(res,503,{error:'Preview sign-in is temporarily unavailable.'});}
