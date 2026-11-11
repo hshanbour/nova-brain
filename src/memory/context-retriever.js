@@ -74,7 +74,11 @@ function selectRecentWork({runs=[],activity=[],message,projectId}){
 }
 
 export function buildSystemContext(retrieved) {
-  return `${NOVA_COMMUNICATION_POLICY}\n\nThe following is minimal private owner context selected for this request. Use it internally to assist the owner. Do not repeat private details unless relevant to the owner's request. When asked why the owner built you (including ليش عملتك), explain the purpose recorded in the system-scoped project_context memories below. Do not substitute a generic list of assistant capabilities or speculate about the owner's motives. Distinguish the recorded vision from features actually verified as operational.\n${JSON.stringify(retrieved)}`;
+  const language = retrieved?.owner?.defaultReplyLanguage;
+  const languageInstruction = ['ar','en'].includes(language)
+    ? `\n\nACTIVE OWNER REPLY LANGUAGE: ${language === 'ar' ? 'Natural Jordanian/Levantine Arabic, written in Arabic script' : 'English'}. This saved preference takes precedence over the general default above. Keep it in fresh conversations and follow-up replies unless the owner explicitly requests a different reply language. An English question is not an explicit language-switch request. Honour an explicit translation or language-switch request without changing the saved preference unless asked.`
+    : '';
+  return `${NOVA_COMMUNICATION_POLICY}\n\nThe following is minimal private owner context selected for this request. Use it internally to assist the owner. Do not repeat private details unless relevant to the owner's request. When asked why the owner built you (including ليش عملتك), explain the purpose recorded in the system-scoped project_context memories below. Do not substitute a generic list of assistant capabilities or speculate about the owner's motives. Distinguish the recorded vision from features actually verified as operational.\n${JSON.stringify(retrieved)}${languageInstruction}`;
 }
 
 export function buildSpeakerSafeSystemContext(speaker, scopedContext = null) {
