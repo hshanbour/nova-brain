@@ -145,9 +145,16 @@ try {
     $currentScript=if($currentRuntimeValid){Join-Path (Join-Path $versions $statusRuntime) 'scripts\persistent-local-worker.js'}else{''}
     $currentRoot=if($null -ne $proof){[string]$proof.root}else{''}
     $currentBranch=if($null -ne $proof){[string]$proof.branch}else{''}
+    # Validate the old task against its own recorded dependency bindings. App
+    # updates can remove an older Codex binary while its worker stays alive.
+    $currentGit=if($null -ne $status -and $status.PSObject.Properties['gitExecutable']){[string]$status.gitExecutable}else{$git}
+    $currentCodex=if($null -ne $status -and $status.PSObject.Properties['codexExecutable']){[string]$status.codexExecutable}else{$codex}
+    $oldDependencyPathsValid=[System.IO.Path]::IsPathRooted($currentGit) -and [System.IO.Path]::GetFileName($currentGit) -eq 'git.exe' -and [System.IO.Path]::IsPathRooted($currentCodex) -and [System.IO.Path]::GetFileName($currentCodex) -eq 'codex.exe' -and $currentGit -notmatch '["\r\n]' -and $currentCodex -notmatch '["\r\n]'
     $currentArgumentsLegacy=if($currentRuntimeValid -and $currentPreviewValid -and -not [string]::IsNullOrWhiteSpace($currentRoot)){'"'+$currentScript+'" --preview-url "'+$statusPreview+'" --repository-root "'+$currentRoot+'" --runtime-version "'+$statusRuntime+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'}else{''}
     $currentArgumentsBound=if(-not [string]::IsNullOrWhiteSpace($currentArgumentsLegacy) -and -not [string]::IsNullOrWhiteSpace($currentBranch)){'"'+$currentScript+'" --preview-url "'+$statusPreview+'" --repository-root "'+$currentRoot+'" --repository-branch "'+$currentBranch+'" --runtime-version "'+$statusRuntime+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'}else{''}
-    $currentActionMatches=$null -ne $taskActionCurrent -and $taskActionCurrent.Execute -eq $node -and $taskActionCurrent.Arguments -in @($currentArgumentsLegacy,$currentArgumentsBound) -and $taskActionCurrent.WorkingDirectory -eq $currentRoot
+    $currentArgumentsLegacy=$currentArgumentsLegacy.Replace(('"'+$git+'"'),('"'+$currentGit+'"')).Replace(('"'+$codex+'"'),('"'+$currentCodex+'"'))
+    $currentArgumentsBound=$currentArgumentsBound.Replace(('"'+$git+'"'),('"'+$currentGit+'"')).Replace(('"'+$codex+'"'),('"'+$currentCodex+'"'))
+    $currentActionMatches=$oldDependencyPathsValid -and $null -ne $taskActionCurrent -and $null -ne $process -and $taskActionCurrent.Execute -eq $node -and $process.Path -eq $node -and $taskActionCurrent.Arguments -in @($currentArgumentsLegacy,$currentArgumentsBound) -and $taskActionCurrent.WorkingDirectory -eq $currentRoot
     $repositoryMatches=$null -ne $proof -and -not [string]::IsNullOrWhiteSpace($currentRoot) -and (Test-Path -LiteralPath $currentRoot -PathType Container) -and [string]$proof.repository -eq 'hshanbour/nova-brain' -and $currentBranch -notin @('','main','master') -and [string]$proof.head -match '^[0-9a-f]{40}$'
     $healthy=$owned -and $idle -and (Test-RecentTimestamp $heartbeat) -and (Test-RecentTimestamp $lastPoll)
     $safeToReplace=($null -eq $process -and $lockPid -eq 0) -or ($null -ne $task -and $healthy)
@@ -175,6 +182,24 @@ try {
     $current=$safeIdle.Snapshot
   }
   $oldPid=[int]$current.Pid
+
+  # Prove rollback before stopping the healthy process. Preserve the old runtime,
+  # workspace and service URL; use the already-validated installed executables.
+  if($priorWasRunning -and -not $current.Converged){
+    $rollbackStatus=Read-WorkerStatus
+    $rollbackScript=Join-Path (Join-Path $versions $current.RuntimeVersion) 'scripts\persistent-local-worker.js'
+    $rollbackRoot=[string]$rollbackStatus.repositoryProof.root
+    $rollbackBranch=[string]$rollbackStatus.repositoryProof.branch
+    $rollbackProbe=Invoke-NovaNativeProbe -FilePath $node -ArgumentValues @($rollbackScript,'--verify-runtime','--runtime-version',$current.RuntimeVersion,'--repository-root',$rollbackRoot,'--repository-branch',$rollbackBranch,'--git-executable',$git,'--codex-executable',$codex)
+    if($rollbackProbe.ExitCode -ne 0){throw 'The prior runtime cannot be safely restarted with the installed dependencies; existing worker left running.'}
+    $rollbackVerified=($rollbackProbe.Stdout -join "`n") | ConvertFrom-Json
+    if(-not $rollbackVerified.ok -or $rollbackVerified.runtimeVersion -ne $current.RuntimeVersion -or $rollbackVerified.repositoryRoot -ne $rollbackRoot -or $rollbackVerified.repositoryBranch -ne $rollbackBranch){throw 'The prior runtime rollback binding could not be verified.'}
+    [xml]$rollbackXml=$priorTaskXml
+    $rollbackActions=$rollbackXml.SelectNodes('//*[local-name()="Actions"]/*[local-name()="Exec"]')
+    if($rollbackActions.Count -ne 1){throw 'Unexpected prior task action count; existing worker left running.'}
+    $rollbackActions[0].Arguments='"'+$rollbackScript+'" --preview-url "'+$current.PreviewUrl+'" --repository-root "'+$rollbackRoot+'" --repository-branch "'+$rollbackBranch+'" --runtime-version "'+$current.RuntimeVersion+'" --git-executable "'+$git+'" --codex-executable "'+$codex+'" --credential-helper "'+$helper+'"'
+    $priorTaskXml=$rollbackXml.OuterXml
+  }
 
   $stopCurrent={ Stop-ScheduledTask -TaskName $name -ErrorAction Stop }
   $awaitCurrentStopped={

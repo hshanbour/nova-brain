@@ -5,6 +5,7 @@
   "buildCommand": "node scripts/build-synthetic-preview.js",
   "outputDirectory": "preview-public",
   "routes": [
+    {"src":"/(.*)","has":[{"type":"host","value":"scnovawa.vercel.app"}],"dest":"/api/index"},
     {"src":"/(src|test|scripts|deliverables|node_modules|\\.git|\\.env)(/.*)?","status":404},
     {
       "src": "/",

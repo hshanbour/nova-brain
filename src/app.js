@@ -206,7 +206,7 @@ export function createApp({
   const footageAnalysis=createFootageAnalysisService({modelProvider,socialService,storage,ownerId:OWNER_ID});
   const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch}):null;
   const sharpCutsCustomerReader=config.sharpCutsCustomerDatabase.configured?createSharpCutsCustomerReader({config:config.sharpCutsCustomerDatabase}):null;
-  const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender,instagramOAuth,customerReader:sharpCutsCustomerReader});
+  const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender,instagramOAuth,customerReader:sharpCutsCustomerReader,whatsappStatusProvider:()=>sharpCutsWhatsAppService.status()});
   registerSocialTools(toolRegistry,{service:socialService,mediaAutomation});
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){

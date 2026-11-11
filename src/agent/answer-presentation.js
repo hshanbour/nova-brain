@@ -1,5 +1,5 @@
 export const ANSWER_PRESENTATION_GUIDANCE = `ANSWER PRESENTATION:
-- Match the language of the owner's current request unless the owner explicitly asks for another language.
+- Honour the active reply language and authorised saved language preference. Change it only on an explicit language request; otherwise use the current request's language only when no active or saved preference exists.
 - Write for quick scanning: use short descriptive headings, short paragraphs, bullets, and numbered steps when sequence matters.
 - Bold important prices, decisions, limitations, and warnings. Prefer practical, direct language.
 - Avoid giant tables and dense text walls. Use a compact table only when it materially improves a comparison; otherwise use grouped bullets.
