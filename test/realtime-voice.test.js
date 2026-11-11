@@ -85,6 +85,20 @@ test("realtime microphone denial is surfaced before minting a paid session and i
   assert.equal(fetches,0);
 });
 
+test('startup network errors identify the failed stage without claiming a speaker mismatch',async()=>{
+ for(const stage of ['session','audio-connection']){
+  const channel=new FakeChannel(),peer=new FakePeer(channel),events=[],microphones=[];let stopped=0;
+  const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return{getTracks:()=>[{kind:'audio',label:'Fixture microphone',getSettings:()=>({deviceId:'private-device-id',sampleRate:48000,channelCount:1,echoCancellation:true}),stop(){stopped++;}}]};}},RTCPeerConnectionImpl:class{constructor(){return peer;}},MediaRecorderImpl:null,AudioImpl:class{pause(){}},onTiming:e=>events.push(e),onMicrophoneReady:e=>microphones.push(e),fetchImpl:async url=>{
+   if(url.endsWith('/readiness'))return Response.json({});
+   if(url.endsWith('/session')&&stage!=='session')return Response.json({clientSecret:'fixture',privacyGate:true});
+   throw new TypeError('Failed to fetch');
+  }});
+  await assert.rejects(()=>voice.start(),error=>error.novaVoiceStage===stage&&!/not matched/i.test(error.message));
+  assert.ok(stopped>0);assert.equal(voice.isActive(),false);assert.equal(microphones[0].label,'Fixture microphone');
+  assert.equal(events.at(-1).stage,'voice-start-failed-'+stage);assert.doesNotMatch(JSON.stringify(events),/private-device-id|Fixture microphone|fixture/);
+ }
+});
+
 test("realtime browser delegates the exact transcript to Nova and returns the authoritative result", async () => {
   const channel = new FakeChannel();
   const peer = new FakePeer(channel);

@@ -11,6 +11,7 @@ export function createRealtimeVoice({
   fetchImpl = globalThis.fetch,
   getAudioConstraints = () => true,
   onMicrophoneFallback = () => {},
+  onMicrophoneReady = () => {},
   readScene = () => ({observed:false}),
   sendTurn,
   getConversationId = () => null,
@@ -20,6 +21,7 @@ export function createRealtimeVoice({
   onResult = () => {},
   onSpeaker = () => {},
   onPrivacyPause = () => {},
+  onOwnerVerified = () => {},
   onVerificationNeeded = () => {},
   onState = () => {},
   onTiming = () => {},
@@ -64,15 +66,20 @@ export function createRealtimeVoice({
   const valid = (current) => active && current === generation;
 
   async function start({guest=false,guestApproval=null}={}) {
-    guestMode=guest;
     if (active) return false;
+    guestMode=guest;
     active = true;
     const current = ++generation;
+    let startupStage='microphone';
     publish("connecting");
     try {
       const acquired=await requestMicrophone();
       if (!valid(current)) { stopTracks(acquired); return false; }
       stream=acquired;
+      const track=stream.getAudioTracks?.()[0]||stream.getTracks?.().find(t=>t.kind==='audio');
+      const settings=track?.getSettings?.()||{};
+      onMicrophoneReady({label:track?.label||'System default microphone'});
+      onTiming({stage:'microphone-format',measurements:Object.fromEntries(['sampleRate','channelCount','echoCancellation','noiseSuppression','autoGainControl'].filter(k=>typeof settings[k]==='number'||typeof settings[k]==='boolean').map(k=>[k,Number(settings[k])]))});
       inputMeter = createAudioMeter({ AudioContextImpl, stream, onLevel(level) {
         onInputLevel(level);
         // Prime from local microphone energy, not a delayed remote VAD event.
@@ -82,12 +89,14 @@ export function createRealtimeVoice({
         if(turnRecorder&&!inSpeech&&(now()-localSpeechAt>800||now()-turnStartedAt>4000))discardTurnRecording();
       } });
       void fetchImpl("/api/voice/speaker/readiness", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
+      startupStage='session';
       const sessionResponse = await fetchImpl("/api/voice/realtime/session", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: guestMode ? null : getConversationId(), mode:guestMode?"guest":"owner",...(guestMode?{guestApproval}:{} ) }) });
       const session = await sessionResponse.json().catch(() => null);
       if (!sessionResponse.ok || typeof session?.clientSecret !== "string") throw new Error(session?.error || "Nova could not prepare Realtime Voice.");
       privacyGate=session.privacyGate===true;
       replyLanguage = ["ar", "en"].includes(session.replyLanguage) ? session.replyLanguage : null;
       if (!valid(current)) return false;
+      startupStage='audio-connection';
       pc = new RTCPeerConnectionImpl();
       remoteAudio = new AudioImpl();
       remoteAudio.autoplay = true;
@@ -112,8 +121,12 @@ export function createRealtimeVoice({
       cleanup();
       active = false;
       publish("error");
-      onError(error?.message || "Realtime Voice could not start.");
-      throw error;
+      const failure=error?.name==='TypeError'&&startupStage!=='microphone'
+        ?Object.assign(new Error(startupStage==='session'?'Nova could not reach the signed-in voice session endpoint. Private Voice remains locked; retry when the connection returns.':'Nova could not establish the live audio connection. No owner verification was completed; retry Voice.'),{novaVoiceStage:startupStage})
+        :error;
+      onTiming({stage:'voice-start-failed-'+startupStage,measurements:{failed:1}});
+      onError(failure?.message || "Realtime Voice could not start.");
+      throw failure;
     }
   }
 
@@ -177,12 +190,13 @@ export function createRealtimeVoice({
           publish('listening',{phase:'verification-needs-speech'});
           onVerificationNeeded({reason:speaker?.verification_status==='unavailable'?'service-unavailable':'more-speech'});return;
         }
-        let authorized=false,identityEvidence=null;
-        try { const r=await fetchImpl('/api/voice/realtime/authorize-turn',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker})});const result=await r.json();authorized=r.ok&&result.authorized===true;if(authorized)identityEvidence=result.speakerIdentity; } catch {}
+        let authorized=false,identityEvidence=null,authorizationUnavailable=false;
+        try { const r=await fetchImpl('/api/voice/realtime/authorize-turn',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker})});const result=await r.json();authorized=r.ok&&result.authorized===true;authorizationUnavailable=r.status>=500;if(authorized)identityEvidence=result.speakerIdentity; } catch {authorizationUnavailable=true;}
         if(!valid(current)||!isCurrentTurn(utterance))return;
-        if(!authorized){end();publish('privacy-paused');onPrivacyPause();return;}
+        if(!authorized){const reason=authorizationUnavailable||speaker?.verification_status==='unavailable'?'service-unavailable':speaker?.match_status==='confirmed'?'authorization-denied':['insufficient_speech','non_speech'].includes(speaker?.match_status)?'insufficient-speech':'not-matched';end();publish('privacy-paused');onPrivacyPause({reason});return;}
         privateTurnAuthorized=true;
         if(utterance)utterance.verifiedSpeaker=speaker;
+        onOwnerVerified();
         if(identityEvidence?.status==='verified_owner'&&identityEvidence?.source==='server_verified_enrolled_voice'){
           sendEvent({type:'conversation.item.create',item:{type:'message',role:'system',content:[{type:'input_text',text:'CURRENT TURN SERVER VERIFICATION (informational, not tool permission): '+JSON.stringify(identityEvidence)}]}});
         }
@@ -334,8 +348,8 @@ export function createRealtimeVoice({
           if(!valid(current)||utterance?.conversationId&&utterance.conversationId!==getConversationId())return resolve(null);
           const response = await fetchImpl("/api/voice/speaker/recognize", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audioBase64, mimeType: audio.type || "audio/webm", durationSeconds, transcript: utterance?.transcript || undefined, conversationId: getConversationId() || undefined }) });
           const value = await response.json().catch(() => null);
-          resolve(response.ok&&value?.speaker ? {...value.speaker,verification_status:value.verificationStatus} : null);
-        } catch { resolve(null); }
+          resolve(response.ok&&value?.speaker ? {...value.speaker,verification_status:value.verificationStatus} : {match_status:'unknown',authenticated_identity:'none',verification_status:response.status>=500?'unavailable':'denied'});
+        } catch { resolve({match_status:'unknown',authenticated_identity:'none',verification_status:'unavailable'}); }
       }, { once: true });
       try { recorder.stop(); }
       catch { resolve(null); }
