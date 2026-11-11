@@ -2,7 +2,7 @@ import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
 import {usesServiceAuthentication} from "../identity/console-access.js";
 import {continuityRouteAllowed} from '../identity/continuity-preview.js';
 import {savedReplyLanguage} from '../identity/communication-policy.js';
-import {requirePrivateVoiceSpeaker} from '../voice/private-context-access.js';
+import {requirePrivateVoiceSpeaker,verifiedOwnerVoiceEvidence} from '../voice/private-context-access.js';
 import {syntheticRouteAllowed} from '../identity/synthetic-preview.js';
 import { readRealtimeContext } from "../voice/realtime-context.js";
 import {PROJECT_DOCUMENT_LIMITS,ProjectSourceError} from "../projects/document-extractor.js";
@@ -823,17 +823,19 @@ export function createApi({
         if (request.method === 'POST' && pathname === '/api/voice/realtime/authorize-turn') {
           if(!sameOriginRequest(request)){sendJson(response,403,{error:'Same-origin voice request required.'});return;}
           await ready();const input=await readJsonBody(request,config.maxBodyBytes);
-          await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity});
-          sendJson(response,200,{authorized:true});return;
+          const verified=await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity});
+          logger.info('Nova private voice turn authorized',{requestId,recognizedProfileId:verified.speaker_profile_id,matchStatus:verified.match_status});
+          sendJson(response,200,{authorized:true,speakerIdentity:verifiedOwnerVoiceEvidence()});return;
         }
         if (request.method === "POST" && pathname === "/api/voice/realtime/context") {
           if (!realtimeAccountContext) { sendJson(response, 404, { error: "Not found." }); return; }
           if (!sameOriginRequest(request)) { sendJson(response, 403, { error: "Voice context requires a same-origin owner console request." }); return; }
           await ready();
           const input = validateAgentRequest(await readJsonBody(request, config.maxBodyBytes));
-          await requirePrivateVoiceSpeaker({assertion:input.context?.speaker?.assertion,speakerAssertions,speakerIdentity});
+          const verified=await requirePrivateVoiceSpeaker({assertion:input.context?.speaker?.assertion,speakerAssertions,speakerIdentity});
           const evidence = await readRealtimeContext({ storage, projectService, ownerId, message: input.message, conversationId: input.conversationId, lookupProjectId: typeof input.context?.lookupProjectId === "string" ? input.context.lookupProjectId : null });
-          logger.info("Nova realtime context retrieved", { requestId, authority: evidence.authority, projectIds: evidence.projects.map(p => p.id), memoryIds: evidence.memories.map(m => m.id) });
+          evidence.speakerIdentity=verifiedOwnerVoiceEvidence();
+          logger.info("Nova realtime context retrieved", { requestId, authority: evidence.authority, recognizedProfileId:verified.speaker_profile_id,matchStatus:verified.match_status, projectIds: evidence.projects.map(p => p.id), memoryIds: evidence.memories.map(m => m.id) });
           sendJson(response, 200, evidence);
           return;
         }

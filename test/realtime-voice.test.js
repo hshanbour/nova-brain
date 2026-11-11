@@ -50,7 +50,7 @@ test("realtime service mints a short-lived, delegated, bilingual WebRTC session"
   assert.equal(request.body.session.tools[0].name, "nova_turn");
   assert.equal(request.body.session.tool_choice, "auto");
   assert.match(request.body.session.instructions, /Arabic-English/);
-  assert.match(request.body.session.instructions, /Call nova_turn exactly once/);
+  assert.match(request.body.session.instructions, /call nova_turn exactly once/);
   assert.match(request.body.session.instructions, /questions about who Nova is/);
   assert.match(request.body.session.instructions, /Do not volunteer an identity-verification disclaimer/);
 });

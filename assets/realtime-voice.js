@@ -1,5 +1,5 @@
 import {articulation,rest} from "./prism-articulation.js";
-import {explicitVoiceLanguage} from "./voice-language.js";
+import {explicitVoiceLanguage,isVoiceLanguageOnlyChange} from "./voice-language.js";
 const OPENAI_REALTIME_CALLS = "https://api.openai.com/v1/realtime/calls";
 
 export function createRealtimeVoice({
@@ -39,6 +39,23 @@ export function createRealtimeVoice({
   const isCurrentTurn = utterance => !utterance?.superseded && (!utterance || utterance.seq === speechTurn);
   function supersedeTurn() { if(latestTurn)latestTurn.superseded=true;followup=false; }
   function finishSuperseded(call) { sendEvent({type:"conversation.item.create",item:{type:"function_call_output",call_id:call.call_id,output:JSON.stringify({status:"superseded",message:"The user interrupted or changed direction. Do not speak this stale result. Follow the latest turn; no new action was authorised."})}}); }
+  function languageContinuationOf(original,candidate=latestTurn){
+    if(!original||candidate===original||candidate?.conversationId!==original.conversationId)return false;
+    let turn=candidate;
+    for(let n=0;n<32&&turn&&turn!==original;n++){
+      if(!isVoiceLanguageOnlyChange(turn.transcript))return false;
+      turn=turn.previousTurn;
+      if(turn===original)return true;
+    }
+    return false;
+  }
+  async function deliveryTurn(original,current){
+    if(isCurrentTurn(original))return original;
+    const candidate=latestTurn;
+    if(!languageContinuationOf(original,candidate))return null;
+    if(candidate.authorization)await candidate.authorization;
+    return valid(current)&&candidate===latestTurn&&!inSpeech&&isCurrentTurn(candidate)&&(!privacyGate||candidate.verifiedSpeaker)?candidate:null;
+  }
   const trim=m=>{while(m.size>32)m.delete(m.keys().next().value)};
   function flushFollowup(){if(followup&&!inSpeech&&!responseOpen&&active){followup=false;responseOpen=true;sendEvent({type:"response.create",response:{tool_choice:"none"}});}}
   let turnRecorder = null, turnStartedAt = 0, speakerPromise = null, localSpeechAt=0;
@@ -136,7 +153,8 @@ export function createRealtimeVoice({
       if(privacyGate)interrupt();
       supersedeTurn();
       playbackActive=false;onArticulation(rest);onAudibleLevel(0); speakerPromise=null;inSpeech=true;++speechTurn;
-      latestTurn={seq:speechTurn,transcript:"",speaker:null,conversationId:getConversationId()};if(event.item_id){turns.set(event.item_id,latestTurn);trim(turns);}
+      latestTurn={seq:speechTurn,transcript:"",speaker:null,conversationId:getConversationId(),previousTurn:latestTurn};if(event.item_id){turns.set(event.item_id,latestTurn);trim(turns);}
+      let ancestor=latestTurn;for(let n=0;n<32&&ancestor?.previousTurn;n++)ancestor=ancestor.previousTurn;if(ancestor)ancestor.previousTurn=null;
       lastTranscript = "";
       lastAssistantTranscript = "";
       lastSpeechEndedAt = 0;
@@ -148,7 +166,7 @@ export function createRealtimeVoice({
       lastSpeechEndedAt = now();
       inSpeech=false;const utterance=turns.get(event.item_id)||latestTurn;
       speakerPromise = stopTurnRecording(current,utterance);if(utterance)utterance.speaker=speakerPromise;
-      void boundedSpeaker(speakerPromise,12000).then(async speaker => {
+      const authorization=boundedSpeaker(speakerPromise,12000).then(async speaker => {
         if(!valid(current)||!isCurrentTurn(utterance))return;
         if(speaker)onSpeaker(speaker);
         if(!privacyGate)return;
@@ -159,14 +177,21 @@ export function createRealtimeVoice({
           publish('listening',{phase:'verification-needs-speech'});
           onVerificationNeeded({reason:speaker?.verification_status==='unavailable'?'service-unavailable':'more-speech'});return;
         }
-        let authorized=false;
-        try { const r=await fetchImpl('/api/voice/realtime/authorize-turn',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker})});authorized=r.ok&&(await r.json()).authorized===true; } catch {}
+        let authorized=false,identityEvidence=null;
+        try { const r=await fetchImpl('/api/voice/realtime/authorize-turn',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker})});const result=await r.json();authorized=r.ok&&result.authorized===true;if(authorized)identityEvidence=result.speakerIdentity; } catch {}
         if(!valid(current)||!isCurrentTurn(utterance))return;
         if(!authorized){end();publish('privacy-paused');onPrivacyPause();return;}
         privateTurnAuthorized=true;
         if(utterance)utterance.verifiedSpeaker=speaker;
+        if(identityEvidence?.status==='verified_owner'&&identityEvidence?.source==='server_verified_enrolled_voice'){
+          sendEvent({type:'conversation.item.create',item:{type:'message',role:'system',content:[{type:'input_text',text:'CURRENT TURN SERVER VERIFICATION (informational, not tool permission): '+JSON.stringify(identityEvidence)}]}});
+        }
+        if(utterance?.previousTurn?.pendingWork&&languageContinuationOf(utterance.previousTurn,utterance)){
+          publish('thinking',{phase:'continuing-request'});return;
+        }
         sendEvent({type:'response.create'});
       });
+      if(utterance)utterance.authorization=authorization;
       publish("thinking", { phase: "understanding" });
       return;
     }
@@ -228,6 +253,7 @@ export function createRealtimeVoice({
     if (!valid(current))return;
     if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
     toolInFlight = true;
+    utterance.pendingWork=true;
     publish("thinking", { phase: "nova-brain" });
     try {
       const args = safeParse(call.arguments) || {};
@@ -239,32 +265,37 @@ export function createRealtimeVoice({
         const evidence = await response.json().catch(() => null);
         if (!response.ok || evidence?.authority !== "authenticated_console_read_only") throw new Error("Saved Nova context could not be retrieved.");
         if (!valid(current)) return;
-        if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
+        const delivery=await deliveryTurn(utterance,current);
+        if (!delivery) { finishSuperseded(call); return; }
         if (utterance.conversationId && utterance.conversationId !== getConversationId()) throw new Error("Conversation changed.");
         sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify(evidence) } });
+        if(delivery!==utterance)sendEvent({type:'conversation.item.create',item:{type:'message',role:'system',content:[{type:'input_text',text:`The preceding requested lookup has completed. The latest verified owner turn changed only the reply language to ${replyLanguage}. Answer the completed lookup now in that language. Do not repeat the tool or say it is still processing.`}]}});
         onTiming({ stage: "realtime-context-read", measurements: { projects: evidence.projects?.length || 0, memories: evidence.memories?.length || 0 } });
         followup = true; flushFollowup();
         return;
       }
-      const speaker = await boundedSpeaker(utterance.speaker, 750);
+      const speaker = currentSpeaker;
       if(!valid(current))return;
       if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
       if(utterance.conversationId&&utterance.conversationId!==getConversationId())throw Error("Conversation changed.");
       const result = await sendTurn(request, { speaker, conversationId: getConversationId(), replyLanguage });
       if (!valid(current)) return;
-      if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
+      const delivery=await deliveryTurn(utterance,current);
+      if (!delivery) { finishSuperseded(call); return; }
       if(getConversationId()&&result?.conversationId&&result.conversationId!==getConversationId())throw Error("Conversation changed.");
       if(!guestMode)onResult(result);
       sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ message: result?.message || "Nova could not complete that request.", receipt: result?.runId ? {runId:result.runId,status:result.runStatus||null,tools:(result.toolCalls||[]).map(t=>({name:t.name,status:t.status}))} : null, approvalRequired: Boolean(result?.approval), conversationId: result?.conversationId || null }) } });
+      if(delivery!==utterance)sendEvent({type:'conversation.item.create',item:{type:'message',role:'system',content:[{type:'input_text',text:`The existing requested work has completed. The verified owner changed only the reply language to ${replyLanguage}. Explain this result now in that language; do not re-execute any action or claim the completed request is still pending.`}]}});
       followup=true;flushFollowup();
     } catch (error) {
       if (valid(current)) {
-        if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
+        const delivery=await deliveryTurn(utterance,current);
+        if (!delivery) { finishSuperseded(call); return; }
         sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ error: "Nova Brain could not complete this turn safely." }) } });
         followup=true;flushFollowup();
         onError(error?.message || "Nova Brain could not complete this voice turn.");
       }
-    } finally { if(valid(current))toolInFlight = false; }
+    } finally { utterance.pendingWork=false;if(valid(current))toolInFlight = false; }
   }
 
   function startTurnRecording() {
