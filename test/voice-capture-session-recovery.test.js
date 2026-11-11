@@ -10,7 +10,7 @@ import {readPreviewSession} from '../assets/preview-session.js';
 
 const wait=()=>new Promise(r=>setTimeout(r,320));
 function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn,recognize,authorizationFailure=false}={}){
- let clock=0,frame,requests=[],notices=0,pauses=0,verified=0;const results=[],pauseReasons=[];
+ let clock=0,frame,requests=[],notices=0,pauses=0,verified=0;const results=[],pauseReasons=[],recoveries=[];
  const prior=globalThis.requestAnimationFrame,priorCancel=globalThis.cancelAnimationFrame;
  globalThis.requestAnimationFrame=fn=>{frame=fn;return 1;};globalThis.cancelAnimationFrame=()=>{};
  class Channel extends EventTarget{readyState='open';sent=[];send(s){this.sent.push(JSON.parse(s));}close(){this.readyState='closed';}message(e){this.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(e)}));}}
@@ -18,14 +18,14 @@ function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn
  class Peer extends EventTarget{createDataChannel(){channel=new Channel();return channel;}addTrack(){}async createOffer(){return{sdp:'test'};}async setLocalDescription(){}async setRemoteDescription(){}close(){}}
  class Recorder extends EventTarget{state='inactive';mimeType='audio/webm';start(){this.state='recording';}stop(){this.state='inactive';const e=new Event('dataavailable');e.data=new Blob(['synthetic-audio-fixture']);this.dispatchEvent(e);this.dispatchEvent(new Event('stop'));}}
  class Context{createMediaStreamSource(){return{connect(){},disconnect(){}};}createAnalyser(){return{getByteTimeDomainData:a=>a.fill(133)};}async close(){}}
- const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){}}]};}},RTCPeerConnectionImpl:Peer,MediaRecorderImpl:Recorder,AudioContextImpl:Context,AudioImpl:class{pause(){}},now:()=>clock,sendTurn,onResult:r=>results.push(r),getConversationId:()=> 'fixture-conversation',onVerificationNeeded:()=>notices++,onPrivacyPause:detail=>{pauses++;pauseReasons.push(detail?.reason);},onOwnerVerified:()=>verified++,
+ const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){}}]};}},RTCPeerConnectionImpl:Peer,MediaRecorderImpl:Recorder,AudioContextImpl:Context,AudioImpl:class{pause(){}},now:()=>clock,sendTurn,onResult:r=>results.push(r),getConversationId:()=> 'fixture-conversation',onPrivacyRecovery:()=>recoveries.push(true),onVerificationNeeded:()=>notices++,onPrivacyPause:detail=>{pauses++;pauseReasons.push(detail?.reason);},onOwnerVerified:()=>verified++,
  fetchImpl:async(url,o)=>{
   if(url.endsWith('/session'))return Response.json({clientSecret:'fixture',privacyGate:true,replyLanguage:'ar'});
   if(url.endsWith('/recognize')){const body=JSON.parse(o.body);requests.push(body);return Response.json({speaker:recognize?recognize(body,requests.length):body.durationSeconds>=1?{match_status:'confirmed',authenticated_identity:'owner',assertion:'fixture'}:{match_status:shortResult,authenticated_identity:'none'}});}
   if(url.endsWith('/authorize-turn')){if(authorizationFailure)throw new TypeError('Failed to fetch');const allowed=authorize&&JSON.parse(o.body).speaker?.match_status==='confirmed';return Response.json({authorized:allowed,...(allowed?{speakerIdentity:verifiedOwnerVoiceEvidence()}:{})},{status:allowed?200:403});}
   return new Response('fixture');
  }});
- return{voice,get channel(){return channel;},requests,results,pauseReasons,verifiedCount:()=>verified,counts:()=>({notices,pauses}),set:t=>clock=t,local:t=>{clock=t;frame();},event:(type,id)=>channel.message({type:'input_audio_buffer.'+type,item_id:id}),close(){voice.end();globalThis.requestAnimationFrame=prior;globalThis.cancelAnimationFrame=priorCancel;}};
+ return{voice,get channel(){return channel;},requests,results,pauseReasons,recoveries,verifiedCount:()=>verified,counts:()=>({notices,pauses}),set:t=>clock=t,local:t=>{clock=t;frame();},event:(type,id)=>channel.message({type:'input_audio_buffer.'+type,item_id:id}),close(){voice.end();globalThis.requestAnimationFrame=prior;globalThis.cancelAnimationFrame=priorCancel;}};
 }
 
 test('local capture preserves speech onset before delayed remote VAD and still requires server authorization',async()=>{
@@ -35,7 +35,8 @@ test('local capture preserves speech onset before delayed remote VAD and still r
   assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,1);
   // A short later fragment cannot retain access from the previous owner assertion.
   h.set(3000);h.event('speech_started','two');h.set(3200);h.event('speech_stopped','two');await wait();
-  assert.equal(h.counts().pauses,1);assert.equal(h.voice.isActive(),false);
+  assert.equal(h.counts().pauses,0);assert.equal(h.recoveries.length,1);assert.equal(h.voice.isActive(),true);
+  assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,0,'Fresh session is locked until a new match');
  }finally{h.close();}
 });
 
@@ -120,10 +121,10 @@ for(const correction of ['احكي باللغة الثانية، احكي بال
 });
 
 test('owner-verification notice requires a signed active owner profile, not a browser claim',async()=>{
- const api=createApi({ownerId:'owner',initialize:async()=>{},config:{allowedOrigins:[],maxBodyBytes:5000},speakerAssertions:{verify:a=>a==='signed-owner'?{speaker_profile_id:'enrolled',speaker_label:'owner',match_status:'confirmed'}:null},speakerIdentity:{get:async()=>({status:'active',relation:'owner'})},logger:{info(){},error(){}}});
+ let profileReads=0;const api=createApi({ownerId:'owner',storage:{async getOwner(id){assert.equal(id,'owner');profileReads++;return{preferredName:'Fixture Owner',arabicName:'اسم الاختبار',email:'must-not-leak',facts:{private:'must-not-leak'}};}},initialize:async()=>{},config:{allowedOrigins:[],maxBodyBytes:5000},speakerAssertions:{verify:a=>a==='signed-owner'?{speaker_profile_id:'enrolled',speaker_label:'owner',match_status:'confirmed'}:null},speakerIdentity:{get:async()=>({status:'active',relation:'owner'})},logger:{info(){},error(){}}});
  const call=async speaker=>{const r=response(),q=Object.assign(Readable.from([JSON.stringify({speaker})]),{url:'/api/voice/realtime/authorize-turn',method:'POST',headers:{host:'nova.test',origin:'https://nova.test','content-type':'application/json'}});await api.handle(q,r);return r;};
- const denied=await call({authenticated_identity:'owner',match_status:'confirmed'});assert.equal(denied.statusCode,403);assert.doesNotMatch(denied.body,/server_verified_enrolled_voice/);
- const granted=await call({assertion:'signed-owner'});assert.equal(granted.statusCode,200);assert.equal(JSON.parse(granted.body).speakerIdentity.status,'verified_owner');assert.doesNotMatch(granted.body,/signed-owner|enrolled\"/);
+ const denied=await call({authenticated_identity:'owner',match_status:'confirmed'});assert.equal(denied.statusCode,403);assert.doesNotMatch(denied.body,/server_verified_enrolled_voice/);assert.equal(profileReads,0);
+ const granted=await call({assertion:'signed-owner'});assert.equal(granted.statusCode,200);assert.equal(JSON.parse(granted.body).speakerIdentity.status,'verified_owner');assert.doesNotMatch(granted.body,/signed-owner|enrolled\"/);assert.equal(profileReads,1);assert.equal(JSON.parse(granted.body).speakerIdentity.identity.preferredName,'Fixture Owner');assert.doesNotMatch(granted.body,/must-not-leak/);
 });
 
 test('owner to unknown speaker destroys private session; clean retry requires and accepts a fresh owner assertion',async()=>{
@@ -155,4 +156,24 @@ test('recreated browser controller has no persistent speaker denial, but still i
  const first=voiceHarness({recognize:()=>({match_status:'unknown',authenticated_identity:'none'})});
  try{await first.voice.start();first.set(1000);first.event('speech_started','unknown');first.set(4000);first.event('speech_stopped','unknown');await wait();assert.equal(first.counts().pauses,1);}finally{first.close();}
  const fresh=voiceHarness();try{await fresh.voice.start();assert.equal(fresh.verifiedCount(),0);fresh.set(1000);fresh.event('speech_started','owner');fresh.set(7000);fresh.event('speech_stopped','owner');await wait();assert.equal(fresh.verifiedCount(),1);assert.equal(fresh.counts().pauses,0);}finally{fresh.close();}
+});
+
+
+test('quality recovery destroys private context, accepts only fresh owner evidence and cannot loop',async()=>{
+ const h=voiceHarness();try{
+  await h.voice.start();h.set(1000);h.event('speech_started','owner');h.set(4000);h.event('speech_stopped','owner');await wait();
+  const old=h.channel;h.set(5000);h.event('speech_started','fragment');h.set(5300);h.event('speech_stopped','fragment');await wait();
+  assert.equal(old.readyState,'closed');assert.notEqual(h.channel,old);assert.equal(h.recoveries.length,1);assert.equal(h.verifiedCount(),1);
+  old.message({type:'response.created',response:{id:'stale'}});assert.equal(h.channel.sent.length,0);
+  h.set(6000);h.event('speech_started','owner-return');h.set(9000);h.event('speech_stopped','owner-return');await wait();assert.equal(h.verifiedCount(),2);
+  h.set(10000);h.event('speech_started','second-fragment');h.set(10300);h.event('speech_stopped','second-fragment');await wait();
+  assert.equal(h.voice.isActive(),false);assert.equal(h.recoveries.length,1);assert.deepEqual(h.pauseReasons,['insufficient-speech']);
+ }finally{h.close();}
+});
+
+test('different speaker after automatic quality recovery cannot inherit the previous match',async()=>{
+ const h=voiceHarness({recognize:(_b,n)=>({match_status:n===1?'confirmed':n===2?'insufficient_speech':'unknown',authenticated_identity:n===1?'owner':'none',assertion:n===1?'fixture':null})});try{
+  await h.voice.start();for(let n=0;n<3;n++){h.set(1000+n*4000);h.event('speech_started','turn-'+n);h.set(3000+n*4000);h.event('speech_stopped','turn-'+n);await wait();}
+  assert.equal(h.recoveries.length,1);assert.equal(h.verifiedCount(),1);assert.equal(h.voice.isActive(),false);assert.deepEqual(h.pauseReasons,['not-matched']);
+ }finally{h.close();}
 });

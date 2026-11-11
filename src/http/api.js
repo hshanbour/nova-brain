@@ -825,7 +825,8 @@ export function createApi({
           await ready();const input=await readJsonBody(request,config.maxBodyBytes);
           const verified=await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity});
           logger.info('Nova private voice turn authorized',{requestId,recognizedProfileId:verified.speaker_profile_id,matchStatus:verified.match_status});
-          sendJson(response,200,{authorized:true,speakerIdentity:verifiedOwnerVoiceEvidence()});return;
+          const ownerProfile=await storage.getOwner(ownerId);
+          sendJson(response,200,{authorized:true,speakerIdentity:verifiedOwnerVoiceEvidence(ownerProfile)});return;
         }
         if (request.method === "POST" && pathname === "/api/voice/realtime/context") {
           if (!realtimeAccountContext) { sendJson(response, 404, { error: "Not found." }); return; }
@@ -834,7 +835,7 @@ export function createApi({
           const input = validateAgentRequest(await readJsonBody(request, config.maxBodyBytes));
           const verified=await requirePrivateVoiceSpeaker({assertion:input.context?.speaker?.assertion,speakerAssertions,speakerIdentity});
           const evidence = await readRealtimeContext({ storage, projectService, ownerId, message: input.message, conversationId: input.conversationId, lookupProjectId: typeof input.context?.lookupProjectId === "string" ? input.context.lookupProjectId : null });
-          evidence.speakerIdentity=verifiedOwnerVoiceEvidence();
+          evidence.speakerIdentity=verifiedOwnerVoiceEvidence(evidence.ownerIdentity);
           logger.info("Nova realtime context retrieved", { requestId, authority: evidence.authority, recognizedProfileId:verified.speaker_profile_id,matchStatus:verified.match_status, projectIds: evidence.projects.map(p => p.id), memoryIds: evidence.memories.map(m => m.id) });
           sendJson(response, 200, evidence);
           return;

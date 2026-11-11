@@ -77,3 +77,14 @@ test("realtime provider receives saved evidence and context tool without changin
   assert.match(body.session.instructions,/correction replaces the mistaken interpretation/);
   assert.match(body.session.instructions,/then stop and wait/);
 });
+
+
+test('private initial and recovery sessions never preload saved owner identity or history',async()=>{
+ let body;const service=createRealtimeVoiceService({apiKey:'fixture',fetchImpl:async(_,o)=>{body=JSON.parse(o.body);return Response.json({value:'ek_fixture'});}});
+ for(const guest of [false,true]){
+  await service.createClientSecret({privacyGate:true,guest,accountContext:{replyLanguage:'ar',ownerIdentity:{preferredName:'PrivateIdentityFixture'},conversation:[{content:'PrivateHistoryFixture'}],memories:[{content:'PrivateMemoryFixture'}]}});
+  assert.doesNotMatch(JSON.stringify(body),/PrivateIdentityFixture|PrivateHistoryFixture|PrivateMemoryFixture/);
+  assert.equal(body.session.audio.input.turn_detection.create_response,guest);
+  if(guest)assert.deepEqual(body.session.tools,[]);
+ }
+});

@@ -21,6 +21,7 @@ export function createRealtimeVoice({
   onResult = () => {},
   onSpeaker = () => {},
   onPrivacyPause = () => {},
+  onPrivacyRecovery = () => {},
   onOwnerVerified = () => {},
   onVerificationNeeded = () => {},
   onState = () => {},
@@ -37,6 +38,7 @@ export function createRealtimeVoice({
   let lastTranscript = "", lastSpeechEndedAt = 0, assistantTranscript = "", lastAssistantTranscript = "", toolInFlight = false, muted = false;
   let playbackActive=false, serial=Promise.resolve(),speechTurn=0,inSpeech=false,responseOpen=false,followup=false;
   let replyLanguage = null, privacyGate=false, guestMode=false, privateTurnAuthorized=false;
+  let qualityRecoveryUsed=false;
   const handledCalls=new Set(),turns=new Map(),responses=new Map(),responseTranscripts=new Map();let latestTurn=null;
   const isCurrentTurn = utterance => !utterance?.superseded && (!utterance || utterance.seq === speechTurn);
   function supersedeTurn() { if(latestTurn)latestTurn.superseded=true;followup=false; }
@@ -65,8 +67,9 @@ export function createRealtimeVoice({
   const publish = (state, detail = {}) => onState({ active, state, mode: "realtime", ...detail });
   const valid = (current) => active && current === generation;
 
-  async function start({guest=false,guestApproval=null}={}) {
+  async function start({guest=false,guestApproval=null,recovery=false}={}) {
     if (active) return false;
+    if(!recovery)qualityRecoveryUsed=false;
     guestMode=guest;
     active = true;
     const current = ++generation;
@@ -189,6 +192,21 @@ export function createRealtimeVoice({
           if(event.item_id)sendEvent({type:'conversation.item.delete',item_id:event.item_id});
           publish('listening',{phase:'verification-needs-speech'});
           onVerificationNeeded({reason:speaker?.verification_status==='unavailable'?'service-unavailable':'more-speech'});return;
+        }
+        // Too little speech is not a different-speaker match. Destroy the old
+        // private provider context, then offer ONE clean, still-gated retry.
+        // Never carry the previous assertion, transcript or queued reply across.
+        if(privateTurnAuthorized&&!qualityRecoveryUsed&&['insufficient_speech','non_speech'].includes(speaker?.match_status)){
+          qualityRecoveryUsed=true;
+          end();const recoveryGeneration=generation;
+          onPrivacyRecovery();
+          if(generation!==recoveryGeneration||active)return;
+          try {
+            if(await start({recovery:true}))onVerificationNeeded({reason:'more-speech'});
+          } catch {
+            publish('privacy-paused');onPrivacyPause({reason:'service-unavailable'});
+          }
+          return;
         }
         let authorized=false,identityEvidence=null,authorizationUnavailable=false;
         try { const r=await fetchImpl('/api/voice/realtime/authorize-turn',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker})});const result=await r.json();authorized=r.ok&&result.authorized===true;authorizationUnavailable=r.status>=500;if(authorized)identityEvidence=result.speakerIdentity; } catch {authorizationUnavailable=true;}

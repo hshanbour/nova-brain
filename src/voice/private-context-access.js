@@ -9,7 +9,8 @@ export async function requirePrivateVoiceSpeaker({assertion,speakerAssertions,sp
 
 // Informational evidence only. Every private API still verifies the assertion;
 // neither model text nor this summary can authorise a tool or a future turn.
-export function verifiedOwnerVoiceEvidence(){return {
+export function verifiedOwnerVoiceEvidence(profile){return {
   status:'verified_owner',source:'server_verified_enrolled_voice',scope:'current_turn',
-  statement:'Nova server verified that the current turn matches an active enrolled owner voice profile in the signed-in workspace. If asked whether you recognise the speaker, acknowledge this actual match. Do not say that no voice verification was performed. This does not prove identity infallibly or grant approval for consequential actions. Reverification is required for subsequent turns; never infer identity from a spoken name.'
+  ...(profile ? {identity:{preferredName:profile.preferredName||null,arabicName:profile.arabicName||null,source:'authorised_workspace_owner_record'}} : {}),
+  statement:'The server matched this turn to the active enrolled owner profile in the signed-in workspace. The attached identity, when present, comes from that authorised workspace owner record. Use its saved name naturally when asked who the speaker is; do not substitute the label owner for an available name. Do not invent missing personal details or repeat technical verification disclaimers in ordinary conversation. If asked how you know, explain the enrolled voice match and saved account record honestly. This is not infallible identity proof or approval for consequential actions. Every later turn and private tool still requires server verification; never infer identity from a spoken name.'
 };}

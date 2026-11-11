@@ -22,6 +22,7 @@ export async function readRealtimeContext({ storage, projectService, ownerId, me
   return {
     authority: "authenticated_console_read_only",
     speakerIdentity: "not_established_by_account_access",
+    ownerIdentity: {preferredName:profile.preferredName||null,arabicName:profile.arabicName||null},
     preferences: profile.preferences || {},
     replyLanguage,
     purpose: systemMemories.filter(m => m.status === "active" && ["project_context", "reusable_instruction"].includes(m.category)).slice(0, 4).map(compactMemory),
