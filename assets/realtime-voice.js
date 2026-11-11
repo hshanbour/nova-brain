@@ -148,16 +148,16 @@ export function createRealtimeVoice({
       lastSpeechEndedAt = now();
       inSpeech=false;const utterance=turns.get(event.item_id)||latestTurn;
       speakerPromise = stopTurnRecording(current,utterance);if(utterance)utterance.speaker=speakerPromise;
-      void boundedSpeaker(speakerPromise,6000).then(async speaker => {
+      void boundedSpeaker(speakerPromise,12000).then(async speaker => {
         if(!valid(current)||!isCurrentTurn(utterance))return;
         if(speaker)onSpeaker(speaker);
         if(!privacyGate)return;
         // A short first utterance is not an identity mismatch. No private context
         // has entered this session yet; keep the gate shut and request more speech.
-        if(!privateTurnAuthorized&&['insufficient_speech','non_speech'].includes(speaker?.match_status)){
+        if(!privateTurnAuthorized&&(['insufficient_speech','non_speech'].includes(speaker?.match_status)||speaker?.verification_status==='unavailable')){
           if(event.item_id)sendEvent({type:'conversation.item.delete',item_id:event.item_id});
           publish('listening',{phase:'verification-needs-speech'});
-          onVerificationNeeded();return;
+          onVerificationNeeded({reason:speaker?.verification_status==='unavailable'?'service-unavailable':'more-speech'});return;
         }
         let authorized=false;
         try { const r=await fetchImpl('/api/voice/realtime/authorize-turn',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker})});authorized=r.ok&&(await r.json()).authorized===true; } catch {}
@@ -303,7 +303,7 @@ export function createRealtimeVoice({
           if(!valid(current)||utterance?.conversationId&&utterance.conversationId!==getConversationId())return resolve(null);
           const response = await fetchImpl("/api/voice/speaker/recognize", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audioBase64, mimeType: audio.type || "audio/webm", durationSeconds, transcript: utterance?.transcript || undefined, conversationId: getConversationId() || undefined }) });
           const value = await response.json().catch(() => null);
-          resolve(response.ok ? value?.speaker || null : null);
+          resolve(response.ok&&value?.speaker ? {...value.speaker,verification_status:value.verificationStatus} : null);
         } catch { resolve(null); }
       }, { once: true });
       try { recorder.stop(); }
@@ -371,7 +371,7 @@ function microphoneAccessError(cause) { const error=new Error(cause?.message||"N
 function safeParse(value) { try { return JSON.parse(String(value || "")); } catch { return null; } }
 function safeProviderError(event) { const code = String(event?.error?.code || "realtime_error").slice(0, 80); return `Realtime Voice error (${code}).`; }
 function bytesToBase64(bytes) { let binary = ""; for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)); return btoa(binary); }
-async function boundedSpeaker(promise, timeoutMs) { if (!promise) return null; return Promise.race([Promise.resolve(promise).catch(() => null), new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs))]); }
+async function boundedSpeaker(promise, timeoutMs) { if (!promise) return null; let timer;try{return await Promise.race([Promise.resolve(promise).catch(() => null), new Promise((resolve) => {timer=setTimeout(() => resolve(null), timeoutMs);})]);}finally{clearTimeout(timer);} }
 
 function createAudioMeter({ AudioContextImpl, stream, onLevel, onShape }) {
   if (typeof AudioContextImpl !== "function" || !stream) return null;

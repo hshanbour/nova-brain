@@ -879,7 +879,7 @@ export function createApi({
               signal: controller.signal,
               speakerCalibration: config.speakerRecognition,
             }) || Promise.reject(new Error("Speaker recognition is not configured.")),
-            config.speakerRecognition.liveTurnBudgetMs,
+            config.speakerRecognition.protectedTurnBudgetMs ?? 10_000,
             () => {
               controller.abort();
               return { authoritative: createSpeakerEngineResult({ engineId: recognitionEngines?.authoritativeEngineId || "ecapa", engineVersion: config.speakerRecognition.modelVersion, qualityState: "deadline_exceeded", status: "failure", error: { code: "recognition_deadline_exceeded", stage: "speaker_embedding" } }) };
@@ -888,11 +888,12 @@ export function createApi({
           let speaker = speakerFromAuthoritativeResult(report.authoritative, config.speakerRecognition.modelVersion);
           speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
           if (speaker.match_status === "confirmed" && !speaker.assertion) speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: speaker.extractor_version, match_status: "unknown", authenticated_identity: "none", assertion: null };
-          logger.info("Nova realtime speaker recognition completed", { requestId, matchStatus: speaker.match_status, speakerCategory: speaker.speaker_label, assertionIssued: Boolean(speaker.assertion) });
+          const verificationStatus=report.authoritative.status==='failure'?'unavailable':report.authoritative.status;
+          logger.info("Nova realtime speaker recognition completed", { requestId, matchStatus: speaker.match_status, speakerCategory: speaker.speaker_label, assertionIssued: Boolean(speaker.assertion), verificationStatus, errorCode:report.authoritative.error?.code||null, qualityGateReason:report.authoritative.diagnostics?.qualityGateReason||null });
           if (typeof input?.transcript === "string" && input.transcript.trim()) {
             await speakerIdentity.recordUtterance({ conversationId: typeof input.conversationId === "string" ? input.conversationId : null, speakerProfileId: speaker.speaker_profile_id, speakerLabel: speaker.speaker_label, confidence: speaker.confidence, text: input.transcript.trim().slice(0, 12000) });
           }
-          sendJson(response, 200, { speaker });
+          sendJson(response, 200, { speaker, verificationStatus });
           return;
         }
         if (request.method === "POST" && pathname === "/api/voice/transcribe") {

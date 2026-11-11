@@ -16,7 +16,9 @@ export function createEcapaSpeakerEngine({ extractor, identity } = {}) {
         const [extracted, transcription] = await Promise.all([extractor.extract(input, { requestId, signal }), transcriptPromise, readyPromise]);
         const hasTranscript = Boolean(String(transcription?.transcript || "").trim());
         const diagnostics = extractionDiagnostics(extracted, input, hasTranscript);
-        if (!extracted.sufficient || !hasTranscript) return createSpeakerEngineResult({ engineId: "ecapa", engineVersion: extracted.extractorVersion, qualityState: extracted.quality || "rejected", status: hasTranscript ? "insufficient" : "non_speech", latencyMs: extracted.latencyMs, candidateCount: await identity.candidateCount(), diagnostics, evidence: extracted });
+        // No profile query is needed when there is no usable representation.
+        // A slow database read must not mask the real speech-quality result.
+        if (!extracted.sufficient || !hasTranscript) return createSpeakerEngineResult({ engineId: "ecapa", engineVersion: extracted.extractorVersion, qualityState: extracted.quality || "rejected", status: hasTranscript ? "insufficient" : "non_speech", latencyMs: extracted.latencyMs, candidateCount: 0, diagnostics, evidence: extracted });
         const match = typeof identity.recognizeMany === "function" ? await identity.recognizeMany(extracted.representationVariants || [{ label: "vad_v3", representation: extracted.representation }], speakerCalibration) : await identity.recognize(extracted.representation);
         return createSpeakerEngineResult({ engineId: "ecapa", engineVersion: extracted.extractorVersion, qualityState: extracted.quality || "accepted", status: match.state, candidateProfileId: match.speakerProfileId, category: match.relation === "owner" ? "owner" : match.speakerProfileId ? "non_owner" : match.bestCandidateCategory, confidence: match.confidence, threshold: match.threshold, ambiguityMargin: match.ambiguityMargin, scoreMargin: match.scoreMargin, representationId: match.matchVariant, latencyMs: extracted.latencyMs, candidateCount: match.candidateCount, diagnostics, evidence: extracted });
       } catch (error) {

@@ -77,3 +77,21 @@ test('Neon network failure remains unavailable, not signed out, and wrong accoun
  for(const code of [401,403])assert.equal((await readPreviewSession(async()=>new Response('',{status:code}))).state,'signed-out');
  assert.equal((await readPreviewSession(async()=>Response.json({workspaceId:'owner'}))).state,'verified');
 });
+
+// Regression for the real 16:49 failure: quality rejection finished after the
+// old live-turn deadline, then an unnecessary profile read hid its reason.
+test('quality rejection does not query profiles and preserves its actual reason',async()=>{
+ const {createEcapaSpeakerEngine}=await import('../src/voice/ecapa-speaker-engine.js');
+ let reads=0;const engine=createEcapaSpeakerEngine({extractor:{configured:true,async extract(){return{sufficient:false,reason:'insufficient_voiced_speech',speechSeconds:.95,totalDurationSeconds:1.62,latencyMs:2259};}},identity:{candidateCount(){reads++;throw Error('must not query');}}});
+ const result=await engine.recognize({durationSeconds:1.645},{transcriptPromise:Promise.resolve({transcript:'fixture'})});
+ assert.equal(result.status,'insufficient');assert.equal(result.diagnostics.qualityGateReason,'insufficient_voiced_speech');assert.equal(result.diagnostics.voicedDurationSeconds,.95);assert.equal(reads,0);
+});
+
+test('protected recognition uses its own bounded deadline and does not misclassify a late quality result',async()=>{
+ const {createSpeakerEngineResult}=await import('../src/voice/speaker-engine.js');
+ let mode='insufficient';
+ const api=createApi({ownerId:'owner',config:{allowedOrigins:[],voiceV2:{maxBodyBytes:5000},speakerRecognition:{liveTurnBudgetMs:5,protectedTurnBudgetMs:80,modelVersion:'fixture'}},initialize:async()=>{},speakerEngines:{authoritativeEngineId:'ecapa',async recognize(){await new Promise(r=>setTimeout(r,25));return{authoritative:createSpeakerEngineResult({status:mode,engineId:'ecapa',diagnostics:{qualityGateReason:'insufficient_voiced_speech'},error:mode==='failure'?{code:'extractor_timeout'}:null})};}},speakerAssertions:{issue:()=>null}});
+ const call=async()=>{const r=response();const q=Object.assign(Readable.from(['{}']),{url:'/api/voice/speaker/recognize',method:'POST',headers:{'content-type':'application/json'}});await api.handle(q,r);return JSON.parse(r.body);};
+ const rejected=await call();assert.equal(rejected.speaker.match_status,'insufficient_speech');assert.equal(rejected.verificationStatus,'insufficient');
+ mode='failure';const unavailable=await call();assert.equal(unavailable.speaker.authenticated_identity,'none');assert.equal(unavailable.verificationStatus,'unavailable');
+});

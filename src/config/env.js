@@ -525,6 +525,7 @@ export function readConfig(environment = process.env) {
       minSpeechSeconds: 1.0,
       maxAudioBytes: 2 * 1024 * 1024,
         liveTurnBudgetMs: 2_500,
+        protectedTurnBudgetMs: 10_000,
         readinessBudgetMs: 900,
       threshold: 0.35,
       ambiguityMargin: 0.05,
