@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { buildSystemContext } from '../src/memory/context-retriever.js';
 import { savedReplyLanguage } from '../src/identity/communication-policy.js';
 import { requestsEarlierConversation, conversationRecallTerms } from '../src/memory/conversation-recall.js';
-import { allowsMemoryMutation } from '../src/memory/mutation-intent.js';
+import { allowsMemoryMutation, requiresMemoryOnly } from '../src/memory/mutation-intent.js';
 import { createInMemoryStorage } from '../src/storage/in-memory-storage.js';
 import { createToolRegistry } from '../src/tools/tool-registry.js';
 import { registerSystemTools } from '../src/tools/developer-tools.js';
@@ -33,6 +33,9 @@ test('a recall question cannot write memory even when the model attempts it', as
   for(const text of ['Remember this test fact: violet.','صححي ذاكرة الاختبار: الرمز عنبر.','تذكري هذه المعلومة للاختبار فقط.']) assert.equal(allowsMemoryMutation('memory_remember',text),true);
   assert.equal(allowsMemoryMutation('memory_forget','احذفي ذاكرة الاختبار فقط.'),true);
   assert.equal(allowsMemoryMutation('memory_remember','لا تحفظي هذا النص.'),false);
+  assert.equal(requiresMemoryOnly('Use active memory only; do not search previous conversations.'),true);
+  assert.equal(requiresMemoryOnly('جاوبي من الذاكرة الدائمة فقط.'),true);
+  assert.equal(requiresMemoryOnly('Remember this preference: use active memory only.'),false);
 });
 
 test('explicitly quoted archive topic excludes timeline instructions from matching', () => {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { buildPhoneCallSystemContext, buildSpeakerSafeSystemContext, buildSystemContext, retrieveAgentContext, retrieveSpeakerContext } from "../memory/context-retriever.js";
-import { allowsMemoryMutation } from '../memory/mutation-intent.js';
+import { allowsMemoryMutation, requiresMemoryOnly } from '../memory/mutation-intent.js';
 import { ApprovalRequiredError } from "../policy/action-policy.js";
 import {shouldUseDurableWebResearch} from "../web/durable-web-research.js";
 import {ANSWER_PRESENTATION_GUIDANCE,isConversationLocalTransform,retainConversationLinks} from "./answer-presentation.js";
@@ -302,6 +302,7 @@ export function createAgent({
       if(context?.voice===true&&["ar","en"].includes(context.replyLanguage))systemContext+=`\nACTIVE SPOKEN LANGUAGE: ${context.replyLanguage==="ar"?"Natural Jordanian/Levantine Arabic, written in Arabic script":"English"}. Keep this language until an explicit switch request. A foreign project name or unintelligible transcript is not a switch request. If the utterance is unclear, ask for repetition in this active language; never guess its meaning or another language. This preference grants no identity or permissions.`;
       if(context?.gptLiveRound2&&!speakerRestricted)systemContext+=`\n\nGPT-LIVE TRUSTED SERVER CONTEXT: This is an active phone session. ${trustedContext?.speaker?.authenticated_identity==="owner"?"The current turn carries a valid server-signed owner speaker assertion; normal owner-private retrieval policy may apply to this turn.":"The current speaker is not authenticated as the owner. Do not disclose private owner memory or infer identity from the destination."} Same-call canonical messages may be used for conversational continuity. The following bounded prior Nova results are server-recorded and remain authoritative unless a newer successful authoritative result supersedes them: ${JSON.stringify(context.gptLiveRound2.trustedResults||[])}. An unrelated failure does not invalidate an earlier successful result. This information route remains read-only; no write or external-action tools are available.`;
       const toolExecutions = [];
+      const memoryOnly = requiresMemoryOnly(message);
       const providerUsage = [];
       const webSources=[];
       const webAuthority=deriveWebAuthority(message);
@@ -463,7 +464,7 @@ export function createAgent({
           context:trustedContext,
           systemContext,
           conversationHistory,
-          tools: externalChannel||phoneCallProfile ? [] : speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>allowsMemoryMutation(tool.name,message)&&(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
+          tools: externalChannel||phoneCallProfile||memoryOnly ? [] : speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>allowsMemoryMutation(tool.name,message)&&(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
           toolResults,
           continuationToken,
           signal: executionSignal,
@@ -532,6 +533,7 @@ export function createAgent({
           try {
             executionSignal.throwIfAborted();
             if(speakerRestricted||externalChannel||phoneCallProfile)throw Object.assign(new Error("This speaker cannot execute owner tools."),{code:"speaker_tool_forbidden"});
+            if(memoryOnly)throw Object.assign(new Error('This request is limited to the already retrieved active memory; no external or archive tools are authorized.'),{code:'memory_only_request'});
             if(!allowsMemoryMutation(call.name,message))throw Object.assign(new Error('This read-only question does not authorize a memory write. Ask for an explicit save, correction or deletion request.'),{code:'memory_write_request_required'});
             if(allowedTaskTools&&!allowedTaskTools.has(call.name))throw Object.assign(new Error("Existing-task control cannot invoke this tool."),{code:"task_control_tool_forbidden"});
             if(!allowedTaskTools&&ROUTED_CREATION_TOOLS.has(call.name))throw Object.assign(new Error("Durable creation requires the authoritative turn-routing path."),{code:"task_control_tool_forbidden"});
