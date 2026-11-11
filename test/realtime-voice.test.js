@@ -184,13 +184,13 @@ class FakePeer extends EventTarget {
 }
 
 test("12 interrupted English/Arabic turns suppress stale queued work and preserve latest turn, camera and playback",async()=>{
-  const channel=new FakeChannel(),peer=new FakePeer(channel),observed=[],turns=[];
+  const channel=new FakeChannel(),peer=new FakePeer(channel),observed=[],turns=[],results=[];
   let unlock,look={observed:false};
   const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return {getTracks:()=>[]};}},
     RTCPeerConnectionImpl:class{constructor(){return peer}},AudioImpl:class{pause(){}},MediaRecorderImpl:null,
     fetchImpl:async url=>url.includes("session")?Response.json({clientSecret:"ek_test"}):new Response("answer"),
-    getConversationId:()=>"c1",readScene:()=>look,onState:e=>observed.push(e),
-    sendTurn:async t=>{turns.push(t);if(turns.length===1)await new Promise(r=>unlock=r);return {message:"Local result: "+t};}});
+    getConversationId:()=>"c1",readScene:()=>look,onState:e=>observed.push(e),onResult:r=>results.push(r),
+    sendTurn:async t=>{turns.push(t);if(turns.length===1)await new Promise(r=>unlock=r);return {conversationId:'c1',runId:'receipt',message:"Local result: "+t};}});
   await voice.start();channel.open();
   for(let i=0;i<12;i++){
     const item_id="i"+i,id="r"+i,request=i%2?"تابع المهمة "+i:"Review task "+i;
@@ -203,6 +203,7 @@ test("12 interrupted English/Arabic turns suppress stale queued work and preserv
   }
   unlock();await new Promise(r=>setTimeout(r,10));
   assert.equal(turns.length,2);assert.equal(new Set(turns).size,2);assert.equal(turns[1],"تابع المهمة 11");
+  assert.equal(results.length,1);assert.match(results[0].message,/11$/);
   const outputs=()=>channel.sent.filter(x=>x.item?.type==="function_call_output");
   assert.equal(outputs().length,12);assert.equal(outputs()[11].item.call_id,"c11");
   assert.ok(outputs().slice(0,11).every(x=>JSON.parse(x.item.output).status==="superseded"));

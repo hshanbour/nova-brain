@@ -17,6 +17,7 @@ export function createRealtimeVoice({
   onTranscript = () => {},
   onAssistantTranscript = () => {},
   onDirectTurn = () => {},
+  onResult = () => {},
   onSpeaker = () => {},
   onPrivacyPause = () => {},
   onState = () => {},
@@ -236,6 +237,8 @@ export function createRealtimeVoice({
       const result = await sendTurn(request, { speaker, conversationId: getConversationId(), replyLanguage });
       if (!valid(current)) return;
       if (!isCurrentTurn(utterance)) { finishSuperseded(call); return; }
+      if(getConversationId()&&result?.conversationId&&result.conversationId!==getConversationId())throw Error("Conversation changed.");
+      if(!guestMode)onResult(result);
       sendEvent({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output: JSON.stringify({ message: result?.message || "Nova could not complete that request.", receipt: result?.runId ? {runId:result.runId,status:result.runStatus||null,tools:(result.toolCalls||[]).map(t=>({name:t.name,status:t.status}))} : null, approvalRequired: Boolean(result?.approval), conversationId: result?.conversationId || null }) } });
       followup=true;flushFollowup();
     } catch (error) {
