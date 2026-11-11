@@ -453,7 +453,7 @@ function memoryCard(memory) {
 function memoryCandidateCard(candidate) {
   const article=document.createElement("article");article.className="memory-card";article.dataset.candidateId=candidate.id;
   const heading=document.createElement("div");heading.className="memory-card-heading";const tags=document.createElement("div");tags.className="memory-tags";
-  for(const label of[candidate.candidateType.replaceAll("_"," "),candidate.sourceKind.replaceAll("_"," "),candidate.projectId].filter(Boolean)){const tag=document.createElement("span");tag.textContent=label;tags.append(tag);}heading.append(tags);
+  for(const label of[candidate.candidateType.replaceAll("_"," "),candidate.evidence?.channel==="voice"?"voice conversation":candidate.sourceKind.replaceAll("_"," "),candidate.projectId].filter(Boolean)){const tag=document.createElement("span");tag.textContent=label;tags.append(tag);}heading.append(tags);
   const content=document.createElement("p");content.textContent=candidate.content;const meta=document.createElement("small");meta.textContent=`Pending owner review · ${candidate.provenance}`;
   const controls=document.createElement("div");controls.className="candidate-controls";const select=document.createElement("select");select.className="candidate-supersede";select.setAttribute("aria-label","Memory to supersede (optional)");select.append(new Option("Accept as new memory",""));
   for(const memory of memoryRecords.filter(item=>item.status==="active")){select.append(new Option(`Supersede: ${memory.content.slice(0,80)}`,memory.id));}

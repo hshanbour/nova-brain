@@ -153,3 +153,17 @@ test("candidate review HTTP routes list and decide without exposing another owne
   const invalid = await invoke({ method: "POST", url: `/api/memory-candidates/${pending.candidate.id}/decision`, body: { decision: "rejected", supersedesMemoryId: "not-allowed" } });
   assert.equal(invalid.status, 400);
 });
+
+
+test('Arabic identity questions and explicit commands do not create misleading proposals',()=>{
+ for(const text of ['طيب إذا أنا المالك شو اسمي؟','شو اسمي','Do you know my name is Test?','احفظي بالذاكرة أني أفضل التقرير يوم الجمعة','صححي المعلومة المحفوظة: رمز الاختبار تغير','انسي المعلومة القديمة'])assert.equal(classifyTypedMemoryCandidate(text),null,text);
+ assert.equal(classifyTypedMemoryCandidate('اسمي اسم الاختبار').candidateType,'owner_claim');
+});
+
+test('introduced relationships are review proposals, never speaker identities or permissions',async()=>{
+ const {storage,learning}=await fixture();
+ assert.equal(await learning.observeVoiceTurn({verifiedOwner:false,message:'My wife is Test Person',conversationId:'conversation-learning',userMessageId:'guest'}),null);
+ const proposed=await learning.observeVoiceTurn({verifiedOwner:true,message:'زوجتي اسمها اسم الاختبار',conversationId:'conversation-learning',userMessageId:'owner-introduction'});
+ assert.equal(proposed.candidate.status,'pending');assert.equal(proposed.candidate.evidence.requiresOwnerReview,true);
+ assert.equal((await storage.listMemories(OWNER)).length,0);assert.equal((await storage.listSpeakerProfiles(OWNER)).length,0);
+});

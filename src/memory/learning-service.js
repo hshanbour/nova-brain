@@ -2,7 +2,10 @@ import {createHash} from "node:crypto";
 
 const TYPES=new Set(["verified_fact","owner_claim","preference","project_decision","hypothesis","unresolved_question","completed_task_outcome","failed_task_lesson","correction"]);
 const SECRET=/\b(?:sk-[A-Za-z0-9_-]{10,}|github_pat_[A-Za-z0-9_]{10,}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+)/i;
-const EXPLICIT_MEMORY=/\b(?:remember|save (?:this|that) (?:to|in) memory|forget (?:this|that))\b|(?:تذكّر|احفظ.{0,20}الذاكرة|انسى)/iu;
+const EXPLICIT_MEMORY=/\b(?:remember|save (?:this|that) (?:to|in) memory|forget (?:this|that))\b|(?:تذكّر|تذكري|تذكر |احفظي?|انسى|انسي|صححي?.{0,40}(?:الذاكرة|المحفوظة)|احذفي?.{0,40}الذاكرة)/iu;
+// Questions about identity/preferences are requests for recall, not new facts.
+const QUESTION=/[?؟]\s*$|^(?:do you|what|who|where|when|why|how|هل|شو|مين|وين|ليش|كيف)\s/iu;
+const RELATIONSHIP=/\bmy (?:wife|husband|friend|partner)(?:'s name)? is\b|(?:زوجتي|زوجي|صديقي|صديقتي)\s+(?:اسمها|اسمه|هي|هو)\s/iu;
 const PREFERENCE=/\b(?:i prefer|my preference is|i like nova to|i want nova to|please always|please never)\b|(?:بفضّل|أفضل|بحب نوفا|دائماً اعمل|لا تعمل أبداً)/iu;
 const DECISION=/\b(?:we decided|i decided|the decision is|from now on)\b|(?:قررنا|قررت|القرار هو|من الآن)/iu;
 const CORRECTION=/\b(?:correction|actually[, :]|that(?:'s| is) (?:wrong|outdated)|not .{1,80} but )\b|(?:تصحيح|بالحقيقة|المعلومة القديمة|مش .{1,80} بل )/iu;
@@ -15,8 +18,8 @@ const fingerprint=(parts)=>createHash("sha256").update(parts.map(value=>String(v
 
 export function classifyTypedMemoryCandidate(message){
   const content=clean(message);
-  if(content.length<8||content.length>4000||SECRET.test(content)||EXPLICIT_MEMORY.test(content))return null;
-  const candidateType=CORRECTION.test(content)?"correction":PREFERENCE.test(content)?"preference":DECISION.test(content)?"project_decision":OWNER_CLAIM.test(content)?"owner_claim":UNRESOLVED.test(content)?"unresolved_question":HYPOTHESIS.test(content)?"hypothesis":null;
+  if(content.length<8||content.length>4000||SECRET.test(content)||EXPLICIT_MEMORY.test(content)||QUESTION.test(content))return null;
+  const candidateType=CORRECTION.test(content)?"correction":PREFERENCE.test(content)?"preference":DECISION.test(content)?"project_decision":OWNER_CLAIM.test(content)||RELATIONSHIP.test(content)?"owner_claim":UNRESOLVED.test(content)?"unresolved_question":HYPOTHESIS.test(content)?"hypothesis":null;
   return candidateType?Object.freeze({candidateType,content}):null;
 }
 
