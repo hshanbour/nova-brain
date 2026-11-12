@@ -48,6 +48,7 @@ const ASSETS = Object.freeze({
   "/assets/voice-v2.js": { file: "../../assets/voice-v2.js", type: "text/javascript; charset=utf-8" },
   "/assets/realtime-voice.js": { file: "../../assets/realtime-voice.js", type: "text/javascript; charset=utf-8" },
   "/assets/voice-language.js": { file: "../../assets/voice-language.js", type: "text/javascript; charset=utf-8" },
+  "/assets/voice-turn-routing.js": { file: "../../assets/voice-turn-routing.js", type: "text/javascript; charset=utf-8" },
   "/assets/voice-control.js": { file: "../../assets/voice-control.js", type: "text/javascript; charset=utf-8" },
   "/assets/speaker-enrollment.js": { file: "../../assets/speaker-enrollment.js", type: "text/javascript; charset=utf-8" },
   "/assets/speaker-familiarity.js": { file: "../../assets/speaker-familiarity.js", type: "text/javascript; charset=utf-8" },

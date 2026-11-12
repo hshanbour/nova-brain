@@ -1,5 +1,6 @@
 import {articulation,rest} from "./prism-articulation.js";
 import {explicitVoiceLanguage,isVoiceLanguageOnlyChange} from "./voice-language.js";
+import {isDirectVoiceExchange,isLocalVisionRequest,cancelsPreviousVoiceRequest,authoritativeVoiceResponse} from './voice-turn-routing.js';
 const OPENAI_REALTIME_CALLS = "https://api.openai.com/v1/realtime/calls";
 
 export function createRealtimeVoice({
@@ -33,6 +34,7 @@ export function createRealtimeVoice({
   onError = () => {},
   now = () => globalThis.performance?.now?.() ?? Date.now(),
   verificationWindowMs = 3500,
+  transcriptWaitMs = 1500,
 } = {}) {
   if (!mediaDevices?.getUserMedia || typeof RTCPeerConnectionImpl !== "function" || typeof fetchImpl !== "function") throw new TypeError("Realtime Voice browser dependencies are unavailable.");
   let active = false, generation = 0, pc, channel, stream, remoteAudio, inputMeter, outputMeter;
@@ -176,7 +178,7 @@ export function createRealtimeVoice({
       if(privacyGate)interrupt();
       supersedeTurn();
       playbackActive=false;onArticulation(rest);onAudibleLevel(0); speakerPromise=null;inSpeech=true;++speechTurn;
-      latestTurn={seq:speechTurn,transcript:"",speaker:null,conversationId:getConversationId(),previousTurn:latestTurn};if(event.item_id){turns.set(event.item_id,latestTurn);trim(turns);}
+      latestTurn={seq:speechTurn,startedAt:now(),transcript:"",speaker:null,conversationId:getConversationId(),previousTurn:latestTurn};if(event.item_id){turns.set(event.item_id,latestTurn);trim(turns);}
       let ancestor=latestTurn;for(let n=0;n<32&&ancestor?.previousTurn;n++)ancestor=ancestor.previousTurn;if(ancestor)ancestor.previousTurn=null;
       lastTranscript = "";
       lastAssistantTranscript = "";
@@ -188,6 +190,7 @@ export function createRealtimeVoice({
     if (event.type === "input_audio_buffer.speech_stopped") {
       lastSpeechEndedAt = now();
       inSpeech=false;const utterance=turns.get(event.item_id)||latestTurn;
+      if(utterance){utterance.endedAt=lastSpeechEndedAt;if(utterance.authorization)return;}
       // Before admitting private context, collect one bounded recording across
       // short VAD pauses. Never concatenate WebM files or reuse a prior match.
       if(privacyGate&&!privateTurnAuthorized&&turnRecorder&&!event.novaVerificationWindow&&now()-turnStartedAt<verificationWindowMs){
@@ -202,6 +205,7 @@ export function createRealtimeVoice({
       speakerPromise = stopTurnRecording(current,utterance);if(utterance)utterance.speaker=speakerPromise;
       const authorization=boundedSpeaker(speakerPromise,12000).then(async speaker => {
         if(!valid(current))return;
+        if(utterance)utterance.recognizedSpeaker=speaker;
         if(!isCurrentTurn(utterance)){timing('speaker-result-superseded');return;}
         if(speaker)onSpeaker(speaker);
         if(!privacyGate)return;
@@ -240,21 +244,39 @@ export function createRealtimeVoice({
         if(identityEvidence?.status==='verified_owner'&&identityEvidence?.source==='server_verified_enrolled_voice'){
           sendEvent({type:'conversation.item.create',item:{type:'message',role:'system',content:[{type:'input_text',text:'CURRENT TURN SERVER VERIFICATION (informational, not tool permission): '+JSON.stringify(identityEvidence)}]}});
         }
+        await waitForTranscript(utterance);
+        if(!valid(current)||!isCurrentTurn(utterance))return;
         if(utterance?.previousTurn?.pendingWork&&languageContinuationOf(utterance.previousTurn,utterance)){
           publish('thinking',{phase:'continuing-request'});return;
         }
-        timing('reply-requested');sendEvent({type:'response.create'});
+        const request=await verifiedRequest(utterance);
+        if(!valid(current)||!isCurrentTurn(utterance))return;
+        if(!request){
+          timing('transcript-unavailable');
+          speakBrainResult({message:replyLanguage==='en'?"The speech transcript was unavailable. Please repeat your request.":'تعذّر تحويل الكلام لنص. ممكن تعيد طلبك؟'},utterance);return;
+        }
+        utterance.request=request;
+        if(isDirectVoiceExchange(request)){
+          utterance.responseRequested=true;timing('reply-requested');sendEvent({type:'response.create'});
+        } else if(isLocalVisionRequest(request)){
+          utterance.responseRequested=true;timing('reply-requested');sendEvent({type:'response.create',response:{tool_choice:{type:'function',name:'nova_look'}}});
+        } else await runVerifiedTurn(utterance,current);
       });
       if(utterance)utterance.authorization=authorization;
       publish("thinking", { phase: "understanding" });
       return;
     }
     if (event.type === "conversation.item.input_audio_transcription.completed") {
-      const text=String(event.transcript||"").trim();const utterance=turns.get(event.item_id)||latestTurn;if(utterance)utterance.transcript=text;
+      const text=String(event.transcript||"").trim();const utterance=event.item_id?turns.get(event.item_id):latestTurn;
+      if(!utterance){timing('orphan-transcript-ignored');return;}
+      utterance.transcript=text;utterance.transcriptionComplete=true;utterance.resolveTranscript?.();
       if(utterance&&utterance!==latestTurn)return;lastTranscript=text;
       replyLanguage = explicitVoiceLanguage(text) || replyLanguage;
       if (lastTranscript) onTranscript(lastTranscript);
       return;
+    }
+    if(event.type==='conversation.item.input_audio_transcription.failed'){
+      const utterance=turns.get(event.item_id);if(utterance){utterance.transcriptionComplete=true;utterance.resolveTranscript?.();}timing('transcription-failed');return;
     }
     if (event.type === "response.output_audio_transcript.delta") {
       assistantTranscript += String(event.delta || "");
@@ -291,7 +313,7 @@ export function createRealtimeVoice({
       } else if(look.length){followup=true;flushFollowup();
       } else if (lastSpeechEndedAt && event.response?.metadata?.purpose!=="explain_task_report" && event.response?.status!=="cancelled") {
         const userText=utterance.transcript, assistantText=responseTranscripts.get(event.response?.id)||lastAssistantTranscript;
-        if (!guestMode && isCurrentTurn(utterance) && userText && assistantText) void Promise.resolve(onDirectTurn({ speaker:utterance.verifiedSpeaker || await boundedSpeaker(utterance.speaker,750), turnId: String(event.response?.id || `turn-${Math.round(lastSpeechEndedAt)}`), userText, assistantText, conversationId: getConversationId() })).catch(() => {});
+        if (!guestMode && !utterance.brainHandled && isCurrentTurn(utterance) && userText && assistantText) void Promise.resolve(onDirectTurn({ speaker:utterance.verifiedSpeaker || await boundedSpeaker(utterance.speaker,750), turnId: String(event.response?.id || `turn-${Math.round(lastSpeechEndedAt)}`), userText, assistantText, conversationId: getConversationId() })).catch(() => {});
         onTiming({ stage: "realtime-response-done", measurements: { speechEndToResponseDoneMs: Math.max(0, now() - lastSpeechEndedAt) } });
         if(!playbackActive&&!toolInFlight)publish("listening");
       }
@@ -314,6 +336,53 @@ export function createRealtimeVoice({
       return;
     }
     if (event.type === "error" && event.error?.code!=="response_cancel_not_active") {timing('provider-event-error');fail(safeProviderError(event));}
+  }
+
+  async function waitForTranscript(utterance){
+    if(!utterance||utterance.transcriptionComplete||utterance.transcript)return;
+    let timer;try{await Promise.race([new Promise(resolve=>{utterance.resolveTranscript=resolve;}),new Promise(resolve=>{timer=setTimeout(resolve,transcriptWaitMs);})]);}finally{clearTimeout(timer);utterance.resolveTranscript=null;}
+  }
+
+  async function verifiedRequest(utterance){
+    let text=utterance.transcript||'';
+    if(!text||cancelsPreviousVoiceRequest(text))return text;
+    let next=utterance,previous=utterance.previousTurn;
+    for(let n=0;n<3&&previous;n++){
+      if(previous.consumed||previous.responseRequested||previous.pendingWork||previous.conversationId!==utterance.conversationId||!Number.isFinite(previous.endedAt)||next.startedAt-previous.endedAt>1000||next.startedAt<previous.endedAt)break;
+      const match=previous.recognizedSpeaker||await boundedSpeaker(previous.speaker,500);
+      // A continuation may include only independently matched speech from the
+      // same enrolled profile. Never carry an unknown speaker's words forward.
+      if(match?.match_status!=='confirmed'||!match.speaker_profile_id||match.speaker_profile_id!==utterance.verifiedSpeaker?.speaker_profile_id)break;
+      await waitForTranscript(previous);if(!previous.transcript)break;
+      text=previous.transcript+'\n'+text;previous.consumed=true;next=previous;previous=previous.previousTurn;
+    }
+    return text;
+  }
+
+  function speakBrainResult(result,utterance){
+    if(!active||inSpeech||!isCurrentTurn(utterance)||!utterance.verifiedSpeaker)return;
+    utterance.responseRequested=true;
+    timing('reply-requested');sendEvent({type:'response.create',response:authoritativeVoiceResponse(result,replyLanguage)});
+  }
+
+  async function runVerifiedTurn(utterance,current){
+    if(utterance.brainHandled)return;
+    utterance.brainHandled=true;utterance.pendingWork=true;toolInFlight=true;
+    publish('thinking',{phase:'nova-brain'});timing('brain-turn-submitted');
+    try{
+      const result=await sendTurn(utterance.request,{speaker:utterance.verifiedSpeaker,conversationId:getConversationId(),replyLanguage});
+      if(!valid(current))return;
+      const delivery=await deliveryTurn(utterance,current);if(!delivery)return;
+      if(utterance.conversationId&&getConversationId()!==utterance.conversationId)throw Error('Conversation changed.');
+      delivery.brainHandled=true;
+      onResult(result);timing('brain-turn-completed',{tools:result?.toolCalls?.length||0});
+      speakBrainResult(result,delivery);
+    }catch(error){
+      if(valid(current)&&isCurrentTurn(utterance)){
+        timing('brain-turn-failed');onError(error?.message||'Nova Brain could not complete this turn.');
+        speakBrainResult({message:replyLanguage==='en'?'The request failed. I have no successful result to confirm.':'تعذّر تنفيذ الطلب، وما عندي نتيجة ناجحة أقدر أؤكدها.'},utterance);
+      }
+    }finally{utterance.pendingWork=false;if(valid(current))toolInFlight=false;}
   }
 
   async function handleNovaTurn(call, current, utterance) {

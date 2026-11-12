@@ -25,11 +25,12 @@ test('a different voice cannot use the gated recovery session',async()=>{
   assert.equal(h.verifiedCount(),1);assert.equal(h.counts().pauses,1);assert.equal(h.voice.isActive(),false);assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,0);
  }finally{h.close();}
 });
-function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn,recognize,authorizationFailure=false,verificationWindowMs=0}={}){
+function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn,recognize,authorizationFailure=false,verificationWindowMs=0,autoTranscript=true}={}){
  let clock=0,frame,requests=[],notices=0,pauses=0,verified=0;const results=[],pauseReasons=[],recoveries=[];
  const prior=globalThis.requestAnimationFrame,priorCancel=globalThis.cancelAnimationFrame;
  globalThis.requestAnimationFrame=fn=>{frame=fn;return 1;};globalThis.cancelAnimationFrame=()=>{};
- class Channel extends EventTarget{readyState='open';sent=[];send(s){this.sent.push(JSON.parse(s));}close(){this.readyState='closed';}message(e){this.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(e)}));}}
+ const transcribed=new Set();
+ class Channel extends EventTarget{readyState='open';sent=[];send(s){this.sent.push(JSON.parse(s));}close(){this.readyState='closed';}message(e){if(e.type==='conversation.item.input_audio_transcription.completed')transcribed.add(e.item_id);this.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(e)}));}}
  let channel;
  class Peer extends EventTarget{createDataChannel(){channel=new Channel();return channel;}addTrack(){}async createOffer(){return{sdp:'test'};}async setLocalDescription(){}async setRemoteDescription(){}close(){}}
  class Recorder extends EventTarget{state='inactive';mimeType='audio/webm';start(){this.state='recording';}stop(){this.state='inactive';const e=new Event('dataavailable');e.data=new Blob(['synthetic-audio-fixture']);this.dispatchEvent(e);this.dispatchEvent(new Event('stop'));}}
@@ -37,11 +38,11 @@ function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn
  const voice=createRealtimeVoice({verificationWindowMs,mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){}}]};}},RTCPeerConnectionImpl:Peer,MediaRecorderImpl:Recorder,AudioContextImpl:Context,AudioImpl:class{pause(){}},now:()=>clock,sendTurn,onResult:r=>results.push(r),getConversationId:()=> 'fixture-conversation',onPrivacyRecovery:()=>recoveries.push(true),onVerificationNeeded:()=>notices++,onPrivacyPause:detail=>{pauses++;pauseReasons.push(detail?.reason);},onOwnerVerified:()=>verified++,
  fetchImpl:async(url,o)=>{
   if(url.endsWith('/session'))return Response.json({clientSecret:'fixture',privacyGate:true,replyLanguage:'ar'});
-  if(url.endsWith('/recognize')){const body=JSON.parse(o.body);requests.push(body);return Response.json({speaker:recognize?recognize(body,requests.length):body.durationSeconds>=1?{match_status:'confirmed',authenticated_identity:'owner',assertion:'fixture'}:{match_status:shortResult,authenticated_identity:'none'}});}
+  if(url.endsWith('/recognize')){const body=JSON.parse(o.body);requests.push(body);return Response.json({speaker:recognize?await recognize(body,requests.length):body.durationSeconds>=1?{match_status:'confirmed',authenticated_identity:'owner',assertion:'fixture'}:{match_status:shortResult,authenticated_identity:'none'}});}
   if(url.endsWith('/authorize-turn')){if(authorizationFailure)throw new TypeError('Failed to fetch');const allowed=authorize&&JSON.parse(o.body).speaker?.match_status==='confirmed';return Response.json({authorized:allowed,...(allowed?{speakerIdentity:verifiedOwnerVoiceEvidence()}:{})},{status:allowed?200:403});}
   return new Response('fixture');
  }});
- return{voice,get channel(){return channel;},requests,results,pauseReasons,recoveries,verifiedCount:()=>verified,counts:()=>({notices,pauses}),set:t=>clock=t,local:t=>{clock=t;frame();},event:(type,id)=>channel.message({type:'input_audio_buffer.'+type,item_id:id}),close(){voice.end();globalThis.requestAnimationFrame=prior;globalThis.cancelAnimationFrame=priorCancel;}};
+ return{voice,get channel(){return channel;},requests,results,pauseReasons,recoveries,verifiedCount:()=>verified,counts:()=>({notices,pauses}),set:t=>clock=t,local:t=>{clock=t;frame();},event:(type,id)=>{if(type==='speech_stopped'&&autoTranscript&&!transcribed.has(id))channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:id,transcript:'مرحبا'});channel.message({type:'input_audio_buffer.'+type,item_id:id});},close(){voice.end();globalThis.requestAnimationFrame=prior;globalThis.cancelAnimationFrame=priorCancel;}};
 }
 
 test('local capture preserves speech onset before delayed remote VAD and still requires server authorization',async()=>{
@@ -137,18 +138,16 @@ test('language-only correction is narrow and never hides cancellation or a new i
 });
 
 for(const correction of ['احكي باللغة الثانية، احكي بالعربي.','وقف خلينا نغير الموضوع'])test('pending result after '+correction,async()=>{
- let finish,calls=0;const h=voiceHarness({sendTurn:async()=>{calls++;return new Promise(r=>finish=r);}});
+ let finish,calls=0;const h=voiceHarness({sendTurn:async()=>{calls++;if(calls===1)return new Promise(r=>finish=r);return{message:'New topic',runId:'new-topic'};}});
  try{
   await h.voice.start();h.set(1000);h.event('speech_started','request');h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'request',transcript:'شو بتعرفي عن مشروع الاختبار؟'});h.set(3500);h.event('speech_stopped','request');await wait();
   const identity=h.channel.sent.find(x=>x.item?.role==='system');assert.match(identity.item.content[0].text,/server_verified_enrolled_voice/);assert.doesNotMatch(identity.item.content[0].text,/assertion|fixture-conversation/);
-  assert.ok(h.channel.sent.indexOf(identity)<h.channel.sent.findIndex(x=>x.type==='response.create'));
-  h.channel.message({type:'response.created',response:{id:'r1'}});h.channel.message({type:'response.done',response:{id:'r1',output:[{type:'function_call',name:'nova_turn',call_id:'pending-call',arguments:'{}'}]}});await new Promise(r=>setTimeout(r,10));assert.equal(calls,1);
+  assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,0,'Substantive speech waits for Brain, not a speculative audio answer');assert.equal(calls,1);
   h.set(5000);h.event('speech_started','language');h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'language',transcript:correction});h.set(7500);h.event('speech_stopped','language');await wait();
   finish({message:'Completed project evidence',runId:'fixture-receipt',conversationId:'fixture-conversation'});await new Promise(r=>setTimeout(r,15));
-  const output=h.channel.sent.find(x=>x.item?.call_id==='pending-call');
-  if(isVoiceLanguageOnlyChange(correction)){assert.match(output.item.output,/fixture-receipt/);assert.equal(h.results.length,1);assert.ok(h.channel.sent.some(x=>x.item?.content?.[0]?.text?.includes('reply language to ar')));}
-  else {assert.equal(JSON.parse(output.item.output).status,'superseded');assert.equal(h.results.length,0);}
-  assert.equal(calls,1,'Never re-execute the original request');
+  const spoken=h.channel.sent.filter(x=>x.type==='response.create').map(x=>JSON.stringify(x.response));
+  if(isVoiceLanguageOnlyChange(correction)){assert.ok(spoken.some(x=>x.includes('fixture-receipt')));assert.equal(h.results.length,1);assert.equal(calls,1);}
+  else {assert.ok(!spoken.some(x=>x.includes('fixture-receipt')));assert.equal(h.results.length,1);assert.equal(calls,2,'Only the new instruction runs; original is never re-executed');}
  }finally{h.close();}
 });
 
@@ -238,5 +237,56 @@ test('late response-created cannot attach an old authorized reply to a new unver
   h.channel.message({type:'output_audio_buffer.started'});
   assert.ok(h.channel.sent.some(x=>x.type==='response.cancel'));assert.ok(h.channel.sent.some(x=>x.type==='output_audio_buffer.clear'));
   assert.equal(h.verifiedCount(),1);
+ }finally{h.close();}
+});
+
+test('the actual notebook recall transcript reaches Brain rather than a speculative exam answer',async()=>{
+ const requests=[];const h=voiceHarness({sendTurn:async(text,context)=>{requests.push({text,context});return{message:'لم أجد معلومة محفوظة عن لون الدفتر.',runId:'actual-retrieval-fixture',toolCalls:[{name:'memory_search',status:'completed'}]};}});
+ try{
+  await h.voice.start();h.set(1000);h.event('speech_started','recall');
+  const transcript='أوكي، هس أنا هون مش... بدك تحكيلي شو لون دفتر الاختبار.';
+  h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'recall',transcript});h.set(7000);h.event('speech_stopped','recall');await wait();
+  assert.equal(requests.length,1);assert.equal(requests[0].text,transcript);assert.equal(requests[0].context.speaker.match_status,'confirmed');
+  const reply=h.channel.sent.find(x=>x.type==='response.create').response;
+  assert.equal(reply.conversation,'none');assert.equal(reply.tool_choice,'none');assert.match(JSON.stringify(reply.input),/actual-retrieval-fixture/);assert.doesNotMatch(JSON.stringify(reply.input),/exam|بنفسجي/);
+ }finally{h.close();}
+});
+
+test('adjacent independently verified fragments preserve the interrupted save request exactly once',async()=>{
+ const requests=[];let releaseFirst;
+ const h=voiceHarness({recognize:(_body,n)=>n===1?new Promise(resolve=>releaseFirst=()=>resolve({match_status:'confirmed',speaker_profile_id:'owner-profile',assertion:'first'})):{match_status:'confirmed',speaker_profile_id:'owner-profile',assertion:'second'},sendTurn:async text=>{requests.push(text);return{message:'Saved with receipt.',runId:'save-fixture'};}});
+ try{
+  await h.voice.start();h.set(1000);h.event('speech_started','first');
+  h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'first',transcript:'احفظي معلومة خيالية للاختبار: لون دفتر الاختبار بنفسجي.'});h.set(9000);h.event('speech_stopped','first');await wait();
+  h.set(9070);h.event('speech_started','continuation');releaseFirst();
+  h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'continuation',transcript:'خليها عندك المعلومة.'});h.set(12000);h.event('speech_stopped','continuation');await wait();
+  assert.equal(requests.length,1);assert.match(requests[0],/^احفظي.*بنفسجي\.\nخليها/u);assert.equal(h.verifiedCount(),1,'Only current turn grants access');
+ }finally{h.close();}
+});
+
+test('unverified earlier fragments never become owner memory instructions',async()=>{
+ const requests=[];const h=voiceHarness({recognize:(_b,n)=>n===1?{match_status:'unknown',speaker_profile_id:null}:{match_status:'confirmed',speaker_profile_id:'owner-profile',assertion:'fixture'},sendTurn:async t=>{requests.push(t);return{message:'Clarification only',runId:'read-fixture'};}});
+ try{
+  await h.voice.start();h.set(1000);h.event('speech_started','guest');h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'guest',transcript:'احفظي سر الضيف'});h.set(4000);h.event('speech_stopped','guest');h.set(4070);h.event('speech_started','owner');await wait();h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'owner',transcript:'خليها عندك المعلومة.'});h.set(8000);h.event('speech_stopped','owner');await wait();
+  assert.deepEqual(requests,['خليها عندك المعلومة.']);
+ }finally{h.close();}
+});
+
+test('late transcription is awaited and an unrelated item never substitutes for the current request',async()=>{
+ const requests=[];const h=voiceHarness({autoTranscript:false,sendTurn:async t=>{requests.push(t);return{message:'Read-only result',runId:'late-transcript'};}});
+ try{
+  await h.voice.start();h.set(1000);h.event('speech_started','current');h.set(4000);h.event('speech_stopped','current');await wait();assert.equal(requests.length,0);
+  h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'unrelated',transcript:'Wrong instruction'});
+  h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'current',transcript:'What colour is my test notebook?'});await wait();assert.deepEqual(requests,['What colour is my test notebook?']);
+ }finally{h.close();}
+});
+
+test('an explicit camera question retains the existing local observation tool',async()=>{
+ const h=voiceHarness({sendTurn:async()=>{throw Error('Camera-only requests must retain the local observation route');}});
+ try{
+  await h.voice.start();h.set(1000);h.event('speech_started','look');h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'look',transcript:'شو شايفة بالكاميرا؟'});h.set(4000);h.event('speech_stopped','look');await wait();
+  assert.deepEqual(h.channel.sent.find(x=>x.type==='response.create').response.tool_choice,{type:'function',name:'nova_look'});
+  h.channel.message({type:'response.done',response:{output:[{type:'function_call',name:'nova_look',call_id:'local-observation'}]}});await wait();
+  assert.equal(JSON.parse(h.channel.sent.find(x=>x.item?.call_id==='local-observation').item.output).observed,false);
  }finally{h.close();}
 });

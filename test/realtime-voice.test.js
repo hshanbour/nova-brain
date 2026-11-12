@@ -19,6 +19,7 @@ test("read-only context bypasses neither Brain action checks nor language contin
     fetchImpl:async(url,o)=>{if(url.endsWith("/session")){assert.equal(JSON.parse(o.body).conversationId,"mine");return Response.json({clientSecret:"ek_test",replyLanguage:"ar"})}if(url.endsWith("/context")){reads.push(JSON.parse(o.body));return Response.json({authority:"authenticated_console_read_only",projects:[],memories:[],purpose:[{content:"Saved purpose"}]})}return new Response("answer")},
     sendTurn:async(text,options)=>{actions.push({text,options});return {message:"Safe clarification"}}});
   await voice.start();channel.open();
+  channel.message({type:'input_audio_buffer.speech_started'});
   channel.message({type:"conversation.item.input_audio_transcription.completed",transcript:"شو بتتذكري عن Plumber Growth Kit؟"});
   channel.message({type:"response.done",response:{output:[{type:"function_call",name:"nova_context",call_id:"context-1",arguments:'{"request":"Wrong paraphrase"}'}]}});
   await new Promise(r=>setTimeout(r,10));
@@ -117,6 +118,7 @@ test("realtime browser delegates the exact transcript to Nova and returns the au
   });
   assert.equal(await voice.start(), true);
   channel.open();
+  channel.message({ type: "input_audio_buffer.speech_started" });
   channel.message({ type: "input_audio_buffer.speech_stopped" });
   channel.message({ type: "conversation.item.input_audio_transcription.completed", transcript: "What is next for Sharp Cuts?" });
   channel.message({ type: "response.done", response: { output: [{ type: "function_call", name: "nova_turn", call_id: "call-1", arguments: "{\"request\":\"ignored paraphrase\"}" }] } });
@@ -143,6 +145,7 @@ test("realtime warm-up is non-blocking, direct turns persist, and mute controls 
   assert.equal(await voice.start(), true);
   assert.ok(requests.includes("/api/voice/speaker/readiness"));
   channel.open();
+  channel.message({ type: "input_audio_buffer.speech_started" });
   channel.message({ type: "input_audio_buffer.speech_stopped" });
   channel.message({ type: "conversation.item.input_audio_transcription.completed", transcript: "مرحبا Nova" });
   channel.message({ type: "response.output_audio_transcript.done", transcript: "أهلاً، كيف أساعدك؟" });
