@@ -1,4 +1,5 @@
 import {createHash} from "node:crypto";
+import {requestedMemoryTool} from './mutation-intent.js';
 
 const TYPES=new Set(["verified_fact","owner_claim","preference","project_decision","hypothesis","unresolved_question","completed_task_outcome","failed_task_lesson","correction"]);
 const SECRET=/\b(?:sk-[A-Za-z0-9_-]{10,}|github_pat_[A-Za-z0-9_]{10,}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+)/i;
@@ -18,7 +19,7 @@ const fingerprint=(parts)=>createHash("sha256").update(parts.map(value=>String(v
 
 export function classifyTypedMemoryCandidate(message){
   const content=clean(message);
-  if(content.length<8||content.length>4000||SECRET.test(content)||EXPLICIT_MEMORY.test(content)||QUESTION.test(content))return null;
+  if(content.length<8||content.length>4000||SECRET.test(content)||requestedMemoryTool(content)||EXPLICIT_MEMORY.test(content)||QUESTION.test(content))return null;
   const candidateType=CORRECTION.test(content)?"correction":PREFERENCE.test(content)?"preference":DECISION.test(content)?"project_decision":OWNER_CLAIM.test(content)||RELATIONSHIP.test(content)?"owner_claim":UNRESOLVED.test(content)?"unresolved_question":HYPOTHESIS.test(content)?"hypothesis":null;
   return candidateType?Object.freeze({candidateType,content}):null;
 }

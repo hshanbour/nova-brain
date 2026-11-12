@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { buildPhoneCallSystemContext, buildSpeakerSafeSystemContext, buildSystemContext, retrieveAgentContext, retrieveSpeakerContext } from "../memory/context-retriever.js";
-import { allowsMemoryMutation, requiresMemoryOnly } from '../memory/mutation-intent.js';
+import { allowsMemoryMutation, requiresMemoryOnly, requestedMemoryTool, hasMemoryWriteReceipt } from '../memory/mutation-intent.js';
 import { ApprovalRequiredError } from "../policy/action-policy.js";
 import {shouldUseDurableWebResearch} from "../web/durable-web-research.js";
 import {ANSWER_PRESENTATION_GUIDANCE,isConversationLocalTransform,retainConversationLinks} from "./answer-presentation.js";
@@ -302,6 +302,7 @@ export function createAgent({
       if(context?.voice===true&&["ar","en"].includes(context.replyLanguage))systemContext+=`\nACTIVE SPOKEN LANGUAGE: ${context.replyLanguage==="ar"?"Natural Jordanian/Levantine Arabic, written in Arabic script":"English"}. Keep this language until an explicit switch request. A foreign project name or unintelligible transcript is not a switch request. If the utterance is unclear, ask for repetition in this active language; never guess its meaning or another language. This preference grants no identity or permissions.`;
       if(context?.gptLiveRound2&&!speakerRestricted)systemContext+=`\n\nGPT-LIVE TRUSTED SERVER CONTEXT: This is an active phone session. ${trustedContext?.speaker?.authenticated_identity==="owner"?"The current turn carries a valid server-signed owner speaker assertion; normal owner-private retrieval policy may apply to this turn.":"The current speaker is not authenticated as the owner. Do not disclose private owner memory or infer identity from the destination."} Same-call canonical messages may be used for conversational continuity. The following bounded prior Nova results are server-recorded and remain authoritative unless a newer successful authoritative result supersedes them: ${JSON.stringify(context.gptLiveRound2.trustedResults||[])}. An unrelated failure does not invalidate an earlier successful result. This information route remains read-only; no write or external-action tools are available.`;
       const toolExecutions = [];
+      let memoryReceiptRetry = false;
       const memoryOnly = requiresMemoryOnly(message);
       const providerUsage = [];
       const webSources=[];
@@ -454,6 +455,7 @@ export function createAgent({
         if (durable?.task) {
           return completeDurableSelfDevelopment({ task: durable.task, idempotent: durable.idempotent, workflowContinued: durable.workflowContinued===true });
         }
+        if(requestedMemoryTool(message))systemContext+='\nEXPLICIT MEMORY REQUEST: Use the authorised memory tool to save/correct/delete the exact requested fact. Only confirm a change after its successful persisted receipt. Searching memory, proposing a candidate, or promising to save is not a completed write. If unsafe or ambiguous, do not claim success.';
         for (let step = 1; step <= maxSteps; step += 1) {
         executionSignal.throwIfAborted();
         if(step>1)await storage.updateRun(run.id, ownerId, { status: "running", currentStep: step });
@@ -483,6 +485,17 @@ export function createAgent({
         const agentGenerationCompletedAt=Date.now();
 
         if (generated.type === "final") {
+          const memoryTool=requestedMemoryTool(message);
+          if(memoryTool && !externalChannel && !phoneCallProfile && !speakerRestricted && !liveReadOnly && !hasMemoryWriteReceipt(toolExecutions,memoryTool)){
+            const available=toolRegistry.list({executableOnly:true}).some(tool=>tool.name===memoryTool)&&(!allowedTaskTools||allowedTaskTools.has(memoryTool));
+            if(available&&!memoryReceiptRetry&&step<maxSteps&&!toolExecutions.some(tool=>tool.name===memoryTool)){
+              memoryReceiptRetry=true;
+              systemContext+=`\nMEMORY WRITE RECEIPT REQUIRED: The owner explicitly requested ${memoryTool}. No successful write has occurred. Call that tool with the exact requested fact or retrieved target ID if safe. A memory_search result is not a write. Do not invent content, store credentials, or promise success. If ambiguous or unsafe, explain why it was not saved.`;
+              continuationToken=undefined;
+              continue;
+            }
+            generated={...generated,message:/[\u0600-\u06ff]/u.test(message)?'لم يتم تأكيد أي تغيير في الذاكرة الدائمة لهذا الطلب. لا يوجد إيصال حفظ أو حذف ناجح؛ لن أقول إن المعلومة حُفظت.':'No durable memory change was confirmed for this request. There is no successful save or deletion receipt, so I cannot say it was saved.'};
+          }
           const modelMessage=bindWebCitations(enforceSpeakerIdentityContract(generated.message, trustedContext.speaker),webSources);
           const response = {
             id: requestedAssistantMessageId || randomUUID(),

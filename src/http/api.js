@@ -461,6 +461,8 @@ export function createApi({
           return;
         }
         if (request.method === "POST" && pathname === "/api/integrations/gmail/oauth/start") {
+          if(!sameOriginRequest(request)){sendJson(response,403,{error:'Gmail reconnect requires a same-origin request.'});return;}
+          if(connectedPreview&&new URL(config.gmail.redirectUri).host!==request.headers.host){sendJson(response,409,{error:'Gmail callback is bound to a different hostname. Preview reconnect needs a Google-authorised callback on this Preview hostname; no connection was changed.',code:'gmail_preview_callback_mismatch'});return;}
           await ready();
           const started = await gmailService.startOAuth();
           const secure = new URL(config.gmail.redirectUri).protocol === "https:";
@@ -792,17 +794,16 @@ export function createApi({
           }
           const safetyIdentifier = createHash("sha256").update(`nova-realtime:${ownerId}`).digest("hex");
           const sessionInput=await readJsonBody(request,config.maxBodyBytes);
-          if(connectedPreview&&sessionInput.mode==='guest'&&!previewAuth?.verifyGuestGrant(sessionInput.guestApproval)){
-            sendJson(response,403,{error:'Owner sign-in approval is required for a public guest session.',code:'guest_owner_approval_required'});return;
+          if(connectedPreview&&sessionInput.mode==='guest'&&sessionInput.guestApproval&&!previewAuth?.verifyGuestGrant(sessionInput.guestApproval)){
+            sendJson(response,403,{error:'The requested guest permission is invalid or expired.',code:'guest_owner_approval_required'});return;
           }
           if(continuityPreview&&sessionInput.mode!=='guest'&&(!speakerAssertions?.configured||!config.speakerRecognition?.embeddingKey||!config.speakerRecognition?.token||!config.speakerRecognition?.endpoint)){
             sendJson(response,503,{code:'private_voice_configuration_required',error:'Private Voice is paused: the existing speaker-verification credentials must be securely bound to this Preview. No voice session was started.'});return;
           }
           let accountContext;
-          if (realtimeAccountContext) {
+          if (realtimeAccountContext && sessionInput.mode!=='guest') {
             await ready();
             const input=sessionInput;
-            const conversationId = typeof input?.conversationId === "string" ? input.conversationId.slice(0, 128) : null;
             // Account sign-in supplies language only, not private context before a voice match.
             const profile=await storage.getOwner(ownerId);
             accountContext={replyLanguage:savedReplyLanguage(profile?.preferences||{}),projects:[],purpose:[],memories:[],conversation:[]};

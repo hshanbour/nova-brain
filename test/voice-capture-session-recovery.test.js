@@ -9,6 +9,22 @@ import {isVoiceLanguageOnlyChange} from '../assets/voice-language.js';
 import {readPreviewSession} from '../assets/preview-session.js';
 
 const wait=()=>new Promise(r=>setTimeout(r,320));
+test('unmatched owner recheck destroys private context and recovers only on a new match',async()=>{
+ const h=voiceHarness({recognize:(_,n)=>n===2?{match_status:'unknown',authenticated_identity:'none'}:{match_status:'confirmed',authenticated_identity:'owner',assertion:'fixture'}});
+ try{
+  await h.voice.start();h.set(1000);h.event('speech_started','one');h.set(3500);h.event('speech_stopped','one');await wait();const old=h.channel;
+  h.set(4000);h.event('speech_started','two');h.set(6500);h.event('speech_stopped','two');await wait();
+  assert.equal(old.readyState,'closed');assert.notEqual(h.channel,old);assert.equal(h.recoveries.length,1);assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,0);
+  h.set(7000);h.event('speech_started','three');h.set(10000);h.event('speech_stopped','three');await wait();assert.equal(h.verifiedCount(),2);assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,1);
+ }finally{h.close();}
+});
+test('a different voice cannot use the gated recovery session',async()=>{
+ const h=voiceHarness({recognize:(_,n)=>n===1?{match_status:'confirmed',authenticated_identity:'owner',assertion:'fixture'}:{match_status:'unknown',authenticated_identity:'none'}});
+ try{
+  await h.voice.start();for(let n=0;n<3;n++){h.set(1000+n*4000);h.event('speech_started','t'+n);h.set(3500+n*4000);h.event('speech_stopped','t'+n);await wait();}
+  assert.equal(h.verifiedCount(),1);assert.equal(h.counts().pauses,1);assert.equal(h.voice.isActive(),false);assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,0);
+ }finally{h.close();}
+});
 function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn,recognize,authorizationFailure=false}={}){
  let clock=0,frame,requests=[],notices=0,pauses=0,verified=0;const results=[],pauseReasons=[],recoveries=[];
  const prior=globalThis.requestAnimationFrame,priorCancel=globalThis.cancelAnimationFrame;
@@ -133,7 +149,7 @@ test('owner to unknown speaker destroys private session; clean retry requires an
   await h.voice.start();h.set(1000);h.event('speech_started','owner');h.set(4000);h.event('speech_stopped','owner');await wait();
   assert.equal(h.verifiedCount(),1);const old=h.channel;
   h.set(5000);h.event('speech_started','guest');h.set(8000);h.event('speech_stopped','guest');await wait();
-  assert.equal(h.voice.isActive(),false);assert.equal(old.readyState,'closed');assert.deepEqual(h.pauseReasons,['not-matched']);assert.equal(h.verifiedCount(),1);
+  assert.equal(h.voice.isActive(),true);assert.equal(old.readyState,'closed');assert.deepEqual(h.pauseReasons,[]);assert.equal(h.recoveries.length,1);assert.equal(h.verifiedCount(),1);
   assert.equal(old.sent.filter(x=>x.type==='response.create').length,1);
   await h.voice.start();assert.notEqual(h.channel,old);assert.equal(h.verifiedCount(),1,'Starting a new session does not unlock owner context');
   old.message({type:'response.done',response:{output:[{type:'function_call',name:'nova_context',call_id:'stale',arguments:'{}'}]}});

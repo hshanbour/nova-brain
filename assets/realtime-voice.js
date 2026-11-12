@@ -193,10 +193,10 @@ export function createRealtimeVoice({
           publish('listening',{phase:'verification-needs-speech'});
           onVerificationNeeded({reason:speaker?.verification_status==='unavailable'?'service-unavailable':'more-speech'});return;
         }
-        // Too little speech is not a different-speaker match. Destroy the old
-        // private provider context, then offer ONE clean, still-gated retry.
+        // Any unsuccessful recheck must destroy the private provider context.
+        // Offer ONE clean, still-gated retry; this never accepts the old match.
         // Never carry the previous assertion, transcript or queued reply across.
-        if(privateTurnAuthorized&&!qualityRecoveryUsed&&['insufficient_speech','non_speech'].includes(speaker?.match_status)){
+        if(privateTurnAuthorized&&!qualityRecoveryUsed&&['insufficient_speech','non_speech','unknown','uncertain'].includes(speaker?.match_status)){
           qualityRecoveryUsed=true;
           end();const recoveryGeneration=generation;
           onPrivacyRecovery();

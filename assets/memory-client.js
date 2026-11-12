@@ -72,6 +72,7 @@ export const ownerMemoryClient = Object.freeze({
     return request(`/api/approvals${suffix}`);
   },
   gmailStatus: () => request("/api/integrations/gmail/status"),
+  reconnectGmail: () => request('/api/integrations/gmail/oauth/start',{method:'POST'}),
   phoneCalls: (conversationId) => request(conversationId ? `/api/phone/calls?conversationId=${encodeURIComponent(conversationId)}` : "/api/phone/calls?limit=50"),
   phoneCall: (id) => request(`/api/phone/calls/${encodeURIComponent(id)}`),
   ownerContactPolicy: () => request("/api/phone/owner-contact-policy"),
