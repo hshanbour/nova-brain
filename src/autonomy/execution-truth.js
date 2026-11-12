@@ -41,12 +41,13 @@ export function createExecutionTruthService({storage,ownerId,clock=()=>new Date(
     if(!attempt)throw Object.assign(new Error("Execution attempt is stale or fenced."),{code:"execution_attempt_stale",statusCode:409});
     return attempt;
   }
-  async function reconcile({workerId}={}){
+  async function reconcile({workerId,taskAllowed=null}={}){
     const activeAttempts=await storage.listActiveExecutionAttempts(ownerId),activeByTask=new Map(activeAttempts.map(attempt=>[attempt.taskId,attempt])),taskMap=new Map(),results=[];
     for(const attempt of activeAttempts){const task=await storage.getAutonomyTask(attempt.taskId,ownerId);if(task)taskMap.set(task.id,task);}
     for(const task of await storage.listAutonomyTasks(ownerId,{status:"running",limit:1000}))taskMap.set(task.id,task);
     const tasks=[...taskMap.values()];
     for(const task of tasks){
+      if(taskAllowed&&!await taskAllowed(task))continue;
       const active=activeByTask.get(task.id)||(await storage.getActiveExecutionAttempt(task.id,ownerId));
       if(TERMINAL.has(task.status)){if(active)await storage.finishExecutionAttempt({id:active.id,taskId:task.id,ownerId,handoffId:active.handoffId,workerId:active.workerId,generation:active.generation,fenceToken:active.fenceToken,status:"superseded",reason:"task_already_terminal"});continue;}
       if(active&&Date.parse(active.leaseExpiresAt)<=clock().getTime()){

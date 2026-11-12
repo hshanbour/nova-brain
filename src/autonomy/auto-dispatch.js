@@ -54,7 +54,7 @@ export function createAutoDispatchService({storage,ownerId,approvedBranch="feat/
   async function next({workerId,branch=approvedBranch}={}){
     if(typeof workerId!=="string"||!workerId.trim()||workerId.length>200)throw Object.assign(new Error("A bounded worker ID is required."),{code:"invalid_dispatch_request",statusCode:400});
     if(branch!==approvedBranch||["main","master"].includes(branch))throw Object.assign(new Error("Only the approved feature branch may be dispatched."),{code:"branch_not_allowed",statusCode:403});
-    if(executionTruth&&!taskAllowed)await executionTruth.reconcile({workerId});
+    if(executionTruth)await executionTruth.reconcile({workerId,...(taskAllowed?{taskAllowed}:{})});
     if(terminalReporter)await terminalReporter.reconcile();
     const tasks=await storage.listAutonomyTasks(ownerId,{limit:100,...(executionScope?{executionScope}:{})});
     let task,approvedDelivery=false;

@@ -24,7 +24,8 @@ test('only fresh server-stamped local coding jobs with exact approved handle are
 test('dispatch skips historical queue and global recovery while retaining approved task',async()=>{
  const {task,storage}=setup();const legacy={...task,id:'legacy',metadata:{...task.metadata,connectedExecution:null}};
  storage.listAutonomyTasks=async()=>[legacy,task];
- const service=createAutoDispatchService({storage,ownerId,approvedBranch:branch,taskAllowed:t=>connectedTaskAllowed(storage,ownerId,t),executionTruth:{reconcile(){throw Error('historical reconcile forbidden');}}});
+ const allowed=t=>connectedTaskAllowed(storage,ownerId,t);
+ const service=createAutoDispatchService({storage,ownerId,approvedBranch:branch,taskAllowed:allowed,executionTruth:{reconcile({taskAllowed}){assert.equal(taskAllowed,allowed);}}});
  assert.equal((await service.next({workerId:'test-worker',branch})).task.id,'fresh');
  storage.listAutonomyTasks=async()=>[legacy];assert.equal((await service.next({workerId:'test-worker',branch})).dispatched,false);
 });
