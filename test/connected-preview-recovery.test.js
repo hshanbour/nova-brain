@@ -33,10 +33,10 @@ test('history changing search discards a stale load-more response',async()=>{
  let resolveMore;const api={conversations:async({query,offset})=>offset?new Promise(r=>resolveMore=r):{conversations:[{id:query||'initial',updatedAt:'2026-11-11'}],nextOffset:query?null:20}};
  const history=createConversationHistory({api,client:{},storage:{}});await history.refresh();const pending=history.more();await history.refresh({query:'new'});resolveMore({conversations:[{id:'stale'}],nextOffset:null});await pending;assert.deepEqual(history.conversations.map(c=>c.id),['new']);
 });
-test('old worker can poll but cannot release any pending task or WhatsApp record',async()=>{
- let writes=0;const api=createApi({ownerId:'a',connectedPreview:true,continuityPreview:true,config:{allowedOrigins:[],localWorkerToken:'fixture-worker'},authorizeConsole:()=>{throw Error('not a browser');},initialize:async()=>writes++,storage:{}});
+test('authenticated worker poll with no released task leaves outbound channels held',async()=>{
+ let writes=0;const api=createApi({ownerId:'a',connectedPreview:true,continuityPreview:true,config:{allowedOrigins:[],localWorkerToken:'fixture-worker'},authorizeConsole:()=>{throw Error('not a browser');},initialize:async()=>writes++,storage:{},autoDispatch:{async next(){return{dispatched:false};}}});
  const url='/api/admin/worker/auto-dispatch/next';const denied=await call(api,url,'POST');assert.notEqual(denied.statusCode,200);
- const held=await call(api,url,'POST',{'authorization':'Bearer fixture-worker'});assert.equal(held.statusCode,200);assert.equal(held.data.dispatched,false);assert.equal(held.data.held,true);assert.equal(writes,0);
+ const held=await call(api,url,'POST',{'authorization':'Bearer fixture-worker','content-type':'application/json'});assert.equal(held.statusCode,200);assert.equal(held.data.dispatched,false);assert.deepEqual(held.data.channelPolling,[]);assert.equal(writes,1);
 });
 test('project activity analysis returns real scoped counts with attributable charts and refuses another project',async()=>{
  const storage=createInMemoryStorage();await storage.initialize({owner:{id:'a'},projects:[{id:'p',name:'Fixture'}]});await storage.appendActivity({ownerId:'a',projectId:'p',action:'read',status:'completed',summary:'test'});await storage.appendActivity({ownerId:'b',projectId:'other',action:'private',status:'failed',summary:'hidden'});

@@ -1,3 +1,4 @@
+import {registerBusinessPreparationTools} from './automation/business-preparation-tools.js';
 import { randomUUID } from "node:crypto";
 import {CONNECTED_EXECUTION,connectedTaskAllowed} from './identity/connected-execution.js';
 import {continuityPreviewEnvironment,continuityToolAllowed,EXISTING_WORKSPACE_BRANCH,EXISTING_WORKSPACE_ENDPOINT} from './identity/continuity-preview.js';
@@ -124,7 +125,7 @@ export function createApp({
   const preview = syntheticPreviewEnvironment(continuity.environment);
   environment = preview.environment;
   const OWNER_ID = preview.synthetic ? SYNTHETIC_OWNER_ID : DEFAULT_OWNER_ID;
-  const previewAuth = preview.synthetic||continuity.continuity ? createPreviewAuth({environment,workspaceId:OWNER_ID,synthetic:preview.synthetic}) : null;
+  const previewAuth = preview.synthetic||continuity.continuity ? createPreviewAuth({environment,workspaceId:OWNER_ID,synthetic:preview.synthetic,resolveGuestProject:async id=>(await storage.listProjects(OWNER_ID)).find(p=>p.id===id)||null}) : null;
   const config = readConfig(environment);
   let modelProvider;
   const storage = createMultilingualMemoryStorage({storage:storageOverride||createStorage(config),translateQuery:async(query)=>{
@@ -208,6 +209,7 @@ export function createApp({
   const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch}):null;
   const sharpCutsCustomerReader=config.sharpCutsCustomerDatabase.configured?createSharpCutsCustomerReader({config:config.sharpCutsCustomerDatabase}):null;
   const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender,instagramOAuth,customerReader:sharpCutsCustomerReader,whatsappStatusProvider:()=>sharpCutsWhatsAppService.status()});
+  registerBusinessPreparationTools(toolRegistry,{storage,ownerId:OWNER_ID,customerReader:sharpCutsCustomerReader,senderClient:sharpCutsSender,senderConfig:config.sharpCutsEmail,whatsapp:sharpCutsWhatsAppService});
   registerSocialTools(toolRegistry,{service:socialService,mediaAutomation});
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){

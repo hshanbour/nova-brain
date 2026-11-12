@@ -807,7 +807,15 @@ export function createApi({
             const profile=await storage.getOwner(ownerId);
             accountContext={replyLanguage:savedReplyLanguage(profile?.preferences||{}),projects:[],purpose:[],memories:[],conversation:[]};
           }
-          const session = await realtimeVoiceService.createClientSecret({ safetyIdentifier, accountContext, privacyGate: realtimeAccountContext, guest: sessionInput.mode === "guest" });
+          let guestProjectBrief=null;
+          const grant=sessionInput.mode==='guest'?previewAuth?.readGuestGrant?.(sessionInput.guestApproval):null;
+          if(grant?.purpose==='project-brief-only'){
+            await ready();const project=(await storage.listProjects(ownerId)).find(p=>p.id===grant.projectId);
+            if(!project)throw Object.assign(new Error('The approved guest project is unavailable.'),{statusCode:403});
+            guestProjectBrief={id:project.id,name:String(project.name).slice(0,200),description:String(project.description||'').slice(0,2000),status:project.status||'not_recorded'};
+            await storage.appendActivity({ownerId,projectId:project.id,action:'voice_guest_project_brief_shared',status:'completed',summary:'Owner reauthentication approved one read-only project brief. No history, memories or tools shared.',metadata:{scope:'project_brief_only'}});
+          }
+          const session = await realtimeVoiceService.createClientSecret({ safetyIdentifier, accountContext, guestProjectBrief, privacyGate: realtimeAccountContext, guest: sessionInput.mode === "guest" });
           logger.info("Nova realtime voice session prepared", {
             requestId,
             model: session.model,

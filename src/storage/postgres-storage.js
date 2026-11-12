@@ -1560,6 +1560,7 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         [providerMessageSid,ownerId,patch.status,patch.errorCode??null],
       ))[0]);
     },
+    async listHeldWhatsAppInbound(ownerId, conversationPrefix) { return (await run("SELECT * FROM nova_whatsapp_inbound_messages WHERE owner_id=$1 AND starts_with(conversation_id,$2) AND status='queued' AND lease_token IS NULL ORDER BY created_at ASC LIMIT 20",[ownerId,conversationPrefix])).map(whatsappInboundRow); },
     async getWhatsAppInbound(messageSid, ownerId) { return whatsappInboundRow((await run("SELECT * FROM nova_whatsapp_inbound_messages WHERE message_sid=$1 AND owner_id=$2",[messageSid,ownerId]))[0]); },
     async getWhatsAppOutbound(inboundSid, ownerId) { return whatsappOutboundRow((await run("SELECT * FROM nova_whatsapp_outbound_messages WHERE inbound_sid=$1 AND owner_id=$2",[inboundSid,ownerId]))[0]); },
     async createSocialContent(input){return socialContentRow((await run(`INSERT INTO nova_social_content (id,owner_id,project_id,kind,title,caption,script,platforms,media,source_refs,evidence_status,originality_status,plan,status,content_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13::jsonb,$14,$15) RETURNING *`,[input.id,input.ownerId,input.projectId,input.kind,input.title,input.caption,input.script||"",json(input.platforms),json(input.media||[]),json(input.sourceRefs||[]),input.evidenceStatus,input.originalityStatus,json(input.plan||{}),input.status,input.contentHash]))[0]);},

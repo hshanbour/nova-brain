@@ -23,6 +23,13 @@ export function createProjectService({storage,ownerId}={}){
       const exact=projects.find(project=>project.id===projectId);
       return exact?{status:"resolved",project:compactProject(exact),source:"explicit_id"}:{status:"missing",project:null,source:"explicit_id",message:`Nova could not find the requested project ${clean(projectId,80)}.`};
     }
+    // An explicit destination is stronger than project names mentioned as task
+    // subject matter. Still resolve only inside this authenticated catalogue.
+    const destination=String(message).match(/(?:\bproject(?:\s+id)?|معرّف المشروع|معرف المشروع)\s*[:=]?\s*[`"']?([a-z0-9]+(?:-[a-z0-9]+)+)/iu)?.[1];
+    if(destination){
+      const selected=projects.find(project=>project.id===destination.toLowerCase());
+      if(selected)return{status:'resolved',project:compactProject(selected),source:'explicit_destination'};
+    }
     const aliasMatches=projects.filter(project=>(PROJECT_ALIASES[project.id]||[]).some(alias=>phrase(message,alias)));
     const namedMatches=projects.filter(project=>phrase(message,project.name)||phrase(message,project.id));
     if(aliasMatches.length){

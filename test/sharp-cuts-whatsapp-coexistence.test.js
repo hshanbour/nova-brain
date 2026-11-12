@@ -134,3 +134,16 @@ test("persistent worker polls the isolated Sharp Cuts WhatsApp queue",async()=>{
   const paths=[],worker=createPersistentLocalWorker({registry:{},branch:"codex/combined-nova-preview-d5b5-c5bd",client:Object.freeze({async request(path){paths.push(path);if(path==="/api/admin/worker/auto-dispatch/next")return{dispatched:false,channelPolling:["sharp_cuts_whatsapp"]};if(path==="/api/admin/worker/sharp-cuts/whatsapp/tick")return{worked:true,status:"awaiting_owner_review"};throw new Error("unexpected");}})}),result=await worker.runOnce();
   assert.equal(result.stepType,"sharp_cuts_whatsapp_inbound");assert.deepEqual(paths,["/api/admin/worker/auto-dispatch/next","/api/admin/worker/sharp-cuts/whatsapp/tick"]);
 });
+
+
+test('held reply review reuses Brain drafting without claiming, decrypting, sending or altering backlog',async()=>{
+ const {storage,service,calls}=await fixture();const sid='wamid.review-held-test';
+ await service.receive(payload('Where can I book?',sid),'Bearer '+TOKEN);
+ const before=await storage.getWhatsAppInbound(sid,OWNER),inbox=await service.reviewHeld();
+ assert.equal(inbox.records.length,1);assert.doesNotMatch(JSON.stringify(inbox),/447700900111|contactCiphertext/);
+ const first=await service.prepareHeldDraft({recordRef:inbox.records[0].recordRef});assert.equal(first.sent,false);assert.equal(first.queueUnchanged,true);assert.equal(calls.length,1);
+ assert.equal(calls[0].context.channel,'whatsapp');assert.equal(calls[0].context.externalActionsAllowed,false);assert.equal(calls[0].context.projectId,'sharp-cuts-web');
+ assert.deepEqual(await storage.getWhatsAppInbound(sid,OWNER),before);
+ const repeat=await service.prepareHeldDraft({recordRef:inbox.records[0].recordRef});assert.equal(repeat.duplicate,true);assert.equal(calls.length,1);
+ await assert.rejects(service.prepareHeldDraft({recordRef:'0'.repeat(64)}));
+});

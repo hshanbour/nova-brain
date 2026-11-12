@@ -48,6 +48,28 @@ export function createSharpCutsWhatsAppCoexistenceService({config,storage,ownerI
     return storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:"submitted",providerMessageSid:String(value.messageId)});
   }
   return Object.freeze({
+    // Deliberately separate from processNext: review does not lease, consume,
+    // decrypt recipients, schedule, or deliver anything from the held backlog.
+    async reviewHeld(){
+      const rows=await storage.listHeldWhatsAppInbound(ownerId,CONVERSATION_PREFIX);
+      return {projectId:PROJECT_ID,queueHeld:true,sendingEnabled:false,records:rows.map(row=>({recordRef:hash(row.messageSid),receivedAt:row.createdAt,status:row.status,attemptCount:row.attemptCount}))};
+    },
+    async prepareHeldDraft({recordRef}={}){
+      if(!/^[a-f0-9]{64}$/.test(recordRef||''))throw new SharpCutsWhatsAppError('A review record reference is required.');
+      const rows=await storage.listHeldWhatsAppInbound(ownerId,CONVERSATION_PREFIX),record=rows.find(row=>hash(row.messageSid)===recordRef);
+      if(!record)throw new SharpCutsWhatsAppError('The held Sharp Cuts record was not found.',{statusCode:404});
+      const messages=await storage.listMessages(record.conversationId,ownerId,{limit:100}),userMessage=messages.find(item=>item.id===`whatsapp-user-${recordRef.slice(0,40)}`);
+      if(!userMessage)throw new SharpCutsWhatsAppError('The original message is unavailable.',{code:'sharp_cuts_whatsapp_message_missing'});
+      if(STOP.test(userMessage.content))return{recordRef,status:'opt_out_requires_staff_review',draft:null,sent:false,queueUnchanged:true};
+      const reviewConversation=`review_${CONVERSATION_PREFIX}${recordRef.slice(0,32)}`,assistantMessageId=`review-whatsapp-assistant-${recordRef.slice(0,40)}`;
+      await storage.ensureConversation({id:reviewConversation,ownerId,title:'Sharp Cuts WhatsApp · unsent reply review'});
+      const existing=(await storage.listMessages(reviewConversation,ownerId,{limit:10})).find(item=>item.id===assistantMessageId);
+      let result=existing?{id:existing.id,message:existing.content}:null;
+      if(!result)result=await novaTurn({message:userMessage.content,conversationId:reviewConversation,requestId:`sharp-cuts-review:${recordRef}`,userMessageId:`review-whatsapp-user-${recordRef.slice(0,40)}`,assistantMessageId,context:{channel:'whatsapp',projectId:PROJECT_ID,externalActionsAllowed:false,verifiedBusinessProfile:VERIFIED_PROFILE}});
+      const draft=safeText(result.message);
+      if(!existing)await storage.appendActivity({ownerId,projectId:PROJECT_ID,runId:result.runId||null,action:'sharp_cuts_whatsapp_reply_review_prepared',tool:'sharp_cuts_automation_reply_review',status:'completed',summary:'Prepared an unsent reply review without releasing the original inbound record.',metadata:{recordRef,reviewConversation,assistantMessageId,queueUnchanged:true,sent:false}});
+      return{recordRef,status:'draft_for_review',draft,reviewConversation,runId:result.runId||null,duplicate:Boolean(existing),sent:false,queueUnchanged:true};
+    },
     async status(){const allowed=await executionAllowed();return Object.freeze({projectId:PROJECT_ID,number:"+44 1582 510565",provider:settings.provider||"gupshup_coexistence",configured:settings.configured===true,coexistenceRequired:true,businessAppPreserved:true,receiveEnabled:settings.receiveEnabled===true,mode:settings.mode||"disabled",aiReplyPolicy:settings.mode==="owner_test"?"allowlisted_owner_test_only":"draft_then_owner_review",humanTakeover:"business_app_remains_authoritative",sendEnabled:settings.sendEnabled===true&&allowed,executionHeld:!allowed,campaignsEnabled:false,spendAuthorisedGbp:0,webhookAuthentication:settings.provider==="gupshup_coexistence"?"vercel_verified_provider_ip_or_shared_bearer":"provider_custom_bearer_header",projectIsolation:"conversation_and_worker_prefix_enforced",nextAction:settings.configured?"complete_owner_controlled_inbound_test":"complete_official_gupshup_coexistence_signup"});},
     async receive(payload,requestIdentity){
       const identity=typeof requestIdentity==="string"?{authorization:requestIdentity}:requestIdentity;

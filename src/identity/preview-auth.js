@@ -14,14 +14,15 @@ export function workspaceActor(session,environment,workspaceId=SYNTHETIC_OWNER_I
   if(user.emailVerified!==true||!environment.NOVA_PREVIEW_OWNER_EMAIL||String(user.email).toLowerCase()!==environment.NOVA_PREVIEW_OWNER_EMAIL.toLowerCase()||(environment.NOVA_PREVIEW_OWNER_SUBJECT&&user.id!==environment.NOVA_PREVIEW_OWNER_SUBJECT))throw new ConsoleAccessError('console_workspace_forbidden',403);
   return Object.freeze({ownerId:workspaceId,workspaceId,subject:user.id,role:'owner',issuer:PREVIEW_AUTH_URL});
 }
-export function createPreviewAuth({environment,serverFactory=createAuthServer,proxy=handleAuthProxyRequest,workspaceId=SYNTHETIC_OWNER_ID,synthetic=true}) {
+export function createPreviewAuth({environment,serverFactory=createAuthServer,proxy=handleAuthProxyRequest,workspaceId=SYNTHETIC_OWNER_ID,synthetic=true,resolveGuestProject=null}) {
   // Purpose-separated cache-signing key derived from the isolated database's
   // random credential. No shared Production key or new secret-copy workflow.
   const password=new URL(environment.DATABASE_URL).password;
   const cookieSecret=Buffer.from(hkdfSync('sha256',Buffer.from(password),'nova-preview-auth','session-cache-v1',32)).toString('base64');
   const config={baseUrl:PREVIEW_AUTH_URL,cookieSecret,sessionDataTtl:30,sameSite:'strict',log:silent};
-  function guestGrant(){const payload=Buffer.from(JSON.stringify({workspaceId,subject:environment.NOVA_PREVIEW_OWNER_SUBJECT,expires:Date.now()+90000,purpose:'public-guest-only'})).toString('base64url');return `${payload}.${createHmac('sha256',cookieSecret).update('guest:'+payload).digest('base64url')}`;}
-  function verifyGuestGrant(value){try{const [payload,signature,...extra]=String(value||'').split('.');if(extra.length||!payload||!signature)return false;const actual=Buffer.from(signature,'base64url'),expected=createHmac('sha256',cookieSecret).update('guest:'+payload).digest();if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return false;const data=JSON.parse(Buffer.from(payload,'base64url').toString());return data.workspaceId===workspaceId&&data.subject===environment.NOVA_PREVIEW_OWNER_SUBJECT&&data.purpose==='public-guest-only'&&data.expires>Date.now()&&data.expires<Date.now()+91000;}catch{return false;}}
+  function guestGrant(projectId=null){const payload=Buffer.from(JSON.stringify({workspaceId,subject:environment.NOVA_PREVIEW_OWNER_SUBJECT,expires:Date.now()+90000,purpose:projectId?'project-brief-only':'public-guest-only',projectId})).toString('base64url');return `${payload}.${createHmac('sha256',cookieSecret).update('guest:'+payload).digest('base64url')}`;}
+  function readGuestGrant(value){try{const [payload,signature,...extra]=String(value||'').split('.');if(extra.length||!payload||!signature)return false;const actual=Buffer.from(signature,'base64url'),expected=createHmac('sha256',cookieSecret).update('guest:'+payload).digest();if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return false;const data=JSON.parse(Buffer.from(payload,'base64url').toString());return data.workspaceId===workspaceId&&data.subject===environment.NOVA_PREVIEW_OWNER_SUBJECT&&['public-guest-only','project-brief-only'].includes(data.purpose)&&(data.purpose!=='project-brief-only'||/^[a-z0-9-]{1,80}$/.test(data.projectId||''))&&data.expires>Date.now()&&data.expires<Date.now()+91000?data:null;}catch{return false;}}
+  const verifyGuestGrant=value=>Boolean(readGuestGrant(value));
   function server(req,res){
     return serverFactory({...config,context:()=>({
       getCookies:()=>extractNeonAuthCookies(req.headers.cookie||''),
@@ -36,7 +37,7 @@ export function createPreviewAuth({environment,serverFactory=createAuthServer,pr
     if(result?.error&&!([401,403].includes(result.error.status)))throw new ConsoleAccessError('console_identity_unavailable',503);
     return workspaceActor(result?.data,environment,workspaceId);
   };
-  return {authorize,verifyGuestGrant,async handle(req,res){
+  return {authorize,verifyGuestGrant,readGuestGrant,async handle(req,res){
     const pathname=new URL(req.url,'https://preview.invalid').pathname;
     if(pathname==='/api/preview/isolation'&&req.method==='GET'){
       if(!synthetic){try{await authorize(req,res);json(res,200,{synthetic:false,existingWorkspace:true,authUrl:PREVIEW_AUTH_URL,gitBranch:environment.VERCEL_GIT_COMMIT_REF,externalActions:false,privatePhone:false,whatsappSending:false});}catch(e){json(res,e.statusCode||401,{error:'Session verification required.'});}return true;}
@@ -57,6 +58,7 @@ export function createPreviewAuth({environment,serverFactory=createAuthServer,pr
       if(path==='email-otp/send-verification-otp')body.type='email-verification';
       // Only local return paths; do not forward arbitrary redirects or plugins.
       delete body.callbackURL;delete body.redirectTo;
+      const guestProjectId=path==='approve-guest'?String(body.projectId||'').trim():'';delete body.projectId;
       const proxyPath=path==='approve-guest'?'sign-in/email':path;
       if(proxyPath==='sign-in/email')body.rememberMe=true;
       const response=await proxy({...config,path:proxyPath,request:new Request(`${origin}/api/auth/${proxyPath}`,{method:'POST',headers:{'content-type':'application/json',origin,cookie:extractNeonAuthCookies(req.headers.cookie||'')},body:JSON.stringify(body)})});
@@ -64,7 +66,8 @@ export function createPreviewAuth({environment,serverFactory=createAuthServer,pr
       if(path==='approve-guest'){
         let data;try{data=await response.json();}catch{}
         const verified=response.ok&&data?.user?.id===environment.NOVA_PREVIEW_OWNER_SUBJECT&&data.user.emailVerified===true;
-        json(res,verified?200:403,verified?{ok:true,guestApproval:guestGrant()}:{error:'The verified owner must sign in again to approve public guest conversation.'});return true;
+        if(verified&&guestProjectId&&(!resolveGuestProject||!await resolveGuestProject(guestProjectId))){json(res,403,{error:'The exact project is unavailable in this workspace.'});return true;}
+        json(res,verified?200:403,verified?{ok:true,guestApproval:guestGrant(guestProjectId||null)}:{error:'The verified owner must sign in again to approve public guest conversation.'});return true;
       }
       // Never return the provider's session token, password or raw diagnostics.
       json(res,response.status,{ok:response.ok,...(!response.ok?{error:response.status===403?'Verify your email code before signing in.':'Sign-in could not be completed. Check your details or retry.'}:{})});

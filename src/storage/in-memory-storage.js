@@ -1161,6 +1161,7 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       if(terminal.has(current.status)||(!terminal.has(next)&&(rank[next]??-1)<(rank[current.status]??-1)))return copy(current);
       return this.updateWhatsAppOutbound(current.inboundSid, ownerId, patch);
     },
+    async listHeldWhatsAppInbound(ownerId, conversationPrefix) { return copy([...whatsappInboundMessages.values()].filter(row=>row.ownerId===ownerId&&row.conversationId.startsWith(conversationPrefix)&&row.status==='queued'&&!row.leaseToken).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt))).slice(0,20)); },
     async getWhatsAppInbound(messageSid, ownerId) { const value = whatsappInboundMessages.get(messageSid); return copy(value?.ownerId === ownerId ? value : null); },
     async getWhatsAppOutbound(inboundSid, ownerId) { const value = whatsappOutboundMessages.get(inboundSid); return copy(value?.ownerId === ownerId ? value : null); },
     async createSocialContent(input){if(socialContent.has(input.id))throw Object.assign(new Error("Social content already exists."),{code:"23505"});const timestamp=now(clock),record={...copy(input),approvedHash:null,createdAt:timestamp,updatedAt:timestamp};socialContent.set(record.id,record);return copy(record);},
