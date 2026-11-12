@@ -49,16 +49,17 @@ export function isExactApprovedDelivery({task,approval,steps=[],approvedBranch="
   return Boolean(task&&task.taskType==="self_development"&&(task.status==="queued"||task.status==="waiting_for_worker"||(allowClaimed&&["planning","running"].includes(task.status)&&Boolean(task.leaseToken)))&&repository===approvedRepository&&repositoryBound&&task.branch===approvedBranch&&!['main','master'].includes(task.branch)&&state?.approved===true&&state.tool==="git_push"&&typeof state.approvalId==="string"&&state.stepId===`${task.currentStep+1}:push`&&state.branch===task.branch&&state.commitSha===task.currentCommit&&state.arguments?.branch===task.branch&&state.arguments?.commitSha===task.currentCommit&&approval?.id===state.approvalId&&approval.status==="approved"&&approval.tool==="git_push"&&approval.runId===task.id&&approval.projectId===task.projectId&&approval.arguments?.branch===task.branch&&approval.arguments?.commitSha===task.currentCommit&&exactVersionBinding({task,approval,state,allowClaimed})&&ordinal(review)===task.currentStep&&reviewedCommit===task.currentCommit&&committedCommit===task.currentCommit&&(afterReview.length===0||recoveringFailedPush));
 }
 
-export function createAutoDispatchService({storage,ownerId,approvedBranch="feat/nova-brain-mvp-foundation",approvedRepository="hshanbour/nova-brain",clock=()=>new Date(),terminalReporter=null,executionTruth=null}={}){
+export function createAutoDispatchService({storage,ownerId,approvedBranch="feat/nova-brain-mvp-foundation",approvedRepository="hshanbour/nova-brain",clock=()=>new Date(),terminalReporter=null,executionTruth=null,taskAllowed=null}={}){
   if(!storage||!ownerId)throw new Error("Auto-dispatch requires durable task storage and an owner.");
   async function next({workerId,branch=approvedBranch}={}){
     if(typeof workerId!=="string"||!workerId.trim()||workerId.length>200)throw Object.assign(new Error("A bounded worker ID is required."),{code:"invalid_dispatch_request",statusCode:400});
     if(branch!==approvedBranch||["main","master"].includes(branch))throw Object.assign(new Error("Only the approved feature branch may be dispatched."),{code:"branch_not_allowed",statusCode:403});
-    if(executionTruth)await executionTruth.reconcile({workerId});
+    if(executionTruth&&!taskAllowed)await executionTruth.reconcile({workerId});
     if(terminalReporter)await terminalReporter.reconcile();
     const tasks=await storage.listAutonomyTasks(ownerId,{limit:100});
     let task,approvedDelivery=false;
     for(const item of tasks){
+      if(taskAllowed&&!await taskAllowed(item))continue;
       const pendingScopeResolution=pendingStructuredScopeResolution(item);
       const browserTask=item.taskType==="public_web_browser"&&item.metadata?.requiredCapability==="remote_public_browser";
       const researchTask=item.taskType==="public_web_research"&&item.metadata?.requiredCapability==="remote_public_research";

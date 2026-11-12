@@ -15,9 +15,10 @@ export function continuityRouteAllowed(path,method,{connected=false}={}) {
   // Preserve authenticated webhook intake and worker polling without releasing
   // any existing queue. The API returns a held/no-dispatch result for the poll.
   if(connected&&((path==='/wa'&&['GET','POST'].includes(method))||(method==='POST'&&['/api/admin/worker/auto-dispatch/next','/api/admin/worker/sharp-cuts/whatsapp/tick'].includes(path))))return true;
+  if(connected&&method==='POST'&&(/^\/api\/approvals\/[^/]+\/decision$/.test(path)||/^\/api\/admin\/worker\/handoff\/(?:claim|[^/]+\/(?:complete|fail))$/.test(path)||/^\/api\/admin\/coding-jobs\/[^/]+\/progress$/.test(path)||/^\/api\/autonomy\/worker\/tasks\/[^/]+\/tick$/.test(path)||/^\/api\/admin\/worker\/execution-attempts\/[^/]+\/heartbeat$/.test(path)))return true;
   if(path.startsWith('/api/auth/')||path==='/api/preview/session'||path==='/api/preview/isolation')return true;
   if(method==='GET')return !/\/api\/(?:admin|phone|internal|webhooks)\//.test(path)&&path!=='/wa';
   if(method==='POST')return ['/api/agent','/api/memories','/api/voice/readiness','/api/voice/speaker/readiness','/api/voice/speaker/recognize','/api/voice/transcribe','/api/voice/speech','/api/voice/control','/api/voice/telemetry','/api/voice/realtime/session','/api/voice/realtime/authorize-turn','/api/voice/realtime/context','/api/voice/realtime/transcript'].includes(path)||/^\/api\/memory-candidates\/[^/]+\/decision$/.test(path);
   return ['PATCH','DELETE'].includes(method)&&/^\/api\/memories\/[^/]+$/.test(path);
 }
-export const continuityToolAllowed=tool=>tool?.riskLevel==='READ_ONLY'||['memory_remember','memory_correct','memory_forget'].includes(tool?.name);
+export const continuityToolAllowed=(tool,{connected=false}={})=>tool?.riskLevel==='READ_ONLY'||['memory_remember','memory_correct','memory_forget'].includes(tool?.name)||(connected&&['coding_job_prepare','coding_job_create'].includes(tool?.name));

@@ -110,7 +110,7 @@ export function renderTerminalTaskReport(task,steps=[]){
   return lines.join("\n").slice(0,12000);
 }
 
-export function createTerminalTaskReporter({storage,ownerId,ownerContactPolicy=null,learningService=null}={}){
+export function createTerminalTaskReporter({storage,ownerId,ownerContactPolicy=null,learningService=null,taskAllowed=null}={}){
   if(!storage||!ownerId)throw new Error("Terminal task reporting requires storage and an owner.");
   const binding=(task)=>task?.metadata?.terminalReporting;
   const eligible=(task)=>{
@@ -120,18 +120,18 @@ export function createTerminalTaskReporter({storage,ownerId,ownerContactPolicy=n
     return true;
   };
   async function enqueue(task){
-    if(!eligible(task))return null;
+    if(!eligible(task)||(taskAllowed&&!await taskAllowed(task)))return null;
     const content=renderTerminalTaskReport(task,await storage.listAutonomySteps(task.id));
     if(learningService?.observeTaskOutcome)await learningService.observeTaskOutcome(task,content).catch(()=>null);
     const reportKey=`${task.id}:${task.stateVersion}`,messageId=`task-report_${digest(`${task.id}:${task.stateVersion}:${task.status}`).slice(0,48)}`;
     return storage.enqueueTaskReport({reportKey,taskId:task.id,ownerId,conversationId:binding(task).conversationId,terminalStateVersion:task.stateVersion,terminalStatus:task.status,messageId,content});
   }
   async function reconcile({limit=100}={}){
-    if(ownerContactPolicy?.reconcileTerminalTasks)await ownerContactPolicy.reconcileTerminalTasks({limit});
+    if(!taskAllowed&&ownerContactPolicy?.reconcileTerminalTasks)await ownerContactPolicy.reconcileTerminalTasks({limit});
     const tasks=await storage.listTerminalTaskReportCandidates(ownerId,{limit:Math.max(100,limit)});
     let enqueued=0,delivered=0;
-    for(const task of tasks){if(eligible(task)){await enqueue(task);enqueued+=1;}}
-    for(const report of await storage.listPendingTaskReports(ownerId,{limit})){await storage.deliverTaskReport(report.reportKey,ownerId);delivered+=1;}
+    for(const task of tasks){if((!taskAllowed||await taskAllowed(task))&&eligible(task)){await enqueue(task);enqueued+=1;}}
+    for(const report of await storage.listPendingTaskReports(ownerId,{limit})){if(taskAllowed&&!await taskAllowed(await storage.getAutonomyTask(report.taskId,ownerId)))continue;await storage.deliverTaskReport(report.reportKey,ownerId);delivered+=1;}
     return{enqueued,delivered};
   }
   async function latestForConversation(conversationId){

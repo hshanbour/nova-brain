@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import {CONNECTED_EXECUTION,connectedTaskAllowed} from './identity/connected-execution.js';
 import {continuityPreviewEnvironment,continuityToolAllowed,EXISTING_WORKSPACE_BRANCH,EXISTING_WORKSPACE_ENDPOINT} from './identity/continuity-preview.js';
 import {registerProjectActivityReport} from './tools/project-activity-report.js';
 import {registerMemorySearch} from './tools/memory-search.js';
@@ -156,7 +157,7 @@ export function createApp({
     ownerId: OWNER_ID,
     approvedBranch: config.developmentBranch,
   });
-  const toolRegistry = createToolRegistry({ policy, disabled:preview.synthetic, toolAllowed:continuity.continuity?continuityToolAllowed:undefined });
+  const toolRegistry = createToolRegistry({ policy, disabled:preview.synthetic, toolAllowed:continuity.continuity?(tool=>continuityToolAllowed(tool,{connected:continuity.connected})):undefined });
   const projectService=createProjectService({storage,ownerId:OWNER_ID});
   const learningService=typeof storage?.createMemoryCandidate==="function"?createMemoryLearningService({storage,ownerId:OWNER_ID}):null;
   const pageReader=createPublicPageReader({fetchImpl:webFetchImpl||globalThis.fetch,...(webResolveHost?{resolveHost:webResolveHost}:{})});
@@ -240,16 +241,19 @@ export function createApp({
     ownerId: OWNER_ID,
     approvedBranch: config.developmentBranch,
   });
+  const taskAllowed=continuity.connected?(task=>connectedTaskAllowed(storage,OWNER_ID,task)):null;
   const localWorkerHandoff = createLocalWorkerHandoff({
+    taskAllowed,
     storage,
     ownerId: OWNER_ID,
     approvedBranch: config.developmentBranch,
     deploymentEnvironment: environment.VERCEL_ENV || "local",
     executionTruth,
   });
-  const terminalReporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID,ownerContactPolicy,learningService});
-  const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,terminalReporter,executionTruth});
+  const terminalReporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID,ownerContactPolicy,learningService,taskAllowed});
+  const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,terminalReporter,executionTruth,taskAllowed});
   const codingExecutor=typeof storage?.getAutonomyTask==="function"?createCodingExecutorService({
+    executionScope:continuity.connected?CONNECTED_EXECUTION:null,
     runtime:workerRuntime,
     storage,
     ownerId:OWNER_ID,
@@ -283,7 +287,7 @@ export function createApp({
   toolRegistry.register({name:"deployment_status_existing",description:"Verify READY status and source for the exact existing acceptance Preview.",category:"deployment",capability:"read",riskLevel:"READ_ONLY",available:Boolean(environment.NOVA_BRAIN_VERCEL_TOKEN),configurationStatus:environment.NOVA_BRAIN_VERCEL_TOKEN?"ready":"configuration_required",async execute(input){const deployment=await verifyDeployment(input);if(deployment.target==="production"||deployment.branch!==config.developmentBranch||deployment.sha!==input.commitSha)throw Object.assign(new Error("Preview source mismatch."),{code:"source_mismatch"});if(deployment.status!=="READY")throw Object.assign(new Error("Preview deployment is not READY."),{code:"deployment_not_ready"});return{ok:true,deploymentId:input.deploymentId,status:deployment.status,url:`https://${deployment.url}`,commitSha:input.commitSha};}});
   toolRegistry.register({name:"preview_verify_existing",description:"Verify the exact existing acceptance Preview route.",category:"deployment",capability:"read",riskLevel:"READ_ONLY",available:Boolean(environment.NOVA_BRAIN_VERCEL_TOKEN),configurationStatus:environment.NOVA_BRAIN_VERCEL_TOKEN?"ready":"configuration_required",async execute(input){const deployment=await verifyDeployment(input);if(deployment.target==="production"||deployment.branch!==config.developmentBranch||deployment.sha!==input.commitSha)throw Object.assign(new Error("Preview source mismatch."),{code:"source_mismatch"});const response=await fetch(`https://${deployment.url}${input.path}`,{headers:{...(environment.VERCEL_AUTOMATION_BYPASS_SECRET?{"x-vercel-protection-bypass":environment.VERCEL_AUTOMATION_BYPASS_SECRET}:{})}});if(response.status!==input.expectedStatus)throw Object.assign(new Error("Preview route returned an unexpected status."),{code:"preview_unreachable"});return{ok:true,deploymentId:input.deploymentId,url:`https://${deployment.url}${input.path}`,status:response.status,commitSha:input.commitSha};}});
   toolRegistry.register({name:"preview_storage_verify_existing",description:"Verify durable Postgres readiness through the exact existing acceptance Preview health route.",category:"deployment",capability:"read",riskLevel:"READ_ONLY",available:Boolean(environment.NOVA_BRAIN_VERCEL_TOKEN),configurationStatus:environment.NOVA_BRAIN_VERCEL_TOKEN?"ready":"configuration_required",async execute(input){const deployment=await verifyDeployment(input);if(deployment.target==="production"||deployment.branch!==config.developmentBranch||deployment.sha!==input.commitSha)throw Object.assign(new Error("Preview source mismatch."),{code:"source_mismatch"});const response=await fetch(`https://${deployment.url}/api/health`,{headers:{...(environment.VERCEL_AUTOMATION_BYPASS_SECRET?{"x-vercel-protection-bypass":environment.VERCEL_AUTOMATION_BYPASS_SECRET}:{})}}),value=await response.json().catch(()=>({}));if(response.status!==200||value.storage?.provider!=="postgres"||value.storage?.durable!==true||value.storage?.status!=="ready")throw Object.assign(new Error("Preview durable storage is not ready."),{code:"storage_not_ready"});return{ok:true,deploymentId:input.deploymentId,status:200,storage:{provider:"postgres",durable:true,status:"ready"},commitSha:input.commitSha};}});
-  const codingDelegation=codingExecutor?createCodingDelegationService({runtime:workerRuntime,storage,ownerId:OWNER_ID,bindings:codingBindings,verifyRemote}):null;
+  const codingDelegation=codingExecutor?createCodingDelegationService({runtime:workerRuntime,storage,ownerId:OWNER_ID,bindings:codingBindings,verifyRemote,executionScope:continuity.connected?CONNECTED_EXECUTION:null}):null;
   registerWorkerTools(toolRegistry, { runtime: workerRuntime, taskMigration, codingExecutor, codingDelegation });
   const implementationPlanner=createSelfDevelopmentImplementationPlanner({modelProvider,storage,ownerId:OWNER_ID,runtimeVersion:environment.VERCEL_GIT_COMMIT_SHA,resolvePathState:async(path,commitSha)=>toolRegistry.execute("repo_path_state",{path,commitSha})});
   toolRegistry.register({name:"self_development_plan_implementation",description:"Generate one evidence-bound structured implementation or repair plan for the exact durable Self-Development task.",category:"autonomy",capability:"reasoning",riskLevel:"READ_ONLY",available:true,configurationStatus:"ready",inputSchema:{type:"object",properties:{taskId:{type:"string"},candidatePaths:{type:"array"},authorizedCreatePaths:{type:"array"},currentCommit:{type:"string"},failureEvidence:{type:"object"}},required:["taskId","candidatePaths","currentCommit"],additionalProperties:false},execute:input=>implementationPlanner.generate(input)});

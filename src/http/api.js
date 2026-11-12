@@ -1,5 +1,6 @@
 import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
 import {usesServiceAuthentication} from "../identity/console-access.js";
+import {connectedTaskAllowed,isFreshCodingParent,connectedExecutionDenied} from '../identity/connected-execution.js';
 import {continuityRouteAllowed} from '../identity/continuity-preview.js';
 import {savedReplyLanguage} from '../identity/communication-policy.js';
 import {requirePrivateVoiceSpeaker,verifiedOwnerVoiceEvidence} from '../voice/private-context-access.js';
@@ -339,7 +340,7 @@ export function createApi({
             }
           }
         }
-        if(connectedPreview&&request.method==='POST'&&['/api/admin/worker/auto-dispatch/next','/api/admin/worker/sharp-cuts/whatsapp/tick'].includes(pathname)){
+        if(connectedPreview&&request.method==='POST'&&pathname==='/api/admin/worker/sharp-cuts/whatsapp/tick'){
           sendJson(response,200,{dispatched:false,channels:[],worked:false,held:true,reason:'connected_preview_recovery_hold'});return;
         }
         if (request.method === "POST" && pathname.startsWith("/api/internal/phone/gpt-live-round2/")) {
@@ -2064,6 +2065,7 @@ export function createApi({
           await ready();
           authorizeLocalWorker(request, config.localWorkerToken);
           const input = await readJsonBody(request, config.maxBodyBytes);
+          if(connectedPreview&&!await connectedTaskAllowed(storage,ownerId,await storage.getAutonomyTask(decodeURIComponent(taskTickMatch[1]),ownerId)))throw connectedExecutionDenied();
           sendJson(
             response,
             200,
@@ -2105,12 +2107,13 @@ export function createApi({
         const handoffClaim = pathname === "/api/admin/worker/handoff/claim";
         const executionHeartbeat=pathname.match(/^\/api\/admin\/worker\/execution-attempts\/([^/]+)\/heartbeat$/);
         if(executionTruth&&executionHeartbeat&&request.method==="POST"){
-          await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);if(input.id&&input.id!==decodeURIComponent(executionHeartbeat[1])){sendJson(response,409,{error:"Execution attempt ID does not match route.",code:"execution_attempt_stale"});return;}try{sendJson(response,200,{attempt:await executionTruth.heartbeat({...input,id:decodeURIComponent(executionHeartbeat[1])},{phase:input.phase||null,executorStarted:input.executorStarted===true,progress:input.progress===true})});}catch(error){if(error?.code==="execution_attempt_stale"){sendJson(response,409,{error:error.message,code:error.code});return;}throw error;}return;
+          await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);if(connectedPreview&&!await connectedTaskAllowed(storage,ownerId,await storage.getAutonomyTask(input.taskId,ownerId)))throw connectedExecutionDenied();if(input.id&&input.id!==decodeURIComponent(executionHeartbeat[1])){sendJson(response,409,{error:"Execution attempt ID does not match route.",code:"execution_attempt_stale"});return;}try{sendJson(response,200,{attempt:await executionTruth.heartbeat({...input,id:decodeURIComponent(executionHeartbeat[1])},{phase:input.phase||null,executorStarted:input.executorStarted===true,progress:input.progress===true})});}catch(error){if(error?.code==="execution_attempt_stale"){sendJson(response,409,{error:error.message,code:error.code});return;}throw error;}return;
         }
         const codingProgress = pathname.match(/^\/api\/admin\/coding-jobs\/([^/]+)\/progress$/);
         if (codingExecutor && codingProgress && request.method === "POST") {
           await ready();
           authorizeLocalWorker(request, config.localWorkerToken);
+          if(connectedPreview&&!await connectedTaskAllowed(storage,ownerId,await storage.getAutonomyTask(decodeURIComponent(codingProgress[1]),ownerId)))throw connectedExecutionDenied();
           sendJson(response, 200, await codingExecutor.progress(decodeURIComponent(codingProgress[1]), await readJsonBody(request, config.maxBodyBytes)));
           return;
         }
@@ -2134,7 +2137,7 @@ export function createApi({
           await ready();
           authorizeLocalWorker(request, config.localWorkerToken);
           const dispatch=await autoDispatch.next(await readJsonBody(request,config.maxBodyBytes));
-          sendJson(response,200,{...dispatch,channelPolling:["whatsapp","social","social_media",...(config.sharpCutsWhatsApp.configured?["sharp_cuts_whatsapp"]:[])]});
+          sendJson(response,200,{...dispatch,channelPolling:connectedPreview?[]:["whatsapp","social","social_media",...(config.sharpCutsWhatsApp.configured?["sharp_cuts_whatsapp"]:[])]});
           return;
         }
         const handoffMatch = pathname.match(
@@ -2282,6 +2285,11 @@ export function createApi({
           const decision = validateApprovalDecision(
             await readJsonBody(request, config.maxBodyBytes),
           );
+          if(connectedPreview){
+            const pending=await storage.getApproval(decodeURIComponent(approvalMatch[1]),ownerId);
+            const parent=pending?.tool==='coding_job_create'?await storage.getAutonomyTask(pending.arguments?.parentTaskId,ownerId):null;
+            if(!isFreshCodingParent(parent))throw connectedExecutionDenied();
+          }
           const approval = await storage.decideApproval(
             decodeURIComponent(approvalMatch[1]),
             ownerId,

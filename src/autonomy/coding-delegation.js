@@ -32,7 +32,7 @@ export function isChatCodingDelegationRequest(message) {
   return CODING_ACTION.test(value) && CODEX_DELEGATION.test(value);
 }
 
-export function createCodingDelegationService({ runtime, storage, ownerId, bindings = [], verifyRemote } = {}) {
+export function createCodingDelegationService({ runtime, storage, ownerId, bindings = [], verifyRemote, executionScope = null } = {}) {
   if (!runtime?.create || !storage?.getAutonomyTask || !storage?.createApproval || !storage?.getApproval || !storage?.decideApproval || typeof verifyRemote !== "function") {
     throw new Error("Coding delegation requires durable runtime, storage, and trusted remote resolution.");
   }
@@ -58,7 +58,7 @@ export function createCodingDelegationService({ runtime, storage, ownerId, bindi
       });
       const existing=await storage.getAutonomyTask(parentTaskId,ownerId);
       if(existing){const prepared=existing.metadata?.codingDelegation,specificationHash=prepared?.codingJobHash;if(existing.taskType!=="coding_orchestration"||!prepared?.codingJob||specificationHash!==codingSpecificationHash(prepared.codingJob))throw Object.assign(new Error("The coding delegation identity is already bound to invalid or different durable inputs."),{code:"coding_delegation_identity_conflict"});return{task:publicParent(existing),creationRequest:Object.freeze({parentTaskId:existing.id,specificationHash}),duplicate:true};}
-      const task=await runtime.create({id:parentTaskId,title:`Codex delegation: ${objective.slice(0,90)}`,objective,taskType:"coding_orchestration",projectId:binding.projectId,branch:binding.branch,startingCommit:remote.currentTip,currentCommit:remote.currentTip,maxSteps:1,maxRetries:0,maxRuntimeMinutes:120,metadata:{autoDispatch:false,parentTask:true,codingDelegation:{version:1,requestFingerprint,codingJob:job,codingJobHash:codingSpecificationHash(job)},...(trustedArtifact?{trustedArtifactAdoption:{version:1,sourceTaskId:trustedArtifact.sourceTaskId,sourceStateVersion:trustedArtifact.sourceStateVersion,specificationHash:codingSpecificationHash(job)}}:{}),...(context.conversationId?{terminalReporting:{version:1,conversationId:context.conversationId,runId:context.runId||null}}:{}),steps:[]}});
+      const task=await runtime.create({id:parentTaskId,title:`Codex delegation: ${objective.slice(0,90)}`,objective,taskType:"coding_orchestration",projectId:binding.projectId,branch:binding.branch,startingCommit:remote.currentTip,currentCommit:remote.currentTip,maxSteps:1,maxRetries:0,maxRuntimeMinutes:120,metadata:{...(executionScope?{connectedExecution:executionScope}:{}),autoDispatch:false,parentTask:true,codingDelegation:{version:1,requestFingerprint,codingJob:job,codingJobHash:codingSpecificationHash(job)},...(trustedArtifact?{trustedArtifactAdoption:{version:1,sourceTaskId:trustedArtifact.sourceTaskId,sourceStateVersion:trustedArtifact.sourceStateVersion,specificationHash:codingSpecificationHash(job)}}:{}),...(context.conversationId?{terminalReporting:{version:1,conversationId:context.conversationId,runId:context.runId||null}}:{}),steps:[]}});
       return{task:publicParent(task),creationRequest:Object.freeze({parentTaskId:task.id,specificationHash:task.metadata.codingDelegation.codingJobHash}),duplicate:false};
   };
   const selectBinding=requestedProject=>requestedProject?trusted.get(requestedProject):trusted.size===1?[...trusted.values()][0]:null;

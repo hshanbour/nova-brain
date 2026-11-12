@@ -71,7 +71,7 @@ export function verifyLocalWorkerWorkspaceProof(proof,signature,token){
   return Object.freeze({actorType:"scoped_local_worker",workspaceProof:proof});
 }
 
-export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/nova-brain-mvp-foundation",clock=()=>new Date(),leaseMs=120000,deploymentEnvironment="preview",executionTruth=null}={}){
+export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/nova-brain-mvp-foundation",clock=()=>new Date(),leaseMs=120000,deploymentEnvironment="preview",executionTruth=null,taskAllowed=null}={}){
   if(!storage||!ownerId)throw new Error("Local Worker handoff requires storage and ownerId.");
   const activity=(task,action,status,summary,metadata={})=>storage.appendActivity({ownerId,projectId:task.projectId,runId:task.id,action,status,summary,metadata:redact({taskId:task.id,...metadata})});
   const response=async(task,handoff)=>{let executionAttempt=null;if(executionTruth){const attempt=await executionTruth.attemptForTask(task.id);if(attempt?.handoffId===handoff.id&&attempt?.workerId===handoff.workerId)executionAttempt={id:attempt.id,generation:attempt.generation,fenceToken:attempt.fenceToken};}return{handoffId:handoff.id,taskId:task.id,stepId:handoff.stepId,stepType:handoff.stepType,repository:"hshanbour/nova-brain",branch:task.branch,expectedCommit:task.currentCommit,tool:handoff.tool,arguments:redact(handoff.arguments),...(handoff.reviewRemediationScope?{reviewRemediationScope:handoff.reviewRemediationScope}:{}),...(handoff.approvedDelivery?{approvedDelivery:handoff.approvedDelivery}:{}),...(handoff.executionScope?{executionScope:handoff.executionScope}:{}),...(handoff.fullTestScope?{fullTestScope:handoff.fullTestScope}:{}),...(executionAttempt?{executionAttempt}:{}),idempotencyKey:handoff.idempotencyKey,deadline:handoff.expiresAt};};
@@ -83,7 +83,8 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
     if(input.expectedBranch!==approvedBranch||["main","master"].includes(input.expectedBranch))throw new HandoffError("branch_not_allowed","Only the approved feature branch may be handed off.",403);
     boundedString(input.expectedCommit,"expectedCommit",64);
     const capabilities=[...new Set(Array.isArray(input.capabilities)?input.capabilities:[])].filter(value=>["repo_mutate_local","test_local","repo_read_remote","approved_delivery_git_push","codex_local"].includes(value));
-    if(executionTruth)await executionTruth.reconcile({workerId});const before=await storage.getAutonomyTask(taskId,ownerId);if(!before)return{claimed:false};
+    if(executionTruth&&!taskAllowed)await executionTruth.reconcile({workerId});const before=await storage.getAutonomyTask(taskId,ownerId);if(!before)return{claimed:false};
+    if(taskAllowed&&!await taskAllowed(before))throw new HandoffError("connected_preview_task_held","This task remains held.",403);
     if(before.branch!==input.expectedBranch)throw new HandoffError("branch_mismatch","Task branch does not match.");
     if(before.currentCommit!==input.expectedCommit)throw new HandoffError("commit_mismatch","Task commit does not match.");
     if(reviewRemediationDescriptor(before))return claimReviewRemediation(before,input,workerId,idempotencyKey,capabilities);
@@ -246,6 +247,7 @@ export function createLocalWorkerHandoff({storage,ownerId,approvedBranch="feat/n
   async function finish(handoffId,input,{failed=false}={}){
     boundedString(handoffId,"handoffId");const taskId=boundedString(input?.taskId,"taskId"),workerId=boundedString(input?.workerId,"workerId"),idempotencyKey=boundedString(input?.idempotencyKey,"idempotencyKey");
     const task=await storage.getAutonomyTask(taskId,ownerId);if(!task)throw new HandoffError("handoff_not_found","Handoff was not found.",404);
+    if(taskAllowed&&!await taskAllowed(task))throw new HandoffError("connected_preview_task_held","This task remains held.",403);
     if((task.metadata?.completedHandoffs||[]).includes(handoffId))return{idempotent:true,task:publicTask(task)};
     const handoff=task.metadata?.localHandoff;if(!handoff||handoff.id!==handoffId||handoff.workerId!==workerId||handoff.idempotencyKey!==idempotencyKey)throw new HandoffError("handoff_mismatch","Handoff does not match the active task.",403);
     if(executionTruth){const supplied=input?.executionAttempt,attempt=await executionTruth.attemptForTask(taskId);if(!attempt||attempt.handoffId!==handoffId||attempt.workerId!==workerId||!supplied||supplied.id!==attempt.id||supplied.generation!==attempt.generation||supplied.fenceToken!==attempt.fenceToken)throw new HandoffError("execution_attempt_stale","Execution attempt fencing does not match the active handoff.",409);await executionTruth.heartbeat({id:attempt.id,taskId,ownerId,handoffId,workerId,generation:attempt.generation,fenceToken:attempt.fenceToken},{phase:null,executorStarted:false,progress:false});}

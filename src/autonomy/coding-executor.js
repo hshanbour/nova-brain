@@ -250,7 +250,7 @@ function publicResult(task, steps) {
   });
 }
 
-export function createCodingExecutorService({ runtime, storage, ownerId, bindings = [], executionTruth } = {}) {
+export function createCodingExecutorService({ runtime, storage, ownerId, bindings = [], executionTruth, executionScope = null } = {}) {
   if (!runtime?.create || !runtime?.get || !runtime?.steps || !runtime?.control || !storage?.getAutonomyTask) {
     throw new Error("Coding executor requires the durable task runtime and storage.");
   }
@@ -263,6 +263,7 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
     if (parent.projectId !== job.projectId || parent.branch !== job.repository.branch || parent.currentCommit !== job.repository.baseline) {
       fail("coding_parent_binding_changed", "The parent task no longer matches the trusted coding baseline.");
     }
+    if(executionScope && parent.metadata?.connectedExecution!==executionScope) fail("connected_preview_task_held", "Historical coding work remains held.",403);
     const prepared = parent.metadata?.codingDelegation;
     if (parent.taskType === "coding_orchestration" && prepared?.codingJobHash !== codingSpecificationHash(job)) {
       fail("coding_parent_specification_changed", "The approved coding job no longer matches its prepared parent task.");
@@ -275,6 +276,7 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
     if (!parent || parent.taskType !== "coding_orchestration") {
       fail("coding_parent_task_not_found", "The prepared coding parent was not found.", 404, { validationCode: "unknown_parent", fieldPath: "coding_job_create.parentTaskId", argumentKeys: Object.keys(handle) });
     }
+    if(executionScope && parent.metadata?.connectedExecution!==executionScope) fail("connected_preview_task_held", "Historical coding work remains held.",403);
     const prepared = parent.metadata?.codingDelegation;
     if (!prepared?.codingJob || typeof prepared.codingJobHash !== "string") {
       fail("coding_parent_specification_missing", "The prepared coding specification is unavailable.", 409, { validationCode: "stored_specification_missing", fieldPath: "coding_job_create.parentTaskId", argumentKeys: Object.keys(handle) });
@@ -373,6 +375,7 @@ export function createCodingExecutorService({ runtime, storage, ownerId, binding
         maxRetries: 0,
         maxRuntimeMinutes: 120,
         metadata: {
+          ...(executionScope?{connectedExecution:executionScope}:{}),
           codingJob: job,
           codingJobHash: jobHash,
           codingSpecificationHash: specificationHash,

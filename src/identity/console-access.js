@@ -34,6 +34,7 @@ export function createConsoleAccess({environment={}, ownerId, keySet}={}) {
 // These routes have their own provider-signature/session/worker authentication.
 // No broad '/api/integrations' exemption: status pages contain private data.
 export function usesServiceAuthentication(pathname,method) {
+  if(method==="POST"&&(/^\/api\/admin\/coding-jobs\/[^/]+\/progress$/.test(pathname)||/^\/api\/autonomy\/worker\/tasks\/[^/]+\/tick$/.test(pathname)))return "worker";
   if(method==="POST"&&pathname.startsWith("/api/admin/worker/"))return "worker";
   if(method==="POST"&&pathname==="/api/admin/scheduler/social/tick")return "scheduler";
   if(method==="POST"&&pathname.startsWith("/api/internal/phone/gpt-live-round2/"))return "phone";
