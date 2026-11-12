@@ -1069,11 +1069,11 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         WHERE e.id=$1 AND e.owner_id=$2 AND e.task_id=$3`,[id,ownerId,taskId]))[0];
       return row?{id:row.id,ownerId:row.owner_id,taskId:row.task_id,createdAt:date(row.created_at),envelope:row.envelope}:null;
     },
-    async listAutonomyTasks(ownerId, { status, limit = 50 } = {}) {
+    async listAutonomyTasks(ownerId, { status, limit = 50, executionScope = null } = {}) {
       return (
         await run(
-          "SELECT * FROM nova_autonomy_tasks WHERE owner_id=$1 AND ($2::text IS NULL OR status=$2) ORDER BY priority DESC,created_at ASC LIMIT $3",
-          [ownerId, status || null, limit],
+          "SELECT * FROM nova_autonomy_tasks WHERE owner_id=$1 AND ($2::text IS NULL OR status=$2) AND ($4::text IS NULL OR metadata->>'connectedExecution'=$4) ORDER BY priority DESC,created_at ASC LIMIT $3",
+          [ownerId, status || null, limit, executionScope],
         )
       ).map(autonomyTaskRow);
     },

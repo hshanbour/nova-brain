@@ -253,7 +253,7 @@ export function createApp({
     executionTruth,
   });
   const terminalReporter=createTerminalTaskReporter({storage,ownerId:OWNER_ID,ownerContactPolicy,learningService,taskAllowed});
-  const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,terminalReporter,executionTruth,taskAllowed});
+  const autoDispatch=createAutoDispatchService({storage,ownerId:OWNER_ID,approvedBranch:config.developmentBranch,terminalReporter,executionTruth,taskAllowed,executionScope:continuity.connected?CONNECTED_EXECUTION:null});
   const codingExecutor=typeof storage?.getAutonomyTask==="function"?createCodingExecutorService({
     executionScope:continuity.connected?CONNECTED_EXECUTION:null,
     runtime:workerRuntime,

@@ -4,6 +4,7 @@ import {CONNECTED_EXECUTION,connectedTaskAllowed} from '../src/identity/connecte
 import {continuityRouteAllowed,continuityToolAllowed} from '../src/identity/continuity-preview.js';
 import {createAutoDispatchService} from '../src/autonomy/auto-dispatch.js';
 import {createLocalWorkerHandoff} from '../src/autonomy/local-worker-handoff.js';
+import {createInMemoryStorage} from '../src/storage/in-memory-storage.js';
 const ownerId='test-owner',branch='codex/combined-nova-preview-d5b5-c5bd';
 function setup(){
  const parent={id:'parent',ownerId,taskType:'coding_orchestration',projectId:'nova-brain',metadata:{connectedExecution:CONNECTED_EXECUTION,codingDelegation:{codingJobHash:'hash'}}};
@@ -31,6 +32,15 @@ test('direct handoff cannot bypass held task filter',async()=>{
  const {task,storage}=setup();task.metadata.connectedExecution=null;
  const service=createLocalWorkerHandoff({storage,ownerId,approvedBranch:branch,taskAllowed:t=>connectedTaskAllowed(storage,ownerId,t)});
  await assert.rejects(service.claim({taskId:'fresh',workerId:'worker',idempotencyKey:'one',expectedBranch:branch,expectedCommit:task.currentCommit,capabilities:['codex_local']}),{code:'connected_preview_task_held'});
+});
+
+test('a fresh permitted task cannot be starved by 100 historical records',async()=>{
+ const storage=createInMemoryStorage();await storage.initialize({owner:{id:ownerId,fullName:'Fixture'},projects:[{id:'nova-brain',name:'Nova'}]});
+ for(let n=0;n<101;n++)await storage.createAutonomyTask({id:`old-${n}`,ownerId,projectId:'nova-brain',title:'Held',objective:'Held fixture',taskType:'self_development',branch,startingCommit:'a'.repeat(40),metadata:{steps:[{type:'delegate_coding'}]}});
+ await storage.createAutonomyTask({id:'new',ownerId,projectId:'nova-brain',title:'New',objective:'Approved fixture',taskType:'coding_delegation',branch,startingCommit:'a'.repeat(40),metadata:{connectedExecution:CONNECTED_EXECUTION,codingJob:{repository:{slug:'hshanbour/nova-brain'}},steps:[{type:'delegate_coding'}]}});
+ const service=createAutoDispatchService({storage,ownerId,approvedBranch:branch,executionScope:CONNECTED_EXECUTION,taskAllowed:async t=>t.id==='new'});
+ assert.equal((await service.next({workerId:'fixture'})).task.id,'new');
+ assert.equal((await storage.getAutonomyTask('old-0',ownerId)).status,'queued');
 });
 test('only connected Preview exposes bounded coding controls; sending stays unavailable',()=>{
  assert.equal(continuityToolAllowed({name:'coding_job_prepare',riskLevel:'LOW_RISK_WRITE'},{connected:true}),true);

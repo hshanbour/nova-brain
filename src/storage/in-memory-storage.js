@@ -742,10 +742,10 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       if(autonomyTasks.get(taskId)?.ownerId!==ownerId)return null;
       return copy([...rejectedReviewEvidence.values()].find(item=>item.id===id&&item.ownerId===ownerId&&item.taskId===taskId)||null);
     },
-    async listAutonomyTasks(ownerId, { status, limit = 50 } = {}) {
+    async listAutonomyTasks(ownerId, { status, limit = 50, executionScope = null } = {}) {
       return [...autonomyTasks.values()]
         .filter(
-          (x) => x.ownerId === ownerId && (!status || x.status === status),
+          (x) => x.ownerId === ownerId && (!status || x.status === status) && (!executionScope || x.metadata?.connectedExecution === executionScope),
         )
         .sort(
           (a, b) =>
