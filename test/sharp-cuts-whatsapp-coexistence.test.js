@@ -147,3 +147,11 @@ test('held reply review reuses Brain drafting without claiming, decrypting, send
  const repeat=await service.prepareHeldDraft({recordRef:inbox.records[0].recordRef});assert.equal(repeat.duplicate,true);assert.equal(calls.length,1);
  await assert.rejects(service.prepareHeldDraft({recordRef:'0'.repeat(64)}));
 });
+
+
+test('deployed processing check exercises a fresh queue record and preserves every held record',async()=>{
+ const f=await fixture();await f.service.receive(payload('Held original','wamid.historical-held-123'), 'Bearer '+TOKEN);
+ const before=await f.service.reviewHeld();const result=await f.service.processingCheck();
+ assert.equal(result.status,'awaiting_owner_review');assert.equal(result.attemptCount,1);assert.equal(result.sent,false);assert.equal(result.providerCalls,0);assert.equal(result.backlogUnchanged,true);assert.equal(result.liveWebhookTest,false);assert.equal(result.windowsDispatchTest,false);assert.ok(result.draft);
+ assert.deepEqual(await f.service.reviewHeld(),before);
+});

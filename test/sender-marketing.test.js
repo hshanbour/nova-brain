@@ -23,7 +23,7 @@ test("Sender.net free readiness fits the candidate audience but fails closed wit
 
 test("Sender client exposes only bounded safe probes and never sends",async()=>{
   const calls=[],client=createSenderMarketingClient({config:CONFIG,fetchImpl:async(url,options)=>{calls.push({url,options});return Response.json({data:[{id:"private-group-id",title:"private"}]});}}),probe=await client.probe();
-  assert.deepEqual(probe,{connected:true,provider:"Sender.net",groupCount:1,tokenExposed:false});assert.equal(calls[0].url,"https://api.sender.net/v2/groups?limit=1");assert.equal(calls[0].options.headers.Authorization,"Bearer provider-secret-token");assert.doesNotMatch(JSON.stringify(probe),/provider-secret|private-group/);
+  assert.deepEqual(probe,{connected:true,provider:"Sender.net",groupCount:null,groupsOnProbePage:1,tokenExposed:false});assert.equal(calls[0].url,"https://api.sender.net/v2/groups?limit=1");assert.equal(calls[0].options.headers.Authorization,"Bearer provider-secret-token");assert.doesNotMatch(JSON.stringify(probe),/provider-secret|private-group/);
   await assert.rejects(()=>client.sendCampaign("campaign_1"),error=>error.code==="sender_live_send_disabled");
 });
 
@@ -65,4 +65,17 @@ test("owner test is one-recipient transactional mail and never uploads a subscri
   await assert.rejects(()=>client.sendOwnerTest(),error=>error.code==="sender_test_authority_required");
   const result=await client.sendOwnerTest({recipient:"sharpcuts.luton@gmail.com"},{authority:{operation:"send_owner_test",projectId:"sharp-cuts-web",recipient:"sharpcuts.luton@gmail.com"}});
   assert.equal(result.accepted,true);assert.equal(result.subscriberUploads,0);assert.equal(calls.length,1);assert.equal(calls[0].url,"https://api.sender.net/v2/message/send");const body=JSON.parse(calls[0].options.body);assert.equal(body.from.email,"info@sharpcuts.uk");assert.equal(body.from.name,"Sharp Cuts");assert.equal(body.to.email,"sharpcuts.luton@gmail.com");assert.doesNotMatch(JSON.stringify(body),/groups|subscribers/);
+});
+
+
+test('campaign inspection keeps 1562 membership intact and reports provider errors rather than assuming readiness',async()=>{
+ const calls=[];const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async(url,options)=>{
+  calls.push([url,options.method]);return Response.json(url.endsWith('/groups')?{data:[{id:'group_90day',title:'Sharp Cuts',recipient_count:1562,active_subscribers:1550,unsubscribed_count:10,bounced_count:2}],links:{next:null}}:url.endsWith('/campaigns')?{data:[{id:'draft_1',status:'DRAFT',recipient_count:1562}],links:{next:null}}:{errors:[{title:'Account verification required'}],warnings:[]});
+ }});
+ const r=await client.inspectCampaignReadiness();assert.equal(r.groups[0].total,1562);assert.equal(r.groups[0].active,1550);assert.equal(r.contactsChanged,0);assert.equal(r.sendPermissionVerified,false);assert.deepEqual(r.campaigns[0].validation.errors,['Account verification required']);assert.ok(calls.every(x=>x[1]==='GET'));
+});
+
+test('sent reporting uses provider pagination total and never equates sent with delivered',async()=>{
+ const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async url=>Response.json(url.endsWith('/errors')?{errors:[{title:'No subscribers selected'}],warnings:[{title:'SPF warning'}]}:{data:[{email:'must-not-return@example.invalid'}],meta:{total:1562},links:{next:'page-2'}})});
+ const r=await client.campaignStatus('campaign_1');assert.equal(r.sentCount,1562);assert.equal(r.deliveredCount,null);assert.equal(r.errors.length,1);assert.equal(r.warnings.length,1);assert.doesNotMatch(JSON.stringify(r),/must-not-return/);
 });

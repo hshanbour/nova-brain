@@ -25,7 +25,7 @@ test('a different voice cannot use the gated recovery session',async()=>{
   assert.equal(h.verifiedCount(),1);assert.equal(h.counts().pauses,1);assert.equal(h.voice.isActive(),false);assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,0);
  }finally{h.close();}
 });
-function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn,recognize,authorizationFailure=false}={}){
+function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn,recognize,authorizationFailure=false,verificationWindowMs=0}={}){
  let clock=0,frame,requests=[],notices=0,pauses=0,verified=0;const results=[],pauseReasons=[],recoveries=[];
  const prior=globalThis.requestAnimationFrame,priorCancel=globalThis.cancelAnimationFrame;
  globalThis.requestAnimationFrame=fn=>{frame=fn;return 1;};globalThis.cancelAnimationFrame=()=>{};
@@ -34,7 +34,7 @@ function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn
  class Peer extends EventTarget{createDataChannel(){channel=new Channel();return channel;}addTrack(){}async createOffer(){return{sdp:'test'};}async setLocalDescription(){}async setRemoteDescription(){}close(){}}
  class Recorder extends EventTarget{state='inactive';mimeType='audio/webm';start(){this.state='recording';}stop(){this.state='inactive';const e=new Event('dataavailable');e.data=new Blob(['synthetic-audio-fixture']);this.dispatchEvent(e);this.dispatchEvent(new Event('stop'));}}
  class Context{createMediaStreamSource(){return{connect(){},disconnect(){}};}createAnalyser(){return{getByteTimeDomainData:a=>a.fill(133)};}async close(){}}
- const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){}}]};}},RTCPeerConnectionImpl:Peer,MediaRecorderImpl:Recorder,AudioContextImpl:Context,AudioImpl:class{pause(){}},now:()=>clock,sendTurn,onResult:r=>results.push(r),getConversationId:()=> 'fixture-conversation',onPrivacyRecovery:()=>recoveries.push(true),onVerificationNeeded:()=>notices++,onPrivacyPause:detail=>{pauses++;pauseReasons.push(detail?.reason);},onOwnerVerified:()=>verified++,
+ const voice=createRealtimeVoice({verificationWindowMs,mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){}}]};}},RTCPeerConnectionImpl:Peer,MediaRecorderImpl:Recorder,AudioContextImpl:Context,AudioImpl:class{pause(){}},now:()=>clock,sendTurn,onResult:r=>results.push(r),getConversationId:()=> 'fixture-conversation',onPrivacyRecovery:()=>recoveries.push(true),onVerificationNeeded:()=>notices++,onPrivacyPause:detail=>{pauses++;pauseReasons.push(detail?.reason);},onOwnerVerified:()=>verified++,
  fetchImpl:async(url,o)=>{
   if(url.endsWith('/session'))return Response.json({clientSecret:'fixture',privacyGate:true,replyLanguage:'ar'});
   if(url.endsWith('/recognize')){const body=JSON.parse(o.body);requests.push(body);return Response.json({speaker:recognize?recognize(body,requests.length):body.durationSeconds>=1?{match_status:'confirmed',authenticated_identity:'owner',assertion:'fixture'}:{match_status:shortResult,authenticated_identity:'none'}});}
@@ -191,5 +191,36 @@ test('different speaker after automatic quality recovery cannot inherit the prev
  const h=voiceHarness({recognize:(_b,n)=>({match_status:n===1?'confirmed':n===2?'insufficient_speech':'unknown',authenticated_identity:n===1?'owner':'none',assertion:n===1?'fixture':null})});try{
   await h.voice.start();for(let n=0;n<3;n++){h.set(1000+n*4000);h.event('speech_started','turn-'+n);h.set(3000+n*4000);h.event('speech_stopped','turn-'+n);await wait();}
   assert.equal(h.recoveries.length,1);assert.equal(h.verifiedCount(),1);assert.equal(h.voice.isActive(),false);assert.deepEqual(h.pauseReasons,['not-matched']);
+ }finally{h.close();}
+});
+
+
+test('private entry collects short VAD fragments in one recording, then requests a reply only after server authorization',async()=>{
+ const h=voiceHarness({verificationWindowMs:3500});try{
+  await h.voice.start();h.set(1000);h.event('speech_started','a');h.set(2100);h.event('speech_stopped','a');await wait();
+  assert.equal(h.requests.length,0);assert.equal(h.verifiedCount(),0);
+  h.set(2400);h.event('speech_started','b');h.set(5100);h.event('speech_stopped','b');await wait();
+  assert.equal(h.requests.length,1);assert.equal(h.requests[0].durationSeconds,4.1);assert.equal(h.verifiedCount(),1);
+  assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,1);
+ }finally{h.close();}
+});
+
+test('ending during verification collection cancels pending recognition and does not unlock or reply',async()=>{
+ const h=voiceHarness({verificationWindowMs:100});try{
+  await h.voice.start();h.set(1000);h.event('speech_started','a');h.set(1050);h.event('speech_stopped','a');h.voice.end();await wait();
+  assert.equal(h.requests.length,0);assert.equal(h.verifiedCount(),0);
+ }finally{h.close();}
+});
+
+
+test('late response-created cannot attach an old authorized reply to a new unverified speaker',async()=>{
+ const h=voiceHarness();try{
+  await h.voice.start();h.set(1000);h.event('speech_started','owner');h.set(5000);h.event('speech_stopped','owner');await wait();
+  assert.equal(h.verifiedCount(),1);
+  h.set(5200);h.event('speech_started','new-speaker');
+  h.channel.message({type:'response.created',response:{id:'late-owner-reply'}});
+  h.channel.message({type:'output_audio_buffer.started'});
+  assert.ok(h.channel.sent.some(x=>x.type==='response.cancel'));assert.ok(h.channel.sent.some(x=>x.type==='output_audio_buffer.clear'));
+  assert.equal(h.verifiedCount(),1);
  }finally{h.close();}
 });

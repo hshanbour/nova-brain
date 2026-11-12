@@ -32,13 +32,17 @@ export function createRealtimeVoice({
   onArticulation=()=>{},
   onError = () => {},
   now = () => globalThis.performance?.now?.() ?? Date.now(),
+  verificationWindowMs = 3500,
 } = {}) {
   if (!mediaDevices?.getUserMedia || typeof RTCPeerConnectionImpl !== "function" || typeof fetchImpl !== "function") throw new TypeError("Realtime Voice browser dependencies are unavailable.");
   let active = false, generation = 0, pc, channel, stream, remoteAudio, inputMeter, outputMeter;
   let lastTranscript = "", lastSpeechEndedAt = 0, assistantTranscript = "", lastAssistantTranscript = "", toolInFlight = false, muted = false;
   let playbackActive=false, serial=Promise.resolve(),speechTurn=0,inSpeech=false,responseOpen=false,followup=false;
   let replyLanguage = null, privacyGate=false, guestMode=false, privateTurnAuthorized=false;
-  let qualityRecoveryUsed=false;
+  let qualityRecoveryUsed=false, verificationStopTimer=null;
+  let activeResponseTurn=null;
+  const requestedResponseTurns=[];
+  const timing=(stage,measurements={})=>onTiming({stage,turnId:speechTurn,measurements});
   const handledCalls=new Set(),turns=new Map(),responses=new Map(),responseTranscripts=new Map();let latestTurn=null;
   const isCurrentTurn = utterance => !utterance?.superseded && (!utterance || utterance.seq === speechTurn);
   function supersedeTurn() { if(latestTurn)latestTurn.superseded=true;followup=false; }
@@ -89,7 +93,7 @@ export function createRealtimeVoice({
         // This is capture only: server speech quality and identity still decide access.
         if(!active||muted||channel?.readyState!=="open")return;
         if(level>=0.06){localSpeechAt=now();if(!turnRecorder)startTurnRecording();}
-        if(turnRecorder&&!inSpeech&&(now()-localSpeechAt>800||now()-turnStartedAt>4000))discardTurnRecording();
+        if(turnRecorder&&!inSpeech&&!verificationStopTimer&&(now()-localSpeechAt>800||now()-turnStartedAt>4000))discardTurnRecording();
       } });
       void fetchImpl("/api/voice/speaker/readiness", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
       startupStage='session';
@@ -103,7 +107,7 @@ export function createRealtimeVoice({
       pc = new RTCPeerConnectionImpl();
       remoteAudio = new AudioImpl();
       remoteAudio.autoplay = true;
-      pc.ontrack = (event) => { const remoteStream = event.streams?.[0] || new MediaStream([event.track]); remoteAudio.srcObject = remoteStream; outputMeter?.dispose?.(); outputMeter = createAudioMeter({ AudioContextImpl, stream: remoteStream, onLevel: level=>{onOutputLevel(level);onAudibleLevel(playbackActive&&remoteAudio&&!remoteAudio.paused&&!remoteAudio.ended&&!remoteAudio.muted&&remoteAudio.volume>0?level*remoteAudio.volume:0);},onShape:shape=>onArticulation(playbackActive?shape:rest) }); void remoteAudio.play?.().catch?.(() => {}); };
+      pc.ontrack = (event) => { const remoteStream = event.streams?.[0] || new MediaStream([event.track]); remoteAudio.srcObject = remoteStream; outputMeter?.dispose?.(); outputMeter = createAudioMeter({ AudioContextImpl, stream: remoteStream, onLevel: level=>{onOutputLevel(level);onAudibleLevel(playbackActive&&remoteAudio&&!remoteAudio.paused&&!remoteAudio.ended&&!remoteAudio.muted&&remoteAudio.volume>0?level*remoteAudio.volume:0);},onShape:shape=>onArticulation(playbackActive?shape:rest) }); void remoteAudio.play?.().then?.(()=>timing("playback-element-ready")).catch?.(() => { timing("playback-element-blocked"); onError("Browser audio playback is blocked. Restart Voice using its button to allow playback."); }); };
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       channel = pc.createDataChannel("oai-events");
       channel.addEventListener("open", () => { if (valid(current)) publish("listening"); });
@@ -156,6 +160,7 @@ export function createRealtimeVoice({
   function interrupt() {
     if (!active || channel?.readyState !== "open") return false;
     supersedeTurn();
+    if(privacyGate&&remoteAudio)remoteAudio.muted=true;
     if(responseOpen)sendEvent({type:"response.cancel"});
     if(playbackActive)sendEvent({type:"output_audio_buffer.clear"});
     playbackActive=false;onArticulation(rest);onAudibleLevel(0);
@@ -166,6 +171,8 @@ export function createRealtimeVoice({
   async function handleEvent(event, current) {
     if (!event?.type) return;
     if (event.type === "input_audio_buffer.speech_started") {
+      clearTimeout(verificationStopTimer);verificationStopTimer=null;
+      timing('vad-speech-start',{privateAuthorized:privateTurnAuthorized?1:0,playing:playbackActive?1:0});
       if(privacyGate)interrupt();
       supersedeTurn();
       playbackActive=false;onArticulation(rest);onAudibleLevel(0); speakerPromise=null;inSpeech=true;++speechTurn;
@@ -181,9 +188,21 @@ export function createRealtimeVoice({
     if (event.type === "input_audio_buffer.speech_stopped") {
       lastSpeechEndedAt = now();
       inSpeech=false;const utterance=turns.get(event.item_id)||latestTurn;
+      // Before admitting private context, collect one bounded recording across
+      // short VAD pauses. Never concatenate WebM files or reuse a prior match.
+      if(privacyGate&&!privateTurnAuthorized&&turnRecorder&&!event.novaVerificationWindow&&now()-turnStartedAt<verificationWindowMs){
+        clearTimeout(verificationStopTimer);
+        verificationStopTimer=setTimeout(()=>{
+          verificationStopTimer=null;
+          if(valid(current)&&!inSpeech&&isCurrentTurn(utterance))void handleEvent({...event,novaVerificationWindow:true},current);
+        },Math.max(0,verificationWindowMs-(now()-turnStartedAt)));
+        publish('listening',{phase:'collecting-verification-speech'});return;
+      }
+      timing('vad-speech-stop');
       speakerPromise = stopTurnRecording(current,utterance);if(utterance)utterance.speaker=speakerPromise;
       const authorization=boundedSpeaker(speakerPromise,12000).then(async speaker => {
-        if(!valid(current)||!isCurrentTurn(utterance))return;
+        if(!valid(current))return;
+        if(!isCurrentTurn(utterance)){timing('speaker-result-superseded');return;}
         if(speaker)onSpeaker(speaker);
         if(!privacyGate)return;
         // A short first utterance is not an identity mismatch. No private context
@@ -197,6 +216,7 @@ export function createRealtimeVoice({
         // Offer ONE clean, still-gated retry; this never accepts the old match.
         // Never carry the previous assertion, transcript or queued reply across.
         if(privateTurnAuthorized&&!qualityRecoveryUsed&&['insufficient_speech','non_speech','unknown','uncertain'].includes(speaker?.match_status)){
+          timing('private-context-reset');
           qualityRecoveryUsed=true;
           end();const recoveryGeneration=generation;
           onPrivacyRecovery();
@@ -210,18 +230,20 @@ export function createRealtimeVoice({
         }
         let authorized=false,identityEvidence=null,authorizationUnavailable=false;
         try { const r=await fetchImpl('/api/voice/realtime/authorize-turn',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker})});const result=await r.json();authorized=r.ok&&result.authorized===true;authorizationUnavailable=r.status>=500;if(authorized)identityEvidence=result.speakerIdentity; } catch {authorizationUnavailable=true;}
-        if(!valid(current)||!isCurrentTurn(utterance))return;
+        if(!valid(current))return;
+        if(!isCurrentTurn(utterance)){timing('authorization-superseded');return;}
         if(!authorized){const reason=authorizationUnavailable||speaker?.verification_status==='unavailable'?'service-unavailable':speaker?.match_status==='confirmed'?'authorization-denied':['insufficient_speech','non_speech'].includes(speaker?.match_status)?'insufficient-speech':'not-matched';end();publish('privacy-paused');onPrivacyPause({reason});return;}
         privateTurnAuthorized=true;
         if(utterance)utterance.verifiedSpeaker=speaker;
         onOwnerVerified();
+        timing('owner-turn-authorized');
         if(identityEvidence?.status==='verified_owner'&&identityEvidence?.source==='server_verified_enrolled_voice'){
           sendEvent({type:'conversation.item.create',item:{type:'message',role:'system',content:[{type:'input_text',text:'CURRENT TURN SERVER VERIFICATION (informational, not tool permission): '+JSON.stringify(identityEvidence)}]}});
         }
         if(utterance?.previousTurn?.pendingWork&&languageContinuationOf(utterance.previousTurn,utterance)){
           publish('thinking',{phase:'continuing-request'});return;
         }
-        sendEvent({type:'response.create'});
+        timing('reply-requested');sendEvent({type:'response.create'});
       });
       if(utterance)utterance.authorization=authorization;
       publish("thinking", { phase: "understanding" });
@@ -247,11 +269,19 @@ export function createRealtimeVoice({
       return;
     }
     if (event.type === "response.created") {
-      responseOpen=true;if(event.response?.id&&latestTurn){responses.set(event.response.id,latestTurn);trim(responses);}
+      timing('reply-created');
+      activeResponseTurn=requestedResponseTurns.shift()||latestTurn;
+      responseOpen=true;if(event.response?.id&&activeResponseTurn){responses.set(event.response.id,activeResponseTurn);trim(responses);}
+      if(privacyGate&&(!activeResponseTurn?.verifiedSpeaker||!isCurrentTurn(activeResponseTurn)||inSpeech)){
+        if(remoteAudio)remoteAudio.muted=true;
+        sendEvent({type:'response.cancel'});sendEvent({type:'output_audio_buffer.clear'});timing('stale-reply-blocked');return;
+      }
+      if(remoteAudio)remoteAudio.muted=false;
       if(!playbackActive)publish("thinking", { phase: "preparing" });
       return;
     }
     if (event.type === "response.done") {
+      timing(event.response?.status==='failed'?'reply-failed':event.response?.status==='cancelled'?'reply-cancelled':'reply-done');
       responseOpen=false;const utterance=responses.get(event.response?.id)||latestTurn||{seq:speechTurn,transcript:lastTranscript,speaker:speakerPromise,conversationId:getConversationId()};
       const look=event.response?.output?.filter?.(i=>i.type==="function_call"&&i.name==="nova_look")||[];
       for(const call of look)sendEvent({type:"conversation.item.create",item:{type:"function_call_output",call_id:call.call_id,output:JSON.stringify(readScene())}});
@@ -268,17 +298,22 @@ export function createRealtimeVoice({
       flushFollowup();return;
     }
     if (event.type === "output_audio_buffer.started") {
+      if(privacyGate&&(!activeResponseTurn?.verifiedSpeaker||!isCurrentTurn(activeResponseTurn)||inSpeech)){
+        if(remoteAudio)remoteAudio.muted=true;
+        sendEvent({type:'output_audio_buffer.clear'});timing('stale-audio-blocked');return;
+      }
       playbackActive=true;
       if (lastSpeechEndedAt) onTiming({ stage: "realtime-first-audio", measurements: { speechEndToFirstAudioMs: Math.max(0, now() - lastSpeechEndedAt) } });
       publish("speaking", { phase: "playing" });
       return;
     }
     if (event.type === "output_audio_buffer.stopped" || event.type === "output_audio_buffer.cleared") {
+      timing(event.type.endsWith('cleared')?'playback-cleared':'playback-stopped');
       playbackActive=false;onArticulation(rest);onAudibleLevel(0);
       if (!toolInFlight) publish("listening");
       return;
     }
-    if (event.type === "error" && event.error?.code!=="response_cancel_not_active") fail(safeProviderError(event));
+    if (event.type === "error" && event.error?.code!=="response_cancel_not_active") {timing('provider-event-error');fail(safeProviderError(event));}
   }
 
   async function handleNovaTurn(call, current, utterance) {
@@ -384,6 +419,8 @@ export function createRealtimeVoice({
   }
 
   function cleanup() {
+    clearTimeout(verificationStopTimer);verificationStopTimer=null;
+    requestedResponseTurns.length=0;activeResponseTurn=null;
     try { if (turnRecorder && turnRecorder.state !== "inactive") turnRecorder.stop(); } catch {}
     turnRecorder = null;privateTurnAuthorized=false;localSpeechAt=0;
     try { channel?.close?.(); } catch {}
@@ -398,7 +435,10 @@ export function createRealtimeVoice({
   }
 
   function sendEvent(value) {
-    if (channel?.readyState === "open") channel.send(JSON.stringify(value));
+    if (channel?.readyState === "open") {
+      if(value.type==='response.create'){requestedResponseTurns.push(latestTurn);if(requestedResponseTurns.length>32)requestedResponseTurns.shift();}
+      channel.send(JSON.stringify(value));
+    }
   }
 
   function explainReport({conversationId,text}) {

@@ -80,7 +80,20 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
     finally{clearTimeout(timer);}
   };
   return Object.freeze({
-    async probe(){const data=await request("/groups?limit=1");return Object.freeze({connected:true,provider:"Sender.net",groupCount:Array.isArray(data?.data)?data.data.length:null,tokenExposed:false});},
+    async probe(){const data=await request("/groups?limit=1");return Object.freeze({connected:true,provider:"Sender.net",groupCount:Number.isInteger(data?.meta?.total)?data.meta.total:null,groupsOnProbePage:Array.isArray(data?.data)?data.data.length:null,tokenExposed:false});},
+    async inspectCampaignReadiness(){
+      const groups=await request('/groups'),campaigns=await request('/campaigns');
+      const number=value=>Number.isFinite(Number(value))&&value!==null?Number(value):null;
+      const rows=Array.isArray(campaigns.data)?campaigns.data:campaigns.data?.id?[campaigns.data]:[];
+      const summaries=[];
+      for(const item of rows.slice(0,10)){
+        if(!safeId(item.id))continue;
+        let validation={status:'unavailable'};
+        try{const result=await request(`/campaigns/${item.id}/errors`);validation={status:'checked',errors:(result.errors||[]).map(e=>String(e.title||'Unknown provider restriction').slice(0,180)),warnings:(result.warnings||[]).map(e=>String(e.title||'Provider warning').slice(0,180))};}catch(e){validation={status:e.code||'provider_failed'};}
+        summaries.push({id:item.id,status:item.status||null,recipientCount:number(item.recipient_count),validation});
+      }
+      return {source:'Sender API read-only',expectedAudience:1562,groups:(groups.data||[]).map(g=>({id:g.id,title:g.title,total:number(g.recipient_count),active:number(g.active_subscribers),unsubscribed:number(g.unsubscribed_count),bounced:number(g.bounced_count),boundToNova:g.id===config.groupId})),groupsComplete:!groups.links?.next,campaigns:summaries,campaignsComplete:!campaigns.links?.next&&rows.length<=10,sendPermissionVerified:false,contactsChanged:0};
+    },
     async createCampaignDraft(payload,{authority}={}){
       if(!authority||authority.operation!=="create_campaign_draft"||authority.projectId!=="sharp-cuts-web"||authority.audienceSnapshotHash!==payload?.audienceSnapshotHash||authority.copyHash!==payload?.copyHash)throw Object.assign(new Error("Exact owner-authorised campaign-draft authority is required."),{code:"sender_campaign_authority_required",statusCode:403});
       const response=await request("/campaigns",{method:"POST",body:payload.provider});
@@ -93,7 +106,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
       if(response?.success!==true||typeof response?.emailId!=="string")throw safeProviderError(502);
       return Object.freeze({accepted:true,status:"submitted",provider:"Sender.net",messageId:response.emailId,recipient,customerContacts:0,subscriberUploads:0});
     },
-    async campaignStatus(campaignId){if(!safeId(campaignId))throw new TypeError("campaignId is invalid.");const [sent,errors]=await Promise.all([request(`/campaigns/${campaignId}/emails-sent`),request(`/campaigns/${campaignId}/errors`)]);return Object.freeze({campaignId,sentCount:Array.isArray(sent?.data)?sent.data.length:Number(sent?.data?.total||0),errors:Array.isArray(errors?.data)?errors.data.map(item=>({code:String(item?.code||"provider_error"),severity:String(item?.severity||"error")})):[],recipientDetailsExposed:false});},
+    async campaignStatus(campaignId){if(!safeId(campaignId))throw new TypeError("campaignId is invalid.");const [sent,errors]=await Promise.all([request(`/campaigns/${campaignId}/emails-sent`),request(`/campaigns/${campaignId}/errors`)]);const total=sent?.meta?.total??sent?.data?.total;return Object.freeze({campaignId,sentCount:Number.isFinite(Number(total))&&total!=null?Number(total):!sent?.links?.next&&Array.isArray(sent?.data)?sent.data.length:null,deliveredCount:null,deliveryEvidence:'sent_records_are_not_delivery_receipts',errors:(errors.errors||errors.data||[]).map(item=>({code:String(item?.code||'provider_error'),title:String(item?.title||'Provider restriction').slice(0,180),severity:'error'})),warnings:(errors.warnings||[]).map(item=>String(item.title||'Provider warning').slice(0,180)),recipientDetailsExposed:false});},
     async sendCampaign(){throw Object.assign(new Error("Sharp Cuts live email sending is disabled."),{code:"sender_live_send_disabled",statusCode:403});},
   });
 }

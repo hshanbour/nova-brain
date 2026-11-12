@@ -46,7 +46,9 @@ export function createRealtimeVoiceService({ apiKey, fetchImpl = globalThis.fetc
                   type: "server_vad",
                   threshold: 0.5,
                   prefix_padding_ms: 300,
-                  silence_duration_ms: 450,
+                  // Private turns need enough continuous speech for the existing
+                  // enrolled-voice gate. Avoid splitting natural sentence pauses.
+                  silence_duration_ms: privacyGate && !guest ? 900 : 450,
                   create_response: guest || !privacyGate,
                   interrupt_response: true,
                 },

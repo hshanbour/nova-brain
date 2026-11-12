@@ -13,6 +13,7 @@ export function registerBusinessPreparationTools(registry,{storage,ownerId,custo
     return{projectId,provider,senderIdentity:'Sharp Cuts <info@sharpcuts.uk>',dedicatedAudienceConfigured:Boolean(senderConfig?.groupId),audience,contactUploadEnabled:false,sendingEnabled:false};
   };
   registry.register({...common,name:'sharp_cuts_email_readiness',description:'Read current Sender API access and SELECT-only audience evidence. No contacts uploaded or messages sent.',riskLevel:'READ_ONLY',inputSchema:schema({}),execute:readiness});
+  registry.register({...common,name:'sharp_cuts_email_provider_review',description:'Read existing Sender groups, aggregate subscriber counts, campaign states and actual provider pre-send restrictions. Expected list is exactly 1562; does not add/remove contacts, schedule, send or create provider drafts.',riskLevel:'READ_ONLY',inputSchema:schema({}),async execute(){return senderClient?senderClient.inspectCampaignReadiness():{status:'not_configured'};}});
   registry.register({...common,name:'sharp_cuts_email_drafts',description:'Retrieve saved Sharp Cuts campaign review drafts with exact subject/body, audience evidence, approval blocks and delivery status. These are Nova drafts, not sent provider campaigns.',riskLevel:'READ_ONLY',inputSchema:schema({}),async execute(){
     const events=await storage.listActivity(ownerId,{projectId,limit:200});
     return{projectId,drafts:events.filter(e=>e.action==='sharp_cuts_email_review_draft_prepared'&&e.metadata?.draft?.projectId===projectId).slice(0,20).map(e=>e.metadata.draft),sendingEnabled:false};
@@ -27,5 +28,6 @@ export function registerBusinessPreparationTools(registry,{storage,ownerId,custo
     return draft;
   }});
   registry.register({...common,name:'sharp_cuts_whatsapp_held_reviews',description:'List opaque references for the existing held Sharp Cuts inbound records. No contact identifiers, queue claims or sends.',riskLevel:'READ_ONLY',inputSchema:schema({}),execute:()=>whatsapp.reviewHeld()});
+  registry.register({...common,name:'sharp_cuts_whatsapp_processing_check',description:'Run ONE fresh synthetic message through the deployed Sharp Cuts processing handler and real Brain, save an unsent draft receipt. Never claims the historical queue, sends, or tests provider webhook delivery.',riskLevel:'LOW_RISK_WRITE',autonomous:true,inputSchema:schema({}),execute:()=>whatsapp.processingCheck()});
   registry.register({...common,name:'sharp_cuts_whatsapp_reply_draft',description:'Prepare one UNSENT project-scoped reply for an exact recordRef from sharp_cuts_whatsapp_held_reviews. The original queue stays held. No recipient decryption or outbound action.',riskLevel:'LOW_RISK_WRITE',autonomous:true,inputSchema:{...schema({recordRef:{type:'string'}}),required:['recordRef']},execute:input=>whatsapp.prepareHeldDraft(input)});
 }

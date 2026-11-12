@@ -1,4 +1,5 @@
 import {createCipheriv,createDecipheriv,createHash,createHmac,randomBytes,randomUUID,timingSafeEqual} from "node:crypto";
+import {createInMemoryStorage} from '../storage/in-memory-storage.js';
 
 const PROJECT_ID="sharp-cuts-web";
 const CONVERSATION_PREFIX=`whatsapp_${PROJECT_ID}_`;
@@ -48,6 +49,31 @@ export function createSharpCutsWhatsAppCoexistenceService({config,storage,ownerI
     return storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:"submitted",providerMessageSid:String(value.messageId)});
   }
   return Object.freeze({
+    async processingCheck(){
+      // Exercise the deployed handler and real Brain, but never the held queue.
+      // The fixture has no real contact, provider key or network send capability.
+      const before=await storage.listHeldWhatsAppInbound(ownerId,CONVERSATION_PREFIX);
+      const fixture=createInMemoryStorage(),id=randomUUID(),sid=`synthetic-${id}`;
+      await fixture.initialize({owner:{id:ownerId},projects:[{id:PROJECT_ID,name:'Sharp Cuts'}]});
+      let generated=null,providerCalls=0;
+      const isolated=createSharpCutsWhatsAppCoexistenceService({
+        config:{sharpCutsWhatsApp:{...settings,configured:true,receiveEnabled:true,executionEnabled:true,sendEnabled:false,mode:'draft_only',apiKey:null,webhookToken:'synthetic-check-only',identityKeyBytes:randomBytes(32),testRecipients:[]}},
+        storage:fixture,ownerId,automationControls:{async allows(){return true;}},logger,
+        fetchImpl:async()=>{providerCalls++;throw Error('Synthetic processing cannot contact a provider.');},
+        novaTurn:async input=>{
+          await storage.ensureConversation({id:`synthetic_wa_check_${id}`,ownerId,title:'Synthetic WhatsApp processing check · unsent'});
+          generated=await novaTurn({...input,conversationId:`synthetic_wa_check_${id}`});
+          return generated;
+        },
+      });
+      await isolated.receive({gs_app_id:settings.appId,entry:[{changes:[{field:'messages',value:{messaging_product:'whatsapp',metadata:{phone_number_id:settings.phoneNumberId},messages:[{id:sid,from:'447700900111',type:'text',text:{body:'Synthetic processing check: where can I book a haircut with the Sharp Cuts team? Do not contact anyone.'}}]}}]}]},'Bearer synthetic-check-only');
+      const result=await isolated.processNext({workerId:`synthetic-check-${id}`});
+      const record=await fixture.getWhatsAppInbound(sid,ownerId);
+      const after=await storage.listHeldWhatsAppInbound(ownerId,CONVERSATION_PREFIX);
+      const receipt={projectId:PROJECT_ID,testId:id,source:'synthetic_in_memory_queue_real_brain',status:result.status,attemptCount:record?.attemptCount||0,runId:generated?.runId||null,draft:generated?.message||null,providerCalls,sent:false,backlogUnchanged:JSON.stringify(before)===JSON.stringify(after),liveWebhookTest:false,windowsDispatchTest:false};
+      await storage.appendActivity({ownerId,projectId:PROJECT_ID,runId:receipt.runId,action:'sharp_cuts_whatsapp_processing_check',status:result.status==='awaiting_owner_review'&&receipt.backlogUnchanged?'completed':'failed',summary:'Synthetic deployed-handler processing check; no historical queue release or provider send.',metadata:receipt});
+      return receipt;
+    },
     // Deliberately separate from processNext: review does not lease, consume,
     // decrypt recipients, schedule, or deliver anything from the held backlog.
     async reviewHeld(){
