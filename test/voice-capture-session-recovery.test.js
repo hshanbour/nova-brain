@@ -115,6 +115,22 @@ test('protected recognition uses its own bounded deadline and does not misclassi
  mode='failure';const unavailable=await call();assert.equal(unavailable.speaker.authenticated_identity,'none');assert.equal(unavailable.verificationStatus,'unavailable');
 });
 
+test('first-turn recognition never persists a transcript before conversation authorization',async()=>{
+ const {createSpeakerEngineResult}=await import('../src/voice/speaker-engine.js');
+ let writes=0,mode='unknown';
+ const api=createApi({ownerId:'owner',config:{allowedOrigins:[],voiceV2:{maxBodyBytes:5000},speakerRecognition:{modelVersion:'fixture'}},initialize:async()=>{},logger:{info(){},error(){}},
+  speakerIdentity:{async recordUtterance(){writes++;throw Object.assign(Error('conversation_id required'),{code:'23502'});}},
+  speakerEngines:{async recognize(){return{authoritative:createSpeakerEngineResult({status:mode,category:mode==='confirmed'?'owner':null,candidateProfileId:mode==='confirmed'?'enrolled':null,confidence:mode==='confirmed'?.552:.223})};}},
+  speakerAssertions:{issue:s=>s.match_status==='confirmed'?'signed-owner-fixture':null}});
+ for(const conversationId of [undefined,'untrusted-conversation'])for(const status of ['unknown','confirmed']){
+  mode=status;const r=response();const q=Object.assign(Readable.from([JSON.stringify({transcript:'synthetic first utterance',conversationId})]),{url:'/api/voice/speaker/recognize',method:'POST',headers:{'content-type':'application/json'}});
+  await api.handle(q,r);assert.equal(r.statusCode,200);const body=JSON.parse(r.body);
+  assert.equal(body.speaker.match_status,status);assert.equal(body.speaker.authenticated_identity,status==='confirmed'?'owner':'none');
+  assert.equal(body.speaker.assertion,status==='confirmed'?'signed-owner-fixture':null);
+ }
+ assert.equal(writes,0,'Recognition must not save an unscoped transcript or depend on optional persistence');
+});
+
 test('language-only correction is narrow and never hides cancellation or a new instruction',()=>{
  for(const text of ['احكي باللغة الثانية، احكي بالعربي.','احكي بالعربي','Please speak in Arabic','Switch to English'])assert.equal(isVoiceLanguageOnlyChange(text),true,text);
  for(const text of ['وقف احكي بالعربي','احكي بالعربي وشو أخبار المشي','Speak Arabic and cancel the booking','خلينا نغير الموضوع','Arfeminana'])assert.equal(isVoiceLanguageOnlyChange(text),false,text);

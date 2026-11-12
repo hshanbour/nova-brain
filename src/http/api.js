@@ -914,9 +914,10 @@ export function createApi({
           if (speaker.match_status === "confirmed" && !speaker.assertion) speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: speaker.extractor_version, match_status: "unknown", authenticated_identity: "none", assertion: null };
           const verificationStatus=report.authoritative.status==='failure'?'unavailable':report.authoritative.status;
           logger.info("Nova realtime speaker recognition completed", { requestId, matchStatus: speaker.match_status, speakerCategory: speaker.speaker_label, assertionIssued: Boolean(speaker.assertion), verificationStatus, errorCode:report.authoritative.error?.code||null, qualityGateReason:report.authoritative.diagnostics?.qualityGateReason||null });
-          if (typeof input?.transcript === "string" && input.transcript.trim()) {
-            await speakerIdentity.recordUtterance({ conversationId: typeof input.conversationId === "string" ? input.conversationId : null, speakerProfileId: speaker.speaker_profile_id, speakerLabel: speaker.speaker_label, confidence: speaker.confidence, text: input.transcript.trim().slice(0, 12000) });
-          }
+          // Recognition precedes conversation creation and private-turn authorization.
+          // Do not write an unscoped/optional transcript here: a new Voice session
+          // has no conversation ID yet. Completed turns use the normal transcript
+          // and Brain persistence paths; recognition retains only its safe audit above.
           sendJson(response, 200, { speaker, verificationStatus });
           return;
         }
