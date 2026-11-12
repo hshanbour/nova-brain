@@ -332,11 +332,11 @@ export function createApp({
     validateAnonymousSpeaker: speakerIdentity.isActiveAnonymous,
     speakerIdentity,
     routeExistingTaskRequest: async ({message,conversationId}) => {
-      if(continuity.continuity)return null;
       if(isConversationTaskResultQuestion(message)){
         const report=await terminalReporter.latestForConversation(conversationId);
         if(report)return{route:"conversation_task_report",action:"report",...report};
       }
+      if(continuity.continuity)return null;
       const request=parseExistingTaskControlRequest(message);
       if(!request)return null;
       return validateExistingTaskControlRequest(request,await workerRuntime.get(request.taskId));
@@ -346,6 +346,9 @@ export function createApp({
     projectService,
     projectOnboarding,
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
+      // New bounded delegation only; do not re-enable historical workflow
+      // continuation, deployment, or self-development queues in this Preview.
+      if(continuity.connected)return context?.voice!==true&&isChatCodingDelegationRequest(message)?{codingDelegation:true}:null;
       if(continuity.continuity)return null;
       if(context?.voice===true)return null;
       const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message),workflowTurn=isConversationWorkflowTurn(message,{implementationSignal,codingSignal});
