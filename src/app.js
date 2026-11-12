@@ -348,7 +348,11 @@ export function createApp({
     routeDurableRequest: async ({message, context, runId, conversationId, signal}) => {
       // New bounded delegation only; do not re-enable historical workflow
       // continuation, deployment, or self-development queues in this Preview.
-      if(continuity.connected)return context?.voice!==true&&isChatCodingDelegationRequest(message)?{codingDelegation:true,requestFingerprint:codingDelegationFingerprint(message)}:null;
+      if(continuity.connected){
+        if(context?.voice===true)return null;
+        const retry=await resolveExplicitCodingRetryRequest({message,conversationId,runId,loadTask:async id=>{const task=await workerRuntime.get(id);return await taskAllowed(task)?task:null;},codingExecutor});
+        return retry||(isChatCodingDelegationRequest(message)?{codingDelegation:true,requestFingerprint:codingDelegationFingerprint(message)}:null);
+      }
       if(continuity.continuity)return null;
       if(context?.voice===true)return null;
       const implementationSignal=isDurableSelfDevelopmentRequest(message),codingSignal=isChatCodingDelegationRequest(message),workflowTurn=isConversationWorkflowTurn(message,{implementationSignal,codingSignal});

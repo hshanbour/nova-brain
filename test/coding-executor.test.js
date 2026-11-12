@@ -763,6 +763,11 @@ test("Codex process failures retain only bounded JSONL stage and error categorie
   );
 });
 
+test('rejected asynchronous progress fails only the bounded child, not its worker host',async()=>{
+ const script='console.log(JSON.stringify({type:"turn.started"}));setTimeout(()=>{},10000)';
+ await assert.rejects(runCodexProcess(process.execPath,['-e',script],{onLine:async()=>{throw Object.assign(new Error('Progress fenced'),{code:'execution_attempt_stale'});}}),{code:'execution_attempt_stale'});
+});
+
 test("Codex process failures retain bounded string and item error messages without raw payloads or secrets", async () => {
   const longMessage = "x".repeat(500);
   const stringScript = [

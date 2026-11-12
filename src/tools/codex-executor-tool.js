@@ -122,6 +122,13 @@ export function runCodexProcess(command, args, { cwd, env, input, signal, onLine
     const child = spawn(command, args, { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], signal });
     let stdout = "", stderr = "", pending = "", settled = false;
     const trace = createCodexTraceSummary();
+    const notify = (line) => {
+      if(settled)return;
+      // EventEmitter does not await async listeners. A rejected progress request
+      // must fail this bounded job, never crash the persistent worker process.
+      try { Promise.resolve(onLine?.(line)).catch(error=>{if(!settled){settled=true;child.kill();reject(error);}}); }
+      catch(error){if(!settled){settled=true;child.kill();reject(error);}}
+    };
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -129,7 +136,7 @@ export function runCodexProcess(command, args, { cwd, env, input, signal, onLine
       pending += chunk;
       const lines = pending.split(/\r?\n/);
       pending = lines.pop() || "";
-      for (const line of lines) if (line.trim()) { trace.record(line); onLine?.(line); }
+      for (const line of lines) if (line.trim()) { trace.record(line); notify(line); }
     });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.once("error", (error) => { if (!settled) { settled = true; reject(error); } });
@@ -140,7 +147,7 @@ export function runCodexProcess(command, args, { cwd, env, input, signal, onLine
     child.once("close", (code) => {
       if (settled) return;
       settled = true;
-      if (pending.trim()) { trace.record(pending); onLine?.(pending); }
+      if (pending.trim()) { trace.record(pending); /* trailing diagnostics only */ }
       if (code === 0) resolvePromise({ stdout, stderr, code });
       else reject(Object.assign(new Error("Codex coding execution failed."), { code: signal?.aborted ? "coding_executor_cancelled" : "coding_executor_failed", safeDiagnostics: { exitCode: code, exitCategory: signal?.aborted ? "cancelled" : "process_exit_nonzero", resultCategory: "structured_result_unavailable", executorLaunched: true, stderrBytes: Buffer.byteLength(stderr), stdoutBytes: Buffer.byteLength(stdout), ...trace.diagnostics() } }));
     });
@@ -327,9 +334,9 @@ export function createCodexCliRunner({ executable = "codex", gitExecutable = "gi
             const type = String(event.type || "");
             const itemType = String(event.item?.type || "");
             const command = String(event.item?.command || event.command || "");
-            if (/command|tool/.test(itemType) && isTestCommand(command)) onProgress?.("testing", "Codex is running the approved local verification.");
-            else if (/command|tool/.test(itemType)) onProgress?.("implementing", "Codex is implementing in the bound project.");
-            else if (/turn\.started|thread\.started/.test(type)) onProgress?.("inspecting", "Codex is inspecting the bound project.");
+            if (/command|tool/.test(itemType) && isTestCommand(command)) return onProgress?.("testing", "Codex is running the approved local verification.");
+            else if (/command|tool/.test(itemType)) return onProgress?.("implementing", "Codex is implementing in the bound project.");
+            else if (/turn\.started|thread\.started/.test(type)) return onProgress?.("inspecting", "Codex is inspecting the bound project.");
           },
         });
       } catch (cause) {
