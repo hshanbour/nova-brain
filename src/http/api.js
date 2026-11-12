@@ -321,6 +321,14 @@ export function createApi({
 
       try {
         if(previewAuth&&await previewAuth.handle(request,response))return;
+        // Strict app cookies are absent on Google's cross-site navigation.
+        // No exchange or private data here: the same-origin POST below still
+        // requires account verification and the existing PKCE + state cookie.
+        if(connectedPreview&&request.method==='GET'&&pathname==='/api/integrations/gmail/oauth/callback'){
+          const script=`const p=new URLSearchParams(location.search);const input={code:p.get('code'),state:p.get('state'),error:p.get('error')};history.replaceState(null,'',location.pathname);fetch(location.pathname,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(input)}).then(async r=>{const b=await r.json();if(!r.ok)throw Error(b.error||'Reconnect failed');location.replace('/?gmail=connected#tools');}).catch(e=>{document.getElementById('status').textContent=e.message;});`;
+          response.setHeader('Cache-Control','no-store');response.setHeader('Referrer-Policy','no-referrer');response.setHeader('Content-Type','text/html; charset=utf-8');response.setHeader('Content-Security-Policy',`default-src 'none'; script-src 'sha256-${createHash('sha256').update(script).digest('base64')}'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'`);
+          response.statusCode=200;response.end(`<!doctype html><title>Reconnect Nova Gmail</title><p id="status">Completing your authorised Gmail reconnection…</p><script>${script}</script>`);return;
+        }
         if(continuityPreview&&!continuityRouteAllowed(pathname,request.method,{connected:connectedPreview})){sendJson(response,403,{error:'Outbound actions, phone and worker execution are held in this Preview.',code:'preview_action_disabled'});return;}
         if(syntheticPreview&&!syntheticRouteAllowed(pathname,request.method)){
           sendJson(response,403,{error:'This isolated sign-in Preview permits synthetic workspace and memory tests only. External actions, Voice, phone, workers and messaging are disabled.',code:'synthetic_actions_disabled'});return;
@@ -470,16 +478,19 @@ export function createApi({
           sendJson(response, 200, { authorizationUrl: started.authorizationUrl, expiresAt: started.expiresAt });
           return;
         }
-        if (request.method === "GET" && pathname === "/api/integrations/gmail/oauth/callback") {
+        if (["GET","POST"].includes(request.method) && pathname === "/api/integrations/gmail/oauth/callback") {
+          if(request.method==='POST'&&!sameOriginRequest(request)){sendJson(response,403,{error:'Same-origin callback required.'});return;}
+          const callback=request.method==='POST'?await readJsonBody(request,config.maxBodyBytes):Object.fromEntries(url.searchParams);
           await ready();
-          if (url.searchParams.get("error"))
+          if (callback.error)
             throw new GmailError("Google authorization was not completed.", { code: "gmail_oauth_denied", statusCode: 400, category: "authorization" });
           await gmailService.completeOAuth({
-            code: url.searchParams.get("code"),
-            state: url.searchParams.get("state"),
+            code: callback.code,
+            state: callback.state,
             session: cookieValue(request, GMAIL_OAUTH_COOKIE),
           });
           const secure = new URL(config.gmail.redirectUri).protocol === "https:";
+          if(request.method==='POST'){response.setHeader('Set-Cookie',gmailOAuthCookie('',{secure,clear:true}));sendJson(response,200,{connected:true});return;}
           response.statusCode = 302;
           response.setHeader("Location", "/?gmail=connected");
           response.setHeader("Set-Cookie", gmailOAuthCookie("", { secure, clear: true }));
