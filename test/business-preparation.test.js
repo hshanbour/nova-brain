@@ -17,6 +17,11 @@ test('explicit repository project wins over business subject while foreign IDs g
  assert.equal((await service.resolve({message:'Nova Brain (project ID nova-brain). Sharp Cuts is only subject matter.'})).project.id,'nova-brain');
  assert.equal((await service.resolve({message:'project other-owner-private'})).project,null);
 });
+
+test('saved campaign review retrieves only owner-scoped Sharp Cuts drafts without provider writes',async()=>{
+ const tools=new Map();registerBusinessPreparationTools({register:t=>tools.set(t.name,t)},{ownerId:'owner',storage:{listActivity:async(id,options)=>{assert.equal(id,'owner');assert.equal(options.projectId,'sharp-cuts-web');return[{action:'sharp_cuts_email_review_draft_prepared',metadata:{draft:{id:'review',projectId:'sharp-cuts-web',copy:{body:'Saved copy'}}}},{action:'other',metadata:{draft:{projectId:'other'}}}];}},whatsapp:{}});
+ const result=await tools.get('sharp_cuts_email_drafts').execute();assert.equal(result.drafts.length,1);assert.equal(result.drafts[0].copy.body,'Saved copy');assert.equal(result.sendingEnabled,false);
+});
 test('guest project scope requires fresh owner credentials and signed exact project binding',async()=>{
  let verified=true,lookups=0;
  const auth=createPreviewAuth({environment:{DATABASE_URL:'postgres://fixture:fixture@localhost/test',NOVA_PREVIEW_OWNER_EMAIL:'owner@example.invalid',NOVA_PREVIEW_OWNER_SUBJECT:'owner'},workspaceId:'workspace',synthetic:false,resolveGuestProject:async id=>{lookups++;return id==='permitted';},proxy:async({request})=>{const body=await request.json();assert.equal(body.projectId,undefined);return Response.json({user:{id:verified?'owner':'stranger',emailVerified:true}});}});

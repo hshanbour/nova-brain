@@ -13,6 +13,10 @@ export function registerBusinessPreparationTools(registry,{storage,ownerId,custo
     return{projectId,provider,senderIdentity:'Sharp Cuts <info@sharpcuts.uk>',dedicatedAudienceConfigured:Boolean(senderConfig?.groupId),audience,contactUploadEnabled:false,sendingEnabled:false};
   };
   registry.register({...common,name:'sharp_cuts_email_readiness',description:'Read current Sender API access and SELECT-only audience evidence. No contacts uploaded or messages sent.',riskLevel:'READ_ONLY',inputSchema:schema({}),execute:readiness});
+  registry.register({...common,name:'sharp_cuts_email_drafts',description:'Retrieve saved Sharp Cuts campaign review drafts with exact subject/body, audience evidence, approval blocks and delivery status. These are Nova drafts, not sent provider campaigns.',riskLevel:'READ_ONLY',inputSchema:schema({}),async execute(){
+    const events=await storage.listActivity(ownerId,{projectId,limit:200});
+    return{projectId,drafts:events.filter(e=>e.action==='sharp_cuts_email_review_draft_prepared'&&e.metadata?.draft?.projectId===projectId).slice(0,20).map(e=>e.metadata.draft),sendingEnabled:false};
+  }});
   registry.register({...common,name:'sharp_cuts_email_draft_prepare',description:'Save a reviewable Sharp Cuts email campaign draft inside Nova. Rechecks audience evidence; never uploads contacts, creates a provider campaign, schedules or sends. Include no invented discounts or availability.',riskLevel:'LOW_RISK_WRITE',autonomous:true,inputSchema:{...schema({subject:{type:'string'},body:{type:'string'}}),required:['subject','body']},async execute(input,context={}){
     if(typeof input.subject!=='string'||!input.subject.trim()||input.subject.length>200||typeof input.body!=='string'||!input.body.trim()||input.body.length>8000)throw new Error('A bounded subject and body are required.');
     const evidence=await readiness(),email=evidence.audience.channels?.email;
