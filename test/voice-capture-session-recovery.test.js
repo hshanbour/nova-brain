@@ -25,7 +25,7 @@ test('a different voice cannot use the gated recovery session',async()=>{
   assert.equal(h.verifiedCount(),1);assert.equal(h.counts().pauses,1);assert.equal(h.voice.isActive(),false);assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,0);
  }finally{h.close();}
 });
-function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn,recognize,authorizationFailure=false,verificationWindowMs=0,autoTranscript=true}={}){
+function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn,recognize,authorizationFailure=false,verificationWindowMs=0,useDefaultWindow=false,autoTranscript=true}={}){
  let clock=0,frame,requests=[],notices=0,pauses=0,verified=0;const results=[],pauseReasons=[],recoveries=[],recorders=[];
  const prior=globalThis.requestAnimationFrame,priorCancel=globalThis.cancelAnimationFrame;
  globalThis.requestAnimationFrame=fn=>{frame=fn;return 1;};globalThis.cancelAnimationFrame=()=>{};
@@ -35,7 +35,7 @@ function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn
  class Peer extends EventTarget{createDataChannel(){channel=new Channel();return channel;}addTrack(){}async createOffer(){return{sdp:'test'};}async setLocalDescription(){}async setRemoteDescription(){}close(){}}
  class Recorder extends EventTarget{state='inactive';mimeType='audio/webm;codecs=opus';static isTypeSupported(type){return type==='audio/webm;codecs=opus';}constructor(stream,options){super();this.options=options;this.audioBitsPerSecond=options?.audioBitsPerSecond;recorders.push(this);}start(timeslice){this.timeslice=timeslice;this.state='recording';}stop(){this.state='inactive';const e=new Event('dataavailable');e.data=new Blob(['synthetic-audio-fixture']);this.dispatchEvent(e);this.dispatchEvent(new Event('stop'));}}
  class Context{createMediaStreamSource(){return{connect(){},disconnect(){}};}createAnalyser(){return{getByteTimeDomainData:a=>a.fill(133)};}async close(){}}
- const voice=createRealtimeVoice({verificationWindowMs,mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){}}]};}},RTCPeerConnectionImpl:Peer,MediaRecorderImpl:Recorder,AudioContextImpl:Context,AudioImpl:class{pause(){}},now:()=>clock,sendTurn,onResult:r=>results.push(r),getConversationId:()=> 'fixture-conversation',onPrivacyRecovery:()=>recoveries.push(true),onVerificationNeeded:()=>notices++,onPrivacyPause:detail=>{pauses++;pauseReasons.push(detail?.reason);},onOwnerVerified:()=>verified++,
+ const voice=createRealtimeVoice({...(!useDefaultWindow?{verificationWindowMs}:{}),mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){}}]};}},RTCPeerConnectionImpl:Peer,MediaRecorderImpl:Recorder,AudioContextImpl:Context,AudioImpl:class{pause(){}},now:()=>clock,sendTurn,onResult:r=>results.push(r),getConversationId:()=> 'fixture-conversation',onPrivacyRecovery:()=>recoveries.push(true),onVerificationNeeded:()=>notices++,onPrivacyPause:detail=>{pauses++;pauseReasons.push(detail?.reason);},onOwnerVerified:()=>verified++,
  fetchImpl:async(url,o)=>{
   if(url.endsWith('/session'))return Response.json({clientSecret:'fixture',privacyGate:true,replyLanguage:'ar'});
   if(url.endsWith('/recognize')){const body=JSON.parse(o.body);requests.push(body);return Response.json({speaker:recognize?await recognize(body,requests.length):body.durationSeconds>=1?{match_status:'confirmed',authenticated_identity:'owner',assertion:'fixture'}:{match_status:shortResult,authenticated_identity:'none'}});}
@@ -231,6 +231,33 @@ test('private entry collects short VAD fragments in one recording, then requests
   h.set(2400);h.event('speech_started','b');h.set(5100);h.event('speech_stopped','b');await wait();
   assert.equal(h.requests.length,1);assert.equal(h.requests[0].durationSeconds,4.1);assert.equal(h.verifiedCount(),1);
   assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,1);
+ }finally{h.close();}
+});
+
+test('diagnostic-backed default admission waits beyond short rejected windows and preserves one recording',async()=>{
+ const h=voiceHarness({useDefaultWindow:true});try{
+  await h.voice.start();h.set(1000);h.event('speech_started','a');h.set(4500);h.event('speech_stopped','a');await wait();
+  assert.equal(h.requests.length,0);assert.equal(h.verifiedCount(),0);
+  h.set(5000);h.event('speech_started','b');h.set(9000);h.event('speech_stopped','b');await wait();
+  assert.equal(h.requests.length,0,'Eight seconds is not the initial admission window');
+  h.set(9500);h.event('speech_started','c');h.set(13100);h.event('speech_stopped','c');await wait();
+  assert.equal(h.recorders.length,1);assert.equal(h.requests.length,1);assert.equal(h.requests[0].durationSeconds,12.1);
+  assert.equal(h.verifiedCount(),1);assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,1);
+ }finally{h.close();}
+});
+
+for(const returnsOwner of [true,false])test(`long recovery window still requires a fresh owner match: ${returnsOwner}`,async()=>{
+ const h=voiceHarness({useDefaultWindow:true,recognize:(_b,n)=>({match_status:n===1||n===3&&returnsOwner?'confirmed':'unknown',authenticated_identity:n===1||n===3&&returnsOwner?'owner':'none',assertion:n===1||n===3&&returnsOwner?'fixture':null})});try{
+  await h.voice.start();h.set(1000);h.event('speech_started','owner');h.set(13100);h.event('speech_stopped','owner');await wait();
+  assert.equal(h.verifiedCount(),1);const old=h.channel;
+  h.set(14000);h.event('speech_started','recheck');h.set(17500);h.event('speech_stopped','recheck');await wait();
+  assert.equal(old.readyState,'closed');assert.equal(h.recoveries.length,1);
+  h.set(18000);h.event('speech_started','recovery-a');h.set(21500);h.event('speech_stopped','recovery-a');await wait();
+  assert.equal(h.requests.length,2);assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,0);
+  h.set(22000);h.event('speech_started','recovery-b');h.set(30100);h.event('speech_stopped','recovery-b');await wait();
+  assert.equal(h.requests[2].durationSeconds,12.1);assert.equal(h.verifiedCount(),returnsOwner?2:1);
+  assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,returnsOwner?1:0);
+  assert.equal(h.voice.isActive(),returnsOwner);
  }finally{h.close();}
 });
 

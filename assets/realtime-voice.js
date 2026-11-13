@@ -34,7 +34,11 @@ export function createRealtimeVoice({
   onArticulation=()=>{},
   onError = () => {},
   now = () => globalThis.performance?.now?.() ?? Date.now(),
-  verificationWindowMs = 3500,
+  // Retained owner diagnostic: three of five voiced 3.5s windows rejected,
+  // but both independent 12s halves matched the unchanged enrolled profile.
+  // Only initial admission/recovery collects this window; each later turn
+  // still needs fresh server authorization and never inherits an old match.
+  verificationWindowMs = 12000,
   transcriptWaitMs = 1500,
 } = {}) {
   if (!mediaDevices?.getUserMedia || typeof RTCPeerConnectionImpl !== "function" || typeof fetchImpl !== "function") throw new TypeError("Realtime Voice browser dependencies are unavailable.");
@@ -113,7 +117,7 @@ export function createRealtimeVoice({
       pc.ontrack = (event) => { const remoteStream = event.streams?.[0] || new MediaStream([event.track]); remoteAudio.srcObject = remoteStream; outputMeter?.dispose?.(); outputMeter = createAudioMeter({ AudioContextImpl, stream: remoteStream, onLevel: level=>{onOutputLevel(level);onAudibleLevel(playbackActive&&remoteAudio&&!remoteAudio.paused&&!remoteAudio.ended&&!remoteAudio.muted&&remoteAudio.volume>0?level*remoteAudio.volume:0);},onShape:shape=>onArticulation(playbackActive?shape:rest) }); void remoteAudio.play?.().then?.(()=>timing("playback-element-ready")).catch?.(() => { timing("playback-element-blocked"); onError("Browser audio playback is blocked. Restart Voice using its button to allow playback."); }); };
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       channel = pc.createDataChannel("oai-events");
-      channel.addEventListener("open", () => { if (valid(current)) publish("listening"); });
+      channel.addEventListener("open", () => { if (valid(current)) publish("listening",privacyGate?{phase:'collecting-verification-speech'}:{}); });
       channel.addEventListener("message", (event) => { if (valid(current)) void handleEvent(safeParse(event.data), current); });
       channel.addEventListener("close", () => { if (valid(current)) fail("Realtime Voice connection closed. Start Voice again to reconnect."); });
       pc.addEventListener?.("connectionstatechange", () => {
@@ -189,7 +193,7 @@ export function createRealtimeVoice({
       // collecting one continuous clip. Keep the transcript segments attached
       // to that clip; do not infer identity across distinct recordings.
       latestTurn.capture=turnRecorder?._novaCaptureId||null;
-      publish("listening", { phase: "speech-detected" });
+      publish("listening", { phase: privacyGate&&!privateTurnAuthorized?'collecting-verification-speech':"speech-detected" });
       return;
     }
     if (event.type === "input_audio_buffer.speech_stopped") {
