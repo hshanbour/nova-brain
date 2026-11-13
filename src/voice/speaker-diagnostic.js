@@ -4,6 +4,15 @@ export const DIAGNOSTIC_TTL_MS = 30 * 60 * 1000;
 const variants = new Set(['original', 'original-repeat', 'decoded-full', 'first-half', 'second-half']);
 const fail = (statusCode, code) => Object.assign(new Error(code), {statusCode, code});
 
+// Accept only the exact PCM container produced by the diagnostic page. Slice
+// decoded sample bytes (not WebM fragments); retain no file or new voiceprint.
+export function diagnosticPcmWindow(wav, startSeconds, durationSeconds) {
+  if(wav.length<44||wav.toString('ascii',0,4)!=='RIFF'||wav.toString('ascii',8,12)!=='WAVE'||wav.toString('ascii',12,16)!=='fmt '||wav.readUInt32LE(16)!==16||wav.readUInt16LE(20)!==1||wav.readUInt16LE(22)!==1||wav.readUInt32LE(24)!==16000||wav.readUInt16LE(34)!==16||wav.toString('ascii',36,40)!=='data'||wav.readUInt32LE(40)!==wav.length-44)throw fail(400,'diagnostic_pcm_invalid');
+  const first=Math.round(startSeconds*16000)*2,count=Math.round(durationSeconds*16000)*2;
+  if(first<0||count<=0||44+first+count>wav.length)throw fail(400,'diagnostic_window_invalid');
+  const output=Buffer.alloc(44+count);wav.copy(output,0,0,44);output.writeUInt32LE(36+count,4);output.writeUInt32LE(count,40);wav.copy(output,44,44+first,44+first+count);return output;
+}
+
 // Diagnostic grants are deliberately NOT speaker assertions. No write, learning,
 // private-turn authorization or enrollment service is reachable from this module.
 export function createSpeakerDiagnostic({ownerId, key, extractor, identity, calibration, clock = Date.now}) {
@@ -58,8 +67,21 @@ export function createSpeakerDiagnostic({ownerId, key, extractor, identity, cali
       }
       const full = input.variant === 'original' || input.variant === 'original-repeat';
       const useful = extracted.sufficient === true && (!full || (duration >= 15 && quality.speechSeconds >= 8 && Math.abs(quality.totalDurationSeconds-duration) < .5)) && (quality.clippingRatio ?? 1) <= .02;
+      let windowComparisons;
+      if(input.variant==='decoded-full'&&input.mimeType==='audio/wav'&&duration>=24){
+        const pcm=Buffer.from(input.audioBase64,'base64');windowComparisons=[];
+        try {
+          for(const [start,seconds] of [[0,3.5],[4,3.5],[8,3.5],[12,3.5],[16,3.5],[20,3.5],[0,8],[12,8]]){
+            verify(input.token);const window=diagnosticPcmWindow(pcm,start,seconds);
+            try {
+              const result=await this.compare({...input,variant:'first-half',audioBase64:window.toString('base64'),durationSeconds:seconds},{requestId});
+              windowComparisons.push({startSeconds:start,durationSeconds:seconds,quality:result.quality,match:result.match,sha256:result.sha256,privateAccessGranted:false});
+            }finally{window.fill(0);}
+          }
+        }finally{pcm.fill(0);}
+      }
       return {diagnosticId: grant.id, variant: input.variant, sha256, encodedBytes: Buffer.byteLength(input.audioBase64, 'base64'), claimedDurationSeconds:duration, quality, match,
-        usableDiagnostic: useful, diagnosticOnly: true, privateAccessGranted: false, profileUpdated: false, expiresAt: grant.expiresAt};
+        ...(windowComparisons?{windowComparisons}:{}),usableDiagnostic: useful, diagnosticOnly: true, privateAccessGranted: false, profileUpdated: false, expiresAt: grant.expiresAt};
     }
   };
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
 import {Readable} from 'node:stream';
 import {createDiagnosticVault,encodeMonoWav} from '../assets/speaker-diagnostic-vault.js';
-import {createSpeakerDiagnostic,DIAGNOSTIC_TTL_MS} from '../src/voice/speaker-diagnostic.js';
+import {createSpeakerDiagnostic,DIAGNOSTIC_TTL_MS,diagnosticPcmWindow} from '../src/voice/speaker-diagnostic.js';
 import {createSpeakerIdentity} from '../src/voice/speaker-identity.js';
 import {createApi} from '../src/http/api.js';
 import {novaMicrophoneConstraints,preferredRecorderOptions} from '../assets/voice-capture.js';
@@ -78,6 +78,16 @@ test('mono WAV encoding averages channels; full duration and halves preserve sam
 test('diagnostic uses the same saved Nova microphone and recorder contract',()=>{
  assert.deepEqual(novaMicrophoneConstraints({getItem:key=>{assert.equal(key,'nova-microphone-device-id');return'device';}}),{echoCancellation:true,noiseSuppression:true,autoGainControl:true,deviceId:{exact:'device'}});
  assert.equal(preferredRecorderOptions({isTypeSupported:()=>true}).audioBitsPerSecond,64000);
+});
+
+test('same retained PCM yields bounded exact short windows without WebM concatenation or profile changes',async()=>{
+ const f=fixture(),grant=await f.diagnostic.prepare(),before=JSON.stringify(f.rows);
+ const wav=Buffer.from(encodeMonoWav([new Float32Array(24*16000).fill(.2)],16000));
+ const part=diagnosticPcmWindow(wav,4,3.5);assert.equal(part.length,44+3.5*32000);assert.deepEqual(part.subarray(44),wav.subarray(44+4*32000,44+7.5*32000));
+ assert.throws(()=>diagnosticPcmWindow(Buffer.from('invalid'),0,3.5));
+ const report=await f.diagnostic.compare({...audio,token:grant.token,variant:'decoded-full',mimeType:'audio/wav',audioBase64:wav.toString('base64')});
+ assert.equal(report.windowComparisons.length,8);assert.equal(f.count(),9);assert.equal(JSON.stringify(f.rows),before);
+ assert.ok(report.windowComparisons.every(r=>r.privateAccessGranted===false&&r.match.threshold===.35));
 });
 
 async function call(api,path,input,headers={}){const req=Readable.from([JSON.stringify(input)]);Object.assign(req,{url:path,method:'POST',headers:{host:'nova.invalid',origin:'https://nova.invalid','content-type':'application/json',...headers}});const res={statusCode:200,setHeader(){},end(body){this.body=body;}};await api.handle(req,res);return{status:res.statusCode,data:JSON.parse(res.body)};}
