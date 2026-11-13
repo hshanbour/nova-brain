@@ -794,7 +794,9 @@ export function createApi({
             return;
           }
           const speaker = await (recognitionEngines?.readiness?.() || speakerExtractor?.readiness?.() || Promise.resolve({ status: "Missing", available: false }));
-          logger.info("Nova speaker worker warm-up completed", { requestId, status: speaker.status, available: speaker.available, latencyMs: speaker.latencyMs, errorCode: speaker.errorCode, enrollment: speaker.enrollment });
+          logger.info("Nova speaker worker warm-up completed", { requestId, status: speaker.status, available: speaker.available, latencyMs: speaker.latencyMs, errorCode: speaker.errorCode, enrollment: speaker.enrollment,
+            // Keep bounded scalar diagnostics visible when the log sink truncates nested objects.
+            profileReadability: speaker.enrollment?.profiles?.map(p=>`${p.id}: ${p.readability}; dimensions=${p.dimensions}; enrolled=${p.enrolledAt}; version=${p.version}`) });
           sendJson(response, 200, { speakerRecognition: speaker });
           return;
         }
