@@ -1,3 +1,5 @@
+import {preferredRecorderOptions} from './voice-capture.js';
+
 export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder, fetchImpl = fetch, now = Date.now } = {}) {
   const dialog = document.querySelector("#speakerEnrollmentDialog");
   const form = document.querySelector("#speakerEnrollmentForm");
@@ -123,10 +125,7 @@ export function initialiseSpeakerEnrollment({ document, navigator, MediaRecorder
     const currentAttempt = attempt;
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     chunks = [];
-    recorder = new MediaRecorder(stream, {
-      mimeType: MediaRecorder.isTypeSupported?.("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm",
-      audioBitsPerSecond: 64000
-    });
+    recorder = new MediaRecorder(stream, preferredRecorderOptions(MediaRecorder));
     startedAt = now();
     recorder.addEventListener("dataavailable", (event) => { if (event.data.size) chunks.push(event.data); });
     recorder.addEventListener("stop", async () => {

@@ -49,20 +49,32 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
     const iv=randomBytes(12);const cipher=createCipheriv("aes-256-gcm",key,iv);const ciphertext=Buffer.concat([cipher.update(JSON.stringify(representation),"utf8"),cipher.final()]);
     return { algorithm:"aes-256-gcm",iv:iv.toString("base64"),tag:cipher.getAuthTag().toString("base64"),ciphertext:ciphertext.toString("base64") };
   };
-  const reveal = (stored) => {
-    if (Array.isArray(stored)) return stored;
-    if (!key || stored?.algorithm!=="aes-256-gcm") return null;
-    try { const decipher=createDecipheriv("aes-256-gcm",key,Buffer.from(stored.iv,"base64"));decipher.setAuthTag(Buffer.from(stored.tag,"base64"));return JSON.parse(Buffer.concat([decipher.update(Buffer.from(stored.ciphertext,"base64")),decipher.final()]).toString("utf8")); } catch { return null; }
+  const inspectRepresentation = (stored) => {
+    let vector;
+    if (Array.isArray(stored)) vector=stored;
+    else {
+      if(stored?.algorithm!=="aes-256-gcm")return {status:'unsupported_format',vector:null};
+      if(!key)return {status:'key_unavailable',vector:null};
+      let plain;
+      try { const decipher=createDecipheriv("aes-256-gcm",key,Buffer.from(stored.iv,"base64"));decipher.setAuthTag(Buffer.from(stored.tag,"base64"));plain=Buffer.concat([decipher.update(Buffer.from(stored.ciphertext,"base64")),decipher.final()]); }
+      catch { return {status:'authentication_failed',vector:null}; }
+      try { vector=JSON.parse(plain.toString('utf8')); }
+      catch { return {status:'invalid_representation',vector:null}; }
+      finally { plain.fill(0); }
+    }
+    try { normalized(vector);return {status:'readable',vector}; }
+    catch { return {status:'invalid_representation',vector:null}; }
   };
+  const reveal = stored => inspectRepresentation(stored).vector;
   const audit = (action, summary, metadata = {}) => storage.appendActivity({ ownerId, action, status: "completed", summary, metadata });
   const recognizeRepresentations = async (variants, calibration = {}) => {
     const effectiveThreshold = Number.isFinite(calibration.threshold) ? calibration.threshold : threshold;
     const effectiveAmbiguityMargin = Number.isFinite(calibration.ambiguityMargin) ? calibration.ambiguityMargin : ambiguityMargin;
     const probes=variants.map(({label,representation})=>({label,representation:normalized(representation)}));
     const candidates=(await storage.listSpeakerProfiles(ownerId,{includeRepresentation:true})).map((profile)=>({...profile,representation:reveal(profile.representation)})).filter((profile)=>profile.status==="active"&&profile.representation);
-    const ranked=candidates.map((profile)=>{const scores=probes.map((probe)=>({label:probe.label,confidence:cosine(probe.representation,profile.representation)})).sort((a,b)=>b.confidence-a.confidence);return{profile,...scores[0]};}).sort((a,b)=>b.confidence-a.confidence);
+    const ranked=candidates.map((profile)=>{const scores=probes.map((probe)=>({label:probe.label,confidence:cosine(probe.representation,profile.representation)})).sort((a,b)=>b.confidence-a.confidence);return{profile,scores,...scores[0]};}).sort((a,b)=>b.confidence-a.confidence);
     const best=ranked[0];const second=ranked[1];const confidence=best?Math.round(best.confidence*1000)/1000:0;const scoreMargin=second?Math.round((best.confidence-second.confidence)*1000)/1000:null;
-    const decision={confidence,candidateCount:candidates.length,threshold:effectiveThreshold,ambiguityMargin:effectiveAmbiguityMargin,scoreMargin,bestCandidateCategory:best?(best.profile.relation==="owner"?"owner":"non_owner"):null,matchVariant:best?.label||null};
+    const decision={confidence,candidateCount:candidates.length,threshold:effectiveThreshold,ambiguityMargin:effectiveAmbiguityMargin,scoreMargin,bestCandidateCategory:best?(best.profile.relation==="owner"?"owner":"non_owner"):null,matchVariant:best?.label||null,comparisonDiagnostics:{comparedProfileId:best?.profile.id||null,profileVersion:best?.profile.representationVersion||null,profileDimensions:best?.profile.representation.length||0,probeDimensions:probes[0]?.representation.length||0,vadScore:best?.scores.find(s=>s.label==='vad_v3')?.confidence??null,legacyScore:best?.scores.find(s=>s.label==='legacy_full_waveform')?.confidence??null}};
     if(!best||best.confidence<effectiveThreshold)return{state:"unknown",speakerProfileId:null,...decision};
     if(second&&best.confidence-second.confidence<effectiveAmbiguityMargin)return{state:"uncertain",speakerProfileId:null,...decision};
     return{state:"confirmed",speakerProfileId:best.profile.id,displayName:best.profile.displayName,relation:best.profile.relation,scope:best.profile.scope,...decision};
@@ -84,10 +96,10 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
     async getByEnrollmentAttempt(enrollmentAttemptId){return publicProfile(await storage.getSpeakerProfileByEnrollmentAttempt(ownerId,enrollmentAttemptId));},
     async isActiveProfile(id) { if(!id)return false;return (await storage.listSpeakerProfiles(ownerId)).some((profile)=>profile.id===id&&profile.status==="active"); },
     async candidateCount() { return (await storage.listSpeakerProfiles(ownerId)).filter((profile)=>profile.status==="active").length; },
-    async enrollmentReadiness() {
+    async enrollmentReadiness({diagnostics=false}={}) {
       const profiles=(await storage.listSpeakerProfiles(ownerId,{includeRepresentation:true})).filter(profile=>profile.status==='active');
       const readable=profiles.filter(profile=>Boolean(reveal(profile.representation)));
-      return {activeProfiles:profiles.length,readableProfiles:readable.length,unreadableProfiles:profiles.length-readable.length,readableOwnerProfiles:readable.filter(profile=>profile.relation==='owner').length};
+      return {activeProfiles:profiles.length,readableProfiles:readable.length,unreadableProfiles:profiles.length-readable.length,readableOwnerProfiles:readable.filter(profile=>profile.relation==='owner').length,...(diagnostics?{profiles:profiles.map(profile=>{const inspection=inspectRepresentation(profile.representation);return {id:profile.id,relation:profile.relation,enrolledAt:profile.createdAt||null,version:profile.representationVersion||null,readability:inspection.status,dimensions:inspection.vector?.length||null};})}:{})};
     },
     async privacyStatus() { return storage.speakerPrivacyStatus(ownerId); },
     async purgeInvalidOwnerEnrollment() { return storage.purgeInvalidOwnerSpeakerEnrollment(ownerId); },

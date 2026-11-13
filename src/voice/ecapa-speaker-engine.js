@@ -8,7 +8,7 @@ export function createEcapaSpeakerEngine({ extractor, identity } = {}) {
     authoritative: true,
     configured: Boolean(extractor.configured),
     async readiness() {
-      const [worker,enrollment]=await Promise.all([extractor.readiness(),identity.enrollmentReadiness?.()]);
+      const [worker,enrollment]=await Promise.all([extractor.readiness(),identity.enrollmentReadiness?.({diagnostics:true})]);
       return {...worker,...(enrollment?{enrollment}:{})};
     },
     async recognize(input, { requestId, transcriptPromise, readyPromise, signal, speakerCalibration } = {}) {
@@ -20,6 +20,7 @@ export function createEcapaSpeakerEngine({ extractor, identity } = {}) {
         // A slow database read must not mask the real speech-quality result.
         if (!extracted.sufficient || !hasTranscript) return createSpeakerEngineResult({ engineId: "ecapa", engineVersion: extracted.extractorVersion, qualityState: extracted.quality || "rejected", status: hasTranscript ? "insufficient" : "non_speech", latencyMs: extracted.latencyMs, candidateCount: 0, diagnostics, evidence: extracted });
         const match = typeof identity.recognizeMany === "function" ? await identity.recognizeMany(extracted.representationVariants || [{ label: "vad_v3", representation: extracted.representation }], speakerCalibration) : await identity.recognize(extracted.representation);
+        Object.assign(diagnostics,match.comparisonDiagnostics||{}, {claimedAudioDurationSeconds:Number(input.durationSeconds)||0,encodedBytes:typeof input.audioBase64==='string'?Buffer.byteLength(input.audioBase64,'base64'):0,inputMimeType:input.mimeType||null});
         return createSpeakerEngineResult({ engineId: "ecapa", engineVersion: extracted.extractorVersion, qualityState: extracted.quality || "accepted", status: match.state, candidateProfileId: match.speakerProfileId, category: match.relation === "owner" ? "owner" : match.speakerProfileId ? "non_owner" : match.bestCandidateCategory, confidence: match.confidence, threshold: match.threshold, ambiguityMargin: match.ambiguityMargin, scoreMargin: match.scoreMargin, representationId: match.matchVariant, latencyMs: extracted.latencyMs, candidateCount: match.candidateCount, diagnostics, evidence: extracted });
       } catch (error) {
         return createSpeakerEngineResult({ engineId: "ecapa", engineVersion: "speechbrain-ecapa", qualityState: "failure", status: "failure", error: { code: signal?.aborted ? "recognition_deadline_exceeded" : error?.code || "ecapa_failure", stage: "speaker_embedding" } });

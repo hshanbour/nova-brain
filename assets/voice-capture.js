@@ -124,7 +124,7 @@ function adaptiveEndpointSilence({ voicedMs, speechSpanMs, resumedEndpoints, end
   return Math.min(maxEndpointSilenceMs, graceMs);
 }
 
-function preferredRecorderOptions(MediaRecorder) {
+export function preferredRecorderOptions(MediaRecorder) {
   for (const mimeType of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]) if (MediaRecorder.isTypeSupported?.(mimeType)) return { mimeType, audioBitsPerSecond: 64_000 };
   return { audioBitsPerSecond: 64_000 };
 }

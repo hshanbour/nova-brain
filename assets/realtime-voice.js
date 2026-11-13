@@ -1,4 +1,5 @@
 import {articulation,rest} from "./prism-articulation.js";
+import {preferredRecorderOptions} from './voice-capture.js';
 import {explicitVoiceLanguage,isVoiceLanguageOnlyChange} from "./voice-language.js";
 import {isDirectVoiceExchange,isLocalVisionRequest,cancelsPreviousVoiceRequest,authoritativeVoiceResponse} from './voice-turn-routing.js';
 const OPENAI_REALTIME_CALLS = "https://api.openai.com/v1/realtime/calls";
@@ -443,12 +444,12 @@ export function createRealtimeVoice({
     if (typeof MediaRecorderImpl !== "function" || !stream || turnRecorder) return;
     try {
       const chunks = [];
-      const recorder = new MediaRecorderImpl(stream);
+      const recorder = new MediaRecorderImpl(stream, preferredRecorderOptions(MediaRecorderImpl));
       recorder._novaCaptureId={};
       turnStartedAt = now();
       recorder.addEventListener("dataavailable", (event) => { if (event.data?.size) chunks.push(event.data); });
       recorder._novaChunks = chunks;
-      recorder.start();
+      recorder.start(100);
       turnRecorder = recorder;
     } catch { turnRecorder = null; }
   }
@@ -468,7 +469,7 @@ export function createRealtimeVoice({
         try {
           const audio = new Blob(recorder._novaChunks || [], { type: recorder.mimeType || "audio/webm" });
           if(!valid(current))return resolve(null);
-          onTiming({stage:'speaker-capture',measurements:{capturedAudioMs:Math.round(durationSeconds*1000)}});
+          onTiming({stage:'speaker-capture',measurements:{capturedAudioMs:Math.round(durationSeconds*1000),encodedBytes:audio.size,chunkCount:(recorder._novaChunks||[]).length,audioBitsPerSecond:Number(recorder.audioBitsPerSecond)||0}});
           if (!audio.size) return resolve(null);
           if (durationSeconds < 0.8) return resolve({match_status:'insufficient_speech',authenticated_identity:'none'});
           const audioBase64 = bytesToBase64(new Uint8Array(await audio.arrayBuffer()));

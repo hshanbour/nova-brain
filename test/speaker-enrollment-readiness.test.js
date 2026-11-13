@@ -18,3 +18,31 @@ test('enrollment readiness checks scoped decryption without exposing or changing
   assert.equal(ready.available,false);assert.equal(ready.enrollment.readableOwnerProfiles,1);
   assert.equal('representation' in ready.enrollment,false);
 });
+
+test('diagnostics distinguish a historical wrong-key enrollment without disclosing vectors or mutating it',async()=>{
+ const rows=[];const storage={async listSpeakerProfiles(){return rows;}};
+ const old=createSpeakerIdentity({storage,ownerId:'owner',embeddingKey:'older-fixture-key-'.repeat(3)});
+ const current=createSpeakerIdentity({storage,ownerId:'owner',embeddingKey:'current-fixture-key-'.repeat(3),threshold:.35});
+ rows.push({id:'historical',status:'active',relation:'owner',representation:old.protectRepresentation([1,0,0])});
+ rows.push({id:'current',status:'active',relation:'owner',representation:current.protectRepresentation([0,1,0])});
+ const before=JSON.stringify(rows);const readiness=await current.enrollmentReadiness({diagnostics:true});
+ assert.equal(readiness.profiles[0].readability,'authentication_failed');
+ assert.equal(readiness.profiles[1].readability,'readable');
+ assert.equal(readiness.profiles[1].dimensions,3);
+ const match=await current.recognizeMany([{label:'vad_v3',representation:[Math.sqrt(1-.293**2),.293,0]},{label:'legacy_full_waveform',representation:[1,0,0]}]);
+ assert.equal(match.state,'unknown');assert.equal(match.threshold,.35);
+ assert.equal(match.comparisonDiagnostics.comparedProfileId,'current');
+ assert.equal(match.comparisonDiagnostics.profileDimensions,3);
+ assert.ok(Math.abs(match.comparisonDiagnostics.vadScore-.293)<.0001);
+ assert.equal(match.comparisonDiagnostics.legacyScore,0);
+ assert.doesNotMatch(JSON.stringify(readiness),/"(?:ciphertext|tag|iv|vector|representation)"|\[0,1,0\]/);
+ assert.equal(JSON.stringify(rows),before);
+});
+
+test('malformed readable data cannot poison matching against another valid profile',async()=>{
+ const rows=[{id:'invalid',status:'active',relation:'owner',representation:[0,0,0]},{id:'valid',status:'active',relation:'owner',representation:[1,0,0]}];
+ const identity=createSpeakerIdentity({storage:{async listSpeakerProfiles(){return rows;}},ownerId:'owner',threshold:.35});
+ const ready=await identity.enrollmentReadiness({diagnostics:true});
+ assert.equal(ready.profiles[0].readability,'invalid_representation');
+ assert.equal((await identity.recognize([1,0,0])).speakerProfileId,'valid');
+});

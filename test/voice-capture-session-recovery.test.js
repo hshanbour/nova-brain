@@ -26,14 +26,14 @@ test('a different voice cannot use the gated recovery session',async()=>{
  }finally{h.close();}
 });
 function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn,recognize,authorizationFailure=false,verificationWindowMs=0,autoTranscript=true}={}){
- let clock=0,frame,requests=[],notices=0,pauses=0,verified=0;const results=[],pauseReasons=[],recoveries=[];
+ let clock=0,frame,requests=[],notices=0,pauses=0,verified=0;const results=[],pauseReasons=[],recoveries=[],recorders=[];
  const prior=globalThis.requestAnimationFrame,priorCancel=globalThis.cancelAnimationFrame;
  globalThis.requestAnimationFrame=fn=>{frame=fn;return 1;};globalThis.cancelAnimationFrame=()=>{};
  const transcribed=new Set();
  class Channel extends EventTarget{readyState='open';sent=[];send(s){this.sent.push(JSON.parse(s));}close(){this.readyState='closed';}message(e){if(e.type==='conversation.item.input_audio_transcription.completed')transcribed.add(e.item_id);this.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(e)}));}}
  let channel;
  class Peer extends EventTarget{createDataChannel(){channel=new Channel();return channel;}addTrack(){}async createOffer(){return{sdp:'test'};}async setLocalDescription(){}async setRemoteDescription(){}close(){}}
- class Recorder extends EventTarget{state='inactive';mimeType='audio/webm';start(){this.state='recording';}stop(){this.state='inactive';const e=new Event('dataavailable');e.data=new Blob(['synthetic-audio-fixture']);this.dispatchEvent(e);this.dispatchEvent(new Event('stop'));}}
+ class Recorder extends EventTarget{state='inactive';mimeType='audio/webm;codecs=opus';static isTypeSupported(type){return type==='audio/webm;codecs=opus';}constructor(stream,options){super();this.options=options;this.audioBitsPerSecond=options?.audioBitsPerSecond;recorders.push(this);}start(timeslice){this.timeslice=timeslice;this.state='recording';}stop(){this.state='inactive';const e=new Event('dataavailable');e.data=new Blob(['synthetic-audio-fixture']);this.dispatchEvent(e);this.dispatchEvent(new Event('stop'));}}
  class Context{createMediaStreamSource(){return{connect(){},disconnect(){}};}createAnalyser(){return{getByteTimeDomainData:a=>a.fill(133)};}async close(){}}
  const voice=createRealtimeVoice({verificationWindowMs,mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){}}]};}},RTCPeerConnectionImpl:Peer,MediaRecorderImpl:Recorder,AudioContextImpl:Context,AudioImpl:class{pause(){}},now:()=>clock,sendTurn,onResult:r=>results.push(r),getConversationId:()=> 'fixture-conversation',onPrivacyRecovery:()=>recoveries.push(true),onVerificationNeeded:()=>notices++,onPrivacyPause:detail=>{pauses++;pauseReasons.push(detail?.reason);},onOwnerVerified:()=>verified++,
  fetchImpl:async(url,o)=>{
@@ -42,8 +42,22 @@ function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn
   if(url.endsWith('/authorize-turn')){if(authorizationFailure)throw new TypeError('Failed to fetch');const allowed=authorize&&JSON.parse(o.body).speaker?.match_status==='confirmed';return Response.json({authorized:allowed,...(allowed?{speakerIdentity:verifiedOwnerVoiceEvidence()}:{})},{status:allowed?200:403});}
   return new Response('fixture');
  }});
- return{voice,get channel(){return channel;},requests,results,pauseReasons,recoveries,verifiedCount:()=>verified,counts:()=>({notices,pauses}),set:t=>clock=t,local:t=>{clock=t;frame();},event:(type,id)=>{if(type==='speech_stopped'&&autoTranscript&&!transcribed.has(id))channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:id,transcript:'مرحبا'});channel.message({type:'input_audio_buffer.'+type,item_id:id});},close(){voice.end();globalThis.requestAnimationFrame=prior;globalThis.cancelAnimationFrame=priorCancel;}};
+ return{voice,get channel(){return channel;},requests,results,pauseReasons,recoveries,recorders,verifiedCount:()=>verified,counts:()=>({notices,pauses}),set:t=>clock=t,local:t=>{clock=t;frame();},event:(type,id)=>{if(type==='speech_stopped'&&autoTranscript&&!transcribed.has(id))channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:id,transcript:'مرحبا'});channel.message({type:'input_audio_buffer.'+type,item_id:id});},close(){voice.end();globalThis.requestAnimationFrame=prior;globalThis.cancelAnimationFrame=priorCancel;}};
 }
+
+test('Realtime verification uses the enrollment encoding contract and keeps a long utterance intact',async()=>{
+ const h=voiceHarness({verificationWindowMs:3500,recognize:()=>({match_status:'unknown',authenticated_identity:'none',confidence:.293})});
+ try{
+  await h.voice.start();h.set(1000);h.event('speech_started','long-owner-attempt');
+  h.set(10274);h.event('speech_stopped','long-owner-attempt');await wait();
+  assert.deepEqual(h.recorders[0].options,{mimeType:'audio/webm;codecs=opus',audioBitsPerSecond:64000});
+  assert.equal(h.recorders[0].timeslice,100);
+  assert.equal(h.requests.length,1);assert.equal(h.requests[0].durationSeconds,9.274);
+  assert.equal(h.requests[0].mimeType,'audio/webm;codecs=opus');
+  assert.equal(h.verifiedCount(),0);assert.equal(h.counts().pauses,1);
+  assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,0);
+ }finally{h.close();}
+});
 
 test('local capture preserves speech onset before delayed remote VAD and still requires server authorization',async()=>{
  const h=voiceHarness();try{
