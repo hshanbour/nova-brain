@@ -34,6 +34,28 @@ test("terminal reporting reconciles callback eligibility without changing its re
   assert.deepEqual(await reporter.reconcile(),{enqueued:1,delivered:1});assert.equal(reconciliations,1);
 });
 
+test('completed coding evidence repairs its stale queued run on normal result recall without executing again',async()=>{
+ const f=await fixture(),id='coding_'+'7'.repeat(32),sha='8'.repeat(40);
+ let task=await terminal(f,{id,type:'coding_delegation',result:{summary:'Bounded work completed.',finalLocalSha:sha}});
+ task=await f.storage.updateAutonomyTask(id,OWNER,{currentCommit:sha},task.stateVersion);
+ await f.storage.createRun({id,ownerId:OWNER,conversationId:CONVERSATION,goal:'Bounded work',status:'queued'});
+ await f.reporter.reconcile();
+ const run=await f.storage.getRun(id,OWNER);assert.equal(run.status,'completed');assert.equal(run.result.commitSha,sha);assert.equal(run.completedAt,task.completedAt);assert.equal(run.result.receiptSource,'durable_coding_step');
+ const before=run.updatedAt;await f.reporter.latestForConversation(CONVERSATION);
+ assert.equal((await f.storage.getRun(id,OWNER)).updatedAt,before,'Already reconciled receipt is not rewritten');
+ assert.equal((await f.storage.listMessages(CONVERSATION,OWNER,{limit:20})).length,1);
+});
+
+for(const scenario of ['wrong-owner','mismatched-commit','failed-run'])test('coding receipt reconciliation refuses '+scenario,async()=>{
+ const f=await fixture(),id='coding_'+'6'.repeat(32),sha='8'.repeat(40);
+ let task=await terminal(f,{id,type:'coding_delegation',result:{summary:'Evidence',finalLocalSha:sha}});
+ task=await f.storage.updateAutonomyTask(id,OWNER,{currentCommit:scenario==='mismatched-commit'?'9'.repeat(40):sha},task.stateVersion);
+ const owner=scenario==='wrong-owner'?'someone-else':OWNER,status=scenario==='failed-run'?'failed':'queued';
+ await f.storage.createRun({id,ownerId:owner,conversationId:CONVERSATION,goal:'Do not overwrite',status});
+ await f.reporter.latestForConversation(CONVERSATION);
+ assert.equal((await f.storage.getRun(id,owner)).status,status);
+});
+
 for(const status of ["failed","blocked","cancelled"])test(`${status} task emits one bounded safe terminal report`,async()=>{
   const f=await fixture();await terminal(f,{id:`selfdev_${status.padEnd(32,"a").slice(0,32)}`,status,phase:"run_focused_tests"});
   await f.reporter.reconcile();await f.reporter.reconcile();const [message]=await f.storage.listMessages(CONVERSATION,OWNER,{limit:10});

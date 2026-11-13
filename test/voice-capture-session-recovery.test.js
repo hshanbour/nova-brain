@@ -227,6 +227,35 @@ test('ending during verification collection cancels pending recognition and does
  }finally{h.close();}
 });
 
+test('one verified capture preserves all adjacent initial VAD transcript fragments',async()=>{
+ const requests=[];
+ const h=voiceHarness({verificationWindowMs:3500,sendTurn:async text=>{requests.push(text);return{message:'Saved only after a successful write.',runId:'combined-clip-receipt'};}});
+ try{
+  await h.voice.start();h.set(1000);h.event('speech_started','instruction');
+  h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'instruction',transcript:'احفظي معلومة خيالية للاختبار.'});
+  h.set(2100);h.event('speech_stopped','instruction');await wait();
+  assert.equal(h.requests.length,0);
+  h.set(2400);h.event('speech_started','fact');
+  h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'fact',transcript:'لون دفتر الاختبار بنفسجي.'});
+  h.set(5100);h.event('speech_stopped','fact');await wait();
+  assert.equal(h.requests.length,1,'One continuous recording is matched once');
+  assert.deepEqual(requests,['احفظي معلومة خيالية للاختبار.\nلون دفتر الاختبار بنفسجي.']);
+  assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,1);
+ }finally{h.close();}
+});
+
+test('unmatched combined verification capture cannot submit any fragment to Brain',async()=>{
+ const requests=[];
+ const h=voiceHarness({verificationWindowMs:3500,recognize:()=>({match_status:'unknown',authenticated_identity:'none'}),sendTurn:async text=>{requests.push(text);return{};}});
+ try{
+  await h.voice.start();h.set(1000);h.event('speech_started','instruction');
+  h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'instruction',transcript:'احفظي معلومة خاصة'});
+  h.set(2100);h.event('speech_stopped','instruction');await wait();
+  h.set(2400);h.event('speech_started','fact');h.set(5100);h.event('speech_stopped','fact');await wait();
+  assert.deepEqual(requests,[]);assert.equal(h.verifiedCount(),0);assert.equal(h.counts().pauses,1);
+ }finally{h.close();}
+});
+
 
 test('late response-created cannot attach an old authorized reply to a new unverified speaker',async()=>{
  const h=voiceHarness();try{

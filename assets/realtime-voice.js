@@ -184,6 +184,10 @@ export function createRealtimeVoice({
       lastAssistantTranscript = "";
       lastSpeechEndedAt = 0;
       startTurnRecording();
+      // VAD may split the initial verification window while MediaRecorder keeps
+      // collecting one continuous clip. Keep the transcript segments attached
+      // to that clip; do not infer identity across distinct recordings.
+      latestTurn.capture=turnRecorder?._novaCaptureId||null;
       publish("listening", { phase: "speech-detected" });
       return;
     }
@@ -349,10 +353,11 @@ export function createRealtimeVoice({
     let next=utterance,previous=utterance.previousTurn;
     for(let n=0;n<3&&previous;n++){
       if(previous.consumed||previous.responseRequested||previous.pendingWork||previous.conversationId!==utterance.conversationId||!Number.isFinite(previous.endedAt)||next.startedAt-previous.endedAt>1000||next.startedAt<previous.endedAt)break;
-      const match=previous.recognizedSpeaker||await boundedSpeaker(previous.speaker,500);
+      const sameVerifiedCapture=Boolean(utterance.capture&&previous.capture===utterance.capture&&utterance.verifiedSpeaker);
+      const match=sameVerifiedCapture?utterance.verifiedSpeaker:previous.recognizedSpeaker||await boundedSpeaker(previous.speaker,500);
       // A continuation may include only independently matched speech from the
       // same enrolled profile. Never carry an unknown speaker's words forward.
-      if(match?.match_status!=='confirmed'||!match.speaker_profile_id||match.speaker_profile_id!==utterance.verifiedSpeaker?.speaker_profile_id)break;
+      if(!sameVerifiedCapture&&(match?.match_status!=='confirmed'||!match.speaker_profile_id||match.speaker_profile_id!==utterance.verifiedSpeaker?.speaker_profile_id))break;
       await waitForTranscript(previous);if(!previous.transcript)break;
       text=previous.transcript+'\n'+text;previous.consumed=true;next=previous;previous=previous.previousTurn;
     }
@@ -439,6 +444,7 @@ export function createRealtimeVoice({
     try {
       const chunks = [];
       const recorder = new MediaRecorderImpl(stream);
+      recorder._novaCaptureId={};
       turnStartedAt = now();
       recorder.addEventListener("dataavailable", (event) => { if (event.data?.size) chunks.push(event.data); });
       recorder._novaChunks = chunks;

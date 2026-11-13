@@ -119,9 +119,23 @@ export function createTerminalTaskReporter({storage,ownerId,ownerContactPolicy=n
     if(task.taskType==="coding_orchestration"&&task.metadata?.delegatedTaskId)return false;
     return true;
   };
+  async function reconcileCodingReceipt(task,steps,content){
+    // The worker's durable completion is authoritative. Older runtimes finished
+    // the task/report but left the companion execution run queued. Reconcile
+    // only the same owner's exact child run, never the parent or another job.
+    if(task?.ownerId!==ownerId||task.taskType!=='coding_delegation'||task.status!=='completed'||!task.completedAt)return;
+    const step=steps.find(item=>item.stepType==='delegate_coding'&&item.status==='completed');
+    const result=step?.result?.diagnostics?.codingResult||step?.result;
+    const commit=result?.finalLocalSha||result?.commitSha;
+    if(!/^[a-f0-9]{40}$/.test(commit||'')||commit!==task.currentCommit)return;
+    const run=await storage.getRun(task.id,ownerId);
+    if(!run||!['queued','running'].includes(run.status))return;
+    await storage.updateRun(task.id,ownerId,{status:'completed',currentStep:task.currentStep,completedAt:task.completedAt,error:null,result:{...run.result,message:content,durableTask:{id:task.id,status:'completed'},commitSha:commit,receiptSource:'durable_coding_step'}});
+  }
   async function enqueue(task){
     if(!eligible(task)||(taskAllowed&&!await taskAllowed(task)))return null;
-    const content=renderTerminalTaskReport(task,await storage.listAutonomySteps(task.id));
+    const steps=await storage.listAutonomySteps(task.id),content=renderTerminalTaskReport(task,steps);
+    await reconcileCodingReceipt(task,steps,content);
     if(learningService?.observeTaskOutcome)await learningService.observeTaskOutcome(task,content).catch(()=>null);
     const reportKey=`${task.id}:${task.stateVersion}`,messageId=`task-report_${digest(`${task.id}:${task.stateVersion}:${task.status}`).slice(0,48)}`;
     return storage.enqueueTaskReport({reportKey,taskId:task.id,ownerId,conversationId:binding(task).conversationId,terminalStateVersion:task.stateVersion,terminalStatus:task.status,messageId,content});
@@ -139,7 +153,9 @@ export function createTerminalTaskReporter({storage,ownerId,ownerContactPolicy=n
     tasks.sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt))||String(b.updatedAt).localeCompare(String(a.updatedAt)));
     const task=tasks.find(item=>!(item.taskType==="coding_orchestration"&&item.metadata?.delegatedTaskId));
     if(!task)return null;
-    const message=TERMINAL.has(task.status)?renderTerminalTaskReport(task,await storage.listAutonomySteps(task.id)):`Task report — ${task.id}\nStatus: ${task.status}\n\nNova is still working at the ${bounded(task.currentPhase||"current",80)} stage. No terminal result is available yet.`;
+    const steps=TERMINAL.has(task.status)?await storage.listAutonomySteps(task.id):[];
+    const message=TERMINAL.has(task.status)?renderTerminalTaskReport(task,steps):`Task report — ${task.id}\nStatus: ${task.status}\n\nNova is still working at the ${bounded(task.currentPhase||"current",80)} stage. No terminal result is available yet.`;
+    if(!taskAllowed||await taskAllowed(task))await reconcileCodingReceipt(task,steps,message);
     return{task,message};
   }
   return Object.freeze({enqueue,reconcile,latestForConversation});
