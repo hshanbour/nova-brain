@@ -25,7 +25,7 @@ export function createCurrentGlassAvatar({readSignal,onDemo=()=>{}}){
   button.onclick=()=>{view=value;for(const b of views.children)b.setAttribute('aria-pressed',String(b===button));};views.append(button);
  }
  controls.append(views);element.append(host,status);
- return {element,controls,setState(){},setSession(value){if(value&&!session)entrance++;session=value;if(value)trace=0;demo.setLive(value);for(const b of demoButtons)b.disabled=value;traceButton.disabled=value||scene!=="emerald";},
+ return {element,controls,setState(){},setSession(value){if(value&&!session)entrance++;session=value;if(value)trace=0;demo.setLive(value);reactions.hidden=value;demoLabel.hidden=value;traceButton.hidden=value;for(const b of demoButtons)b.disabled=value;traceButton.disabled=value||scene!=="emerald";},
   async start(){if(active)return;active=true;const current=++version;
    try{const {createCoreScene}=await import('./current-glass/coreScene.js');if(!active||current!==version)return;
     dispose=createCoreScene(host,()=>session?readSignal():demo.read(),()=>view,()=>{status.textContent='';element.dataset.ready='true';},()=>{status.textContent='Avatar unavailable · voice can continue';element.dataset.ready='error';},t=>{for(const [key,value] of Object.entries(t))element.dataset[key]=String(value);},()=> 'throat',()=>true,()=> 'molten',()=>({hair:true,face:true}),()=>false,()=>scene!=='baseline',()=>scene,()=>entrance,()=>trace);

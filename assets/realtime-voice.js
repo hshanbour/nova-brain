@@ -1,6 +1,7 @@
 import {articulation,rest} from "./prism-articulation.js";
 import {preferredRecorderOptions} from './voice-capture.js';
 import {explicitVoiceLanguage,isVoiceLanguageOnlyChange} from "./voice-language.js";
+import {publicVoiceResponse} from './voice-public-turn.js';
 import {isDirectVoiceExchange,isLocalVisionRequest,cancelsPreviousVoiceRequest,authoritativeVoiceResponse} from './voice-turn-routing.js';
 const OPENAI_REALTIME_CALLS = "https://api.openai.com/v1/realtime/calls";
 
@@ -26,6 +27,7 @@ export function createRealtimeVoice({
   onPrivacyRecovery = () => {},
   onOwnerVerified = () => {},
   onVerificationNeeded = () => {},
+  onAccessState = () => {},
   onState = () => {},
   onTiming = () => {},
   onInputLevel = () => {},
@@ -47,6 +49,8 @@ export function createRealtimeVoice({
   let playbackActive=false, serial=Promise.resolve(),speechTurn=0,inSpeech=false,responseOpen=false,followup=false;
   let replyLanguage = null, privacyGate=false, guestMode=false, privateTurnAuthorized=false;
   let qualityRecoveryUsed=false, verificationStopTimer=null;
+  let isolatedTurns=false;
+  const isolatedReplies=new Map();
   let activeResponseTurn=null;
   const requestedResponseTurns=[];
   const timing=(stage,measurements={})=>onTiming({stage,turnId:speechTurn,measurements});
@@ -108,6 +112,7 @@ export function createRealtimeVoice({
       const session = await sessionResponse.json().catch(() => null);
       if (!sessionResponse.ok || typeof session?.clientSecret !== "string") throw new Error(session?.error || "Nova could not prepare Realtime Voice.");
       privacyGate=session.privacyGate===true;
+      isolatedTurns=privacyGate&&session.isolatedTurns===true;
       replyLanguage = ["ar", "en"].includes(session.replyLanguage) ? session.replyLanguage : null;
       if (!valid(current)) return false;
       startupStage='audio-connection';
@@ -117,7 +122,7 @@ export function createRealtimeVoice({
       pc.ontrack = (event) => { const remoteStream = event.streams?.[0] || new MediaStream([event.track]); remoteAudio.srcObject = remoteStream; outputMeter?.dispose?.(); outputMeter = createAudioMeter({ AudioContextImpl, stream: remoteStream, onLevel: level=>{onOutputLevel(level);onAudibleLevel(playbackActive&&remoteAudio&&!remoteAudio.paused&&!remoteAudio.ended&&!remoteAudio.muted&&remoteAudio.volume>0?level*remoteAudio.volume:0);},onShape:shape=>onArticulation(playbackActive?shape:rest) }); void remoteAudio.play?.().then?.(()=>timing("playback-element-ready")).catch?.(() => { timing("playback-element-blocked"); onError("Browser audio playback is blocked. Restart Voice using its button to allow playback."); }); };
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       channel = pc.createDataChannel("oai-events");
-      channel.addEventListener("open", () => { if (valid(current)) publish("listening",privacyGate?{phase:'collecting-verification-speech'}:{}); });
+      channel.addEventListener("open", () => { if (valid(current)) { if(isolatedTurns)onAccessState({access:'public',reason:'ready'});publish("listening",privacyGate&&!isolatedTurns?{phase:'collecting-verification-speech'}:{}); } });
       channel.addEventListener("message", (event) => { if (valid(current)) void handleEvent(safeParse(event.data), current); });
       channel.addEventListener("close", () => { if (valid(current)) fail("Realtime Voice connection closed. Start Voice again to reconnect."); });
       pc.addEventListener?.("connectionstatechange", () => {
@@ -181,9 +186,10 @@ export function createRealtimeVoice({
       clearTimeout(verificationStopTimer);verificationStopTimer=null;
       timing('vad-speech-start',{privateAuthorized:privateTurnAuthorized?1:0,playing:playbackActive?1:0});
       if(privacyGate)interrupt();
+      if(isolatedTurns){privateTurnAuthorized=false;onAccessState({access:'checking',reason:'new-turn'});}
       supersedeTurn();
       playbackActive=false;onArticulation(rest);onAudibleLevel(0); speakerPromise=null;inSpeech=true;++speechTurn;
-      latestTurn={seq:speechTurn,startedAt:now(),transcript:"",speaker:null,conversationId:getConversationId(),previousTurn:latestTurn};if(event.item_id){turns.set(event.item_id,latestTurn);trim(turns);}
+      latestTurn={seq:speechTurn,startedAt:now(),transcript:"",speaker:null,conversationId:getConversationId(),previousTurn:latestTurn,itemId:event.item_id,verificationId:globalThis.crypto?.randomUUID?.()};if(event.item_id){turns.set(event.item_id,latestTurn);trim(turns);}
       let ancestor=latestTurn;for(let n=0;n<32&&ancestor?.previousTurn;n++)ancestor=ancestor.previousTurn;if(ancestor)ancestor.previousTurn=null;
       lastTranscript = "";
       lastAssistantTranscript = "";
@@ -193,7 +199,7 @@ export function createRealtimeVoice({
       // collecting one continuous clip. Keep the transcript segments attached
       // to that clip; do not infer identity across distinct recordings.
       latestTurn.capture=turnRecorder?._novaCaptureId||null;
-      publish("listening", { phase: privacyGate&&!privateTurnAuthorized?'collecting-verification-speech':"speech-detected" });
+      publish("listening", { phase: privacyGate&&!isolatedTurns&&!privateTurnAuthorized?'collecting-verification-speech':"speech-detected" });
       return;
     }
     if (event.type === "input_audio_buffer.speech_stopped") {
@@ -202,7 +208,7 @@ export function createRealtimeVoice({
       if(utterance){utterance.endedAt=lastSpeechEndedAt;if(utterance.authorization)return;}
       // Before admitting private context, collect one bounded recording across
       // short VAD pauses. Never concatenate WebM files or reuse a prior match.
-      if(privacyGate&&!privateTurnAuthorized&&turnRecorder&&!event.novaVerificationWindow&&now()-turnStartedAt<verificationWindowMs){
+      if(privacyGate&&!isolatedTurns&&!privateTurnAuthorized&&turnRecorder&&!event.novaVerificationWindow&&now()-turnStartedAt<verificationWindowMs){
         clearTimeout(verificationStopTimer);
         verificationStopTimer=setTimeout(()=>{
           verificationStopTimer=null;
@@ -218,6 +224,7 @@ export function createRealtimeVoice({
         if(!isCurrentTurn(utterance)){timing('speaker-result-superseded');return;}
         if(speaker)onSpeaker(speaker);
         if(!privacyGate)return;
+        if(isolatedTurns){await handleIsolatedTurn(utterance,speaker,current);return;}
         // A short first utterance is not an identity mismatch. No private context
         // has entered this session yet; keep the gate shut and request more speech.
         if(!privateTurnAuthorized&&(['insufficient_speech','non_speech'].includes(speaker?.match_status)||speaker?.verification_status==='unavailable')){
@@ -279,13 +286,14 @@ export function createRealtimeVoice({
       const text=String(event.transcript||"").trim();const utterance=event.item_id?turns.get(event.item_id):latestTurn;
       if(!utterance){timing('orphan-transcript-ignored');return;}
       utterance.transcript=text;utterance.transcriptionComplete=true;utterance.resolveTranscript?.();
+      if(isolatedTurns&&event.item_id)sendEvent({type:'conversation.item.delete',item_id:event.item_id});
       if(utterance&&utterance!==latestTurn)return;lastTranscript=text;
       replyLanguage = explicitVoiceLanguage(text) || replyLanguage;
       if (lastTranscript) onTranscript(lastTranscript);
       return;
     }
     if(event.type==='conversation.item.input_audio_transcription.failed'){
-      const utterance=turns.get(event.item_id);if(utterance){utterance.transcriptionComplete=true;utterance.resolveTranscript?.();}timing('transcription-failed');return;
+      const utterance=turns.get(event.item_id);if(utterance){utterance.transcriptionComplete=true;utterance.resolveTranscript?.();}if(isolatedTurns&&event.item_id)sendEvent({type:'conversation.item.delete',item_id:event.item_id});timing('transcription-failed');return;
     }
     if (event.type === "response.output_audio_transcript.delta") {
       assistantTranscript += String(event.delta || "");
@@ -296,14 +304,15 @@ export function createRealtimeVoice({
       assistantTranscript = "";
       lastAssistantTranscript = text;
       if(event.response_id){responseTranscripts.set(event.response_id,text);trim(responseTranscripts);}
-      if (text && isCurrentTurn(responses.get(event.response_id))) onAssistantTranscript(text);
+      const responseTurn=responses.get(event.response_id);
+      if (text && (!isolatedTurns||responseTurn) && isCurrentTurn(responseTurn)) onAssistantTranscript(text);
       return;
     }
     if (event.type === "response.created") {
       timing('reply-created');
-      activeResponseTurn=requestedResponseTurns.shift()||latestTurn;
+      activeResponseTurn=isolatedTurns?isolatedReplies.get(event.response?.metadata?.nova_reply):requestedResponseTurns.shift()||latestTurn;
       responseOpen=true;if(event.response?.id&&activeResponseTurn){responses.set(event.response.id,activeResponseTurn);trim(responses);}
-      if(privacyGate&&(!activeResponseTurn?.verifiedSpeaker||!isCurrentTurn(activeResponseTurn)||inSpeech)){
+      if(privacyGate&&(!mayPlay(activeResponseTurn)||!isCurrentTurn(activeResponseTurn)||inSpeech)){
         if(remoteAudio)remoteAudio.muted=true;
         sendEvent({type:'response.cancel'});sendEvent({type:'output_audio_buffer.clear'});timing('stale-reply-blocked');return;
       }
@@ -313,6 +322,18 @@ export function createRealtimeVoice({
     }
     if (event.type === "response.done") {
       timing(event.response?.status==='failed'?'reply-failed':event.response?.status==='cancelled'?'reply-cancelled':'reply-done');
+      if(isolatedTurns){
+        const utterance=responses.get(event.response?.id);
+        if(utterance===activeResponseTurn)responseOpen=false;
+        if(event.response?.metadata?.nova_reply)isolatedReplies.delete(event.response.metadata.nova_reply);
+        // Private replies are out-of-band and Brain already persisted their
+        // receipt. Public clarification never enters the owner's saved history.
+        if(utterance&&isCurrentTurn(utterance)&&event.response?.status==='failed'){
+          onError('Nova could not produce this spoken reply. The microphone remains available; the request was not repeated.');
+          publish('listening',{phase:'playback-failed'});
+        } else if(utterance&&isCurrentTurn(utterance)&&!playbackActive&&!toolInFlight)publish('listening');
+        return;
+      }
       responseOpen=false;const utterance=responses.get(event.response?.id)||latestTurn||{seq:speechTurn,transcript:lastTranscript,speaker:speakerPromise,conversationId:getConversationId()};
       const look=event.response?.output?.filter?.(i=>i.type==="function_call"&&i.name==="nova_look")||[];
       for(const call of look)sendEvent({type:"conversation.item.create",item:{type:"function_call_output",call_id:call.call_id,output:JSON.stringify(readScene())}});
@@ -329,7 +350,7 @@ export function createRealtimeVoice({
       flushFollowup();return;
     }
     if (event.type === "output_audio_buffer.started") {
-      if(privacyGate&&(!activeResponseTurn?.verifiedSpeaker||!isCurrentTurn(activeResponseTurn)||inSpeech)){
+      if(privacyGate&&(!mayPlay(activeResponseTurn)||!isCurrentTurn(activeResponseTurn)||inSpeech)){
         if(remoteAudio)remoteAudio.muted=true;
         sendEvent({type:'output_audio_buffer.clear'});timing('stale-audio-blocked');return;
       }
@@ -352,6 +373,52 @@ export function createRealtimeVoice({
     let timer;try{await Promise.race([new Promise(resolve=>{utterance.resolveTranscript=resolve;}),new Promise(resolve=>{timer=setTimeout(resolve,transcriptWaitMs);})]);}finally{clearTimeout(timer);utterance.resolveTranscript=null;}
   }
 
+  function mayPlay(turn){
+    return Boolean(turn&&(turn.verifiedSpeaker||isolatedTurns&&turn.publicResponse));
+  }
+
+  async function handleIsolatedTurn(utterance,speaker,current){
+    await waitForTranscript(utterance);
+    if(!valid(current)||!isCurrentTurn(utterance))return;
+    if(utterance.itemId&&!utterance.transcriptionComplete)sendEvent({type:'conversation.item.delete',item_id:utterance.itemId});
+    let reason=speaker?.verification_status==='unavailable'?'service-unavailable':'identity-uncertain';
+    let identity=null;
+    // Only THIS recording is considered. No averaging/concatenation with an
+    // earlier owner recording, cached assertion, or name-based authentication.
+    if(speaker?.match_status==='confirmed'&&speaker?.authenticated_identity==='owner'){
+      try{
+        const response=await fetchImpl('/api/voice/realtime/authorize-turn',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker,turnId:utterance.verificationId})});
+        const body=await response.json();
+        if(response.ok&&body.authorized===true)identity=body.speakerIdentity;
+        else reason=response.status>=500?'authorization-unavailable':'authorization-denied';
+      }catch{reason='authorization-unavailable';}
+    }
+    if(!valid(current)||!isCurrentTurn(utterance))return;
+    if(identity?.status==='verified_owner'&&identity?.source==='server_verified_enrolled_voice'){
+      privateTurnAuthorized=true;utterance.verifiedSpeaker=speaker;utterance.identityEvidence=identity;
+      onAccessState({access:'owner',reason:'server-confirmed'});onOwnerVerified();timing('owner-turn-authorized');
+      utterance.request=await verifiedRequest(utterance);
+      if(!valid(current)||!isCurrentTurn(utterance))return;
+      if(!utterance.request){speakBrainResult({message:replyLanguage==='en'?'The speech transcript was unavailable. Could you repeat that part?':'تعذّر تحويل هالجزء لنص. ممكن تعيده بالعربي؟'},utterance);return;}
+      if(utterance.previousTurn?.pendingWork&&languageContinuationOf(utterance.previousTurn,utterance)){publish('thinking',{phase:'continuing-request'});return;}
+      if(isDirectVoiceExchange(utterance.request)){
+        const response=publicVoiceResponse({text:utterance.request,language:replyLanguage});
+        response.instructions='You are Nova. Respond warmly and briefly to this greeting in '+(replyLanguage==='en'?'English':'natural Arabic')+'. The current-turn owner identity below is server verified. Do not infer any additional facts. No actions or writes are requested.';
+        response.input.push({type:'message',role:'user',content:[{type:'input_text',text:JSON.stringify({currentTurnIdentity:identity})}]});
+        utterance.responseRequested=true;sendEvent({type:'response.create',response});
+      }else if(isLocalVisionRequest(utterance.request)){
+        speakBrainResult({message:JSON.stringify({cameraObservation:readScene(),limits:'These are approximate local detections, not identity or permission evidence.'})},utterance);
+      }else await runVerifiedTurn(utterance,current);
+      return;
+    }
+    privateTurnAuthorized=false;utterance.publicResponse=true;
+    const missing=!utterance.transcript;
+    onAccessState({access:'public',reason:missing?'transcript-unavailable':reason});
+    timing('public-turn-clarification',{transcriptAvailable:missing?0:1,technicalFailure:reason.includes('unavailable')?1:0});
+    utterance.responseRequested=true;
+    sendEvent({type:'response.create',response:publicVoiceResponse({text:utterance.transcript,language:replyLanguage,reason:missing?'transcript-unavailable':reason})});
+  }
+
   async function verifiedRequest(utterance){
     let text=utterance.transcript||'';
     if(!text||cancelsPreviousVoiceRequest(text))return text;
@@ -372,7 +439,9 @@ export function createRealtimeVoice({
   function speakBrainResult(result,utterance){
     if(!active||inSpeech||!isCurrentTurn(utterance)||!utterance.verifiedSpeaker)return;
     utterance.responseRequested=true;
-    timing('reply-requested');sendEvent({type:'response.create',response:authoritativeVoiceResponse(result,replyLanguage)});
+    const response=authoritativeVoiceResponse(result,replyLanguage);
+    if(isolatedTurns&&utterance.identityEvidence)response.input.push({type:'message',role:'user',content:[{type:'input_text',text:JSON.stringify({currentTurnIdentity:utterance.identityEvidence})}]});
+    timing('reply-requested');sendEvent({type:'response.create',response});
   }
 
   async function runVerifiedTurn(utterance,current){
@@ -380,7 +449,7 @@ export function createRealtimeVoice({
     utterance.brainHandled=true;utterance.pendingWork=true;toolInFlight=true;
     publish('thinking',{phase:'nova-brain'});timing('brain-turn-submitted');
     try{
-      const result=await sendTurn(utterance.request,{speaker:utterance.verifiedSpeaker,conversationId:getConversationId(),replyLanguage});
+      const result=await sendTurn(utterance.request,{speaker:utterance.verifiedSpeaker,conversationId:getConversationId(),replyLanguage,presentResult:()=>valid(current)&&isCurrentTurn(utterance)&&!inSpeech&&Boolean(utterance.verifiedSpeaker)});
       if(!valid(current))return;
       const delivery=await deliveryTurn(utterance,current);if(!delivery)return;
       if(utterance.conversationId&&getConversationId()!==utterance.conversationId)throw Error('Conversation changed.');
@@ -479,7 +548,7 @@ export function createRealtimeVoice({
           const audioBase64 = bytesToBase64(new Uint8Array(await audio.arrayBuffer()));
           await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
           if(!valid(current)||utterance?.conversationId&&utterance.conversationId!==getConversationId())return resolve(null);
-          const response = await fetchImpl("/api/voice/speaker/recognize", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audioBase64, mimeType: audio.type || "audio/webm", durationSeconds, transcript: utterance?.transcript || undefined, conversationId: getConversationId() || undefined }) });
+          const response = await fetchImpl("/api/voice/speaker/recognize", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audioBase64, mimeType: audio.type || "audio/webm", durationSeconds, ...(isolatedTurns?{turnId:utterance?.verificationId}:{}), transcript: utterance?.transcript || undefined, conversationId: getConversationId() || undefined }) });
           const value = await response.json().catch(() => null);
           resolve(response.ok&&value?.speaker ? {...value.speaker,verification_status:value.verificationStatus} : {match_status:'unknown',authenticated_identity:'none',verification_status:response.status>=500?'unavailable':'denied'});
         } catch { resolve({match_status:'unknown',authenticated_identity:'none',verification_status:'unavailable'}); }
@@ -501,6 +570,7 @@ export function createRealtimeVoice({
   function cleanup() {
     clearTimeout(verificationStopTimer);verificationStopTimer=null;
     requestedResponseTurns.length=0;activeResponseTurn=null;
+    isolatedReplies.clear();
     try { if (turnRecorder && turnRecorder.state !== "inactive") turnRecorder.stop(); } catch {}
     turnRecorder = null;privateTurnAuthorized=false;localSpeechAt=0;
     try { channel?.close?.(); } catch {}
@@ -516,7 +586,16 @@ export function createRealtimeVoice({
 
   function sendEvent(value) {
     if (channel?.readyState === "open") {
-      if(value.type==='response.create'){requestedResponseTurns.push(latestTurn);if(requestedResponseTurns.length>32)requestedResponseTurns.shift();}
+      if(value.type==='response.create'){
+        if(isolatedTurns){
+          // No private item is ever appended to the shared provider session.
+          if(value.response?.conversation!=='none'||!Array.isArray(value.response?.input))return;
+          const id=globalThis.crypto.randomUUID();
+          value.response.tools=[];value.response.tool_choice='none';
+          value.response.metadata={...value.response.metadata,nova_reply:id};
+          isolatedReplies.set(id,latestTurn);trim(isolatedReplies);
+        }else{requestedResponseTurns.push(latestTurn);if(requestedResponseTurns.length>32)requestedResponseTurns.shift();}
+      }
       channel.send(JSON.stringify(value));
     }
   }

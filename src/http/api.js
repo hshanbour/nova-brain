@@ -846,7 +846,7 @@ export function createApi({
             guestProjectBrief={id:project.id,name:String(project.name).slice(0,200),description:String(project.description||'').slice(0,2000),status:project.status||'not_recorded'};
             await storage.appendActivity({ownerId,projectId:project.id,action:'voice_guest_project_brief_shared',status:'completed',summary:'Owner reauthentication approved one read-only project brief. No history, memories or tools shared.',metadata:{scope:'project_brief_only'}});
           }
-          const session = await realtimeVoiceService.createClientSecret({ safetyIdentifier, accountContext, guestProjectBrief, privacyGate: realtimeAccountContext, guest: sessionInput.mode === "guest" });
+          const session = await realtimeVoiceService.createClientSecret({ safetyIdentifier, accountContext, guestProjectBrief, isolatedTurns: connectedPreview, privacyGate: realtimeAccountContext, guest: sessionInput.mode === "guest" });
           logger.info("Nova realtime voice session prepared", {
             requestId,
             model: session.model,
@@ -863,8 +863,8 @@ export function createApi({
         if (request.method === 'POST' && pathname === '/api/voice/realtime/authorize-turn') {
           if(!sameOriginRequest(request)){sendJson(response,403,{error:'Same-origin voice request required.'});return;}
           await ready();const input=await readJsonBody(request,config.maxBodyBytes);
-          const verified=await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity});
-          logger.info('Nova private voice turn authorized',{requestId,recognizedProfileId:verified.speaker_profile_id,matchStatus:verified.match_status});
+          const verified=await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.turnId});
+          logger.info('Nova private voice turn authorized',{requestId,turnId:verified.turn_id||null,recognizedProfileId:verified.speaker_profile_id,matchStatus:verified.match_status});
           const ownerProfile=await storage.getOwner(ownerId);
           sendJson(response,200,{authorized:true,speakerIdentity:verifiedOwnerVoiceEvidence(ownerProfile)});return;
         }
@@ -873,7 +873,7 @@ export function createApi({
           if (!sameOriginRequest(request)) { sendJson(response, 403, { error: "Voice context requires a same-origin owner console request." }); return; }
           await ready();
           const input = validateAgentRequest(await readJsonBody(request, config.maxBodyBytes));
-          const verified=await requirePrivateVoiceSpeaker({assertion:input.context?.speaker?.assertion,speakerAssertions,speakerIdentity});
+          const verified=await requirePrivateVoiceSpeaker({assertion:input.context?.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.context?.speaker?.turn_id});
           const evidence = await readRealtimeContext({ storage, projectService, ownerId, message: input.message, conversationId: input.conversationId, lookupProjectId: typeof input.context?.lookupProjectId === "string" ? input.context.lookupProjectId : null });
           evidence.speakerIdentity=verifiedOwnerVoiceEvidence(evidence.ownerIdentity);
           logger.info("Nova realtime context retrieved", { requestId, authority: evidence.authority, recognizedProfileId:verified.speaker_profile_id,matchStatus:verified.match_status, projectIds: evidence.projects.map(p => p.id), memoryIds: evidence.memories.map(m => m.id) });
@@ -895,6 +895,7 @@ export function createApi({
             sendJson(response, 400, { error: "A complete Realtime voice turn is required." });
             return;
           }
+          if(connectedPreview)await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.speaker?.turn_id});
           const conversation = await storage.ensureConversation({ id: conversationId, ownerId, title: userText.slice(0, 120) });
           if (!conversation) {
             sendJson(response, 404, { error: "Conversation is unavailable." });
@@ -904,7 +905,7 @@ export function createApi({
           const user = await storage.appendMessage({ id: messageId("user"), conversationId, ownerId, role: "user", content: userText });
           const assistant = await storage.appendMessage({ id: messageId("assistant"), conversationId, ownerId, role: "assistant", content: assistantText });
           let learning=null;
-          try { await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity});
+          try { await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.speaker?.turn_id});
             learning=await learningService?.observeVoiceTurn({verifiedOwner:true,message:userText,conversationId,userMessageId:user.id,assistantMessageId:assistant.id});
           } catch(error) { if(error?.code!=='voice_owner_verification_required')logger.error('Voice learning unavailable',{requestId,code:'voice_learning_failed'}); }
           sendJson(response, 201, { conversationId, user, assistant, learning:learning?{candidateId:learning.candidate.id,status:'pending_review'}:null });
@@ -929,10 +930,11 @@ export function createApi({
             },
           );
           let speaker = speakerFromAuthoritativeResult(report.authoritative, config.speakerRecognition.modelVersion);
+          if(typeof input.turnId==='string'&&/^[0-9a-f-]{36}$/i.test(input.turnId))speaker.turn_id=input.turnId;
           speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
           if (speaker.match_status === "confirmed" && !speaker.assertion) speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: speaker.extractor_version, match_status: "unknown", authenticated_identity: "none", assertion: null };
           const verificationStatus=report.authoritative.status==='failure'?'unavailable':report.authoritative.status;
-          logger.info("Nova realtime speaker recognition completed", { requestId, matchStatus: speaker.match_status, speakerCategory: speaker.speaker_label, assertionIssued: Boolean(speaker.assertion), verificationStatus, errorCode:report.authoritative.error?.code||null, qualityGateReason:report.authoritative.diagnostics?.qualityGateReason||null });
+          logger.info("Nova realtime speaker recognition completed", { requestId, turnId:speaker.turn_id||null, matchStatus: speaker.match_status, speakerCategory: speaker.speaker_label, assertionIssued: Boolean(speaker.assertion), verificationStatus, errorCode:report.authoritative.error?.code||null, qualityGateReason:report.authoritative.diagnostics?.qualityGateReason||null });
           // Recognition precedes conversation creation and private-turn authorization.
           // Do not write an unscoped/optional transcript here: a new Voice session
           // has no conversation ID yet. Completed turns use the normal transcript

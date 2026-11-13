@@ -2,7 +2,7 @@
 export function createVisualDemo({onChange=()=>{},AudioClass=globalThis.Audio,ContextClass=globalThis.AudioContext||globalThis.webkitAudioContext,now=()=>performance.now()}={}){
  let mode='idle',live=false,generation=0,audio,ctx,analyser,data;
  const notify=message=>onChange({mode,live,message});
- function stop(next='idle'){generation++;audio?.pause();mode=next;notify(next==='listening'?'Listening demo · simulated microphone, no capture':'Idle demo · microphone off');}
+ function stop(next='idle'){generation++;audio?.pause();mode=next;notify(live?'Live Nova session · demos disabled':next==='listening'?'Listening demo · simulated microphone, no capture':'Idle demo · microphone off');}
  return {
   async choose(next){if(live)return;stop(next==='speaking'?'idle':next);if(next!=='speaking')return;
    const ticket=generation;

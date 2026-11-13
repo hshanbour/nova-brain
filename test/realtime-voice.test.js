@@ -3,6 +3,15 @@ import assert from "node:assert/strict";
 import { createRealtimeVoiceService } from "../src/voice/realtime-voice-service.js";
 import { createRealtimeVoice } from "../assets/realtime-voice.js";
 
+test('connected isolated audio session has no private context, automatic responses or provider tools',async()=>{
+ let body;const service=createRealtimeVoiceService({apiKey:'fixture',fetchImpl:async(_url,input)=>{body=JSON.parse(input.body);return Response.json({value:'ek_fixture'});}});
+ const result=await service.createClientSecret({privacyGate:true,isolatedTurns:true,accountContext:{replyLanguage:'ar',projects:[{name:'PRIVATE_PROJECT'}],memories:[{content:'PRIVATE_MEMORY'}],conversation:[{content:'PRIVATE_HISTORY'}],ownerName:'PRIVATE_NAME'}});
+ assert.equal(result.isolatedTurns,true);assert.equal(result.privacyGate,true);
+ assert.deepEqual(body.session.tools,[]);assert.equal(body.session.tool_choice,'none');assert.equal(body.session.audio.input.turn_detection.create_response,false);
+ assert.doesNotMatch(JSON.stringify(body),/PRIVATE_PROJECT|PRIVATE_MEMORY|PRIVATE_HISTORY|PRIVATE_NAME/);
+ assert.match(body.session.instructions,/Never use default conversation history/);
+});
+
 test('unknown speaker closes protected session, clears playback, and never launches a reply',async()=>{
  const channel=new FakeChannel(),peer=new FakePeer(channel),states=[],levels=[];let paused=0,stopped=0;
  const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){stopped++;}}]};}},RTCPeerConnectionImpl:class{constructor(){return peer;}},MediaRecorderImpl:null,AudioImpl:class{pause(){}},
