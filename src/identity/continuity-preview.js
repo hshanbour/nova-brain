@@ -12,6 +12,7 @@ export function continuityPreviewEnvironment(input) {
   return {continuity:true,connected:input.VERCEL_GIT_COMMIT_REF===CONNECTED_BRANCH,environment:{...input,NOVA_PHONE_PRIVATE_OWNER_ENABLED:'false',NOVA_SHARP_CUTS_WHATSAPP_EXECUTION_ENABLED:'false',NOVA_SHARP_CUTS_WHATSAPP_OUTBOUND_ENABLED:'false'}};
 }
 export function continuityRouteAllowed(path,method,{connected=false}={}) {
+  if(connected&&method==='POST'&&['/api/voice/speaker/diagnostic/prepare','/api/voice/speaker/diagnostic/compare'].includes(path))return true;
   if(connected&&method==='POST'&&['/api/integrations/gmail/oauth/start','/api/integrations/gmail/oauth/callback'].includes(path))return true;
   // Preserve authenticated webhook intake and worker polling without releasing
   // any existing queue. The API returns a held/no-dispatch result for the poll.

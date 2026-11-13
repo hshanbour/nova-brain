@@ -67,11 +67,11 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
   };
   const reveal = stored => inspectRepresentation(stored).vector;
   const audit = (action, summary, metadata = {}) => storage.appendActivity({ ownerId, action, status: "completed", summary, metadata });
-  const recognizeRepresentations = async (variants, calibration = {}) => {
+  const recognizeRepresentations = async (variants, calibration = {}, {ownerOnly = false} = {}) => {
     const effectiveThreshold = Number.isFinite(calibration.threshold) ? calibration.threshold : threshold;
     const effectiveAmbiguityMargin = Number.isFinite(calibration.ambiguityMargin) ? calibration.ambiguityMargin : ambiguityMargin;
     const probes=variants.map(({label,representation})=>({label,representation:normalized(representation)}));
-    const candidates=(await storage.listSpeakerProfiles(ownerId,{includeRepresentation:true})).map((profile)=>({...profile,representation:reveal(profile.representation)})).filter((profile)=>profile.status==="active"&&profile.representation);
+    const candidates=(await storage.listSpeakerProfiles(ownerId,{includeRepresentation:true})).map((profile)=>({...profile,representation:reveal(profile.representation)})).filter((profile)=>profile.status==="active"&&profile.representation&&(!ownerOnly||profile.relation==='owner'));
     const ranked=candidates.map((profile)=>{const scores=probes.map((probe)=>({label:probe.label,confidence:cosine(probe.representation,profile.representation)})).sort((a,b)=>b.confidence-a.confidence);return{profile,scores,...scores[0]};}).sort((a,b)=>b.confidence-a.confidence);
     const best=ranked[0];const second=ranked[1];const confidence=best?Math.round(best.confidence*1000)/1000:0;const scoreMargin=second?Math.round((best.confidence-second.confidence)*1000)/1000:null;
     const decision={confidence,candidateCount:candidates.length,threshold:effectiveThreshold,ambiguityMargin:effectiveAmbiguityMargin,scoreMargin,bestCandidateCategory:best?(best.profile.relation==="owner"?"owner":"non_owner"):null,matchVariant:best?.label||null,comparisonDiagnostics:{comparedProfileId:best?.profile.id||null,profileVersion:best?.profile.representationVersion||null,profileDimensions:best?.profile.representation.length||0,probeDimensions:probes[0]?.representation.length||0,vadScore:best?.scores.find(s=>s.label==='vad_v3')?.confidence??null,legacyScore:best?.scores.find(s=>s.label==='legacy_full_waveform')?.confidence??null}};
@@ -124,6 +124,7 @@ export function createSpeakerIdentity({ storage, ownerId, clock = () => new Date
     async recognize(representation) {
       return recognizeRepresentations([{label:"vad_v3",representation}]);
     },
+    async diagnoseOwnerRepresentations(variants, calibration) { return recognizeRepresentations(variants,calibration,{ownerOnly:true}); },
     async recognizeMany(variants, calibration){if(!Array.isArray(variants)||!variants.length)throw new Error("At least one speaker representation is required.");return recognizeRepresentations(variants.map((item,index)=>({label:typeof item?.label==="string"?item.label:`variant_${index}`,representation:item?.representation})),calibration);},
     async rememberAnonymous({ representation, representationVersion, consent, consentActor, selfReportedName }) {
       if (consent !== true || typeof consentActor !== "string" || !consentActor.trim()) return { state:"consent_required",anonymousSpeakerId:null,confidence:0,candidateCount:0,threshold:familiarityThreshold,ambiguityMargin:familiarityAmbiguityMargin };

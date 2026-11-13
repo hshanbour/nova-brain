@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 
 const ASSETS = Object.freeze({
+  '/speaker-diagnostic.html':{file:'../../speaker-diagnostic.html',type:'text/html; charset=utf-8'},
+  '/assets/speaker-diagnostic.js':{file:'../../assets/speaker-diagnostic.js',type:'text/javascript; charset=utf-8'},
+  '/assets/speaker-diagnostic-vault.js':{file:'../../assets/speaker-diagnostic-vault.js',type:'text/javascript; charset=utf-8'},
   '/signin.html':{file:'../../signin.html',type:'text/html; charset=utf-8'},
   '/assets/preview-signin.js':{file:'../../assets/preview-signin.js',type:'text/javascript; charset=utf-8'},
   '/assets/preview-session.js':{file:'../../assets/preview-session.js',type:'text/javascript; charset=utf-8'},

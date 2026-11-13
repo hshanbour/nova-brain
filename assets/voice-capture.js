@@ -1,3 +1,8 @@
+export function novaMicrophoneConstraints(storage = globalThis.localStorage) {
+  const deviceId = storage?.getItem('nova-microphone-device-id') || '';
+  return {echoCancellation:true,noiseSuppression:true,autoGainControl:true,...(deviceId?{deviceId:{exact:deviceId}}:{})};
+}
+
 export function createMediaVoiceCapture({
   mediaDevices, MediaRecorder, AudioContext,
   schedule = (callback, delay) => setTimeout(callback, delay), cancelSchedule = (timer) => clearTimeout(timer),

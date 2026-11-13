@@ -1,4 +1,5 @@
 import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
+import {createSpeakerDiagnostic} from '../voice/speaker-diagnostic.js';
 import {usesServiceAuthentication} from "../identity/console-access.js";
 import {connectedTaskAllowed,isFreshCodingParent,connectedExecutionDenied} from '../identity/connected-execution.js';
 import {continuityRouteAllowed} from '../identity/continuity-preview.js';
@@ -272,6 +273,8 @@ export function createApi({
   previewAuth = null,
   logger = console,
 }) {
+  const speakerDiagnostic = connectedPreview && authorizeConsole && speakerExtractor && speakerIdentity
+    ? createSpeakerDiagnostic({ownerId,key:config.speakerRecognition?.assertionKey,extractor:speakerExtractor,identity:speakerIdentity,calibration:config.speakerRecognition}) : null;
   const recognitionEngines =
     speakerEngines ||
     (speakerExtractor && speakerIdentity
@@ -786,6 +789,20 @@ export function createApi({
             },
             speakerRecognition: speaker,
           });
+          return;
+        }
+        if (request.method === 'POST' && ['/api/voice/speaker/diagnostic/prepare','/api/voice/speaker/diagnostic/compare'].includes(pathname)) {
+          if (!speakerDiagnostic) { sendJson(response,404,{error:'Diagnostic is unavailable outside the connected Preview.'}); return; }
+          if (!sameOriginRequest(request)) { sendJson(response,403,{error:'Same-origin owner diagnostic required.'}); return; }
+          // The normal owner/workspace check above runs before any profile query.
+          // No raw request, audio, grant, vector or exception is logged here.
+          try {
+            const input = await readJsonBody(request,config.voiceV2.maxBodyBytes);
+            if (input.consent !== true) { sendJson(response,400,{error:'Temporary diagnostic consent required.'}); return; }
+            await ready();
+            const result = pathname.endsWith('/prepare') ? await speakerDiagnostic.prepare() : await speakerDiagnostic.compare(input,{requestId});
+            sendJson(response,200,result);
+          } catch (error) { sendJson(response,error instanceof ValidationError?400:error.statusCode||503,{error:'Diagnostic could not complete safely.',code:typeof error.code==='string'&&error.code.startsWith('diagnostic_')?error.code:'diagnostic_unavailable'}); }
           return;
         }
         if (request.method === "POST" && pathname === "/api/voice/speaker/readiness") {

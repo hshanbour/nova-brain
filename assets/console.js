@@ -7,7 +7,7 @@ import { conversationTitle, createConversationBindingState, createConversationHi
 import { createComposerVoiceControl } from "./voice-input.js";
 import { createVoiceOutput, hasLanguageVoice } from "./voice-output.js";
 import { createVoiceV2Client } from "./voice-v2-client.js";
-import { createAudioPlayback, createMediaVoiceCapture } from "./voice-capture.js";
+import { createAudioPlayback, createMediaVoiceCapture, novaMicrophoneConstraints } from "./voice-capture.js";
 import { createVoiceV2 } from "./voice-v2.js";
 import {createPrismBust} from "./prism-bust.js";
 import {rest} from "./prism-articulation.js";
@@ -706,7 +706,7 @@ const voiceSettingsDialog=document.querySelector("#voiceSettingsDialog");
 const preferredVoice=document.querySelector("#preferredVoice");
 const microphoneDevice=document.querySelector("#microphoneDevice"),microphoneLevel=document.querySelector("#microphoneLevel"),microphoneDiagnostic=document.querySelector("#microphoneDiagnostic"),microphoneStorageKey="nova-microphone-device-id";
 const selectedMicrophoneId=()=>localStorage.getItem(microphoneStorageKey)||"";
-const microphoneConstraints=()=>{const deviceId=selectedMicrophoneId();return{echoCancellation:true,noiseSuppression:true,autoGainControl:true,...(deviceId?{deviceId:{exact:deviceId}}:{})};};
+const microphoneConstraints=()=>novaMicrophoneConstraints(localStorage);
 async function refreshMicrophones(){if(!navigator.mediaDevices?.enumerateDevices){microphoneDiagnostic.textContent="This browser cannot list microphones.";return;}const devices=(await navigator.mediaDevices.enumerateDevices()).filter(item=>item.kind==="audioinput"),saved=selectedMicrophoneId();microphoneDevice.replaceChildren();const automatic=document.createElement("option");automatic.value="";automatic.textContent="System default microphone";microphoneDevice.append(automatic);devices.filter(item=>item.deviceId!=="default"&&item.deviceId!=="communications").forEach((item,index)=>{const option=document.createElement("option");option.value=item.deviceId;option.textContent=item.label||`Microphone ${index+1}`;microphoneDevice.append(option);});if(saved&&[...microphoneDevice.options].some(item=>item.value===saved))microphoneDevice.value=saved;else{microphoneDevice.value="";if(saved)localStorage.removeItem(microphoneStorageKey);}microphoneDiagnostic.textContent=devices.length?"Speak and confirm that the level meter moves. Nova keeps this choice only in this browser.":"No microphone input is currently visible to Edge.";}
 microphoneDevice.addEventListener("change",()=>{if(microphoneDevice.value)localStorage.setItem(microphoneStorageKey,microphoneDevice.value);else localStorage.removeItem(microphoneStorageKey);if(voiceV2?.isActive?.())voiceV2.end();microphoneLevel.value=0;microphoneDiagnostic.textContent="Microphone changed. Start Voice or dictation and speak to verify the level.";});
 const autoSpeak=document.querySelector("#autoSpeak");

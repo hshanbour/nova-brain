@@ -5,7 +5,7 @@ const continuity=continuityPreviewEnvironment(process.env);
 const config=syntheticPreviewEnvironment(continuity.environment);
 if(!config.synthetic&&!continuity.continuity)throw new Error('A verified Preview branch is required.');
 await mkdir('preview-public',{recursive:true});
-for(const file of ['index.html','signin.html','manifest.webmanifest'])await copyFile(file,`preview-public/${file}`);
+for(const file of ['index.html','signin.html','speaker-diagnostic.html','manifest.webmanifest'])await copyFile(file,`preview-public/${file}`);
 await cp('assets','preview-public/assets',{recursive:true});
 // Source, tests, reports, local evidence, auth files and environment files are
 // deliberately absent from the static output directory.
