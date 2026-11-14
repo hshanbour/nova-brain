@@ -197,6 +197,7 @@ export function createRealtimeVoice({
       if(privacyGate)interrupt();
       if(isolatedTurns){privateTurnAuthorized=false;onAccessState({access:'checking',reason:'new-turn'});}
       supersedeTurn();
+      if(isolatedTurns&&inSpeech)discardTurnRecording(); // overlapping starts cannot share a fallback clip
       playbackActive=false;onArticulation(rest);onAudibleLevel(0); speakerPromise=null;inSpeech=true;++speechTurn;
       latestTurn={seq:speechTurn,startedAt:now(),transcript:"",speaker:null,conversationId:getConversationId(),previousTurn:latestTurn,itemId:event.item_id,verificationId:globalThis.crypto?.randomUUID?.()};if(event.item_id){turns.set(event.item_id,latestTurn);trim(turns);}
       if(privateSessionId)latestTurn.fence=fetchImpl('/api/voice/realtime/turn-state',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'begin',session_id:privateSessionId,turn_id:latestTurn.verificationId,turn_seq:speechTurn})}).then(r=>r.ok).catch(()=>false);
@@ -361,7 +362,8 @@ export function createRealtimeVoice({
       flushFollowup();return;
     }
     if (event.type === "output_audio_buffer.started") {
-      if(privacyGate&&(!mayPlay(activeResponseTurn)||!isCurrentTurn(activeResponseTurn)||inSpeech)){
+      const playingTurn=isolatedTurns&&event.response_id?responses.get(event.response_id):activeResponseTurn;
+      if(privacyGate&&(!mayPlay(playingTurn)||playingTurn!==activeResponseTurn||!isCurrentTurn(playingTurn)||inSpeech)){
         if(remoteAudio)remoteAudio.muted=true;
         sendEvent({type:'output_audio_buffer.clear'});timing('stale-audio-blocked');return;
       }
@@ -371,6 +373,7 @@ export function createRealtimeVoice({
       return;
     }
     if (event.type === "output_audio_buffer.stopped" || event.type === "output_audio_buffer.cleared") {
+      if(isolatedTurns&&event.response_id&&responses.get(event.response_id)!==activeResponseTurn)return;
       timing(event.type.endsWith('cleared')?'playback-cleared':'playback-stopped');
       playbackActive=false;onArticulation(rest);onAudibleLevel(0);
       if (!toolInFlight) publish("listening");

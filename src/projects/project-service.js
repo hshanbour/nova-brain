@@ -30,6 +30,9 @@ export function createProjectService({storage,ownerId}={}){
       const selected=projects.find(project=>project.id===destination.toLowerCase());
       if(selected)return{status:'resolved',project:compactProject(selected),source:'explicit_destination'};
     }
+    // Snake-case tool names (e.g. sharp_cuts_email_drafts) are not a second
+    // project mention. Keep actual project names and canonical hyphenated IDs.
+    message=String(message).replace(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/giu,' ');
     const aliasMatches=projects.filter(project=>(PROJECT_ALIASES[project.id]||[]).some(alias=>phrase(message,alias)));
     const namedMatches=projects.filter(project=>phrase(message,project.name)||phrase(message,project.id));
     if(aliasMatches.length){

@@ -5,6 +5,11 @@ import {registerBusinessPreparationTools} from '../src/automation/business-prepa
 import {createProjectService} from '../src/projects/project-service.js';
 import {createPreviewAuth} from '../src/identity/preview-auth.js';
 import {createRealtimeVoiceService} from '../src/voice/realtime-voice-service.js';
+test('business tool names do not introduce a second Sharp Cuts project',async()=>{
+ const service=createProjectService({ownerId:'fixture',storage:{listProjects:async()=>[{id:'sharp-cuts-web',name:'Sharp Cuts Web'},{id:'sharp-cuts',name:'Sharp Cuts'}]}});
+ assert.equal((await service.resolve({message:'For Sharp Cuts Web, run sharp_cuts_email_provider_review and sharp_cuts_email_drafts.'})).project.id,'sharp-cuts-web');
+ assert.equal((await service.resolve({message:'Compare Sharp Cuts Web and Sharp Cuts.'})).status,'multiple');
+});
 test('campaign draft uses current aggregates, stores copy/approval boundaries and cannot send',async()=>{
  const tools=new Map(),events=[];let probes=0;
  registerBusinessPreparationTools({register:t=>tools.set(t.name,t)},{ownerId:'fixture',storage:{appendActivity:async e=>events.push(e)},senderConfig:{groupId:'dedicated'},senderClient:{probe:async()=>{probes++;return{connected:true};}},customerReader:{snapshot:async()=>({source:'neon_select_only_aggregate',uniqueProfiles:3,channels:{email:{contactCandidates:2,verifiedEligible:0,status:'blocked_evidence_incomplete'}}})},whatsapp:{}});
