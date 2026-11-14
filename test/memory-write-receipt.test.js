@@ -7,6 +7,12 @@ import {createInMemoryStorage} from '../src/storage/in-memory-storage.js';
 import {createToolRegistry} from '../src/tools/tool-registry.js';
 import {registerSystemTools} from '../src/tools/developer-tools.js';
 const request='بدياك تحفظ معلومة خيالية للاختبار. رمز اختبار نوفمبر هو زيتونة 42.';
+test('owner greeting and direct Levantine save are distinguished from reports and negation',()=>{
+ const msg='مرحبا، كيف الحال؟ بدي أحكيلك معلومة وديك تحفظيها. يوم بطاقة السبت لونها عنابي.';
+ assert.equal(requestedMemoryTool(msg),'memory_remember');
+ for(const prefix of ['قلتلك قبل: ','هي قالت: ','ما بدي تحفظ. '])assert.equal(requestedMemoryTool(prefix+msg),null);
+ for(const text of ['بطاقتي يوم السبت لونها عنابي','مرحبا، كيف الحال؟ احكيلي شو بتتذكري؟',msg+' لا تحفظ المعلومة'])assert.equal(requestedMemoryTool(text),null);
+});
 test('natural explicit requests are writable, recollections, questions and negations are not',()=>{
  for(const text of [request,'بديك تحفظي معلومة للاختبار','I want you to save this fictional fact'])assert.equal(requestedMemoryTool(text),'memory_remember');
  for(const text of ['قلتلك بدياك تحفظ معلومة','Did I ask you to save this?','بديك لا تحفظ المعلومة','Can you not save this fact?','I do not want you to save this fact'])assert.equal(requestedMemoryTool(text),null,text);

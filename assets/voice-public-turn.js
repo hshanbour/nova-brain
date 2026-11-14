@@ -11,6 +11,7 @@ For ordinary clear public questions, answer naturally without repeating an ident
 If the text is unintelligible or lacks a clear meaning, ask ONE short clarification in the active language and wait; do not invent a topic. ${missing?'Transcription did not produce usable text: ask to repeat the unclear part; do not infer a request.':''}
 ${technical?'The verification service or authorization request failed technically, not because this voice was proved different. Briefly say private verification is temporarily unavailable and the next spoken turn can retry; ordinary public conversation remains available. Do not request sign-in or re-enrollment.':''}
 ${identityNote} Use only the explicit input below. Never refer to default-session audio or omitted earlier turns.`,
-    input:[...history.slice(-6).map(m=>({type:'message',role:m.role,content:[{type:'input_text',text:m.text}]})),{type:'message',role:'user',content:[{type:'input_text',text:missing?'[No usable speech transcript]':String(text).slice(0,12000)}]}],
+    ...(missing?{instructions:`Read this one sentence only in ${language==='en'?'English':'Levantine Arabic'}, then wait. Do not add a greeting or infer a topic.`}:{}),
+    input:missing?[{type:'message',role:'user',content:[{type:'input_text',text:language==='en'?'Could you repeat that last part?':'ممكن تعيد آخر جزء؟'}]}]:[...history.slice(-6).map(m=>({type:'message',role:m.role,content:[{type:'input_text',text:m.text}]})),{type:'message',role:'user',content:[{type:'input_text',text:String(text).slice(0,12000)}]}],
   };
 }

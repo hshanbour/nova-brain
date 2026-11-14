@@ -1,5 +1,13 @@
 // Memory tools cannot infer consent from retrieved records or the model's plan.
 // Ambiguous requests remain read-only; Nova can ask the owner to clarify.
+const withoutGreeting=text=>text.replace(/^(?:(?:مرحبا|أهلا|اهلا|السلام عليكم|كيف الحال|كيفك|hello|hi|how are you)[\s،,.!?؟؛:]+){1,3}/iu,'').trim();
+// Return only the dictated payload, never the greeting, request or archive.
+export function dictatedSaveFact(message){
+  const text=String(message||'').trim();
+  if(/(?:ما\s+(?:بدي|بدّي|تحفظ)|مش\s+(?:بدي|طالب)|لا\s*تحفظ|بدون\s+حفظ|do not|don't|never save)/iu.test(text))return null;
+  const m=withoutGreeting(text).match(/^بدي\s+(?:أحكيلك|احكيلك|أقولك|اقولك)\s+(?:معلومة|شغلة)(?:\s+خيالية)?(?:\s+للاختبار)?[\s،,]+و(?:بدي(?:ا?ك|كي)?|ديك)\s+تحفظي?ها[\s،,.!:؛]+([^؟?]{4,800})$/u);
+  return m?.[1]?.trim()||null;
+}
 export function allowsMemoryMutation(tool, message) {
   if (!['memory_remember','memory_correct','memory_forget'].includes(tool)) return true;
   // A trailing restriction to the named record is not a cancellation of an
@@ -7,8 +15,15 @@ export function allowsMemoryMutation(tool, message) {
   // negations still fail closed.
   const text = String(message || '').trim().replace(/(?:[.!؛،]\s*|\s+)(?:do not|don't|don’t)\s+(?:delete|remove|forget)\s+(?:anything\s+else|any\s+other\s+(?:memories|records|information))[.!]*\s*$/iu,'').replace(/(?:[.!؛،]\s*|\s+)لا\s+(?:تحذف|تحذفي|تمسح|تمسحي)\s+(?:أي|اي)\s+(?:معلومات|ذاكرة|ذكريات|سجلات)\s+(?:ثانية|تانية|أخرى|اخرى)[.!]*\s*$/iu,'');
   if (/(?:do not|don't|don’t|never)\s+(?:\w+\s+){0,2}(?:save|store|remember|forget|delete|update)|(?:لا|بدون)\s+(?:تحفظ|تحفظي|تخزن|تخزني|تمسح|تمسحي|تحذف|تحذفي|تعيدي حفظ)/iu.test(text)) return false;
+  // A greeting may precede the actual request in the SAME spoken turn. Strip
+  // only closed social formulas, not an arbitrary clause mentioning a save.
+  const direct=withoutGreeting(text);
+  // Colloquial explicit introduction, including the attested ASR spelling
+  // "وديك تحفظيها". Require a following fact, and reject reported/negative
+  // requests; merely saying one's card colour remains a read-only statement.
+  if(dictatedSaveFact(text))return tool==='memory_remember';
   // Only a direct request prefix, never a quotation or recollection of a request.
-  const request = text.replace(/^(?:please\s+)?(?:i (?:want|need) you to|could you|can you)\s+/iu, '').replace(/^(?:من فضلك\s+)?(?:بدي(?:ا?ك|اك|كي)|أريدك(?: أن)?|اريدك(?: ان)?|ممكن)\s+(تحفظي?|تخزني?|تتذكري?|تصححي?|تعدلي?|تحذفي?|تمسحي?|تنسي)\s+/u, (_, verb) => ({تحفظ:'احفظ',تحفظي:'احفظي',تخزن:'خزن',تخزني:'خزني',تتذكر:'تذكر',تتذكري:'تذكري',تصحح:'صحح',تصححي:'صححي',تعدل:'عدل',تعدلي:'عدلي',تحذف:'احذف',تحذفي:'احذفي',تمسح:'امسح',تمسحي:'امسحي',تنسي:'انسي'}[verb]+' '));
+  const request = direct.replace(/^(?:please\s+)?(?:i (?:want|need) you to|could you|can you)\s+/iu, '').replace(/^(?:من فضلك\s+)?(?:بدي(?:ا?ك|اك|كي)|أريدك(?: أن)?|اريدك(?: ان)?|ممكن)\s+(تحفظي?|تخزني?|تتذكري?|تصححي?|تعدلي?|تحذفي?|تمسحي?|تنسي)\s+/u, (_, verb) => ({تحفظ:'احفظ',تحفظي:'احفظي',تخزن:'خزن',تخزني:'خزني',تتذكر:'تذكر',تتذكري:'تذكري',تصحح:'صحح',تصححي:'صححي',تعدل:'عدل',تعدلي:'عدلي',تحذف:'احذف',تحذفي:'احذفي',تمسح:'امسح',تمسحي:'امسحي',تنسي:'انسي'}[verb]+' '));
   if (tool === 'memory_forget') return /^(?:please\s+)?(?:forget|delete|remove)\b|^(?:من فضلك\s+)?(?:احذف|احذفي|احذفه|امسح|امسحي|انسي|انسى|انسَ)/iu.test(request);
   return /^(?:please\s+)?(?:remember\s+(?:that|this|my|the)|save\s+(?:this|that|my|the)|store\s+(?:this|that|my|the)|correct\s+(?:this|that|my|the)|update\s+(?:this|that|my|the))\b|^(?:من فضلك\s+)?(?:تذكر|تذكري|احفظ|احفظي|خزن|خزني|صحح|صححي|عدّل|عدّلي|عدل|عدلي|حدّث|حدّثي|حدث|حدثي)/iu.test(request);
 }

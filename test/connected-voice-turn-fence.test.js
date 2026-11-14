@@ -3,7 +3,21 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {Readable} from 'node:stream';
 import {createInMemoryStorage} from '../src/storage/in-memory-storage.js';
-import {createTurnPcm} from '../assets/turn-pcm.js';
+import {createTurnPcm,attachTurnPcm} from '../assets/turn-pcm.js';
+
+test('PCM worklet drops pending samples and creates an uncontaminated input after unmute',async t=>{
+ const nodes=[],source={connect(){},disconnect(){}};
+ const original=globalThis.AudioWorkletNode;
+ globalThis.AudioWorkletNode=class{constructor(){this.port={close(){}};nodes.push(this);}disconnect(){}};
+ t.after(()=>{if(original===undefined)delete globalThis.AudioWorkletNode;else globalThis.AudioWorkletNode=original;});
+ const capture=await attachTurnPcm({state:'running',sampleRate:16000,audioWorklet:{async addModule(){}}},source);
+ const oldHandler=nodes[0].port.onmessage,chunk=v=>({data:new Float32Array(640).fill(v)});
+ oldHandler(chunk(.9));capture.begin();capture.setMuted(true);
+ assert.equal(capture.ready(),false);assert.equal(capture.end(),null);
+ capture.setMuted(false);oldHandler(chunk(.9));capture.begin();nodes[1].port.onmessage(chunk(.25));
+ const clip=capture.end();assert.equal(clip.durationSeconds,.04);assert.equal(new DataView(clip.bytes.buffer).getInt16(44,true),8192);
+ capture.dispose();
+});
 import {createApi} from '../src/http/api.js';
 import {createSpeakerAssertions} from '../src/voice/speaker-assertion.js';
 

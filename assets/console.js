@@ -706,6 +706,13 @@ async function loadCallDetail(id){
 messages.addEventListener("click",(event)=>{const button=event.target.closest(".speak-response");if(!button)return;if(voiceOutput.activeId()===button.dataset.voiceId)voiceOutput.stop();else voiceOutput.speak(button.dataset.speechText,{id:button.dataset.voiceId});});
 
 const voiceSettingsDialog=document.querySelector("#voiceSettingsDialog");
+const checkConnection=document.querySelector('#voiceConnectionCheck');
+checkConnection?.addEventListener('click',async()=>{
+  const status=document.querySelector('#voiceConnectionCheckStatus');checkConnection.disabled=true;status.textContent='Checking…';
+  try{const response=await fetch('/api/voice/realtime/session',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'owner',checkOnly:true})});const check=await response.json();
+    status.textContent=response.ok&&check.providerAccepted&&check.privateGate&&check.isolatedTurns?'Provider accepted the private Voice configuration. No microphone or playback tested.':'Private Voice connection unavailable. No microphone opened.';
+  }catch{status.textContent='Voice connection check failed. No microphone opened.';}finally{checkConnection.disabled=false;}
+});
 const preferredVoice=document.querySelector("#preferredVoice");
 const microphoneDevice=document.querySelector("#microphoneDevice"),microphoneLevel=document.querySelector("#microphoneLevel"),microphoneDiagnostic=document.querySelector("#microphoneDiagnostic"),microphoneStorageKey="nova-microphone-device-id";
 const selectedMicrophoneId=()=>localStorage.getItem(microphoneStorageKey)||"";
@@ -756,6 +763,12 @@ const voiceExperienceStorageKey="nova.voice.experience.v1";voiceExperienceMode.v
 function syncVoiceSurface() {
   const locked=document.body.classList.contains('voice-privacy-paused');
   const active=Boolean(voiceSessionDesired || voiceV2?.isActive?.());
+  const canMute=Boolean(voiceV2?.isActive?.()&&voiceV2?.setMuted);
+  const micMuted=canMute&&voiceV2.isMuted();
+  for(const button of [voiceMuteButton,voiceWorkspaceMute]){
+    button.disabled=!canMute;button.setAttribute('aria-pressed',String(micMuted));button.textContent=micMuted?'Unmute':'Mute';
+  }
+  if(micMuted){microphoneLevel.value=0;microphoneDiagnostic.textContent='Microphone muted';}
   const immersive=(active||glassPreviewOpen) && voiceExperienceMode.value==="separate";
   voiceExperience.hidden=!immersive;
   if(!immersive && document.querySelector("#avatarGalleryDialog").hidden)camera.stop();
@@ -771,12 +784,12 @@ function syncVoiceSurface() {
     glassAvatar.setSession(active);
     const wasActive=voiceExperience.dataset.sessionActive==='true';voiceExperience.dataset.sessionActive=String(active);
     voiceMuteButton.hidden=!voiceV2?.isActive?.();
-    document.querySelector('#voiceExperienceEnd').textContent=locked?'Unlock private workspace':active?'End conversation':'Back to chat';
+    document.querySelector('#voiceExperienceEnd').textContent=active?'End conversation':locked?'Unlock private workspace':'Back to chat';
     if(active&&!wasActive){const settings=document.querySelector('#glassSettings');if(settings)settings.hidden=true;document.querySelector('#glassSettingsToggle')?.setAttribute('aria-expanded','false');}
   }
 }
 voiceExperienceMode.addEventListener("change",()=>{localStorage.setItem(voiceExperienceStorageKey,voiceExperienceMode.value);syncVoiceSurface();});
-const voiceModeLabels={idle:"Voice idle",connecting:"Connecting microphone…",getting_ready:"Getting ready…",listening:"Voice ready · speak to Nova",muted:"Microphone muted",barge_candidate:"Nova speaking… · speak to interrupt",barge_verifying:"Nova speaking… · speak to interrupt",paused_waiting_for_user:"Nova paused · say continue when ready",transcribing:"Nova heard you · processing…",thinking:"Nova thinking…",speaking:"Nova speaking… · speak to interrupt",interrupted:"Interrupted · getting ready…",retrying:"Voice ready · retrying quietly…",error:"Voice needs attention"};
+const voiceModeLabels={idle:"Voice idle",connecting:"Connecting microphone…",getting_ready:"Getting ready…",listening:"Voice ready · speak to Nova",muted:"Microphone muted",resuming:"Clearing previous audio…",barge_candidate:"Nova speaking… · speak to interrupt",barge_verifying:"Nova speaking… · speak to interrupt",paused_waiting_for_user:"Nova paused · say continue when ready",transcribing:"Nova heard you · processing…",thinking:"Nova thinking…",speaking:"Nova speaking… · speak to interrupt",interrupted:"Interrupted · getting ready…",retrying:"Voice ready · retrying quietly…",error:"Voice needs attention"};
 const capture=createMediaVoiceCapture({mediaDevices:navigator.mediaDevices,MediaRecorder:window.MediaRecorder,AudioContext:window.AudioContext||window.webkitAudioContext,getAudioConstraints:microphoneConstraints,onInputLevel:({level,threshold})=>{microphoneLevel.value=Math.min(1,level*8);if(voiceV2?.isActive?.())microphoneDiagnostic.textContent=level>=threshold?"Voice signal detected.":"Listening — speak close to the selected microphone.";}});
 const playback=createAudioPlayback({Audio:window.Audio,URL});const interruptionPlayback=createAudioPlayback({Audio:window.Audio,URL});
 const voiceCallbacks={
@@ -803,14 +816,32 @@ try{realtimeVoice=createRealtimeVoice({readScene:()=>camera.read(),onArticulatio
 voiceV2=realtimeVoice||batchVoice;
 async function startVoiceSession(){if(voiceSessionDesired||voiceV2?.isActive?.()){voiceExperienceMode.value="separate";localStorage.setItem(voiceExperienceStorageKey,"separate");syncVoiceSurface();return;}requestError.hidden=true;document.querySelector('#voiceResultsButton').hidden=document.body.classList.contains('voice-privacy-paused');voiceExperienceUser.hidden=true;voiceExperienceAssistant.hidden=true;voiceSessionDesired=true;syncVoiceSurface();if(!capture.supported){voiceSessionDesired=false;syncVoiceSurface();requestError.textContent="Start Voice requires MediaRecorder, microphone access, and Web Audio support.";requestError.hidden=false;return;}try{const readiness=await voiceClient.readiness();if(readiness.realtime?.available&&realtimeVoice){voiceV2=realtimeVoice;try{await voiceV2.start();return;}catch(error){if(error?.novaVoiceStage==="microphone"||readiness.realtime?.requiresVerifiedSpeaker)throw error;showVoiceDiagnostic("Realtime Voice was unavailable; Nova switched to the proven recovery voice path.");}}if(readiness.realtime?.requiresVerifiedSpeaker)throw new Error("Protected Realtime Voice is unavailable; private conversation cannot use an unverified fallback.");if(!readiness.available)throw new Error("Voice providers are not fully configured in this Preview.");voiceV2=batchVoice;await voiceV2.start();requestError.hidden=true;}catch(error){voiceSessionDesired=false;voiceV2?.end?.();syncVoiceSurface();requestError.textContent=error.message||"Voice could not start.";requestError.hidden=false;if(glassPreview)voiceExperienceStatus.textContent=requestError.textContent;}}
 voiceModeButton.addEventListener("click",startVoiceSession);
-const endVoiceSession=async()=>{if(document.body.classList.contains('voice-privacy-paused')){voiceV2?.end?.();const unlocked=await requestGuestApproval({unlockWorkspace:true});if(!unlocked)return;document.body.classList.remove('voice-privacy-paused');ownerVoiceRetry.hidden=true;}document.querySelector("#voiceGuestApprove").hidden=true;glassPreviewOpen=false;glassSignal.reset();voiceSessionDesired=false;voiceV2?.end?.();voiceInputLevel=0;voiceOutputLevel=0;avatar.setState("idle");syncVoiceSurface();};
+const endVoiceSession=async()=>{
+  const locked=document.body.classList.contains('voice-privacy-paused');
+  const running=voiceSessionDesired||voiceV2?.isActive?.();
+  if(locked&&!running){
+    const unlocked=await requestGuestApproval({unlockWorkspace:true});
+    if(!unlocked)return;
+    document.body.classList.remove('voice-privacy-paused');ownerVoiceRetry.hidden=true;
+  }
+  voiceSessionDesired=false;voiceV2?.end?.();voiceInputLevel=0;voiceOutputLevel=0;
+  glassSignal.reset();avatar.setState('idle');document.querySelector("#voiceGuestApprove").hidden=true;
+  // Anyone can end microphone capture immediately. Keep the private workspace
+  // covered until an owner verifies on a new voice run or unlocks it explicitly.
+  glassPreviewOpen=locked&&running;
+  if(glassPreviewOpen){
+    voiceExperienceMode.value='separate';ownerVoiceRetry.hidden=false;ownerVoiceRetry.disabled=false;
+    voiceExperienceStatus.textContent='Voice ended · private workspace locked';
+  }
+  syncVoiceSurface();
+};
 document.querySelector("#voiceExperienceEnd").addEventListener("click",endVoiceSession);
  document.querySelector('#voiceGuestApprove').addEventListener('click',async()=>{voiceV2?.end?.();document.querySelector('#voiceGuestApprove').hidden=true;voiceSessionDesired=true;voiceV2=realtimeVoice;try{await realtimeVoice.start({guest:true});}catch(error){showVoiceDiagnostic(error.message);}});
 document.querySelector("#voiceWorkspaceEnd").addEventListener("click",endVoiceSession);
 document.querySelector("#voiceContinueWorkspace").addEventListener("click",()=>{voiceExperience.hidden=true;voiceExperienceMode.value="integrated";localStorage.setItem(voiceExperienceStorageKey,"integrated");syncVoiceSurface();});
 document.querySelector("#voiceWorkspaceOpen").addEventListener("click",()=>{voiceExperienceMode.value="separate";localStorage.setItem(voiceExperienceStorageKey,"separate");syncVoiceSurface();});
 document.querySelector("#voiceTranscriptButton").addEventListener("click",(event)=>{const hidden=!voiceExperienceTranscript.hidden;voiceExperienceTranscript.hidden=hidden;event.currentTarget.setAttribute("aria-pressed",String(!hidden));event.currentTarget.textContent=hidden?"Show transcript":"Hide transcript";});
-const toggleVoiceMute=()=>{const muted=voiceV2?.setMuted?.(!voiceV2.isMuted?.());for(const button of [voiceMuteButton,voiceWorkspaceMute]){button.setAttribute("aria-pressed",String(Boolean(muted)));button.textContent=muted?"Unmute":"Mute";}};
+const toggleVoiceMute=()=>{voiceV2?.setMuted?.(!voiceV2.isMuted?.());syncVoiceSurface();};
 voiceMuteButton.addEventListener("click",toggleVoiceMute);voiceWorkspaceMute.addEventListener("click",toggleVoiceMute);
 
 if(glassPreview){

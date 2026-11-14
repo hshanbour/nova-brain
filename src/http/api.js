@@ -835,6 +835,7 @@ export function createApi({
           }
           const safetyIdentifier = createHash("sha256").update(`nova-realtime:${ownerId}`).digest("hex");
           const sessionInput=await readJsonBody(request,config.maxBodyBytes);
+          if(sessionInput.checkOnly===true&&(!connectedPreview||sessionInput.mode!=='owner')){sendJson(response,403,{error:'Private connected Preview required.'});return;}
           if(connectedPreview&&sessionInput.mode==='guest'&&sessionInput.guestApproval&&!previewAuth?.verifyGuestGrant(sessionInput.guestApproval)){
             sendJson(response,403,{error:'The requested guest permission is invalid or expired.',code:'guest_owner_approval_required'});return;
           }
@@ -858,6 +859,12 @@ export function createApi({
             await storage.appendActivity({ownerId,projectId:project.id,action:'voice_guest_project_brief_shared',status:'completed',summary:'Owner reauthentication approved one read-only project brief. No history, memories or tools shared.',metadata:{scope:'project_brief_only'}});
           }
           const session = await realtimeVoiceService.createClientSecret({ safetyIdentifier, accountContext, guestProjectBrief, isolatedTurns: connectedPreview, privacyGate: realtimeAccountContext, guest: sessionInput.mode === "guest" });
+          if(connectedPreview&&sessionInput.checkOnly===true&&sessionInput.mode==='owner'){
+            // Validate the actual provider configuration without requesting a mic,
+            // opening a peer connection, returning a bearer or replacing a turn.
+            response.setHeader('Cache-Control','no-store');
+            sendJson(response,200,{providerAccepted:true,privateGate:session.privacyGate===true,isolatedTurns:session.isolatedTurns===true});return;
+          }
           logger.info("Nova realtime voice session prepared", {
             requestId,
             model: session.model,

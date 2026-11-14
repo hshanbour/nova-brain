@@ -20,8 +20,20 @@ export async function attachTurnPcm(context,source){
   if(!context?.audioWorklet||typeof AudioWorkletNode!=='function'||context.sampleRate<16000)return null;
   await context.audioWorklet.addModule(new URL('./turn-pcm-worklet.js',import.meta.url));
   if(context.state==='closed')return null;
-  const node=new AudioWorkletNode(context,'nova-turn-pcm',{numberOfOutputs:0}),capture=createTurnPcm(context.sampleRate);
+  const capture=createTurnPcm(context.sampleRate);
+  let node=null;
   let lastFrame=-Infinity;
-  source.connect(node);node.port.onmessage=e=>{capture.write(e.data);lastFrame=performance.now();};
-  return {...capture,ready:()=>context.state==='running'&&performance.now()-lastFrame<300,dispose(){node.port.onmessage=null;node.port.close();try{source.disconnect(node);}catch{}node.disconnect();capture.clear();}};
+  function disconnect(){
+    if(node){node.port.onmessage=null;node.port.close();try{source.disconnect(node);}catch{}node.disconnect();node=null;}
+    lastFrame=-Infinity;capture.clear();
+  }
+  function connect(){
+    if(node||context.state==='closed')return;
+    const current=new AudioWorkletNode(context,'nova-turn-pcm',{numberOfOutputs:0});
+    node=current;current.port.onmessage=e=>{if(node===current){capture.write(e.data);lastFrame=performance.now();}};
+    source.connect(current);
+  }
+  connect();
+  return {...capture,ready:()=>Boolean(node)&&context.state==='running'&&performance.now()-lastFrame<300,
+    setMuted(value){if(value)disconnect();else connect();},dispose:disconnect};
 }

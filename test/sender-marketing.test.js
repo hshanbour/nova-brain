@@ -76,6 +76,22 @@ test('campaign inspection keeps 1562 membership intact and reports provider erro
 });
 
 test('sent reporting uses provider pagination total and never equates sent with delivered',async()=>{
- const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async url=>Response.json(url.endsWith('/errors')?{errors:[{title:'No subscribers selected'}],warnings:[{title:'SPF warning'}]}:{data:[{email:'must-not-return@example.invalid'}],meta:{total:1562},links:{next:'page-2'}})});
- const r=await client.campaignStatus('campaign_1');assert.equal(r.sentCount,1562);assert.equal(r.deliveredCount,null);assert.equal(r.errors.length,1);assert.equal(r.warnings.length,1);assert.doesNotMatch(JSON.stringify(r),/must-not-return/);
+ const documents={
+   '/v2/campaigns/campaign_1':{data:{id:'campaign_1',status:'SENT',sent_time:'2026-11-01 13:00:00',opens:30,clicks:7,bounces_count:2,html:{html_body:'must-not-return'}}},
+   '/v2/campaigns/campaign_1/errors':{errors:[{title:'No subscribers selected'}],warnings:[{title:'SPF warning'}]},
+   '/v2/campaigns/campaign_1/emails-sent':{data:[{email:'must-not-return@example.invalid'}],meta:{total:1562},links:{next:'page-2'}},
+ };
+ const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async(url,options)=>{
+   assert.equal(options.method,'GET');
+   return Response.json(documents[new URL(url).pathname]);
+ }});
+ const r=await client.campaignStatus('campaign_1');
+ assert.equal(r.status,'SENT');assert.equal(r.sentCount,1562);assert.equal(r.deliveredCount,null);
+ assert.deepEqual([r.opens,r.clicks,r.bounces],[30,7,2]);assert.equal(r.sentAt,'2026-11-01 13:00:00');
+ assert.equal(r.errors.length,1);assert.equal(r.warnings.length,1);assert.doesNotMatch(JSON.stringify(r),/must-not-return/);
+});
+
+test('campaign report refuses details for a different campaign',async()=>{
+ const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async()=>Response.json({data:{id:'other_campaign'}})});
+ await assert.rejects(()=>client.campaignStatus('campaign_1'),/could not be reconciled/);
 });

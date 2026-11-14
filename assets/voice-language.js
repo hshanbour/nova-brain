@@ -1,4 +1,13 @@
 // Only explicit requests switch the active spoken language. Project names/noise do not.
+// These are script counts, not guesses about language, identity or who spoke.
+// Never persist the text of a public/uncertain turn for diagnostics.
+export function voiceScriptCounts(text){
+  let arabic=0,latin=0,other=0;
+  for(const c of String(text||'').slice(0,12000)){if(!/\p{L}/u.test(c))continue;
+    if(/\p{Script=Arabic}/u.test(c))arabic++;else if(/\p{Script=Latin}/u.test(c))latin++;else other++;}
+  return {arabic,latin,other};
+}
+export function unsupportedVoiceScript({arabic,latin,other}){return other>=3&&other>2*(arabic+latin);}
 export function explicitVoiceLanguage(text) {
   const value = String(text || "").trim();
   if (/(?:speak|reply|respond|continue|talk|switch)(?:\s+\w+){0,5}\s+(?:in\s+)?English\b/i.test(value) || /(?:احكي|احكيلي|تكلم|رد|جاوب|كملي|كمل|تابع|خليك).{0,35}(?:بالإنجليزي|بالانجليزي|إنجليزي|انجليزي)/u.test(value)) return "en";

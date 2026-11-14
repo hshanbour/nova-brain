@@ -70,7 +70,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
   if(typeof fetchImpl!=="function")throw new TypeError("fetchImpl is required.");
   const request=async(path,{method="GET",body,signal}={})=>{
     const allowed = method==="GET"
-      ? /^\/(?:groups(?:\?limit=1)?|subscribers\?page=[1-9][0-9]{0,2}|campaigns|campaigns\/[A-Za-z0-9_-]{2,80}\/(?:emails-sent|errors))$/.test(path)
+      ? /^\/(?:groups(?:\?limit=1)?|subscribers\?page=[1-9][0-9]{0,2}|campaigns(?:\/[A-Za-z0-9_-]{2,80}(?:\/(?:emails-sent|errors))?)?)$/.test(path)
       : method==="POST" && /^\/(?:subscribers(?:\/groups\/[A-Za-z0-9_-]{2,80})?|campaigns|message\/send)$/.test(path);
     if(!allowed)throw new Error("Sender.net endpoint is not allowlisted.");
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
@@ -157,7 +157,27 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
       if(response?.success!==true||typeof response?.emailId!=="string")throw safeProviderError(502);
       return Object.freeze({accepted:true,status:"submitted",provider:"Sender.net",messageId:response.emailId,recipient,customerContacts:0,subscriberUploads:0});
     },
-    async campaignStatus(campaignId){if(!safeId(campaignId))throw new TypeError("campaignId is invalid.");const [sent,errors]=await Promise.all([request(`/campaigns/${campaignId}/emails-sent`),request(`/campaigns/${campaignId}/errors`)]);const total=sent?.meta?.total??sent?.data?.total;return Object.freeze({campaignId,sentCount:Number.isFinite(Number(total))&&total!=null?Number(total):!sent?.links?.next&&Array.isArray(sent?.data)?sent.data.length:null,deliveredCount:null,deliveryEvidence:'sent_records_are_not_delivery_receipts',errors:(errors.errors||errors.data||[]).map(item=>({code:String(item?.code||'provider_error'),title:String(item?.title||'Provider restriction').slice(0,180),severity:'error'})),warnings:(errors.warnings||[]).map(item=>String(item.title||'Provider warning').slice(0,180)),recipientDetailsExposed:false});},
+    async campaignStatus(campaignId){
+      if(!safeId(campaignId))throw new TypeError("campaignId is invalid.");
+      const path="/campaigns/"+campaignId;
+      const [details,sent,errors]=await Promise.all([
+        request(path),request(path+"/emails-sent"),request(path+"/errors"),
+      ]);
+      const campaign=details.data;
+      if(campaign?.id!==campaignId)throw Error("Sender campaign details could not be reconciled.");
+      const count=value=>Number.isSafeInteger(value)&&value>=0?value:null;
+      const total=count(sent?.meta?.total)??count(sent?.data?.total);
+      const sentCount=total??count(campaign.sent_count)??(sent?.links?.next===null&&Array.isArray(sent.data)?sent.data.length:null);
+      // The campaign details endpoint includes message HTML and recipient group
+      // identifiers. Only the documented aggregate fields leave the adapter.
+      return Object.freeze({
+        campaignId,status:campaign.status??null,scheduledAt:campaign.schedule_time??null,sentAt:campaign.sent_time??null,
+        sentCount,opens:count(campaign.opens),clicks:count(campaign.clicks),bounces:count(campaign.bounces_count),
+        deliveredCount:null,deliveryEvidence:"sent_records_are_not_delivery_receipts",
+        errors:(errors.errors||errors.data||[]).map(item=>({code:String(item?.code||"provider_error"),title:String(item?.title||"Provider restriction").slice(0,180),severity:"error"})),
+        warnings:(errors.warnings||[]).map(item=>String(item.title||"Provider warning").slice(0,180)),recipientDetailsExposed:false,
+      });
+    },
     async sendCampaign(){throw Object.assign(new Error("Sharp Cuts live email sending is disabled."),{code:"sender_live_send_disabled",statusCode:403});},
   });
 }

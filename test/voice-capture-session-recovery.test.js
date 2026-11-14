@@ -1,3 +1,16 @@
+test('unexpected input script cannot enter private Brain and unsupported output is cancelled on its own response',async()=>{
+ let runs=0;
+ const h=voiceHarness({isolatedTurns:true,sendTurn:async()=>{runs++;return {message:'unexpected'};}});
+ try{await h.voice.start();h.set(1000);h.event('speech_started','item');h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'item',transcript:'苹果颜色'});h.set(4000);h.event('speech_stopped','item');await wait();
+ const reply=h.channel.sent.filter(e=>e.type==='response.create').at(-1);assert.ok(reply);assert.equal(runs,0);assert.doesNotMatch(JSON.stringify(reply),/苹果/);
+ h.channel.message({type:'response.created',response:{id:'testreply',metadata:reply.response.metadata}});
+ h.channel.message({type:'response.output_audio_transcript.delta',response_id:'old',delta:'苹果颜色'});
+ assert.ok(!h.channel.sent.some(e=>e.type==='response.cancel'&&e.response_id==='old'));
+ h.channel.message({type:'response.output_audio_transcript.delta',response_id:'testreply',delta:'苹果颜色'});
+ assert.ok(h.channel.sent.some(e=>e.type==='response.cancel'&&e.response_id==='testreply'));
+ }finally{h.close();}
+});
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Readable} from 'node:stream';
@@ -77,7 +90,8 @@ test('isolated technical verification failure and missing transcript have distin
   const h=voiceHarness({isolatedTurns:true,autoTranscript:false,recognize:()=>({match_status:'unknown',verification_status:'unavailable',authenticated_identity:'none'})});try{
    await h.voice.start();h.set(1000);h.event('speech_started','a');h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'a',transcript:missing?'':'What is the weather?'});h.set(4000);h.event('speech_stopped','a');await wait();
    const response=h.channel.sent.find(x=>x.type==='response.create').response;
-   assert.match(response.instructions,missing?/Transcription did not produce usable text/:/verification service or authorization request failed technically/);
+   if(missing){assert.equal(response.input.length,1);assert.equal(response.input[0].content[0].text,'ممكن تعيد آخر جزء؟');assert.deepEqual(response.tools,[]);}
+   else assert.match(response.instructions,/verification service or authorization request failed technically/);
    assert.equal(h.voice.isActive(),true);assert.equal(h.verifiedCount(),0);
   }finally{h.close();}
  }
@@ -113,7 +127,60 @@ test('a different voice cannot use the gated recovery session',async()=>{
   assert.equal(h.verifiedCount(),1);assert.equal(h.counts().pauses,1);assert.equal(h.voice.isActive(),false);assert.equal(h.channel.sent.filter(x=>x.type==='response.create').length,0);
  }finally{h.close();}
 });
-function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn,recognize,authorizationFailure=false,verificationWindowMs=0,useDefaultWindow=false,isolatedTurns=false,autoTranscript=true}={}){
+test('mute discards a primed recording, suppresses late VAD and waits for fresh speech to resume',async()=>{
+ const states=[],fences=[];const h=voiceHarness({isolatedTurns:true,onState:event=>states.push(event.state),onFence:event=>fences.push(event)});
+ try{
+  await h.voice.start();h.set(1000);h.event('speech_started','old');
+  assert.equal(h.recorders.at(-1).state,'recording');
+  h.voice.setMuted(true);
+  assert.equal(h.recorders.at(-1).state,'inactive');assert.equal(states.at(-1),'muted');
+  assert.deepEqual(fences.map(f=>f.turn_seq),[1,2]);
+  assert.ok(h.channel.sent.some(e=>e.type==='input_audio_buffer.clear'));
+  h.local(3000);h.event('speech_stopped','old');h.event('speech_started','muted');
+  h.channel.message({type:'response.created',response:{id:'late'}});h.channel.message({type:'output_audio_buffer.started'});
+  assert.equal(states.at(-1),'muted');assert.equal(h.requests.length,0);assert.equal(h.recorders.length,1);
+  h.voice.setMuted(false);h.event('speech_started','before-flush');assert.equal(h.recorders.length,1);
+  h.channel.message({type:'input_audio_buffer.cleared'});
+  h.event('speech_stopped','muted');assert.equal(h.requests.length,0);
+  h.set(5000);h.event('speech_started','new');h.set(8000);h.event('speech_stopped','new');await wait();
+  assert.equal(h.requests.length,1);assert.equal(h.verifiedCount(),1);assert.equal(h.channel.sent.filter(e=>e.type==='response.create').length,1);
+  assert.deepEqual(fences.map(f=>f.turn_seq),[1,2,3]);assert.equal(h.voice.isActive(),true);
+ }finally{h.close();}
+});
+
+test('mute suppresses late recognition, public clarification and Brain presentation even after unmute',async()=>{
+ for(const stage of ['recognition','public','brain']){
+  let finish,brainSignal,presentResult;const owner={match_status:'confirmed',authenticated_identity:'owner',assertion:'owner'};
+  const h=voiceHarness({isolatedTurns:true,recognize:()=>stage==='brain'?owner:new Promise(resolve=>{finish=resolve;}),
+   sendTurn:(_text,opts)=>{brainSignal=opts.signal;presentResult=opts.presentResult;return new Promise(resolve=>{finish=resolve;});}});
+  try{
+   await h.voice.start();h.set(1000);h.event('speech_started','pre-mute');
+   h.channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'pre-mute',transcript:'Read my private projects'});
+   h.set(5000);h.event('speech_stopped','pre-mute');await wait();assert.equal(typeof finish,'function');
+   h.voice.setMuted(true);h.voice.setMuted(false);h.channel.message({type:'input_audio_buffer.cleared'});
+   if(stage==='brain'){assert.equal(brainSignal.aborted,true);assert.equal(presentResult(),false);}
+   finish(stage==='brain'?{message:'PRIVATE_RESULT'}:stage==='public'?{match_status:'unknown'}:owner);await wait();
+   assert.equal(h.results.length,0);assert.equal(h.channel.sent.filter(e=>e.type==='response.create').length,0);
+  }finally{h.close();}
+ }
+});
+
+test('mute cuts already playing audio and ignores stale provider playback until a fresh turn',async()=>{
+ const states=[];const h=voiceHarness({isolatedTurns:true,onState:s=>states.push(s.state)});
+ try{
+  await h.voice.start();h.set(1000);h.event('speech_started','s1');h.set(4000);h.event('speech_stopped','s1');await wait();
+  const response=h.channel.sent.find(e=>e.type==='response.create').response;
+  h.channel.message({type:'response.created',response:{id:'reply-old',metadata:response.metadata}});
+  h.channel.message({type:'output_audio_buffer.started',response_id:'reply-old'});assert.equal(states.at(-1),'speaking');
+  h.voice.setMuted(true);assert.equal(states.at(-1),'muted');
+  assert.ok(h.channel.sent.some(e=>e.type==='response.cancel'));assert.ok(h.channel.sent.some(e=>e.type==='output_audio_buffer.clear'));
+  h.voice.setMuted(false);h.channel.message({type:'input_audio_buffer.cleared'});
+  h.channel.message({type:'output_audio_buffer.started',response_id:'reply-old'});assert.equal(states.at(-1),'listening');
+  assert.equal(h.channel.sent.at(-1).type,'output_audio_buffer.clear');
+ }finally{h.close();}
+});
+
+function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn,recognize,onState,onFence,authorizationFailure=false,verificationWindowMs=0,useDefaultWindow=false,isolatedTurns=false,autoTranscript=true}={}){
  let clock=0,frame,requests=[],notices=0,pauses=0,verified=0;const results=[],pauseReasons=[],recoveries=[],recorders=[],accessStates=[];
  const prior=globalThis.requestAnimationFrame,priorCancel=globalThis.cancelAnimationFrame;
  globalThis.requestAnimationFrame=fn=>{frame=fn;return 1;};globalThis.cancelAnimationFrame=()=>{};
@@ -124,9 +191,9 @@ function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn
  class Recorder extends EventTarget{state='inactive';mimeType='audio/webm;codecs=opus';static isTypeSupported(type){return type==='audio/webm;codecs=opus';}constructor(stream,options){super();this.options=options;this.audioBitsPerSecond=options?.audioBitsPerSecond;recorders.push(this);}start(timeslice){this.timeslice=timeslice;this.state='recording';}stop(){this.state='inactive';const e=new Event('dataavailable');e.data=new Blob(['synthetic-audio-fixture']);this.dispatchEvent(e);this.dispatchEvent(new Event('stop'));}}
  class Context{createMediaStreamSource(){return{connect(){},disconnect(){}};}createAnalyser(){return{getByteTimeDomainData:a=>a.fill(133)};}async close(){}}
  const voice=createRealtimeVoice({...(!useDefaultWindow?{verificationWindowMs}:{}),mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){}}]};}},RTCPeerConnectionImpl:Peer,MediaRecorderImpl:Recorder,AudioContextImpl:Context,AudioImpl:class{pause(){}},now:()=>clock,sendTurn,onAccessState:s=>accessStates.push(s),onResult:r=>results.push(r),getConversationId:()=> 'fixture-conversation',onPrivacyRecovery:()=>recoveries.push(true),onVerificationNeeded:()=>notices++,onPrivacyPause:detail=>{pauses++;pauseReasons.push(detail?.reason);},onOwnerVerified:()=>verified++,
- fetchImpl:async(url,o)=>{
+ onState,fetchImpl:async(url,o)=>{
   if(url.endsWith('/session'))return Response.json({clientSecret:'fixture',privacyGate:true,isolatedTurns,...(isolatedTurns?{sessionId:'8cac73ed-204f-4b5b-bf65-a00bcff84037'}:{}),replyLanguage:'ar'});
-  if(url.endsWith('/turn-state'))return Response.json({ok:true});
+  if(url.endsWith('/turn-state')){onFence?.(JSON.parse(o.body));return Response.json({ok:true});}
   if(url.endsWith('/recognize')){const body=JSON.parse(o.body);requests.push(body);const speaker=recognize?await recognize(body,requests.length):body.durationSeconds>=1?{match_status:'confirmed',authenticated_identity:'owner',assertion:'fixture'}:{match_status:shortResult,authenticated_identity:'none'};return Response.json({speaker,verificationStatus:speaker.verification_status});}
   if(url.endsWith('/authorize-turn')){if(authorizationFailure)throw new TypeError('Failed to fetch');const allowed=authorize&&JSON.parse(o.body).speaker?.match_status==='confirmed';return Response.json({authorized:allowed,...(allowed?{speakerIdentity:verifiedOwnerVoiceEvidence()}:{})},{status:allowed?200:403});}
   return new Response('fixture');

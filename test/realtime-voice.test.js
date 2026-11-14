@@ -8,6 +8,7 @@ test('connected isolated audio session has no private context, automatic respons
  const result=await service.createClientSecret({privacyGate:true,isolatedTurns:true,accountContext:{replyLanguage:'ar',projects:[{name:'PRIVATE_PROJECT'}],memories:[{content:'PRIVATE_MEMORY'}],conversation:[{content:'PRIVATE_HISTORY'}],ownerName:'PRIVATE_NAME'}});
  assert.equal(result.isolatedTurns,true);assert.equal(result.privacyGate,true);
  assert.deepEqual(body.session.tools,[]);assert.equal(body.session.tool_choice,'none');assert.equal(body.session.audio.input.turn_detection.create_response,false);
+ assert.equal(body.session.audio.input.turn_detection.type,'semantic_vad');assert.equal(body.session.audio.input.noise_reduction.type,'far_field');
  assert.doesNotMatch(JSON.stringify(body),/PRIVATE_PROJECT|PRIVATE_MEMORY|PRIVATE_HISTORY|PRIVATE_NAME/);
  assert.match(body.session.instructions,/Never use default conversation history/);
 });
@@ -140,7 +141,20 @@ test("realtime browser delegates the exact transcript to Nova and returns the au
   voice.end();
 });
 
-test("realtime warm-up is non-blocking, direct turns persist, and mute controls only the microphone track", async () => {
+test("muting while Edge is granting microphone access disables the acquired track before WebRTC attaches it",async()=>{
+  const channel=new FakeChannel(),peer=new FakePeer(channel),states=[],track={kind:'audio',enabled:true,stop(){}};
+  let release;peer.addTrack=added=>assert.equal(added.enabled,false);
+  const voice=createRealtimeVoice({mediaDevices:{getUserMedia:()=>new Promise(resolve=>{release=resolve;})},
+    RTCPeerConnectionImpl:class{constructor(){return peer;}},MediaRecorderImpl:null,AudioContextImpl:null,AudioImpl:class{pause(){}},
+    fetchImpl:async url=>url.endsWith('/session')?Response.json({clientSecret:'test'}):new Response('sdp'),onState:s=>states.push(s.state)});
+  try{
+    const starting=voice.start();voice.setMuted(true);release({getTracks:()=>[track]});
+    assert.equal(await starting,true);channel.open();assert.equal(states.at(-1),'muted');assert.equal(track.enabled,false);
+    voice.setMuted(false);assert.equal(track.enabled,true);
+  }finally{voice.end();}
+});
+
+test("realtime warm-up is non-blocking, direct turns persist, and mute disables the microphone track", async () => {
   const channel = new FakeChannel(), peer = new FakePeer(channel), direct = [], requests = [];
   const audioTrack = { kind: "audio", enabled: true, stop() {} };
   const voice = createRealtimeVoice({
