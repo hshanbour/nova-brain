@@ -7,6 +7,8 @@ import {ANSWER_PRESENTATION_GUIDANCE,isConversationLocalTransform,retainConversa
 import {minimalTransformContext,retrieveConversationTransformSource} from "./conversation-transform-source.js";
 import {createTaskContextSnapshot} from "../memory/task-context-snapshot.js";
 import {projectClarification,createProjectService} from "../projects/project-service.js";
+import {requestsDeploymentStatus} from '../tools/project-deployment-read.js';
+import {requestsEarlierConversation} from '../memory/conversation-recall.js';
 
 export class AgentStepLimitError extends Error {}
 export class AgentToolCallLimitError extends Error {}
@@ -459,6 +461,10 @@ export function createAgent({
           return completeDurableSelfDevelopment({ task: durable.task, idempotent: durable.idempotent, workflowContinued: durable.workflowContinued===true });
         }
         if(requestedMemoryTool(message))systemContext+='\nEXPLICIT MEMORY REQUEST: Use the authorised memory tool to save/correct/delete the exact requested fact. Only confirm a change after its successful persisted receipt. Searching memory, proposing a candidate, or promising to save is not a completed write. If unsafe or ambiguous, do not claim success.';
+        const deploymentCheck = Boolean(resolvedProjectId && !speakerRestricted && !externalChannel && !phoneCallProfile &&
+          !allowedTaskTools && !memoryOnly && !requestedMemoryTool(message) && !requestsEarlierConversation(message) &&
+          requestsDeploymentStatus(message) && readOnlyToolNames.has('project_deployment_read'));
+        if(deploymentCheck) systemContext += '\nUse project_deployment_read for the selected project and base current deployment claims on its returned source. If the check is unavailable, say so.';
         for (let step = 1; step <= maxSteps; step += 1) {
         executionSignal.throwIfAborted();
         if(step>1)await storage.updateRun(run.id, ownerId, { status: "running", currentStep: step });
@@ -472,6 +478,7 @@ export function createAgent({
           tools: externalChannel||phoneCallProfile||speakerRestricted ? [] : toolRegistry.list({ executableOnly: true }).filter(tool=>(!memoryOnly||tool.name==='memory_search')&&allowsMemoryMutation(tool.name,message)&&(allowedTaskTools?allowedTaskTools.has(tool.name):!ROUTED_CREATION_TOOLS.has(tool.name))&&(!webEvidenceActive||tool.riskLevel==="READ_ONLY")&&(!liveReadOnly||tool.riskLevel==="READ_ONLY")),
           toolResults,
           continuationToken,
+          ...(deploymentCheck && step===1 ? {requiredTool:'project_deployment_read'} : {}),
           signal: executionSignal,
           stage: "chat",
           costContext: { runId: run.id },
@@ -488,6 +495,12 @@ export function createAgent({
         const agentGenerationCompletedAt=Date.now();
 
         if (generated.type === "final") {
+          if(deploymentCheck && !toolExecutions.some(t => t.name==='project_deployment_read' && t.status==='completed' && t.result?.verification==='provider_read')){
+            const reason=toolExecutions.find(t=>t.name==='project_deployment_read')?.result?.reason;
+            generated={...generated,message:trustedContext.replyLanguage==='ar'||/[\u0600-\u06ff]/u.test(message)
+              ? 'ما قدرت أتحقق من حالة النشر الحالية لهالمشروع من Vercel.'
+              : 'I could not verify the current Vercel deployment of this project.'+(reason?' '+reason:'')};
+          }
           const memoryTool=requestedMemoryTool(message);
           if(memoryTool && !externalChannel && !phoneCallProfile && !speakerRestricted && !liveReadOnly && !hasMemoryWriteReceipt(toolExecutions,memoryTool)){
             const available=toolRegistry.list({executableOnly:true}).some(tool=>tool.name===memoryTool)&&(!allowedTaskTools||allowedTaskTools.has(memoryTool));

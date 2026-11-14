@@ -199,6 +199,7 @@ export function createOpenAIModelProvider({ apiKey, model, routes = {}, serviceT
       tools,
       toolResults = [],
       continuationToken,
+      requiredTool,
       systemContext,
       responseFormat,
       transformSource,
@@ -223,6 +224,7 @@ export function createOpenAIModelProvider({ apiKey, model, routes = {}, serviceT
             ? multimodalInput(inputContent)
             : initialInput({ message, conversationHistory, context, transformSource }),
         tools: tools.map(toolDefinition),
+        ...(requiredTool && tools.some(tool=>tool.name===requiredTool) ? {tool_choice:{type:'function',name:requiredTool}} : {}),
         parallel_tool_calls: false,
         store: true,
         service_tier: serviceTier,

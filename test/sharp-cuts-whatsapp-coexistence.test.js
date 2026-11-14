@@ -50,7 +50,13 @@ test('execution hold defaults closed and pausing during generation prevents outb
     const config=readConfig({...ENV,NOVA_SHARP_CUTS_WHATSAPP_MODE:'owner_test',NOVA_SHARP_CUTS_WHATSAPP_TEST_RECIPIENTS:'+447700900111',NOVA_SHARP_CUTS_WHATSAPP_OUTBOUND_ENABLED:'true',NOVA_SHARP_CUTS_WHATSAPP_EXECUTION_ENABLED:mode==='execution_held'?undefined:'true'});
     const service=createSharpCutsWhatsAppCoexistenceService({config,storage,ownerId:OWNER,automationControls:mode==='missing_controls'?null:{async allows(){return allowed;}},fetchImpl:async()=>{sends++;throw Error('No network allowed');},novaTurn:async input=>{generated++;allowed=false;return{id:input.assistantMessageId,message:'Synthetic reply'};}});
     await service.receive(payload(),`Bearer ${TOKEN}`);
-    const result=await service.processNext();assert.equal(sends,0);assert.equal(result.sent,false);
+    let selection={};
+    if(mode==='pause_during_generation'){
+      const [record]=(await service.reviewHeld()).records;
+      const review=await service.prepareHeldDraft({recordRef:record.recordRef});
+      selection={recordRef:record.recordRef,approvedReplyHash:review.replyHash};
+    }
+    const result=await service.processNext(selection);assert.equal(sends,0);assert.equal(result.sent,false);
     assert.equal(generated,mode==='pause_during_generation'?1:0);
     assert.equal((await service.status()).sendEnabled,false);
   }
@@ -102,6 +108,9 @@ test("authenticated Gupshup URL-validation probe is accepted without weakening e
   await assert.rejects(()=>service.receive(probe,{sourceIp:"203.0.113.10"}),error=>error.code==="sharp_cuts_whatsapp_webhook_unauthorized");
   const platformProbe={entry:[{changes:[{field:"platform-event",value:{type:"connectivity-check"}}]}]};
   assert.equal((await service.receive(platformProbe,{sourceIp:"34.202.224.208"})).acknowledgedOnly,true);
+  const mixed=payload("New enquiry","wamid.mixed.callback");
+  mixed.entry[0].changes.unshift(platformProbe.entry[0].changes[0]);
+  assert.equal((await service.receive(mixed,{sourceIp:"34.202.224.208"})).queued,1);
   const mockMessage={gs_app_id:ENV.NOVA_SHARP_CUTS_WHATSAPP_APP_ID,entry:[{changes:[{field:"messages",value:{messaging_product:"whatsapp",metadata:{phone_number_id:"provider-validation"},messages:[{id:"wamid.provider-validation",from:"447700900111",type:"text",text:{body:"probe"}}]}}]}]};
   const ignored=await service.receive(mockMessage,{sourceIp:"34.202.224.208"});assert.equal(ignored.queued,0);assert.equal(ignored.ignored,1);assert.equal(ignored.acknowledgedOnly,true);
   await assert.rejects(()=>service.receive(mockMessage,`Bearer ${TOKEN}`),error=>error.code==="sharp_cuts_whatsapp_target_mismatch");
@@ -127,12 +136,47 @@ test("owner test sends only to the exact allowlisted number and records the prov
   const sent=[];const storage=createInMemoryStorage();await storage.initialize({owner:{id:OWNER,fullName:"Owner",preferences:{},facts:{}},projects:[{id:"sharp-cuts-web",name:"Sharp Cuts",description:""}],memories:[]});
   const config=readConfig({...ENV,NOVA_SHARP_CUTS_WHATSAPP_OUTBOUND_ENABLED:"true",NOVA_SHARP_CUTS_WHATSAPP_MODE:"owner_test",NOVA_SHARP_CUTS_WHATSAPP_TEST_RECIPIENTS:"+447700900111"});
   const service=createSharpCutsWhatsAppCoexistenceService({automationControls:{async allows(){return true;}},config,storage,ownerId:OWNER,fetchImpl:async(url,options)=>{sent.push({url,options});return{ok:true,status:200,async json(){return{status:"submitted",messageId:"gs-test-message-123"};}};},async novaTurn(input){await storage.appendMessage({id:input.assistantMessageId,conversationId:input.conversationId,ownerId:OWNER,role:"assistant",content:"Book securely through the Sharp Cuts Fresha page."});return{id:input.assistantMessageId,runId:"run-owner-test",message:"Book securely through the Sharp Cuts Fresha page."};},logger:{error(){}}});
-  await service.receive(payload(),{sourceIp:"34.202.224.208"});const result=await service.processNext({workerId:"worker-owner-test"});assert.equal(result.status,"replied");assert.equal(result.sent,true);assert.equal(sent.length,1);assert.equal(sent[0].url,"https://api.gupshup.io/wa/api/v1/msg");assert.equal(sent[0].options.headers.apikey,ENV.NOVA_SHARP_CUTS_WHATSAPP_API_KEY);assert.doesNotMatch(JSON.stringify(await storage.listActivity(OWNER,{projectId:"sharp-cuts-web",limit:20})),/447700900111/);
+  await service.receive(payload("A held message","wamid.historical-owner-test"),{sourceIp:"34.202.224.208"});
+  await service.receive(payload(),{sourceIp:"34.202.224.208"});
+  assert.equal((await service.processNext({workerId:"worker-owner-test"})).reason,'specific_reply_approval_required');
+  const [held,selected]=(await service.reviewHeld()).records;
+  const review=await service.prepareHeldDraft({recordRef:selected.recordRef});
+  const permitted={workerId:"worker-owner-test",recordRef:selected.recordRef,approvedReplyHash:review.replyHash};
+  assert.equal((await service.processNext({...permitted,approvedReplyHash:'a'.repeat(64)})).reason,'reviewed_reply_changed_or_missing');
+  const result=await service.processNext(permitted);
+  assert.equal(result.providerStatus,"submitted");assert.equal(result.delivered,false);
+  assert.equal(result.status,"replied");assert.equal(result.sent,true);assert.equal(sent.length,1);assert.equal(sent[0].url,"https://api.gupshup.io/wa/api/v1/msg");
+  assert.equal(JSON.parse(new URLSearchParams(sent[0].options.body).get('message')).text,review.draft);
+  assert.equal(sent[0].options.headers.apikey,ENV.NOVA_SHARP_CUTS_WHATSAPP_API_KEY);assert.doesNotMatch(JSON.stringify(await storage.listActivity(OWNER,{projectId:"sharp-cuts-web",limit:20})),/447700900111/);
+  assert.equal((await service.reviewHeld()).records.find(item=>item.recordRef===held.recordRef).attemptCount,0);
 });
 
 test("persistent worker polls the isolated Sharp Cuts WhatsApp queue",async()=>{
   const paths=[],worker=createPersistentLocalWorker({registry:{},branch:"codex/combined-nova-preview-d5b5-c5bd",client:Object.freeze({async request(path){paths.push(path);if(path==="/api/admin/worker/auto-dispatch/next")return{dispatched:false,channelPolling:["sharp_cuts_whatsapp"]};if(path==="/api/admin/worker/sharp-cuts/whatsapp/tick")return{worked:true,status:"awaiting_owner_review"};throw new Error("unexpected");}})}),result=await worker.runOnce();
   assert.equal(result.stepType,"sharp_cuts_whatsapp_inbound");assert.deepEqual(paths,["/api/admin/worker/auto-dispatch/next","/api/admin/worker/sharp-cuts/whatsapp/tick"]);
+});
+
+test('an unupgraded database cannot lease a Sharp Cuts record or call a provider',async()=>{
+  let claims=0;
+  const storage={provider:'postgres',async supportsSharpCutsWhatsAppReview(){return false;},async claimNextWhatsAppInbound(){claims++;}};
+  const service=createSharpCutsWhatsAppCoexistenceService({config:readConfig(ENV),ownerId:OWNER,storage,
+    automationControls:{async allows(){return true;}},novaTurn:async()=>{throw Error('unexpected');},fetchImpl:async()=>{throw Error('unexpected');}});
+  assert.deepEqual(await service.processNext(),{worked:false,reason:'whatsapp_review_migration_required',sent:false});
+  assert.equal(claims,0);
+});
+
+test('provider binding inspection uses the read-only app endpoint and never returns account contacts',async()=>{
+  const config=readConfig(ENV),requests=[];
+  let response={ok:true,status:200,json:async()=>({status:'success',business:{id:config.sharpCutsWhatsApp.appId,email:'private@example.test'}})};
+  const service=createSharpCutsWhatsAppCoexistenceService({config,ownerId:OWNER,storage:createInMemoryStorage(),novaTurn:async()=>{throw Error('unexpected');},
+    fetchImpl:async(url,options)=>{requests.push({url,method:options.method});return response;}});
+  assert.deepEqual(await service.verifyProviderBinding(),{verified:true,httpStatus:200,appId:config.sharpCutsWhatsApp.appId,reason:'configured_app_confirmed'});
+  assert.equal(requests[0].url,`https://api.gupshup.io/wa/app/${config.sharpCutsWhatsApp.appId}/business`);
+  assert.equal(requests[0].method,'GET');
+  response={ok:true,status:200,json:async()=>({status:'success',business:{id:'unrelated-app'}})};
+  assert.equal((await service.verifyProviderBinding()).reason,'app_identity_mismatch');
+  response={ok:false,status:401};
+  assert.deepEqual(await service.verifyProviderBinding(),{verified:false,httpStatus:401,reason:'provider_http_error'});
 });
 
 
@@ -154,4 +198,28 @@ test('deployed processing check exercises a fresh queue record and preserves eve
  const before=await f.service.reviewHeld();const result=await f.service.processingCheck();
  assert.equal(result.status,'awaiting_owner_review');assert.equal(result.attemptCount,1);assert.equal(result.sent,false);assert.equal(result.providerCalls,0);assert.equal(result.backlogUnchanged,true);assert.equal(result.liveWebhookTest,false);assert.equal(result.windowsDispatchTest,false);assert.ok(result.draft);
  assert.deepEqual(await f.service.reviewHeld(),before);
+});
+
+test('uncertain outbound receipts require reconciliation and cannot report a reply or retry',async()=>{
+  const {storage,service:input}=await fixture();
+  const sid='wamid.uncertain-receipt';await input.receive(payload('Book?',sid),'Bearer '+TOKEN);
+  const [record]=(await input.reviewHeld()).records;const review=await input.prepareHeldDraft({recordRef:record.recordRef});
+  await storage.claimWhatsAppOutbound({ownerId:OWNER,inboundSid:sid,bodyHash:review.replyHash});
+  await storage.updateWhatsAppOutbound(sid,OWNER,{status:'uncertain',errorCode:'network_error'});
+  let sends=0;const service=createSharpCutsWhatsAppCoexistenceService({ownerId:OWNER,storage,automationControls:{async allows(){return true;}},config:readConfig({...ENV,NOVA_SHARP_CUTS_WHATSAPP_OUTBOUND_ENABLED:'true',NOVA_SHARP_CUTS_WHATSAPP_MODE:'owner_test',NOVA_SHARP_CUTS_WHATSAPP_TEST_RECIPIENTS:'+447700900111'}),novaTurn:async()=>assert.fail('must reuse approved copy'),fetchImpl:async()=>{sends++;throw Error('unexpected send');},logger:{error(){}}});
+  const result=await service.processNext({recordRef:record.recordRef,approvedReplyHash:review.replyHash});
+  assert.equal(result.errorCode,'sharp_cuts_whatsapp_reconcile_required');assert.equal(result.status,'failed');assert.equal(sends,0);
+  assert.equal((await storage.getWhatsAppOutbound(sid,OWNER)).status,'uncertain');assert.equal((await storage.getWhatsAppInbound(sid,OWNER)).status,'failed');
+});
+
+test('redelivery repairs interrupted receipt and the generic worker cannot claim a Sharp Cuts record',async()=>{
+  const f=await fixture();const original=f.storage.claimWhatsAppInbound.bind(f.storage);let first=true;
+  const storage={...f.storage,claimWhatsAppInbound:async input=>{if(first){first=false;throw Error('database interrupted');}return original(input);}};
+  const service=createSharpCutsWhatsAppCoexistenceService({config:readConfig(ENV),ownerId:OWNER,storage,automationControls:{async allows(){return true;}},novaTurn:async()=>assert.fail()});
+  await assert.rejects(service.receive(payload(),'Bearer '+TOKEN),/database interrupted/);
+  assert.equal((await service.receive(payload(),'Bearer '+TOKEN)).queued,1);
+  assert.equal((await service.receive(payload(),'Bearer '+TOKEN)).duplicates,1);
+  const record=await storage.getWhatsAppInbound('wamid.test-123456789',OWNER);
+  assert.equal((await storage.listMessages(record.conversationId,OWNER)).length,1);
+  assert.equal(await storage.claimNextWhatsAppInbound({ownerId:OWNER,workerId:'generic',leaseMs:1000}),null);
 });

@@ -125,7 +125,8 @@ function voiceHarness({shortResult='insufficient_speech',authorize=true,sendTurn
  class Context{createMediaStreamSource(){return{connect(){},disconnect(){}};}createAnalyser(){return{getByteTimeDomainData:a=>a.fill(133)};}async close(){}}
  const voice=createRealtimeVoice({...(!useDefaultWindow?{verificationWindowMs}:{}),mediaDevices:{async getUserMedia(){return{getTracks:()=>[{stop(){}}]};}},RTCPeerConnectionImpl:Peer,MediaRecorderImpl:Recorder,AudioContextImpl:Context,AudioImpl:class{pause(){}},now:()=>clock,sendTurn,onAccessState:s=>accessStates.push(s),onResult:r=>results.push(r),getConversationId:()=> 'fixture-conversation',onPrivacyRecovery:()=>recoveries.push(true),onVerificationNeeded:()=>notices++,onPrivacyPause:detail=>{pauses++;pauseReasons.push(detail?.reason);},onOwnerVerified:()=>verified++,
  fetchImpl:async(url,o)=>{
-  if(url.endsWith('/session'))return Response.json({clientSecret:'fixture',privacyGate:true,isolatedTurns,replyLanguage:'ar'});
+  if(url.endsWith('/session'))return Response.json({clientSecret:'fixture',privacyGate:true,isolatedTurns,...(isolatedTurns?{sessionId:'8cac73ed-204f-4b5b-bf65-a00bcff84037'}:{}),replyLanguage:'ar'});
+  if(url.endsWith('/turn-state'))return Response.json({ok:true});
   if(url.endsWith('/recognize')){const body=JSON.parse(o.body);requests.push(body);const speaker=recognize?await recognize(body,requests.length):body.durationSeconds>=1?{match_status:'confirmed',authenticated_identity:'owner',assertion:'fixture'}:{match_status:shortResult,authenticated_identity:'none'};return Response.json({speaker,verificationStatus:speaker.verification_status});}
   if(url.endsWith('/authorize-turn')){if(authorizationFailure)throw new TypeError('Failed to fetch');const allowed=authorize&&JSON.parse(o.body).speaker?.match_status==='confirmed';return Response.json({authorized:allowed,...(allowed?{speakerIdentity:verifiedOwnerVoiceEvidence()}:{})},{status:allowed?200:403});}
   return new Response('fixture');

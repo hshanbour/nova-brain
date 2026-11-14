@@ -164,7 +164,8 @@ export function createApp({
   const pageReader=createPublicPageReader({fetchImpl:webFetchImpl||globalThis.fetch,...(webResolveHost?{resolveHost:webResolveHost}:{})});
   const projectOnboarding=learningService&&typeof storage?.createProjectSource==="function"?createProjectOnboardingService({storage,ownerId:OWNER_ID,learningService,pageReader}):null;
   const vercelAccountIntegration=createVercelAccountIntegration({config,storage,ownerId:OWNER_ID,fetchImpl:projectDiscoveryFetchImpl||globalThis.fetch});
-  const projectDiscovery=projectOnboarding?createProjectDiscoveryService({providers:createProjectDiscoveryProviders({config:config.projectDiscovery,vercelAccountIntegration,fetchImpl:projectDiscoveryFetchImpl||globalThis.fetch}),projectService,projectOnboarding,storage,ownerId:OWNER_ID,pageReader,connectionStatus:()=>vercelAccountIntegration.status()}):null;
+  const discoveryProviders=createProjectDiscoveryProviders({config:config.projectDiscovery,vercelAccountIntegration,fetchImpl:projectDiscoveryFetchImpl||globalThis.fetch});
+  const projectDiscovery=projectOnboarding?createProjectDiscoveryService({providers:discoveryProviders,projectService,projectOnboarding,storage,ownerId:OWNER_ID,pageReader,connectionStatus:()=>vercelAccountIntegration.status()}):null;
   const executionTruth=createExecutionTruthService({storage,ownerId:OWNER_ID});
   registerDeveloperTools(toolRegistry, {
     environment,
@@ -173,7 +174,7 @@ export function createApp({
     logger,
   });
   registerSystemTools(toolRegistry, { storage, ownerId: OWNER_ID, projectService, projectOnboarding });
-  registerProjectActivityReport(toolRegistry,{storage,ownerId:OWNER_ID});
+  registerProjectActivityReport(toolRegistry,{storage,ownerId:OWNER_ID,vercel:discoveryProviders.vercel});
   registerMemorySearch(toolRegistry,{storage,ownerId:OWNER_ID});
   const gmailService = createGmailService({
     config,

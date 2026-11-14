@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 32;
 
 export const SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS nova_schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
@@ -545,7 +545,7 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     contact_id text NOT NULL,
     contact_ciphertext text NOT NULL,
     body_hash text NOT NULL,
-    status text NOT NULL CHECK (status IN ('queued','processing','replied','failed')),
+    status text NOT NULL CHECK (status IN ('queued','processing','replied','failed','awaiting_owner_review','opt_out_received')),
     attempt_count integer NOT NULL DEFAULT 0,
     next_attempt_at timestamptz,
     lease_owner text,
@@ -563,7 +563,7 @@ export const SCHEMA_STATEMENTS = Object.freeze([
     inbound_sid text PRIMARY KEY REFERENCES nova_whatsapp_inbound_messages(message_sid) ON DELETE CASCADE,
     owner_id text NOT NULL REFERENCES nova_owners(id) ON DELETE CASCADE,
     body_hash text NOT NULL,
-    status text NOT NULL CHECK (status IN ('sending','submitted','queued','sent','delivered','read','undelivered','failed','uncertain')),
+    status text NOT NULL CHECK (status IN ('sending','submitted','queued','sent','delivered','read','undelivered','failed','uncertain','blocked')),
     provider_message_sid text UNIQUE,
     error_code text,
     created_at timestamptz NOT NULL DEFAULT now(),

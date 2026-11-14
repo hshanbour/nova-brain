@@ -34,8 +34,8 @@ export async function retrieveAgentContext({ storage, ownerId, message, projectI
   const [profile,memories,runs,activity,projects,systemMemories] = await Promise.all([
     storage.getOwner(ownerId),
     storage.retrieveMemories(ownerId, message, { projectId:inferredProjectId, limit: memoryLimit }),
-    includeRecentWork&&typeof storage.listRuns==="function"?storage.listRuns(ownerId,{limit:30}):[],
-    includeRecentWork&&typeof storage.listActivity==="function"?storage.listActivity(ownerId,{limit:30}):[],
+    includeRecentWork&&typeof storage.listRuns==="function"?storage.listRuns(ownerId,{projectId:inferredProjectId,limit:30}):[],
+    includeRecentWork&&typeof storage.listActivity==="function"?storage.listActivity(ownerId,{projectId:inferredProjectId,limit:30}):[],
     typeof storage.listProjects==="function"?storage.listProjects(ownerId):[],
     typeof storage.listMemories==="function"?storage.listMemories(ownerId,{scope:"system",limit:12}):[]
   ]);

@@ -1,8 +1,10 @@
 import {RISK_LEVELS} from '../policy/action-policy.js';
+import {registerProjectDeploymentRead} from './project-deployment-read.js';
 
 // A current read of Nova's records, explicitly not a claim about revenue,
 // bookings or provider delivery. No cross-project or synthetic chart values.
-export function registerProjectActivityReport(registry,{storage,ownerId}){
+export function registerProjectActivityReport(registry,{storage,ownerId,vercel}){
+ registerProjectDeploymentRead(registry,{storage,ownerId,vercel});
  registry.register({name:'project_activity_report',description:'Analyse the current authorised Nova project records and recent execution activity, with sources and a structured chart. This is recorded activity, not live revenue or external provider status.',category:'projects',capability:'read',riskLevel:RISK_LEVELS.READ_ONLY,available:typeof storage.listActivity==='function',configurationStatus:'ready',inputSchema:{type:'object',properties:{projectId:{type:'string'}},required:['projectId'],additionalProperties:false},
   validate({projectId}){if(typeof projectId!=='string'||projectId.length>100||!projectId.trim())throw Error('An exact project is required.');},
   async execute({projectId}){

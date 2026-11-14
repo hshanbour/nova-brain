@@ -1,5 +1,6 @@
 import {articulation,rest} from "./prism-articulation.js";
 import {preferredRecorderOptions} from './voice-capture.js';
+import {attachTurnPcm} from './turn-pcm.js';
 import {explicitVoiceLanguage,isVoiceLanguageOnlyChange} from "./voice-language.js";
 import {publicVoiceResponse} from './voice-public-turn.js';
 import {isDirectVoiceExchange,isLocalVisionRequest,cancelsPreviousVoiceRequest,authoritativeVoiceResponse} from './voice-turn-routing.js';
@@ -50,6 +51,7 @@ export function createRealtimeVoice({
   let replyLanguage = null, privacyGate=false, guestMode=false, privateTurnAuthorized=false;
   let qualityRecoveryUsed=false, verificationStopTimer=null;
   let isolatedTurns=false;
+  let privateSessionId=null,turnPcm=null;
   const isolatedReplies=new Map();
   let activeResponseTurn=null;
   const requestedResponseTurns=[];
@@ -102,7 +104,7 @@ export function createRealtimeVoice({
         onInputLevel(level);
         // Prime from local microphone energy, not a delayed remote VAD event.
         // This is capture only: server speech quality and identity still decide access.
-        if(!active||muted||channel?.readyState!=="open")return;
+        if(!active||muted||turnPcm?.ready()||channel?.readyState!=="open")return;
         if(level>=0.06){localSpeechAt=now();if(!turnRecorder)startTurnRecording();}
         if(turnRecorder&&!inSpeech&&!verificationStopTimer&&(now()-localSpeechAt>800||now()-turnStartedAt>4000))discardTurnRecording();
       } });
@@ -113,6 +115,13 @@ export function createRealtimeVoice({
       if (!sessionResponse.ok || typeof session?.clientSecret !== "string") throw new Error(session?.error || "Nova could not prepare Realtime Voice.");
       privacyGate=session.privacyGate===true;
       isolatedTurns=privacyGate&&session.isolatedTurns===true;
+      privateSessionId=isolatedTurns?session.sessionId:null;
+      if(privateSessionId&&inputMeter?.context){
+        // A suspended/unsupported worklet must leave the existing mic usable.
+        try{turnPcm=await attachTurnPcm(inputMeter.context,inputMeter.source);}catch{turnPcm=null;}
+        if(!valid(current)){turnPcm?.dispose();turnPcm=null;return false;}
+        timing(turnPcm?'capture-pcm-ready':'capture-recorder-fallback');
+      }
       replyLanguage = ["ar", "en"].includes(session.replyLanguage) ? session.replyLanguage : null;
       if (!valid(current)) return false;
       startupStage='audio-connection';
@@ -190,11 +199,12 @@ export function createRealtimeVoice({
       supersedeTurn();
       playbackActive=false;onArticulation(rest);onAudibleLevel(0); speakerPromise=null;inSpeech=true;++speechTurn;
       latestTurn={seq:speechTurn,startedAt:now(),transcript:"",speaker:null,conversationId:getConversationId(),previousTurn:latestTurn,itemId:event.item_id,verificationId:globalThis.crypto?.randomUUID?.()};if(event.item_id){turns.set(event.item_id,latestTurn);trim(turns);}
+      if(privateSessionId)latestTurn.fence=fetchImpl('/api/voice/realtime/turn-state',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'begin',session_id:privateSessionId,turn_id:latestTurn.verificationId,turn_seq:speechTurn})}).then(r=>r.ok).catch(()=>false);
       let ancestor=latestTurn;for(let n=0;n<32&&ancestor?.previousTurn;n++)ancestor=ancestor.previousTurn;if(ancestor)ancestor.previousTurn=null;
       lastTranscript = "";
       lastAssistantTranscript = "";
       lastSpeechEndedAt = 0;
-      startTurnRecording();
+      if(turnPcm?.ready()){discardTurnRecording();turnPcm.begin();latestTurn.pcm=true;}else {turnPcm?.clear();startTurnRecording();}
       // VAD may split the initial verification window while MediaRecorder keeps
       // collecting one continuous clip. Keep the transcript segments attached
       // to that clip; do not infer identity across distinct recordings.
@@ -203,6 +213,7 @@ export function createRealtimeVoice({
       return;
     }
     if (event.type === "input_audio_buffer.speech_stopped") {
+      if(isolatedTurns&&event.item_id&&event.item_id!==latestTurn?.itemId)return;
       lastSpeechEndedAt = now();
       inSpeech=false;const utterance=turns.get(event.item_id)||latestTurn;
       if(utterance){utterance.endedAt=lastSpeechEndedAt;if(utterance.authorization)return;}
@@ -217,7 +228,7 @@ export function createRealtimeVoice({
         publish('listening',{phase:'collecting-verification-speech'});return;
       }
       timing('vad-speech-stop');
-      speakerPromise = stopTurnRecording(current,utterance);if(utterance)utterance.speaker=speakerPromise;
+      speakerPromise = utterance?.pcm?recognizePcm(current,utterance):stopTurnRecording(current,utterance);if(utterance)utterance.speaker=speakerPromise;
       const authorization=boundedSpeaker(speakerPromise,12000).then(async speaker => {
         if(!valid(current))return;
         if(utterance)utterance.recognizedSpeaker=speaker;
@@ -286,14 +297,14 @@ export function createRealtimeVoice({
       const text=String(event.transcript||"").trim();const utterance=event.item_id?turns.get(event.item_id):latestTurn;
       if(!utterance){timing('orphan-transcript-ignored');return;}
       utterance.transcript=text;utterance.transcriptionComplete=true;utterance.resolveTranscript?.();
-      if(isolatedTurns&&event.item_id)sendEvent({type:'conversation.item.delete',item_id:event.item_id});
+      if(isolatedTurns)removeInput(utterance);
       if(utterance&&utterance!==latestTurn)return;lastTranscript=text;
       replyLanguage = explicitVoiceLanguage(text) || replyLanguage;
       if (lastTranscript) onTranscript(lastTranscript);
       return;
     }
     if(event.type==='conversation.item.input_audio_transcription.failed'){
-      const utterance=turns.get(event.item_id);if(utterance){utterance.transcriptionComplete=true;utterance.resolveTranscript?.();}if(isolatedTurns&&event.item_id)sendEvent({type:'conversation.item.delete',item_id:event.item_id});timing('transcription-failed');return;
+      const utterance=turns.get(event.item_id);if(utterance){utterance.transcriptionComplete=true;utterance.resolveTranscript?.();}if(isolatedTurns)removeInput(utterance);timing('transcription-failed');return;
     }
     if (event.type === "response.output_audio_transcript.delta") {
       assistantTranscript += String(event.delta || "");
@@ -372,6 +383,10 @@ export function createRealtimeVoice({
     if(!utterance||utterance.transcriptionComplete||utterance.transcript)return;
     let timer;try{await Promise.race([new Promise(resolve=>{utterance.resolveTranscript=resolve;}),new Promise(resolve=>{timer=setTimeout(resolve,transcriptWaitMs);})]);}finally{clearTimeout(timer);utterance.resolveTranscript=null;}
   }
+  function removeInput(turn){
+    if(!turn?.itemId||turn.inputRemoved)return;
+    turn.inputRemoved=true;sendEvent({type:'conversation.item.delete',item_id:turn.itemId});
+  }
 
   function mayPlay(turn){
     return Boolean(turn&&(turn.verifiedSpeaker||isolatedTurns&&turn.publicResponse));
@@ -380,8 +395,8 @@ export function createRealtimeVoice({
   async function handleIsolatedTurn(utterance,speaker,current){
     await waitForTranscript(utterance);
     if(!valid(current)||!isCurrentTurn(utterance))return;
-    if(utterance.itemId&&!utterance.transcriptionComplete)sendEvent({type:'conversation.item.delete',item_id:utterance.itemId});
-    let reason=speaker?.verification_status==='unavailable'?'service-unavailable':'identity-uncertain';
+    if(!utterance.transcriptionComplete)removeInput(utterance);
+    let reason=!speaker||['unavailable','denied'].includes(speaker.verification_status)?'service-unavailable':speaker.match_status==='confirmed'?'known-nonowner':speaker.verification_status==='unknown'?'no-match':'identity-uncertain';
     let identity=null;
     // Only THIS recording is considered. No averaging/concatenation with an
     // earlier owner recording, cached assertion, or name-based authentication.
@@ -527,6 +542,24 @@ export function createRealtimeVoice({
     } catch { turnRecorder = null; }
   }
 
+  async function recognizePcm(current,turn){
+    const clip=turnPcm.end();
+    if(!clip)return {verification_status:'unavailable'};
+    const {bytes,durationSeconds}=clip;
+    onTiming({stage:'speaker-pcm-capture',measurements:{capturedAudioMs:Math.round(durationSeconds*1000),encodedBytes:bytes.length}});
+    if(durationSeconds<.8)return {match_status:'insufficient_speech'};
+    try{return await recognizeClip(current,turn,bytesToBase64(bytes),'audio/wav',durationSeconds);}finally{bytes.fill(0);}
+  }
+
+  async function recognizeClip(current,turn,audioBase64,mimeType,durationSeconds){
+    try{
+      if(turn?.fence&&!await turn.fence)return {verification_status:'unavailable'};
+      if(!valid(current)||turn?.conversationId&&turn.conversationId!==getConversationId())return null;
+      const response=await fetchImpl('/api/voice/speaker/recognize',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({audioBase64,mimeType,durationSeconds,...(isolatedTurns?{turnId:turn?.verificationId,sessionId:privateSessionId,turnSeq:turn.seq}:{}),conversationId:getConversationId()||undefined})});
+      const value=await response.json().catch(()=>null);return response.ok&&value?.speaker?{...value.speaker,verification_status:value.verificationStatus}:{verification_status:'unavailable'};
+    }catch{return {verification_status:'unavailable'};}
+  }
+
   function discardTurnRecording(){
     const recorder=turnRecorder;turnRecorder=null;
     try{if(recorder&&recorder.state!=="inactive")recorder.stop();}catch{}
@@ -546,11 +579,7 @@ export function createRealtimeVoice({
           if (!audio.size) return resolve(null);
           if (durationSeconds < 0.8) return resolve({match_status:'insufficient_speech',authenticated_identity:'none'});
           const audioBase64 = bytesToBase64(new Uint8Array(await audio.arrayBuffer()));
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-          if(!valid(current)||utterance?.conversationId&&utterance.conversationId!==getConversationId())return resolve(null);
-          const response = await fetchImpl("/api/voice/speaker/recognize", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audioBase64, mimeType: audio.type || "audio/webm", durationSeconds, ...(isolatedTurns?{turnId:utterance?.verificationId}:{}), transcript: utterance?.transcript || undefined, conversationId: getConversationId() || undefined }) });
-          const value = await response.json().catch(() => null);
-          resolve(response.ok&&value?.speaker ? {...value.speaker,verification_status:value.verificationStatus} : {match_status:'unknown',authenticated_identity:'none',verification_status:response.status>=500?'unavailable':'denied'});
+          resolve(await recognizeClip(current,utterance,audioBase64,audio.type||'audio/webm',durationSeconds));
         } catch { resolve({match_status:'unknown',authenticated_identity:'none',verification_status:'unavailable'}); }
       }, { once: true });
       try { recorder.stop(); }
@@ -568,6 +597,8 @@ export function createRealtimeVoice({
   }
 
   function cleanup() {
+    if(privateSessionId)void fetchImpl('/api/voice/realtime/turn-state',{method:'POST',credentials:'same-origin',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'close',session_id:privateSessionId})}).catch(()=>{});
+    privateSessionId=null;turnPcm?.dispose();turnPcm=null;
     clearTimeout(verificationStopTimer);verificationStopTimer=null;
     requestedResponseTurns.length=0;activeResponseTurn=null;
     isolatedReplies.clear();
@@ -646,6 +677,6 @@ function createAudioMeter({ AudioContextImpl, stream, onLevel, onShape }) {
     const bins=onShape && typeof analyser.getFloatFrequencyData==="function"?new Float32Array(analyser.frequencyBinCount):null;
     const sample = () => { if (disposed) return; analyser.getByteTimeDomainData(values); let total = 0; for (const value of values) { const centered = (value - 128) / 128; total += centered * centered; } const level=Math.min(1,Math.sqrt(total/values.length)*5); onLevel(level); if(bins){analyser.getFloatFrequencyData(bins);onShape(articulation(bins,context.sampleRate,analyser.fftSize,level));} frame = globalThis.requestAnimationFrame?.(sample) || globalThis.setTimeout(sample, 40); };
     sample();
-    return { dispose() { disposed = true; if (frame) (globalThis.cancelAnimationFrame || globalThis.clearTimeout)?.(frame); try { source.disconnect(); } catch {} void context?.close?.().catch?.(() => {}); } };
+    return { context,source,dispose() { disposed = true; if (frame) (globalThis.cancelAnimationFrame || globalThis.clearTimeout)?.(frame); try { source.disconnect(); } catch {} void context?.close?.().catch?.(() => {}); } };
   } catch { void context?.close?.().catch?.(() => {}); return null; }
 }

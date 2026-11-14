@@ -45,7 +45,7 @@ export function senderReadiness(config){
     provider:SHARP_CUTS_SENDER_PLAN.provider,
     plan:SHARP_CUTS_SENDER_PLAN.plan,
     planEvidence:SHARP_CUTS_SENDER_PLAN.planEvidence,
-    suitableForCandidateAudience:SHARP_CUTS_SENDER_PLAN.subscriberLimit>=1161,
+    suitableForCandidateAudience:SHARP_CUTS_SENDER_PLAN.subscriberLimit>=1562,
     displayName:SHARP_CUTS_SENDER_PLAN.displayName,
     configured:config?.configured===true,
     liveEnabled:config?.liveEnabled===true,
@@ -61,7 +61,7 @@ export function senderReadiness(config){
 
 function safeProviderError(status){
   const code=status===401?"sender_authentication_required":status===403?"sender_account_restricted":status===429?"sender_rate_limited":new Set([400,422]).has(status)?"sender_request_rejected":"sender_provider_failed";
-  const message=status===403?"Sender.net has not authorised sending for this account yet.":new Set([400,422]).has(status)?"Sender.net rejected the test email request.":"Sender.net request failed safely.";
+  const message=status===403?"Sender.net denied this operation.":new Set([400,422]).has(status)?"Sender.net rejected this request.":"Sender.net request failed safely.";
   const error=new Error(message);error.name="SenderMarketingError";error.code=code;error.statusCode=status===429?503:502;error.upstreamStatus=Number.isInteger(status)?status:null;return error;
 }
 
@@ -69,17 +69,66 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
   if(!config?.configured)throw new TypeError("Configured Sharp Cuts Sender.net credentials are required.");
   if(typeof fetchImpl!=="function")throw new TypeError("fetchImpl is required.");
   const request=async(path,{method="GET",body,signal}={})=>{
-    if(!new Set(["GET","POST"]).has(method)||!/^\/(?:groups(?:\?limit=1)?|campaigns|campaigns\/[A-Za-z0-9_-]{2,80}(?:\/(?:emails-sent|errors|schedule|send))?|message\/send)$/.test(path))throw new Error("Sender.net endpoint is not allowlisted.");
+    const allowed = method==="GET"
+      ? /^\/(?:groups(?:\?limit=1)?|subscribers\?page=[1-9][0-9]{0,2}|campaigns|campaigns\/[A-Za-z0-9_-]{2,80}\/(?:emails-sent|errors))$/.test(path)
+      : method==="POST" && /^\/(?:subscribers(?:\/groups\/[A-Za-z0-9_-]{2,80})?|campaigns|message\/send)$/.test(path);
+    if(!allowed)throw new Error("Sender.net endpoint is not allowlisted.");
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
     const combined=signal?AbortSignal.any([signal,controller.signal]):controller.signal;
     try{
-      const response=await fetchImpl(`${API_ORIGIN}/v2${path}`,{method,headers:{Authorization:`Bearer ${config.apiToken}`,Accept:"application/json","Content-Type":"application/json"},signal:combined,...(body?{body:JSON.stringify(body)}:{})});
+      const response=await fetchImpl(`${API_ORIGIN}/v2${path}`,{method,redirect:"error",headers:{Authorization:`Bearer ${config.apiToken}`,Accept:"application/json","Content-Type":"application/json"},signal:combined,...(body?{body:JSON.stringify(body)}:{})});
       if(!response.ok)throw safeProviderError(response.status);
       return await response.json();
     }catch(error){if(error?.name==="AbortError")throw Object.assign(new Error("Sender.net request timed out safely."),{name:"SenderMarketingError",code:"sender_timeout",statusCode:503});if(error?.name==="SenderMarketingError")throw error;throw Object.assign(new Error("Sender.net request failed safely."),{name:"SenderMarketingError",code:"sender_transport_failed",statusCode:502});}
     finally{clearTimeout(timer);}
   };
+  // Kept private to this client. Raw subscriber records never enter the tool
+  // registry, model context, persistent activity or the operator's output.
+  const inventory=async()=>{
+    const records=[];
+    for(let page=1;page<=999;page++){
+      const result=await request("/subscribers?page="+page);
+      if(!Array.isArray(result.data)||!result.meta||Number(result.meta.current_page)!==page ||
+        !Number.isSafeInteger(result.meta.total)||result.meta.total<0||!result.links||!("next" in result.links))throw Error("Incomplete Sender subscriber inventory.");
+      records.push(...result.data);
+      if(!result.links.next){
+        if(records.length!==result.meta.total)throw Error("Sender subscriber total changed during reconciliation.");
+        return records;
+      }
+      if(!result.data.length)break;
+    }
+    throw Error("Sender inventory could not be completely reconciled.");
+  };
   return Object.freeze({
+    async reconcileAudience({addresses,sharedAddresses,evidence,membershipHash,approvalHash=null}){
+      const {planAudienceTransfer}=await import("./sharp-cuts-audience.js");
+      const read=async()=>planAudienceTransfer({addresses,sharedAddresses,evidence,membershipHash,groupId:config.groupId,providerSubscribers:await inventory()});
+      const plan=await read();
+      if(!approvalHash)return plan.summary;
+      if(!safeId(config.groupId)||!plan.summary.eligible||plan.summary.unexpectedGroupMembers||
+        approvalHash!==plan.summary.approvalHash)throw Error("The reviewed Sharp Cuts audience or destination is unavailable or has changed.");
+      // No automatic retry: a timeout may follow a successful write. A new
+      // run reconstructs provider membership before it considers another POST.
+      let acknowledged=0;
+      try{
+        for(const email of plan.create){
+          const receipt=await request("/subscribers",{method:"POST",body:{email,groups:[config.groupId],trigger_automation:false}});
+          if(receipt.success!==true||!receipt.data?.id)throw Error("Subscriber acknowledgement unavailable.");
+          acknowledged++;
+        }
+        for(let i=0;i<plan.add.length;i+=50){
+          const subscribers=plan.add.slice(i,i+50);
+          const receipt=await request("/subscribers/groups/"+config.groupId,{method:"POST",body:{subscribers,trigger_automation:false}});
+          if(receipt.success!==true)throw Error("Group acknowledgement unavailable.");
+          acknowledged+=subscribers.length;
+        }
+        const after=await read();
+        if(after.summary.approvalHash!==approvalHash||after.summary.unexpectedGroupMembers||after.create.length||after.add.length)throw Error("Membership receipts differ.");
+        return {...after.summary,status:"membership_verified",contactsTransferred:acknowledged,sent:0};
+      }catch{
+        return {...plan.summary,status:"provider_outcome_requires_reconciliation",acknowledged,contactsTransferred:null,sent:0};
+      }
+    },
     async probe(){const data=await request("/groups?limit=1");return Object.freeze({connected:true,provider:"Sender.net",groupCount:Number.isInteger(data?.meta?.total)?data.meta.total:null,groupsOnProbePage:Array.isArray(data?.data)?data.data.length:null,tokenExposed:false});},
     async inspectCampaignReadiness(){
       const groups=await request('/groups'),campaigns=await request('/campaigns');
@@ -97,7 +146,9 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
     async createCampaignDraft(payload,{authority}={}){
       if(!authority||authority.operation!=="create_campaign_draft"||authority.projectId!=="sharp-cuts-web"||authority.audienceSnapshotHash!==payload?.audienceSnapshotHash||authority.copyHash!==payload?.copyHash)throw Object.assign(new Error("Exact owner-authorised campaign-draft authority is required."),{code:"sender_campaign_authority_required",statusCode:403});
       const response=await request("/campaigns",{method:"POST",body:payload.provider});
-      return Object.freeze({created:true,campaignId:response?.data?.id||null,status:response?.data?.status||"DRAFT",sent:false});
+      if(!safeId(response?.data?.id)||String(response.data.status).toUpperCase()!=="DRAFT")
+        throw Object.assign(new Error("Sender draft outcome is unconfirmed. Check existing campaigns before retrying."),{code:"sender_draft_requires_reconciliation"});
+      return Object.freeze({created:true,campaignId:response.data.id,status:"DRAFT",sent:false});
     },
     async sendOwnerTest({recipient=SHARP_CUTS_SENDER_PLAN.accountMailbox,subject="Nova Sender integration test — no action required"}={}, {authority}={}){
       if(!authority||authority.operation!=="send_owner_test"||authority.projectId!=="sharp-cuts-web"||authority.recipient!==recipient||recipient!==SHARP_CUTS_SENDER_PLAN.accountMailbox)throw Object.assign(new Error("Exact owner-test authority is required."),{code:"sender_test_authority_required",statusCode:403});
@@ -112,6 +163,18 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
 }
 
 const escapeHtml=value=>String(value).replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
+
+export function previewSenderCopy(copy){
+  // Historical Nova drafts contain a clearly marked placeholder. Produce the
+  // actual provider template without altering the original reviewed text.
+  const body=copy.body.replace(/^Unsubscribe:\s*\[PROVIDER UNSUBSCRIBE LINK REQUIRED BEFORE SEND\]\s*$/gmi,"").trim();
+  const booking=String(copy.bookingUrl);
+  const link='<a href="'+escapeHtml(booking)+'">Book with the Sharp Cuts team</a>';
+  const paragraphs=body.split(/\n\s*\n/).map(p=>'<p>'+escapeHtml(p).replaceAll(escapeHtml(booking),link).replaceAll('\n','<br>')+'</p>').join('');
+  const address=body.includes(copy.address)?'':'<p>'+escapeHtml(copy.address)+'</p>';
+  const content='<!doctype html><html lang="en"><head><meta charset="utf-8"><title>'+escapeHtml(copy.subject)+'</title></head><body><main>'+paragraphs+(body.includes(booking)?'':'<p>'+link+'</p>')+address+'<p><a href="{$unsubscribe_link}">Unsubscribe</a></p></main></body></html>';
+  return {subject:copy.subject,from:'Sharp Cuts',reply_to:SHARP_CUTS_SENDER_PLAN.fromEmail,content_type:'html',auto_followup_active:false,google_analytics:0,content};
+}
 
 export function buildSenderCampaignDraft({review,config,physicalAddress="Sharp Cuts, 57 Cheapside, Luton, United Kingdom"}={}){
   if(!review||review.projectId!=="sharp-cuts-web")throw new TypeError("Sharp Cuts campaign review is required.");

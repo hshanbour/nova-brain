@@ -41,12 +41,20 @@ export function createSharpCutsWhatsAppCoexistenceService({config,storage,ownerI
   async function sendOwnerTest({to,text,inboundSid}){
     if(settings.provider!=="gupshup_coexistence"||settings.mode!=="owner_test"||!settings.testRecipients.includes(to))throw new SharpCutsWhatsAppError("This recipient is not authorised for the Sharp Cuts owner test.",{code:"sharp_cuts_whatsapp_test_recipient_forbidden",statusCode:403,category:"authorization"});
     if(!settings.sendEnabled||!await executionAllowed())throw new SharpCutsWhatsAppError("Sharp Cuts WhatsApp execution is held.",{code:"sharp_cuts_whatsapp_execution_held",statusCode:403,category:"authorization"});
-    const claimed=await storage.claimWhatsAppOutbound({ownerId,inboundSid,bodyHash:hash(text)});if(!claimed.claimed)return claimed.message;
+    const claimed=await storage.claimWhatsAppOutbound({ownerId,inboundSid,bodyHash:hash(text)});
+    if(!claimed?.claimed){
+      const previous=claimed?.message;
+      if(previous?.bodyHash===hash(text)&&previous.providerMessageSid&&['submitted','queued','sent','delivered','read'].includes(previous.status))return previous;
+      throw new SharpCutsWhatsAppError("An earlier outbound attempt must be reconciled before any retry.",{code:"sharp_cuts_whatsapp_reconcile_required",statusCode:409,category:"provider"});
+    }
     const body=new URLSearchParams({channel:"whatsapp",source:settings.number.replace(/\D/g,""),destination:to.replace(/\D/g,""),message:JSON.stringify({type:"text",text,previewUrl:false}),"src.name":settings.appName});let response;
     if(!await executionAllowed()){await storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:"blocked",errorCode:"automation_paused"});throw new SharpCutsWhatsAppError("Sharp Cuts WhatsApp execution is held.",{code:"sharp_cuts_whatsapp_execution_held",statusCode:403,category:"authorization"});}
     try{response=await fetchImpl("https://api.gupshup.io/wa/api/v1/msg",{method:"POST",headers:{apikey:settings.apiKey,"content-type":"application/x-www-form-urlencoded"},body:body.toString(),signal:AbortSignal.timeout(15_000)});}catch{await storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:"uncertain",errorCode:"network_error"});throw new SharpCutsWhatsAppError("The owner-test delivery outcome is uncertain; Nova will not retry automatically.",{code:"sharp_cuts_whatsapp_send_uncertain",statusCode:502,category:"provider"});}
-    const value=await response.json().catch(()=>({}));if(!response.ok||value.status!=="submitted"||!value.messageId){await storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:"failed",errorCode:`gupshup_${response.status}`});throw new SharpCutsWhatsAppError("Gupshup rejected the owner-test reply.",{code:"sharp_cuts_whatsapp_provider_rejected",statusCode:502,category:"provider"});}
-    return storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:"submitted",providerMessageSid:String(value.messageId)});
+    const value=await response.json().catch(()=>null);
+    if(response.ok&&value?.status==="submitted"&&value.messageId)return storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:"submitted",providerMessageSid:String(value.messageId)});
+    const uncertain=response.status>=500||response.ok;
+    await storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:uncertain?"uncertain":"failed",errorCode:`gupshup_${response.status}`});
+    throw new SharpCutsWhatsAppError(uncertain?"Submission has no conclusive provider receipt. Reconcile before retrying.":"Gupshup rejected the owner-test reply.",{code:uncertain?"sharp_cuts_whatsapp_send_uncertain":"sharp_cuts_whatsapp_provider_rejected",statusCode:502,category:"provider"});
   }
   return Object.freeze({
     async processingCheck(){
@@ -84,24 +92,45 @@ export function createSharpCutsWhatsAppCoexistenceService({config,storage,ownerI
       if(!/^[a-f0-9]{64}$/.test(recordRef||''))throw new SharpCutsWhatsAppError('A review record reference is required.');
       const rows=await storage.listHeldWhatsAppInbound(ownerId,CONVERSATION_PREFIX),record=rows.find(row=>hash(row.messageSid)===recordRef);
       if(!record)throw new SharpCutsWhatsAppError('The held Sharp Cuts record was not found.',{statusCode:404});
-      const messages=await storage.listMessages(record.conversationId,ownerId,{limit:100}),userMessage=messages.find(item=>item.id===`whatsapp-user-${recordRef.slice(0,40)}`);
+      const userMessage=await storage.getWhatsAppMessage({ownerId,conversationId:record.conversationId,messageId:`whatsapp-user-${recordRef.slice(0,40)}`});
       if(!userMessage)throw new SharpCutsWhatsAppError('The original message is unavailable.',{code:'sharp_cuts_whatsapp_message_missing'});
       if(STOP.test(userMessage.content))return{recordRef,status:'opt_out_requires_staff_review',draft:null,sent:false,queueUnchanged:true};
       const reviewConversation=`review_${CONVERSATION_PREFIX}${recordRef.slice(0,32)}`,assistantMessageId=`review-whatsapp-assistant-${recordRef.slice(0,40)}`;
       await storage.ensureConversation({id:reviewConversation,ownerId,title:'Sharp Cuts WhatsApp · unsent reply review'});
-      const existing=(await storage.listMessages(reviewConversation,ownerId,{limit:10})).find(item=>item.id===assistantMessageId);
+      const existing=await storage.getWhatsAppMessage({ownerId,conversationId:reviewConversation,messageId:assistantMessageId});
       let result=existing?{id:existing.id,message:existing.content}:null;
       if(!result)result=await novaTurn({message:userMessage.content,conversationId:reviewConversation,requestId:`sharp-cuts-review:${recordRef}`,userMessageId:`review-whatsapp-user-${recordRef.slice(0,40)}`,assistantMessageId,context:{channel:'whatsapp',projectId:PROJECT_ID,externalActionsAllowed:false,verifiedBusinessProfile:VERIFIED_PROFILE}});
       const draft=safeText(result.message);
       if(!existing)await storage.appendActivity({ownerId,projectId:PROJECT_ID,runId:result.runId||null,action:'sharp_cuts_whatsapp_reply_review_prepared',tool:'sharp_cuts_automation_reply_review',status:'completed',summary:'Prepared an unsent reply review without releasing the original inbound record.',metadata:{recordRef,reviewConversation,assistantMessageId,queueUnchanged:true,sent:false}});
-      return{recordRef,status:'draft_for_review',draft,reviewConversation,runId:result.runId||null,duplicate:Boolean(existing),sent:false,queueUnchanged:true};
+      return{recordRef,status:'draft_for_review',draft,replyHash:hash(draft),reviewConversation,runId:result.runId||null,duplicate:Boolean(existing),sent:false,queueUnchanged:true};
     },
     async status(){const allowed=await executionAllowed();return Object.freeze({projectId:PROJECT_ID,number:"+44 1582 510565",provider:settings.provider||"gupshup_coexistence",configured:settings.configured===true,coexistenceRequired:true,businessAppPreserved:true,receiveEnabled:settings.receiveEnabled===true,mode:settings.mode||"disabled",aiReplyPolicy:settings.mode==="owner_test"?"allowlisted_owner_test_only":"draft_then_owner_review",humanTakeover:"business_app_remains_authoritative",sendEnabled:settings.sendEnabled===true&&allowed,executionHeld:!allowed,campaignsEnabled:false,spendAuthorisedGbp:0,webhookAuthentication:settings.provider==="gupshup_coexistence"?"vercel_verified_provider_ip_or_shared_bearer":"provider_custom_bearer_header",projectIsolation:"conversation_and_worker_prefix_enforced",nextAction:settings.configured?"complete_owner_controlled_inbound_test":"complete_official_gupshup_coexistence_signup"});},
+    async verifyProviderBinding(){
+      // Return only a comparison result. The Gupshup business response also
+      // contains account contact information unrelated to webhook diagnosis.
+      if(!settings.configured||settings.provider!=="gupshup_coexistence"||!settings.appId||!settings.apiKey){
+        return{verified:false,reason:"binding_unavailable"};
+      }
+      let response;
+      try{
+        response=await fetchImpl(`https://api.gupshup.io/wa/app/${encodeURIComponent(settings.appId)}/business`,{
+          method:"GET",headers:{accept:"application/json",apikey:settings.apiKey},
+          redirect:"error",signal:AbortSignal.timeout(5000),
+        });
+        if(!response.ok)return{verified:false,httpStatus:response.status,reason:"provider_http_error"};
+        const payload=await response.json();
+        if(payload?.status!=="success"||!payload.business?.id)return{verified:false,httpStatus:response.status,reason:"app_identity_unavailable"};
+        const verified=payload.business.id===settings.appId;
+        return{verified,httpStatus:response.status,appId:settings.appId,reason:verified?"configured_app_confirmed":"app_identity_mismatch"};
+      }catch{
+        return{verified:false,httpStatus:response?.status||null,reason:response?"provider_response_unreadable":"provider_unreachable"};
+      }
+    },
     async receive(payload,requestIdentity){
       const identity=typeof requestIdentity==="string"?{authorization:requestIdentity}:requestIdentity;
       if(!settings.configured||!settings.receiveEnabled)throw new SharpCutsWhatsAppError("Sharp Cuts WhatsApp inbound processing is not enabled.",{code:"sharp_cuts_whatsapp_not_enabled",statusCode:503,category:"configuration"});
       if(!webhookAuthorised(identity))throw new SharpCutsWhatsAppError("WhatsApp webhook authentication failed.",{code:"sharp_cuts_whatsapp_webhook_unauthorized",statusCode:401,category:"authorization"});
-      const providerSource=providerIpAuthorised(identity),allChanges=(payload?.entry||[]).flatMap(entry=>entry?.changes||[]),platformProbe=providerSource&&allChanges.some(change=>change?.field==="platform-event");
+      const providerSource=providerIpAuthorised(identity),allChanges=(payload?.entry||[]).flatMap(entry=>entry?.changes||[]),platformProbe=providerSource&&allChanges.length>0&&allChanges.every(change=>change?.field==="platform-event");
       if(platformProbe)return{accepted:true,queued:0,duplicates:0,ignored:0,echoes:0,verification:true,acknowledgedOnly:true};
       if(settings.provider==="gupshup_coexistence"&&String(payload?.gs_app_id||"")!==settings.appId)throw new SharpCutsWhatsAppError("The webhook app identity does not match Sharp Cuts.",{code:"sharp_cuts_whatsapp_app_mismatch",statusCode:403,category:"authorization"});
       const values=changes(payload),verificationProbe=providerSource&&values.length>0&&values.every(value=>!(value?.messages?.length||value?.message_echoes?.length||value?.statuses?.length));
@@ -116,29 +145,49 @@ export function createSharpCutsWhatsAppCoexistenceService({config,storage,ownerI
         for(const message of value.messages||[]){
           if(message?.type!=="text"||typeof message?.text?.body!=="string"){ignored+=1;continue;}
           const messageSid=providerId(message.id),from=e164(message.from),text=safeText(message.text.body),personId=contactId(from),conversationId=`${CONVERSATION_PREFIX}${personId.slice(0,32)}`;
-          const claimed=await storage.claimWhatsAppInbound({messageSid,ownerId,conversationId,contactId:personId,contactCiphertext:encryptContact(from,settings.identityKeyBytes),bodyHash:hash(text)});
-          if(!claimed?.claimed){duplicates+=1;continue;}
+          // Persist the deterministic transcript first. A retried callback can
+          // complete a failed queue insert without creating a second message.
           await storage.ensureConversation({id:conversationId,ownerId,title:`Sharp Cuts WhatsApp · ${personId.slice(0,8)}`});
           await storage.appendMessage({id:`whatsapp-user-${hash(messageSid).slice(0,40)}`,conversationId,ownerId,role:"user",content:text});
+          const claimed=await storage.claimWhatsAppInbound({messageSid,ownerId,conversationId,contactId:personId,contactCiphertext:encryptContact(from,settings.identityKeyBytes),bodyHash:hash(text)});
+          if(!claimed?.claimed){duplicates+=1;continue;}
           accepted+=1;
         }
         for(const status of value.statuses||[]){if(status?.id&&status?.status)await storage.updateWhatsAppOutboundByProviderSid(String(status.id),ownerId,{status:String(status.status).toLowerCase(),errorCode:status.errors?.[0]?.code?String(status.errors[0].code).slice(0,32):null});}
       }
       return{accepted:true,queued:accepted,duplicates,ignored,echoes,...(providerSource&&accepted===0&&echoes===0&&ignored>0?{acknowledgedOnly:true}:{})};
     },
-    async processNext({workerId=`sharp-cuts-whatsapp-${randomUUID()}`}={}){
+    async processNext({workerId=`sharp-cuts-whatsapp-${randomUUID()}`,recordRef,approvedReplyHash}={}){
       if(!settings.configured||!settings.receiveEnabled)return{worked:false,reason:"not_enabled"};
       if(!await executionAllowed())return{worked:false,reason:"execution_held",sent:false};
-      const claim=await storage.claimNextWhatsAppInbound({ownerId,workerId,leaseMs:LEASE_MS,conversationPrefix:CONVERSATION_PREFIX});if(!claim)return{worked:false};
+      if(storage.provider==="postgres"&&await storage.supportsSharpCutsWhatsAppReview()!==true){
+        return{worked:false,reason:"whatsapp_review_migration_required",sent:false};
+      }
+      let target=null,reviewed=null;
+      if(settings.sendEnabled===true&&settings.mode==="owner_test"){
+        if(!/^[a-f0-9]{64}$/.test(recordRef||'')||!/^[a-f0-9]{64}$/.test(approvedReplyHash||''))return{worked:false,sent:false,reason:'specific_reply_approval_required'};
+        target=(await storage.listHeldWhatsAppInbound(ownerId,CONVERSATION_PREFIX)).find(row=>hash(row.messageSid)===recordRef);
+        if(!target||Date.now()-new Date(target.createdAt).getTime()>24*60*60*1000)return{worked:false,sent:false,reason:'fresh_owner_test_record_required'};
+        if(!settings.testRecipients.includes(decryptContact(target.contactCiphertext,settings.identityKeyBytes)))return{worked:false,sent:false,reason:'recipient_not_allowlisted'};
+        reviewed=await storage.getWhatsAppMessage({ownerId,conversationId:`review_${CONVERSATION_PREFIX}${recordRef.slice(0,32)}`,messageId:`review-whatsapp-assistant-${recordRef.slice(0,40)}`});
+        if(reviewed?.role!=='assistant'||hash(safeText(reviewed.content))!==approvedReplyHash)return{worked:false,sent:false,reason:'reviewed_reply_changed_or_missing'};
+      }
+      const claim=await storage.claimNextWhatsAppInbound({ownerId,workerId,leaseMs:LEASE_MS,conversationPrefix:CONVERSATION_PREFIX,messageSid:target?.messageSid||null});if(!claim)return{worked:false};
       try{
-        const userMessageId=`whatsapp-user-${hash(claim.messageSid).slice(0,40)}`,assistantMessageId=`whatsapp-assistant-${hash(claim.messageSid).slice(0,40)}`,messages=await storage.listMessages(claim.conversationId,ownerId,{limit:100}),userMessage=messages.find(item=>item.id===userMessageId);
+        const userMessageId=`whatsapp-user-${hash(claim.messageSid).slice(0,40)}`,assistantMessageId=`whatsapp-assistant-${hash(claim.messageSid).slice(0,40)}`,userMessage=await storage.getWhatsAppMessage({ownerId,conversationId:claim.conversationId,messageId:userMessageId});
         if(!userMessage)throw new SharpCutsWhatsAppError("The queued Sharp Cuts WhatsApp message is missing.",{code:"sharp_cuts_whatsapp_message_missing",statusCode:500,category:"storage",retryable:true});
         if(STOP.test(userMessage.content)){await finish(claim,{status:"opt_out_received",errorCode:null});await storage.appendActivity({ownerId,projectId:PROJECT_ID,action:"sharp_cuts_whatsapp_opt_out_received",status:"completed",summary:"A WhatsApp opt-out was captured and no automated reply was sent.",metadata:{conversationId:claim.conversationId,contactId:claim.contactId}});return{worked:true,status:"opt_out_received",conversationId:claim.conversationId};}
-        let assistant=messages.find(item=>item.id===assistantMessageId),runId=claim.runId;
+        let assistant=await storage.getWhatsAppMessage({ownerId,conversationId:claim.conversationId,messageId:assistantMessageId}),runId=claim.runId;
+        if(reviewed)assistant=await storage.appendMessage({id:assistantMessageId,conversationId:claim.conversationId,ownerId,role:'assistant',content:reviewed.content});
         if(!assistant){const result=await novaTurn({message:userMessage.content,conversationId:claim.conversationId,requestId:`sharp-cuts-whatsapp:${hash(claim.messageSid)}`,userMessageId,assistantMessageId,context:{channel:"whatsapp",projectId:PROJECT_ID,personId:claim.contactId,externalActionsAllowed:false,verifiedBusinessProfile:VERIFIED_PROFILE}});assistant={id:result.id||assistantMessageId,content:safeText(result.message)};runId=result.runId||null;const checkpoint=await storage.checkpointWhatsAppInbound({messageSid:claim.messageSid,ownerId,workerId:claim.leaseOwner,leaseToken:claim.leaseToken,runId,assistantMessageId:assistant.id});if(!checkpoint)throw new SharpCutsWhatsAppError("The WhatsApp worker lease was fenced after drafting.",{code:"sharp_cuts_whatsapp_lease_stale",statusCode:409,category:"storage",retryable:true});}
         const reply=safeText(assistant.content),to=decryptContact(claim.contactCiphertext,settings.identityKeyBytes);
         if(!await executionAllowed()){await finish(claim,{status:"awaiting_owner_review",runId,assistantMessageId:assistant.id,errorCode:"automation_paused"});return{worked:true,status:"awaiting_owner_review",sent:false,reason:"execution_held"};}
-        if(settings.sendEnabled===true&&settings.mode==="owner_test"&&settings.testRecipients.includes(to)){const outbound=await sendOwnerTest({to,text:reply,inboundSid:claim.messageSid});await finish(claim,{status:"replied",runId,assistantMessageId:assistant.id,errorCode:null});await storage.appendActivity({ownerId,projectId:PROJECT_ID,runId,action:"sharp_cuts_whatsapp_owner_test_reply_submitted",status:"completed",summary:"Nova submitted one reply to an allowlisted owner-controlled WhatsApp test number.",metadata:{conversationId:claim.conversationId,outboundStatus:outbound.status}});return{worked:true,status:"replied",conversationId:claim.conversationId,sent:true};}
+        if(settings.sendEnabled===true&&settings.mode==="owner_test"&&settings.testRecipients.includes(to)){
+          const outbound=await sendOwnerTest({to,text:reply,inboundSid:claim.messageSid});
+          await finish(claim,{status:"replied",runId,assistantMessageId:assistant.id,errorCode:null});
+          await storage.appendActivity({ownerId,projectId:PROJECT_ID,runId,action:"sharp_cuts_whatsapp_owner_test_reply_submitted",status:"completed",summary:"Nova submitted one reply to an allowlisted owner-controlled WhatsApp test number.",metadata:{conversationId:claim.conversationId,outboundStatus:outbound.status}});
+          return{worked:true,status:"replied",conversationId:claim.conversationId,sent:true,providerStatus:outbound.status,delivered:["delivered","read"].includes(outbound.status)};
+        }
         await finish(claim,{status:"awaiting_owner_review",runId,assistantMessageId:assistant.id,errorCode:null});
         await storage.appendActivity({ownerId,projectId:PROJECT_ID,runId,action:"sharp_cuts_whatsapp_reply_drafted",status:"completed",summary:"Nova prepared a project-scoped WhatsApp reply for owner review; nothing was sent.",metadata:{conversationId:claim.conversationId,replyHash:hash(assistant.content),sendEnabled:false}});
         return{worked:true,status:"awaiting_owner_review",conversationId:claim.conversationId,replyHash:hash(assistant.content),sent:false};

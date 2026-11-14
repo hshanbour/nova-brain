@@ -50,9 +50,14 @@ test('a prohibition on archive search is not permission to search', () => {
     "Don't retrieve previous chats about the lighthouse.",
     'لا تبحثي في أي محادثة سابقة، ولا تخمني.',
     'شو الرمز؟ لا تبحثي في المحادثات السابقة.',
+    'Start a new conversation, do not use any previous conversations.',
+    'I mentioned a previous chat in my notes.',
+    'لا تفتحي المحادثة السابقة.',
   ]) assert.equal(requestsEarlierConversation(message),false,message);
   for (const message of [
     'Recall our earlier conversation about Synthetic Lantern.',
+    'Pick up where we left off in our last chat about PGK.',
+    'كملي آخر محادثة عن المشروع.',
     'ارجعي للمحادثات السابقة عن «منارة تدقيق نوفمبر» ولا تعيدي حفظها.',
   ]) assert.equal(requestsEarlierConversation(message),true,message);
 });

@@ -1491,19 +1491,38 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         [messageSid,ownerId,patch.status||null,patch.runId||null,patch.assistantMessageId||null,patch.errorCode??null],
       ))[0]);
     },
-    async claimNextWhatsAppInbound({ ownerId, workerId, leaseMs, conversationPrefix = null }) {
+    async getWhatsAppMessage({ownerId, conversationId, messageId}) {
+      return messageRow((await run(
+        "SELECT * FROM nova_messages WHERE id=$1 AND owner_id=$2 AND conversation_id=$3",
+        [messageId, ownerId, conversationId],
+      ))[0]);
+    },
+    async supportsSharpCutsWhatsAppReview(){
+      const rows=await run(`SELECT conrelid::regclass::text AS relation, pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint WHERE (conrelid='nova_whatsapp_inbound_messages'::regclass
+        AND conname='nova_whatsapp_inbound_messages_status_check') OR (conrelid='nova_whatsapp_outbound_messages'::regclass
+        AND conname='nova_whatsapp_outbound_messages_status_check')`);
+      const inbound=rows.find(row=>row.relation==='nova_whatsapp_inbound_messages')?.definition||'';
+      const outbound=rows.find(row=>row.relation==='nova_whatsapp_outbound_messages')?.definition||'';
+      return inbound.includes("'awaiting_owner_review'")&&inbound.includes("'opt_out_received'")&&outbound.includes("'blocked'");
+    },
+    async claimNextWhatsAppInbound({ ownerId, workerId, leaseMs, conversationPrefix = null, messageSid = null }) {
       const token=randomUUID();
+      // Unscoped polling belongs to Twilio's historical hashed contact IDs.
+      // A targeted test must never reclaim an unrelated expired lease either.
+      const scope = `(CASE WHEN $5::text IS NULL THEN conversation_id ~ '^whatsapp_[a-f0-9]{32}$'
+                     ELSE starts_with(conversation_id,$5) END) AND ($6::text IS NULL OR message_sid=$6)`;
       return whatsappInboundRow((await run(
         `WITH expired AS (
            UPDATE nova_whatsapp_inbound_messages SET status='queued',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=now()
-           WHERE owner_id=$1 AND ($5::text IS NULL OR conversation_id LIKE ($5 || '%')) AND status='processing' AND lease_expires_at<=now()
+           WHERE owner_id=$1 AND ${scope} AND status='processing' AND lease_expires_at<=now()
          ), candidate AS (
            SELECT message_sid FROM nova_whatsapp_inbound_messages
-           WHERE owner_id=$1 AND status='queued' AND ($5::text IS NULL OR conversation_id LIKE ($5 || '%')) AND COALESCE(next_attempt_at,now())<=now()
+           WHERE owner_id=$1 AND status='queued' AND ${scope} AND COALESCE(next_attempt_at,now())<=now()
            ORDER BY created_at,message_sid FOR UPDATE SKIP LOCKED LIMIT 1
          ) UPDATE nova_whatsapp_inbound_messages message SET status='processing',attempt_count=attempt_count+1,lease_owner=$2,lease_token=$3,lease_expires_at=now()+($4::int*interval '1 millisecond'),updated_at=now()
          FROM candidate WHERE message.message_sid=candidate.message_sid RETURNING message.*`,
-        [ownerId,workerId,token,leaseMs,conversationPrefix],
+        [ownerId,workerId,token,leaseMs,conversationPrefix,messageSid],
       ))[0]);
     },
     async renewWhatsAppInboundLease(input) {
@@ -1822,6 +1841,20 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
         "SELECT * FROM nova_execution_runs WHERE owner_id=$1 AND result->>'approvalId'=$2 ORDER BY created_at ASC,id ASC",
         [ownerId, approvalId],
       )).map(runRow);
+    },
+    // One mutable, non-biometric marker per connected Preview workspace. A new
+    // device/session replaces the former private voice session; no schema change.
+    async voiceTurnFence({ownerId,sessionId,seq,turnId,op}) {
+      const id='connected-preview:voice-turn:'+ownerId;
+      if(op==='open')return (await run("INSERT INTO nova_activity_events (id,owner_id,action,status,summary,metadata) VALUES ($1,$2,'private_voice_session','active','Current private Voice session',jsonb_build_object('sessionId',$3::text,'seq',0)) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata WHERE nova_activity_events.owner_id=$2 RETURNING id",[id,ownerId,sessionId])).length===1;
+      const predicate="id=$1 AND owner_id=$2 AND metadata->>'sessionId'=$3";
+      const params=[id,ownerId,sessionId,seq,turnId];
+      if(op==='begin')return (await run("UPDATE nova_activity_events SET metadata=jsonb_build_object('sessionId',$3::text,'seq',$4::int,'turnId',$5::text,'used',false) WHERE "+predicate+" AND (metadata->>'seq')::int<$4 RETURNING id",params)).length===1;
+      const current=predicate+" AND (metadata->>'seq')::int=$4 AND metadata->>'turnId'=$5 AND metadata->>'used'='false'";
+      if(op==='check')return (await run("SELECT id FROM nova_activity_events WHERE "+current,params)).length===1;
+      if(op==='consume')return (await run("UPDATE nova_activity_events SET metadata=jsonb_set(metadata,'{used}','true') WHERE "+current+" RETURNING id",params)).length===1;
+      if(op==='close')return (await run("UPDATE nova_activity_events SET metadata='{}'::jsonb WHERE "+predicate+" RETURNING id",params.slice(0,3))).length===1;
+      return false;
     },
     async appendActivity(input) {
       return activityRow(

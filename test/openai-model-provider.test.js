@@ -48,7 +48,7 @@ test("OpenAI provider translates Responses API tool calls and results", async ()
     ]
   };
 
-  const first = await provider.generate(common);
+  const first = await provider.generate({...common,requiredTool:'lookup'});
   const second = await provider.generate({
     ...common,
     continuationToken: first.continuationToken,
@@ -65,6 +65,8 @@ test("OpenAI provider translates Responses API tool calls and results", async ()
   const secondBody = JSON.parse(requests[1].options.body);
   assert.equal(requests[0].options.headers.Authorization, "Bearer test-secret");
   assert.equal(firstBody.tools[0].name, "lookup");
+  assert.deepEqual(firstBody.tool_choice,{type:'function',name:'lookup'});
+  assert.equal(secondBody.tool_choice,undefined);
   assert.equal(firstBody.tools[0].strict, false);
   assert.equal(secondBody.previous_response_id, "resp_1");
   assert.deepEqual(secondBody.input, [

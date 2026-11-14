@@ -5,7 +5,10 @@ const AGGREGATE_QUERY=`SELECT current_user AS role_name,current_database() AS da
   count(*) FILTER (WHERE has_email)::int AS email_candidates,count(*) FILTER (WHERE has_mobile)::int AS mobile_candidates,
   count(*) FILTER (WHERE has_email AND has_mobile)::int AS both_candidates,
   count(*) FILTER (WHERE NOT has_email AND NOT has_mobile)::int AS missing_contact,
-  count(*) FILTER (WHERE has_ambiguous_candidates)::int AS ambiguous_identity_profiles
+  count(*) FILTER (WHERE has_ambiguous_candidates)::int AS ambiguous_identity_profiles,
+  count(DISTINCT provisional_identity_id) FILTER (WHERE has_email)::int AS distinct_email_profile_ids,
+  count(*) FILTER (WHERE has_email AND has_ambiguous_candidates)::int AS ambiguous_email_candidates,
+  encode(sha256(convert_to(string_agg(provisional_identity_id::text, chr(10) ORDER BY provisional_identity_id::text COLLATE "C") FILTER (WHERE has_email),'UTF8')),'hex') AS email_membership_hash
 FROM public.sc_customer_deduplicated_preview`;
 
 function count(value,name){const parsed=Number(value);if(!Number.isSafeInteger(parsed)||parsed<0)throw new Error(`Sharp Cuts aggregate ${name} is invalid.`);return parsed;}
@@ -29,7 +32,13 @@ export function createSharpCutsCustomerReader({config,sqlClient}={}){
       const sourceProfiles=count(row.source_profiles,"source profiles"),uniqueProfiles=count(row.provisional_unique_profiles,"unique profiles"),emailCandidates=count(row.email_candidates,"email candidates"),mobileCandidates=count(row.mobile_candidates,"mobile candidates"),bothCandidates=count(row.both_candidates,"both candidates"),missingContact=count(row.missing_contact,"missing contact"),ambiguousIdentityProfiles=count(row.ambiguous_identity_profiles,"ambiguous identities");
       if(uniqueProfiles>sourceProfiles||bothCandidates>emailCandidates||bothCandidates>mobileCandidates||emailCandidates+mobileCandidates-bothCandidates+missingContact!==uniqueProfiles)throw new Error("Sharp Cuts aggregate invariants failed.");
       const evidence=["marketing consent or UK soft-opt-in evidence is not present in the approved view","suppression and opt-out evidence is not present in the approved view","future Fresha booking evidence is not present in the approved view","channel delivery evidence is not present in the approved view"];
-      return Object.freeze({source:"neon_select_only_aggregate",projectId:config.projectId,branchId:config.branchId,branchName:config.branchName,database:config.database,role:config.role,view:config.view,readOnlyEnforced:true,identifiersExposed:false,sourceProfiles,uniqueProfiles,emailCandidates,mobileCandidates,bothCandidates,emailOnly:emailCandidates-bothCandidates,mobileOnly:mobileCandidates-bothCandidates,missingContact,ambiguousIdentityProfiles,channels:Object.freeze({email:channel(emailCandidates,evidence),sms:channel(mobileCandidates,evidence),whatsapp:channel(mobileCandidates,evidence)})});
+      const emailSource = {
+        profileCount: emailCandidates,
+        distinctProfileIds: row.distinct_email_profile_ids == null ? null : count(row.distinct_email_profile_ids,"email profile identities"),
+        ambiguousProfiles: row.ambiguous_email_candidates == null ? null : count(row.ambiguous_email_candidates,"ambiguous email profiles"),
+        membershipHash: row.email_membership_hash || null,
+      };
+      return Object.freeze({source:"neon_select_only_aggregate",projectId:config.projectId,branchId:config.branchId,branchName:config.branchName,database:config.database,role:config.role,view:config.view,readOnlyEnforced:true,identifiersExposed:false,sourceProfiles,uniqueProfiles,emailCandidates,emailSource,mobileCandidates,bothCandidates,emailOnly:emailCandidates-bothCandidates,mobileOnly:mobileCandidates-bothCandidates,missingContact,ambiguousIdentityProfiles,channels:Object.freeze({email:channel(emailCandidates,evidence),sms:channel(mobileCandidates,evidence),whatsapp:channel(mobileCandidates,evidence)})});
     }
   });
 }

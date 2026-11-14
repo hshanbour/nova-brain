@@ -17,6 +17,7 @@ const sameJson = (left, right) => JSON.stringify(stableJson(left)) === JSON.stri
 
 export function createInMemoryStorage({ clock = () => new Date() } = {}) {
   const owners = new Map();
+  const voiceTurnFences = new Map();
   const projects = new Map();
   const projectSources = new Map();
   const conversations = new Map();
@@ -1121,10 +1122,15 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       const updated = { ...current, ...copy(patch), messageSid: current.messageSid, ownerId: current.ownerId, conversationId: current.conversationId, contactId: current.contactId, bodyHash: current.bodyHash, updatedAt: now(clock) };
       whatsappInboundMessages.set(messageSid, updated); return copy(updated);
     },
-    async claimNextWhatsAppInbound({ ownerId, workerId, leaseMs, conversationPrefix = null }) {
+    async getWhatsAppMessage({ownerId, conversationId, messageId}) {
+      return copy((messages.get(conversationId)||[]).find(row=>row.id===messageId && row.ownerId===ownerId)||null);
+    },
+    async claimNextWhatsAppInbound({ ownerId, workerId, leaseMs, conversationPrefix = null, messageSid = null }) {
       const timestamp=clock();
-      for(const message of whatsappInboundMessages.values())if(message.ownerId===ownerId&&(!conversationPrefix||message.conversationId.startsWith(conversationPrefix))&&message.status==="processing"&&new Date(message.leaseExpiresAt)<=timestamp){message.status="queued";message.leaseOwner=null;message.leaseToken=null;message.leaseExpiresAt=null;}
-      const message=[...whatsappInboundMessages.values()].filter(item=>item.ownerId===ownerId&&item.status==="queued"&&(!conversationPrefix||item.conversationId.startsWith(conversationPrefix))&&(!item.nextAttemptAt||new Date(item.nextAttemptAt)<=timestamp)).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.messageSid.localeCompare(b.messageSid))[0];
+      const inScope=item=>item.ownerId===ownerId && (!messageSid||item.messageSid===messageSid)
+        && (conversationPrefix?item.conversationId.startsWith(conversationPrefix):/^whatsapp_[a-f0-9]{32}$/.test(item.conversationId));
+      for(const message of whatsappInboundMessages.values())if(inScope(message)&&message.status==="processing"&&new Date(message.leaseExpiresAt)<=timestamp){message.status="queued";message.leaseOwner=null;message.leaseToken=null;message.leaseExpiresAt=null;}
+      const message=[...whatsappInboundMessages.values()].filter(item=>inScope(item)&&item.status==="queued"&&(!item.nextAttemptAt||new Date(item.nextAttemptAt)<=timestamp)).sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.messageSid.localeCompare(b.messageSid))[0];
       if(!message)return null;message.status="processing";message.attemptCount+=1;message.leaseOwner=workerId;message.leaseToken=randomUUID();message.leaseExpiresAt=new Date(timestamp.getTime()+leaseMs).toISOString();message.updatedAt=now(clock);return copy(message);
     },
     async renewWhatsAppInboundLease(input) {
@@ -1382,6 +1388,16 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
         .filter((run) => run.ownerId === ownerId && run.result?.approvalId === approvalId)
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
         .map(copy);
+    },
+    async voiceTurnFence({ownerId,sessionId,seq,turnId,op}) {
+      const row=voiceTurnFences.get(ownerId);
+      if(op==='open'){voiceTurnFences.set(ownerId,{sessionId,seq:0});return true;}
+      if(!row||row.sessionId!==sessionId)return false;
+      if(op==='close'){voiceTurnFences.delete(ownerId);return true;}
+      if(op==='begin'&&seq>row.seq){Object.assign(row,{seq,turnId,used:false});return true;}
+      if(row.used||row.seq!==seq||row.turnId!==turnId)return false;
+      if(op==='consume'){row.used=true;return true;}
+      return op==='check';
     },
     async appendActivity(input) {
       const event = {

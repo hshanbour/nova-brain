@@ -275,6 +275,13 @@ export function createApi({
 }) {
   const speakerDiagnostic = connectedPreview && authorizeConsole && speakerExtractor && speakerIdentity
     ? createSpeakerDiagnostic({ownerId,key:config.speakerRecognition?.assertionKey,extractor:speakerExtractor,identity:speakerIdentity,calibration:config.speakerRecognition}) : null;
+  const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+  const staleVoice=()=>Object.assign(new Error('This private voice turn is no longer current.'),{statusCode:409,code:'voice_turn_superseded'});
+  async function currentVoiceTurn(evidence,op='check'){
+    if(!connectedPreview)return;
+    if(!uuid(evidence?.session_id)||!uuid(evidence?.turn_id)||!Number.isSafeInteger(evidence?.turn_seq)||evidence.turn_seq<1||evidence.turn_seq>2147483647)throw staleVoice();
+    if(!await storage.voiceTurnFence({ownerId,sessionId:evidence.session_id,seq:evidence.turn_seq,turnId:evidence.turn_id,op}))throw staleVoice();
+  }
   const recognitionEngines =
     speakerEngines ||
     (speakerExtractor && speakerIdentity
@@ -728,6 +735,10 @@ export function createApi({
             await readJsonBody(request, config.maxBodyBytes),
           );
           const requestController = new AbortController();
+          if(connectedPreview&&input.context?.voice===true){
+            const proof=await requirePrivateVoiceSpeaker({assertion:input.context.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.context.speaker?.turn_id});
+            await currentVoiceTurn(proof,'consume');
+          }
           const abortRequest = () => requestController.abort(new DOMException("The client closed the synchronous request.", "AbortError"));
           request.once?.("aborted", abortRequest);
           let result;
@@ -857,13 +868,26 @@ export function createApi({
             projectIds: accountContext?.projects?.map(p => p.id) || [],
             replyLanguage: accountContext?.replyLanguage || null,
           });
-          sendJson(response, 201, session);
+          if(connectedPreview&&session.isolatedTurns){
+            const sessionId=randomUUID();
+            if(!await storage.voiceTurnFence({op:'open',ownerId,sessionId}))throw staleVoice();
+            sendJson(response,201,{...session,sessionId});
+          }else sendJson(response, 201, session);
           return;
+        }
+        if(connectedPreview&&request.method==='POST'&&pathname==='/api/voice/realtime/turn-state'){
+          if(!sameOriginRequest(request)){sendJson(response,403,{error:'Same-origin request required.'});return;}
+          const input=await readJsonBody(request,config.maxBodyBytes);
+          if(input.op==='begin')await currentVoiceTurn(input,'begin');
+          else if(input.op==='close'&&uuid(input.session_id))await storage.voiceTurnFence({op:'close',ownerId,sessionId:input.session_id});
+          else throw staleVoice();
+          sendJson(response,200,{ok:true});return;
         }
         if (request.method === 'POST' && pathname === '/api/voice/realtime/authorize-turn') {
           if(!sameOriginRequest(request)){sendJson(response,403,{error:'Same-origin voice request required.'});return;}
           await ready();const input=await readJsonBody(request,config.maxBodyBytes);
           const verified=await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.turnId});
+          await currentVoiceTurn(verified);
           logger.info('Nova private voice turn authorized',{requestId,turnId:verified.turn_id||null,recognizedProfileId:verified.speaker_profile_id,matchStatus:verified.match_status});
           const ownerProfile=await storage.getOwner(ownerId);
           sendJson(response,200,{authorized:true,speakerIdentity:verifiedOwnerVoiceEvidence(ownerProfile)});return;
@@ -874,6 +898,7 @@ export function createApi({
           await ready();
           const input = validateAgentRequest(await readJsonBody(request, config.maxBodyBytes));
           const verified=await requirePrivateVoiceSpeaker({assertion:input.context?.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.context?.speaker?.turn_id});
+          await currentVoiceTurn(verified,'consume');
           const evidence = await readRealtimeContext({ storage, projectService, ownerId, message: input.message, conversationId: input.conversationId, lookupProjectId: typeof input.context?.lookupProjectId === "string" ? input.context.lookupProjectId : null });
           evidence.speakerIdentity=verifiedOwnerVoiceEvidence(evidence.ownerIdentity);
           logger.info("Nova realtime context retrieved", { requestId, authority: evidence.authority, recognizedProfileId:verified.speaker_profile_id,matchStatus:verified.match_status, projectIds: evidence.projects.map(p => p.id), memoryIds: evidence.memories.map(m => m.id) });
@@ -895,7 +920,7 @@ export function createApi({
             sendJson(response, 400, { error: "A complete Realtime voice turn is required." });
             return;
           }
-          if(connectedPreview)await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.speaker?.turn_id});
+          if(connectedPreview)await currentVoiceTurn(await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.speaker?.turn_id}),'consume');
           const conversation = await storage.ensureConversation({ id: conversationId, ownerId, title: userText.slice(0, 120) });
           if (!conversation) {
             sendJson(response, 404, { error: "Conversation is unavailable." });
@@ -915,6 +940,7 @@ export function createApi({
           await ready();
           const input = await readJsonBody(request, config.voiceV2.maxBodyBytes);
           const controller = new AbortController();
+          if(connectedPreview)await currentVoiceTurn({session_id:input.sessionId,turn_id:input.turnId,turn_seq:input.turnSeq});
           const report = await withinBudget(
             recognitionEngines?.recognize?.(input, {
               requestId,
@@ -931,6 +957,7 @@ export function createApi({
           );
           let speaker = speakerFromAuthoritativeResult(report.authoritative, config.speakerRecognition.modelVersion);
           if(typeof input.turnId==='string'&&/^[0-9a-f-]{36}$/i.test(input.turnId))speaker.turn_id=input.turnId;
+          if(connectedPreview){speaker.session_id=input.sessionId;speaker.turn_seq=input.turnSeq;await currentVoiceTurn(speaker);}
           speaker.assertion = speakerAssertions?.issue?.(speaker) || null;
           if (speaker.match_status === "confirmed" && !speaker.assertion) speaker = { speaker_profile_id: null, speaker_label: "unknown", confidence: 0, extractor_version: speaker.extractor_version, match_status: "unknown", authenticated_identity: "none", assertion: null };
           const verificationStatus=report.authoritative.status==='failure'?'unavailable':report.authoritative.status;
@@ -2531,7 +2558,16 @@ export function createApi({
           sendJson(response, 200, await whatsappService.status());
           return;
         }
-        if(request.method==="GET"&&pathname==="/api/business-automation/sharp-cuts/whatsapp/status"){await ready();sendJson(response,200,await sharpCutsWhatsAppService.status());return;}
+        if(request.method==="GET"&&pathname==="/api/business-automation/sharp-cuts/whatsapp/status"){
+          await ready();
+          const status=await sharpCutsWhatsAppService.status();
+          if(url.searchParams.get("verifyProvider")==="1"){
+            if(!connectedPreview||!authorizeConsole){sendJson(response,403,{error:"Connected private Preview required."});return;}
+            response.setHeader("Cache-Control","no-store");
+            sendJson(response,200,{...status,providerAppBinding:await sharpCutsWhatsAppService.verifyProviderBinding()});return;
+          }
+          sendJson(response,200,status);return;
+        }
         if(request.method==="GET"&&(pathname==="/api/integrations/sharp-cuts/whatsapp/webhook"||pathname==="/wa")){
           sendJson(response,200,{ok:true,service:"sharp-cuts-whatsapp-webhook"});
           return;
@@ -2592,7 +2628,9 @@ export function createApi({
         if(request.method==="POST"&&pathname==="/api/admin/worker/sharp-cuts/whatsapp/tick"){
           await ready();authorizeLocalWorker(request,config.localWorkerToken);const input=await readJsonBody(request,config.maxBodyBytes);
           if(typeof input.workerId!=="string"||!input.workerId.trim()||input.workerId.length>200)throw new ValidationError("workerId is invalid.");
-          sendJson(response,200,await sharpCutsWhatsAppService.processNext({workerId:input.workerId.trim()}));return;
+          sendJson(response,200,await sharpCutsWhatsAppService.processNext({
+            workerId:input.workerId.trim(),recordRef:input.recordRef,approvedReplyHash:input.approvedReplyHash,
+          }));return;
         }
         if (request.method === "POST" && pathname === "/api/integrations/whatsapp/webhook") {
           await ready();
@@ -2643,6 +2681,7 @@ export function createApi({
           return;
         }
         if(error?.code==='voice_owner_verification_required'){sendJson(response,403,{error:error.message,code:error.code});return;}
+        if(error?.code==='voice_turn_superseded'){sendJson(response,409,{error:error.message,code:error.code});return;}
         if(error instanceof InstagramOAuthError||error?.code?.startsWith?.("instagram_")){logger.error("Nova Instagram OAuth request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"instagram_oauth_error",requestId});return;}
         if(error instanceof VercelAccountIntegrationError||error?.code?.startsWith?.("vercel_")){logger.error("Nova Vercel account connection request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"vercel_account_integration_error",requestId});return;}
         if(error instanceof SocialError||error?.code?.startsWith?.("social_")){logger.error("Nova Social request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"social_error",requestId});return;}
