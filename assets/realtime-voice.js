@@ -52,7 +52,7 @@ export function createRealtimeVoice({
   let qualityRecoveryUsed=false, verificationStopTimer=null;
   let lastInputMeter=0,lastOutputMeter=0;
   let isolatedTurns=false;
-  let privateSessionId=null,turnPcm=null;
+  let privateSessionId=null,turnPcm=null,accountGrant=null;
   let inputLifetime=new AbortController(),pendingInputClears=0,inputClearTimer=null,awaitingFreshSpeech=false;
   const isolatedReplies=new Map();
   let activeResponseTurn=null;
@@ -86,10 +86,10 @@ export function createRealtimeVoice({
   const publish = (state, detail = {}) => onState(active&&muted?{active,state:'muted',mode:'realtime',muted:true}:{ active, state, mode: "realtime", ...detail });
   const valid = (current) => active && current === generation;
 
-  async function start({guest=false,guestApproval=null,recovery=false}={}) {
+  async function start({guest=false,guestApproval=null,recovery=false,accountPermission=false}={}) {
     if (active) return false;
     if(!recovery)qualityRecoveryUsed=false;
-    guestMode=guest;
+    guestMode=guest;accountGrant=null;
     active = true;
     const current = ++generation;
     let startupStage='microphone';
@@ -109,19 +109,21 @@ export function createRealtimeVoice({
         lastInputMeter=level;
         // Prime from local microphone energy, not a delayed remote VAD event.
         // This is capture only: server speech quality and identity still decide access.
-        if(!active||muted||turnPcm?.ready()||channel?.readyState!=="open")return;
+        if(!active||muted||accountGrant||turnPcm?.ready()||channel?.readyState!=="open")return;
         if(level>=0.06){localSpeechAt=now();if(!turnRecorder)startTurnRecording();}
         if(turnRecorder&&!inSpeech&&!verificationStopTimer&&(now()-localSpeechAt>800||now()-turnStartedAt>4000))discardTurnRecording();
       } });
       void fetchImpl("/api/voice/speaker/readiness", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
       startupStage='session';
-      const sessionResponse = await fetchImpl("/api/voice/realtime/session", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: guestMode ? null : getConversationId(), mode:guestMode?"guest":"owner",...(guestMode?{guestApproval}:{} ) }) });
+      const sessionResponse = await fetchImpl("/api/voice/realtime/session", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: guestMode ? null : getConversationId(), mode:guestMode?"guest":"owner",...(!guestMode&&accountPermission?{accountConsent:"private-account-session-on-personal-device"}:{}),...(guestMode?{guestApproval}:{} ) }) });
       const session = await sessionResponse.json().catch(() => null);
       if (!sessionResponse.ok || typeof session?.clientSecret !== "string") throw new Error(session?.error || "Nova could not prepare Realtime Voice.");
       privacyGate=session.privacyGate===true;
       isolatedTurns=privacyGate&&session.isolatedTurns===true;
       privateSessionId=isolatedTurns?session.sessionId:null;
-      if(privateSessionId&&inputMeter?.context){
+      accountGrant=!guestMode&&accountPermission&&isolatedTurns?session.accountGrant||null:null;
+      if(accountPermission&&!guestMode&&!accountGrant)throw new Error("Private account Voice permission was not granted. No private conversation started.");
+      if(privateSessionId&&!accountGrant&&inputMeter?.context){
         // A suspended/unsupported worklet must leave the existing mic usable.
         try{turnPcm=await attachTurnPcm(inputMeter.context,inputMeter.source);}catch{turnPcm=null;}
         if(!valid(current)){turnPcm?.dispose();turnPcm=null;return false;}
@@ -229,7 +231,7 @@ export function createRealtimeVoice({
       lastTranscript = "";
       lastAssistantTranscript = "";
       lastSpeechEndedAt = 0;
-      if(turnPcm?.ready()){discardTurnRecording();turnPcm.begin();latestTurn.pcm=true;}else {turnPcm?.clear();startTurnRecording();}
+      if(accountGrant){discardTurnRecording();}else if(turnPcm?.ready()){discardTurnRecording();turnPcm.begin();latestTurn.pcm=true;}else {turnPcm?.clear();startTurnRecording();}
       // VAD may split the initial verification window while MediaRecorder keeps
       // collecting one continuous clip. Keep the transcript segments attached
       // to that clip; do not infer identity across distinct recordings.
@@ -253,12 +255,12 @@ export function createRealtimeVoice({
         publish('listening',{phase:'collecting-verification-speech'});return;
       }
       timing('vad-speech-stop');
-      speakerPromise = utterance?.pcm?recognizePcm(current,utterance):stopTurnRecording(current,utterance);if(utterance)utterance.speaker=speakerPromise;
+      speakerPromise = accountGrant?Promise.resolve({accountGrant,session_id:privateSessionId,turn_id:utterance?.verificationId,turn_seq:utterance?.seq}):utterance?.pcm?recognizePcm(current,utterance):stopTurnRecording(current,utterance);if(utterance)utterance.speaker=speakerPromise;
       const authorization=boundedSpeaker(speakerPromise,12000).then(async speaker => {
         if(!valid(current))return;
         if(utterance)utterance.recognizedSpeaker=speaker;
         if(!isCurrentTurn(utterance)){timing('speaker-result-superseded');return;}
-        if(speaker)onSpeaker(speaker);
+        if(speaker&&!accountGrant)onSpeaker(speaker);
         if(!privacyGate)return;
         if(isolatedTurns){await handleIsolatedTurn(utterance,speaker,current);return;}
         // A short first utterance is not an identity mismatch. No private context
@@ -437,12 +439,13 @@ export function createRealtimeVoice({
   async function handleIsolatedTurn(utterance,speaker,current){
     await waitForTranscript(utterance);
     if(!valid(current)||!isCurrentTurn(utterance))return;
+    if(utterance.fence&&!await utterance.fence){onError('Voice turn could not be registered. No private request was made.');publish('listening');return;}
     if(!utterance.transcriptionComplete)removeInput(utterance);
     let reason=!speaker||['unavailable','denied'].includes(speaker.verification_status)?'service-unavailable':speaker.match_status==='confirmed'?'known-nonowner':speaker.verification_status==='unknown'?'no-match':'identity-uncertain';
     let identity=null;
     // Only THIS recording is considered. No averaging/concatenation with an
     // earlier owner recording, cached assertion, or name-based authentication.
-    if(speaker?.match_status==='confirmed'&&speaker?.authenticated_identity==='owner'){
+    if(speaker?.accountGrant||speaker?.match_status==='confirmed'&&speaker?.authenticated_identity==='owner'){
       try{
         const response=await fetchImpl('/api/voice/realtime/authorize-turn',{method:'POST',signal:utterance.signal,credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker,turnId:utterance.verificationId})});
         const body=await response.json();
@@ -451,16 +454,16 @@ export function createRealtimeVoice({
       }catch{reason='authorization-unavailable';}
     }
     if(!valid(current)||!isCurrentTurn(utterance))return;
-    if(identity?.status==='verified_owner'&&identity?.source==='server_verified_enrolled_voice'){
+    if(identity?.status==='verified_owner'&&identity?.source==='server_verified_enrolled_voice'||identity?.status==='account_authorised'&&identity?.source==='signed_in_account_session'){
       privateTurnAuthorized=true;utterance.verifiedSpeaker=speaker;utterance.identityEvidence=identity;
-      onAccessState({access:'owner',reason:'server-confirmed'});onOwnerVerified();timing('owner-turn-authorized');
+      onAccessState({access:'owner',reason:'server-confirmed'});onOwnerVerified();timing(accountGrant?'account-turn-authorized':'owner-turn-authorized');
       utterance.request=await verifiedRequest(utterance);
       if(!valid(current)||!isCurrentTurn(utterance))return;
       if(!utterance.request){speakBrainResult({message:replyLanguage==='en'?'The speech transcript was unavailable. Could you repeat that part?':'تعذّر تحويل هالجزء لنص. ممكن تعيده بالعربي؟'},utterance);return;}
       if(utterance.previousTurn?.pendingWork&&languageContinuationOf(utterance.previousTurn,utterance)){publish('thinking',{phase:'continuing-request'});return;}
       if(isDirectVoiceExchange(utterance.request)){
         const response=publicVoiceResponse({text:utterance.request,language:replyLanguage});
-        response.instructions='You are Nova. Respond warmly and briefly to this greeting in '+(replyLanguage==='en'?'English':'natural Arabic')+'. The current-turn owner identity below is server verified. Do not infer any additional facts. No actions or writes are requested.';
+        response.instructions='You are Nova. Respond warmly and briefly to this greeting in '+(replyLanguage==='en'?'English':'natural Arabic')+'. Use the server-provided permission and identity evidence below precisely; account permission is not a voice match. Do not infer any additional facts. No actions or writes are requested.';
         response.input.push({type:'message',role:'user',content:[{type:'input_text',text:JSON.stringify({currentTurnIdentity:identity})}]});
         utterance.responseRequested=true;sendEvent({type:'response.create',response});
       }else if(isLocalVisionRequest(utterance.request)){
@@ -648,7 +651,7 @@ export function createRealtimeVoice({
     inputLifetime.abort();inputLifetime=new AbortController();pendingInputClears=0;awaitingFreshSpeech=false;
     clearTimeout(inputClearTimer);inputClearTimer=null;
     if(privateSessionId)void fetchImpl('/api/voice/realtime/turn-state',{method:'POST',credentials:'same-origin',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'close',session_id:privateSessionId})}).catch(()=>{});
-    privateSessionId=null;turnPcm?.dispose();turnPcm=null;
+    privateSessionId=null;accountGrant=null;turnPcm?.dispose();turnPcm=null;
     clearTimeout(verificationStopTimer);verificationStopTimer=null;
     requestedResponseTurns.length=0;activeResponseTurn=null;
     isolatedReplies.clear();

@@ -93,6 +93,7 @@ import {createInstagramOAuthService} from "./social/instagram-oauth.js";
 import {createSharpCutsAutomationService} from "./automation/sharp-cuts-automation.js";
 import {createProjectAutomationControls} from "./automation/project-automation-controls.js";
 import {createSenderMarketingClient} from "./email/sender-marketing.js";
+import {createSenderGroupBinding} from './email/sender-group-binding.js';
 
 export const createRemoteEvidenceComparator=({fetchImpl=globalThis.fetch}={})=>async({repository,paths,oldCommit,newCommit})=>{
   const headers={Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"},blobs={};
@@ -207,7 +208,7 @@ export function createApp({
   const socialService=createSocialService({config,storage,ownerId:OWNER_ID,instagramOAuth,mediaUrlResolver,automationControls:projectAutomationControls});
   const mediaAutomation=createMediaAutomationService({storage,socialService,ownerId:OWNER_ID,cloudStore:privateR2,usageGuard:r2UsageGuard,maxApprovedCloudBytes:config.socialMedia.hardQuotaBytes});
   const footageAnalysis=createFootageAnalysisService({modelProvider,socialService,storage,ownerId:OWNER_ID});
-  const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch}):null;
+  const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch,groupBinding:createSenderGroupBinding({storage,ownerId:OWNER_ID})}):null;
   const sharpCutsCustomerReader=config.sharpCutsCustomerDatabase.configured?createSharpCutsCustomerReader({config:config.sharpCutsCustomerDatabase}):null;
   const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender,instagramOAuth,customerReader:sharpCutsCustomerReader,whatsappStatusProvider:()=>sharpCutsWhatsAppService.status()});
   registerBusinessPreparationTools(toolRegistry,{storage,ownerId:OWNER_ID,customerReader:sharpCutsCustomerReader,senderClient:sharpCutsSender,senderConfig:config.sharpCutsEmail,whatsapp:sharpCutsWhatsAppService});

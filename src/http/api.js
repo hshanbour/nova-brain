@@ -5,6 +5,7 @@ import {connectedTaskAllowed,isFreshCodingParent,connectedExecutionDenied} from 
 import {continuityRouteAllowed} from '../identity/continuity-preview.js';
 import {savedReplyLanguage} from '../identity/communication-policy.js';
 import {requirePrivateVoiceSpeaker,verifiedOwnerVoiceEvidence} from '../voice/private-context-access.js';
+import {createAccountVoiceAccess,accountVoiceEvidence,ACCOUNT_VOICE_CONSENT} from '../voice/account-voice-access.js';
 import {syntheticRouteAllowed} from '../identity/synthetic-preview.js';
 import { readRealtimeContext } from "../voice/realtime-context.js";
 import {PROJECT_DOCUMENT_LIMITS,ProjectSourceError} from "../projects/document-extractor.js";
@@ -276,6 +277,14 @@ export function createApi({
   const speakerDiagnostic = connectedPreview && authorizeConsole && speakerExtractor && speakerIdentity
     ? createSpeakerDiagnostic({ownerId,key:config.speakerRecognition?.assertionKey,extractor:speakerExtractor,identity:speakerIdentity,calibration:config.speakerRecognition}) : null;
   const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+  const accountVoiceAccess=createAccountVoiceAccess({key:config.speakerRecognition?.assertionKey,ownerId});
+  async function privateVoiceProof(speaker,turnId){
+    if(connectedPreview&&authorizeConsole&&speaker?.accountGrant){
+      if(!accountVoiceAccess.verify(speaker)||speaker.turn_id!==turnId)throw Object.assign(new Error('Private account Voice permission expired or is invalid.'),{statusCode:403,code:'voice_account_permission_required'});
+      return {session_id:speaker.session_id,turn_id:speaker.turn_id,turn_seq:speaker.turn_seq,access_source:'signed_in_account_session'};
+    }
+    return requirePrivateVoiceSpeaker({assertion:speaker?.assertion,speakerAssertions,speakerIdentity,turnId});
+  }
   const staleVoice=()=>Object.assign(new Error('This private voice turn is no longer current.'),{statusCode:409,code:'voice_turn_superseded'});
   async function currentVoiceTurn(evidence,op='check'){
     if(!connectedPreview)return;
@@ -735,15 +744,17 @@ export function createApi({
             await readJsonBody(request, config.maxBodyBytes),
           );
           const requestController = new AbortController();
+          let verifiedAccountVoice=false;
           if(connectedPreview&&input.context?.voice===true){
-            const proof=await requirePrivateVoiceSpeaker({assertion:input.context.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.context.speaker?.turn_id});
+            const proof=await privateVoiceProof(input.context.speaker,input.context.speaker?.turn_id);
             await currentVoiceTurn(proof,'consume');
+            verifiedAccountVoice=proof.access_source==='signed_in_account_session';
           }
           const abortRequest = () => requestController.abort(new DOMException("The client closed the synchronous request.", "AbortError"));
           request.once?.("aborted", abortRequest);
           let result;
           try {
-            result = await agent.run({ ...input, requestId, signal: requestController.signal });
+            result = await agent.run({ ...input, verifiedAccountVoice, requestId, signal: requestController.signal });
           } finally {
             request.removeListener?.("aborted", abortRequest);
           }
@@ -878,7 +889,8 @@ export function createApi({
           if(connectedPreview&&session.isolatedTurns){
             const sessionId=randomUUID();
             if(!await storage.voiceTurnFence({op:'open',ownerId,sessionId}))throw staleVoice();
-            sendJson(response,201,{...session,sessionId});
+            const accountGrant=sessionInput.mode==='owner'&&sessionInput.accountConsent===ACCOUNT_VOICE_CONSENT&&authorizeConsole?accountVoiceAccess.issue(sessionId):null;
+            sendJson(response,201,{...session,sessionId,...(accountGrant?{accountGrant,accessMode:'account_permission',accountPermissionMinutes:30}:{})});
           }else sendJson(response, 201, session);
           return;
         }
@@ -893,21 +905,21 @@ export function createApi({
         if (request.method === 'POST' && pathname === '/api/voice/realtime/authorize-turn') {
           if(!sameOriginRequest(request)){sendJson(response,403,{error:'Same-origin voice request required.'});return;}
           await ready();const input=await readJsonBody(request,config.maxBodyBytes);
-          const verified=await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.turnId});
+          const verified=await privateVoiceProof(input.speaker,input.turnId);
           await currentVoiceTurn(verified);
-          logger.info('Nova private voice turn authorized',{requestId,turnId:verified.turn_id||null,recognizedProfileId:verified.speaker_profile_id,matchStatus:verified.match_status});
+          logger.info('Nova private voice turn authorized',{requestId,turnId:verified.turn_id||null,accessSource:verified.access_source||'enrolled_voice',recognizedProfileId:verified.speaker_profile_id||null,matchStatus:verified.match_status||'not_checked'});
           const ownerProfile=await storage.getOwner(ownerId);
-          sendJson(response,200,{authorized:true,speakerIdentity:verifiedOwnerVoiceEvidence(ownerProfile)});return;
+          sendJson(response,200,{authorized:true,speakerIdentity:verified.access_source==='signed_in_account_session'?accountVoiceEvidence(ownerProfile):verifiedOwnerVoiceEvidence(ownerProfile)});return;
         }
         if (request.method === "POST" && pathname === "/api/voice/realtime/context") {
           if (!realtimeAccountContext) { sendJson(response, 404, { error: "Not found." }); return; }
           if (!sameOriginRequest(request)) { sendJson(response, 403, { error: "Voice context requires a same-origin owner console request." }); return; }
           await ready();
           const input = validateAgentRequest(await readJsonBody(request, config.maxBodyBytes));
-          const verified=await requirePrivateVoiceSpeaker({assertion:input.context?.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.context?.speaker?.turn_id});
+          const verified=await privateVoiceProof(input.context?.speaker,input.context?.speaker?.turn_id);
           await currentVoiceTurn(verified,'consume');
           const evidence = await readRealtimeContext({ storage, projectService, ownerId, message: input.message, conversationId: input.conversationId, lookupProjectId: typeof input.context?.lookupProjectId === "string" ? input.context.lookupProjectId : null });
-          evidence.speakerIdentity=verifiedOwnerVoiceEvidence(evidence.ownerIdentity);
+          evidence.speakerIdentity=verified.access_source==='signed_in_account_session'?accountVoiceEvidence(evidence.ownerIdentity):verifiedOwnerVoiceEvidence(evidence.ownerIdentity);
           logger.info("Nova realtime context retrieved", { requestId, authority: evidence.authority, recognizedProfileId:verified.speaker_profile_id,matchStatus:verified.match_status, projectIds: evidence.projects.map(p => p.id), memoryIds: evidence.memories.map(m => m.id) });
           sendJson(response, 200, evidence);
           return;
@@ -927,7 +939,7 @@ export function createApi({
             sendJson(response, 400, { error: "A complete Realtime voice turn is required." });
             return;
           }
-          if(connectedPreview)await currentVoiceTurn(await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.speaker?.turn_id}),'consume');
+          if(connectedPreview)await currentVoiceTurn(await privateVoiceProof(input.speaker,input.speaker?.turn_id),'consume');
           const conversation = await storage.ensureConversation({ id: conversationId, ownerId, title: userText.slice(0, 120) });
           if (!conversation) {
             sendJson(response, 404, { error: "Conversation is unavailable." });
@@ -937,7 +949,7 @@ export function createApi({
           const user = await storage.appendMessage({ id: messageId("user"), conversationId, ownerId, role: "user", content: userText });
           const assistant = await storage.appendMessage({ id: messageId("assistant"), conversationId, ownerId, role: "assistant", content: assistantText });
           let learning=null;
-          try { await requirePrivateVoiceSpeaker({assertion:input.speaker?.assertion,speakerAssertions,speakerIdentity,turnId:input.speaker?.turn_id});
+          try { await privateVoiceProof(input.speaker,input.speaker?.turn_id);
             learning=await learningService?.observeVoiceTurn({verifiedOwner:true,message:userText,conversationId,userMessageId:user.id,assistantMessageId:assistant.id});
           } catch(error) { if(error?.code!=='voice_owner_verification_required')logger.error('Voice learning unavailable',{requestId,code:'voice_learning_failed'}); }
           sendJson(response, 201, { conversationId, user, assistant, learning:learning?{candidateId:learning.candidate.id,status:'pending_review'}:null });
@@ -2687,7 +2699,7 @@ export function createApi({
           sendJson(response, error.statusCode || 400, { error: error.message, code: error.code || "whatsapp_error", requestId });
           return;
         }
-        if(error?.code==='voice_owner_verification_required'){sendJson(response,403,{error:error.message,code:error.code});return;}
+        if(['voice_owner_verification_required','voice_account_permission_required'].includes(error?.code)){sendJson(response,403,{error:error.message,code:error.code});return;}
         if(error?.code==='voice_turn_superseded'){sendJson(response,409,{error:error.message,code:error.code});return;}
         if(error instanceof InstagramOAuthError||error?.code?.startsWith?.("instagram_")){logger.error("Nova Instagram OAuth request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"instagram_oauth_error",requestId});return;}
         if(error instanceof VercelAccountIntegrationError||error?.code?.startsWith?.("vercel_")){logger.error("Nova Vercel account connection request failed",{requestId,code:error.code,category:error.category||"validation"});sendJson(response,error.statusCode||400,{error:error.message,code:error.code||"vercel_account_integration_error",requestId});return;}

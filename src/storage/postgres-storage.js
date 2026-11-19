@@ -1856,6 +1856,9 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
       if(op==='close')return (await run("UPDATE nova_activity_events SET metadata='{}'::jsonb WHERE "+predicate+" RETURNING id",params.slice(0,3))).length===1;
       return false;
     },
+    async getActivity(id, ownerId) {
+      return activityRow((await run('SELECT * FROM nova_activity_events WHERE id=$1 AND owner_id=$2',[id,ownerId]))[0]);
+    },
     async appendActivity(input) {
       return activityRow(
         (

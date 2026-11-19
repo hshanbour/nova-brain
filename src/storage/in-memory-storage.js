@@ -1399,7 +1399,11 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
       if(op==='consume'){row.used=true;return true;}
       return op==='check';
     },
+    async getActivity(id, ownerId) {
+      return copy(activity.find(item=>item.id===id&&item.ownerId===ownerId));
+    },
     async appendActivity(input) {
+      if(input.id&&activity.some(item=>item.id===input.id))throw Object.assign(new Error('Activity already exists.'),{code:'23505'});
       const event = {
         id: input.id || randomUUID(),
         ...copy(input),

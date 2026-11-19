@@ -5,15 +5,20 @@ import {previewSenderCopy} from '../email/sender-marketing.js';
 const projectId='sharp-cuts-web', digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const schema=properties=>({type:'object',properties,additionalProperties:false});
 
-// Local preparation only. This module has no sending or contact-upload client.
+// Draft preparation and one dedicated empty provider group. No tool here sends
+// or uploads contacts; provider group creation has a durable one-shot claim.
 export function registerBusinessPreparationTools(registry,{storage,ownerId,customerReader,senderClient,senderConfig,whatsapp}){
   const common={category:'business_preparation',available:true,configurationStatus:'draft_only'};
   const readiness=async()=>{
     let provider={connected:false,status:'not_configured'},audience={source:'unavailable',channels:null};
     if(senderClient)try{provider={...await senderClient.probe(),status:'connected'};}catch(e){provider={connected:false,status:e?.code||'probe_failed'};}
     if(customerReader)try{const s=await customerReader.snapshot();audience={source:s.source,channels:s.channels,emailSource:s.emailSource,uniqueProfiles:s.uniqueProfiles,identifiersExposed:false};}catch{audience={source:'unavailable',channels:null,status:'failed_closed'};}
-    return{projectId,provider,senderIdentity:'Sharp Cuts <info@sharpcuts.uk>',dedicatedAudienceConfigured:Boolean(senderConfig?.groupId),audience,contactUploadEnabled:false,sendingEnabled:false};
+    return{projectId,provider,senderIdentity:'Sharp Cuts <info@sharpcuts.uk>',dedicatedAudienceConfigured:Boolean(senderConfig?.groupId||await senderClient?.audienceBinding?.()),audience,contactUploadEnabled:false,sendingEnabled:false};
   };
+  registry.register({...common,name:'sharp_cuts_email_group_prepare',description:'Create or reuse exactly one dedicated empty Sharp Cuts Sender campaign-review group and bind its verified receipt. No subscriber uploads, automations, campaigns or sends. Use only for the owner-requested dedicated group setup.',riskLevel:'LOW_RISK_WRITE',autonomous:true,inputSchema:schema({}),async execute(){
+    if(!senderClient)throw Error('Existing Sender connection is unavailable.');
+    return senderClient.prepareDedicatedGroup();
+  }});
   registry.register({...common,name:'sharp_cuts_email_readiness',description:'Read current Sender API access and SELECT-only audience evidence. No contacts uploaded or messages sent.',riskLevel:'READ_ONLY',inputSchema:schema({}),execute:readiness});
   registry.register({...common,name:'sharp_cuts_email_provider_review',description:'Reconcile the frozen 1,562-profile Sharp Cuts cohort with its live staging membership, address deduplication, the configured Sender audience, campaigns and restrictions. Returns aggregate evidence only.',riskLevel:'READ_ONLY',inputSchema:schema({}),async execute(){
     const [provider,source]=await Promise.allSettled([senderClient?.inspectCampaignReadiness(),customerReader?.snapshot()]);

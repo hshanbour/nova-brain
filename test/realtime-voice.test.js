@@ -256,3 +256,19 @@ test("12 interrupted English/Arabic turns suppress stale queued work and preserv
   assert.equal(voice.explainReport({conversationId:"other",text:"private"}),false);
   voice.end();assert.equal(voice.explainReport({conversationId:"c1",text:"private"}),false);
 });
+
+
+test('explicit account mode routes a short transcribed turn without speaker extraction and drops permission for guest',async()=>{
+ const channel=new FakeChannel(),peer=new FakePeer(channel),requests=[],turns=[];let sessionNumber=0;
+ const voice=createRealtimeVoice({mediaDevices:{async getUserMedia(){return{getTracks:()=>[]};}},RTCPeerConnectionImpl:class{constructor(){return peer;}},AudioImpl:class{pause(){}},MediaRecorderImpl:null,
+ fetchImpl:async(url,o)=>{requests.push({url,body:o?.body?.startsWith('{')?JSON.parse(o.body):null});if(url.endsWith('/session')){sessionNumber++;return Response.json({clientSecret:'test',privacyGate:true,isolatedTurns:true,sessionId:'s'+sessionNumber,...(sessionNumber===1?{accountGrant:'fixture-grant'}:{})});}if(url.endsWith('/authorize-turn'))return Response.json({authorized:true,speakerIdentity:{status:'account_authorised',source:'signed_in_account_session',voiceMatched:false}});if(url.endsWith('/turn-state'))return Response.json({ok:true});return new Response('answer');},
+ sendTurn:async(text,options)=>{turns.push({text,options});return{message:'Receipt only'};}});
+ await voice.start({accountPermission:true});channel.open();
+ channel.message({type:'input_audio_buffer.speech_started',item_id:'short'});
+ channel.message({type:'conversation.item.input_audio_transcription.completed',item_id:'short',transcript:'احفظي معلومة خيالية: الدفتر بنفسجي'});
+ channel.message({type:'input_audio_buffer.speech_stopped',item_id:'short'});
+ await new Promise(r=>setTimeout(r,20));
+ assert.equal(turns.length,1);assert.equal(turns[0].options.speaker.accountGrant,'fixture-grant');assert.equal(requests.some(r=>r.url.endsWith('/recognize')),false);
+ assert.ok(channel.sent.some(e=>e.type==='response.create'));voice.end();
+ await voice.start({guest:true,accountPermission:true});assert.equal(requests.filter(r=>r.url.endsWith('/session')).at(-1).body.accountConsent,undefined);voice.end();
+});

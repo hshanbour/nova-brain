@@ -65,13 +65,13 @@ function safeProviderError(status){
   const error=new Error(message);error.name="SenderMarketingError";error.code=code;error.statusCode=status===429?503:502;error.upstreamStatus=Number.isInteger(status)?status:null;return error;
 }
 
-export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,timeoutMs=10_000}={}){
+export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,timeoutMs=10_000,groupBinding=null}={}){
   if(!config?.configured)throw new TypeError("Configured Sharp Cuts Sender.net credentials are required.");
   if(typeof fetchImpl!=="function")throw new TypeError("fetchImpl is required.");
   const request=async(path,{method="GET",body,signal}={})=>{
     const allowed = method==="GET"
       ? /^\/(?:groups(?:\?limit=1)?|subscribers\?page=[1-9][0-9]{0,2}|campaigns(?:\/[A-Za-z0-9_-]{2,80}(?:\/(?:emails-sent|errors))?)?)$/.test(path)
-      : method==="POST" && /^\/(?:subscribers(?:\/groups\/[A-Za-z0-9_-]{2,80})?|campaigns|message\/send)$/.test(path);
+      : method==="POST" && /^\/(?:groups|subscribers(?:\/groups\/[A-Za-z0-9_-]{2,80})?|campaigns|message\/send)$/.test(path);
     if(!allowed)throw new Error("Sender.net endpoint is not allowlisted.");
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
     const combined=signal?AbortSignal.any([signal,controller.signal]):controller.signal;
@@ -100,25 +100,47 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
     throw Error("Sender inventory could not be completely reconciled.");
   };
   return Object.freeze({
+    async audienceBinding(){return config.groupId||await groupBinding?.read()||null;},
+    async prepareDedicatedGroup(){
+      if(!groupBinding)throw Error('Durable group binding is unavailable.');
+      const title='Nova Sharp Cuts — campaign review';
+      const groups=await request('/groups');
+      if(!Array.isArray(groups.data)||groups.links?.next)throw Error('Complete Sender group inventory required before creating a group.');
+      const bound=config.groupId||await groupBinding.read();
+      const found=bound?groups.data.filter(g=>g.id===bound):groups.data.filter(g=>g.title===title);
+      if(found.length>1||bound&&!found.length)throw Error('Sender group requires reconciliation.');
+      if(found.length===1){await groupBinding.save(found[0].id);return{groupId:found[0].id,title:found[0].title,created:false,bound:true,contactsChanged:0,sent:0};}
+      // Durable one-shot claim precedes POST. A timeout never causes another POST.
+      // A later invocation can only reconcile the uniquely named provider group.
+      await groupBinding.claim();
+      const receipt=await request('/groups',{method:'POST',body:{title}});
+      if(receipt.success!==true||!safeId(receipt.data?.id))throw Error('Group creation outcome requires reconciliation; do not retry POST.');
+      const verify=await request('/groups');
+      const matches=Array.isArray(verify.data)?verify.data.filter(g=>g.title===title):[];
+      if(verify.links?.next||matches.length!==1||matches[0].id!==receipt.data.id)throw Error('Group verification requires reconciliation.');
+      await groupBinding.save(receipt.data.id);
+      return{groupId:receipt.data.id,title,created:true,bound:true,contactsChanged:0,sent:0};
+    },
     async reconcileAudience({addresses,sharedAddresses,evidence,membershipHash,approvalHash=null}){
       const {planAudienceTransfer}=await import("./sharp-cuts-audience.js");
-      const read=async()=>planAudienceTransfer({addresses,sharedAddresses,evidence,membershipHash,groupId:config.groupId,providerSubscribers:await inventory()});
+      const groupId=config.groupId||await groupBinding?.read()||null;
+      const read=async()=>planAudienceTransfer({addresses,sharedAddresses,evidence,membershipHash,groupId,providerSubscribers:await inventory()});
       const plan=await read();
       if(!approvalHash)return plan.summary;
-      if(!safeId(config.groupId)||!plan.summary.eligible||plan.summary.unexpectedGroupMembers||
+      if(!safeId(groupId)||!plan.summary.eligible||plan.summary.unexpectedGroupMembers||
         approvalHash!==plan.summary.approvalHash)throw Error("The reviewed Sharp Cuts audience or destination is unavailable or has changed.");
       // No automatic retry: a timeout may follow a successful write. A new
       // run reconstructs provider membership before it considers another POST.
       let acknowledged=0;
       try{
         for(const email of plan.create){
-          const receipt=await request("/subscribers",{method:"POST",body:{email,groups:[config.groupId],trigger_automation:false}});
+          const receipt=await request("/subscribers",{method:"POST",body:{email,groups:[groupId],trigger_automation:false}});
           if(receipt.success!==true||!receipt.data?.id)throw Error("Subscriber acknowledgement unavailable.");
           acknowledged++;
         }
         for(let i=0;i<plan.add.length;i+=50){
           const subscribers=plan.add.slice(i,i+50);
-          const receipt=await request("/subscribers/groups/"+config.groupId,{method:"POST",body:{subscribers,trigger_automation:false}});
+          const receipt=await request("/subscribers/groups/"+groupId,{method:"POST",body:{subscribers,trigger_automation:false}});
           if(receipt.success!==true)throw Error("Group acknowledgement unavailable.");
           acknowledged+=subscribers.length;
         }
@@ -131,6 +153,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
     },
     async probe(){const data=await request("/groups?limit=1");return Object.freeze({connected:true,provider:"Sender.net",groupCount:Number.isInteger(data?.meta?.total)?data.meta.total:null,groupsOnProbePage:Array.isArray(data?.data)?data.data.length:null,tokenExposed:false});},
     async inspectCampaignReadiness(){
+      const groupId=config.groupId||await groupBinding?.read()||null;
       const groups=await request('/groups'),campaigns=await request('/campaigns');
       const number=value=>Number.isFinite(Number(value))&&value!==null?Number(value):null;
       const rows=Array.isArray(campaigns.data)?campaigns.data:campaigns.data?.id?[campaigns.data]:[];
@@ -141,7 +164,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
         try{const result=await request(`/campaigns/${item.id}/errors`);validation={status:'checked',errors:(result.errors||[]).map(e=>String(e.title||'Unknown provider restriction').slice(0,180)),warnings:(result.warnings||[]).map(e=>String(e.title||'Provider warning').slice(0,180))};}catch(e){validation={status:e.code||'provider_failed'};}
         summaries.push({id:item.id,status:item.status||null,recipientCount:number(item.recipient_count),validation});
       }
-      return {source:'Sender API read-only',expectedAudience:1562,groups:(groups.data||[]).map(g=>({id:g.id,title:g.title,total:number(g.recipient_count),active:number(g.active_subscribers),unsubscribed:number(g.unsubscribed_count),bounced:number(g.bounced_count),boundToNova:g.id===config.groupId})),groupsComplete:!groups.links?.next,campaigns:summaries,campaignsComplete:!campaigns.links?.next&&rows.length<=10,sendPermissionVerified:false,contactsChanged:0};
+      return {source:'Sender API read-only',expectedAudience:1562,groups:(groups.data||[]).map(g=>({id:g.id,title:g.title,total:number(g.recipient_count),active:number(g.active_subscribers),unsubscribed:number(g.unsubscribed_count),bounced:number(g.bounced_count),boundToNova:g.id===groupId})),groupsComplete:!groups.links?.next,campaigns:summaries,campaignsComplete:!campaigns.links?.next&&rows.length<=10,sendPermissionVerified:false,contactsChanged:0};
     },
     async createCampaignDraft(payload,{authority}={}){
       if(!authority||authority.operation!=="create_campaign_draft"||authority.projectId!=="sharp-cuts-web"||authority.audienceSnapshotHash!==payload?.audienceSnapshotHash||authority.copyHash!==payload?.copyHash)throw Object.assign(new Error("Exact owner-authorised campaign-draft authority is required."),{code:"sender_campaign_authority_required",statusCode:403});
