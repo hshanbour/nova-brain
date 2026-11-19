@@ -151,6 +151,32 @@ test("owner test sends only to the exact allowlisted number and records the prov
   assert.equal((await service.reviewHeld()).records.find(item=>item.recordRef===held.recordRef).attemptCount,0);
 });
 
+test('V3 delivery events match the Gupshup submission receipt, not the Meta wamid',async()=>{
+  const {storage,service}=await fixture(),sid='wamid.delivery-input',gs='gs-delivery-receipt-123';
+  await service.receive(payload('Synthetic delivery fixture',sid),'Bearer '+TOKEN);
+  await storage.claimWhatsAppOutbound({ownerId:OWNER,inboundSid:sid,bodyHash:'a'.repeat(64)});
+  await storage.updateWhatsAppOutbound(sid,OWNER,{status:'submitted',providerMessageSid:gs});
+  const event=payload();const value=event.entry[0].changes[0].value;
+  delete value.messages;delete value.contacts;
+  value.statuses=[{id:'wamid.different-meta-id',gs_id:gs,status:'delivered'}];
+  const wrongApp=structuredClone(event);wrongApp.gs_app_id='another-app';
+  await assert.rejects(service.receive(wrongApp,'Bearer '+TOKEN),error=>error.code==='sharp_cuts_whatsapp_app_mismatch');
+  const wrongPhone=structuredClone(event);wrongPhone.entry[0].changes[0].value.metadata.phone_number_id='unrelated';
+  await assert.rejects(service.receive(wrongPhone,'Bearer '+TOKEN),error=>error.code==='sharp_cuts_whatsapp_target_mismatch');
+  await assert.rejects(service.receive(event,'Bearer wrong'),error=>error.code==='sharp_cuts_whatsapp_webhook_unauthorized');
+  assert.equal((await storage.getWhatsAppOutbound(sid,OWNER)).status,'submitted');
+  await service.receive(event,'Bearer '+TOKEN);
+  assert.equal((await storage.getWhatsAppOutbound(sid,OWNER)).status,'delivered');
+  value.statuses[0].status='sent';await service.receive(event,'Bearer '+TOKEN);
+  assert.equal((await storage.getWhatsAppOutbound(sid,OWNER)).status,'delivered','late sent cannot regress delivered');
+  value.statuses=[{id:gs,gs_id:'gs-unrelated-receipt',status:'read'}];
+  await service.receive(event,'Bearer '+TOKEN);
+  assert.equal((await storage.getWhatsAppOutbound(sid,OWNER)).status,'delivered','gs_id must not fall back to another id');
+  value.statuses=[{id:gs,status:'read'}];await service.receive(event,'Bearer '+TOKEN);
+  assert.equal((await storage.getWhatsAppOutbound(sid,OWNER)).status,'read','legacy id remains supported');
+  assert.equal(await storage.getWhatsAppOutbound(sid,'different-owner'),null);
+});
+
 test("persistent worker polls the isolated Sharp Cuts WhatsApp queue",async()=>{
   const paths=[],worker=createPersistentLocalWorker({registry:{},branch:"codex/combined-nova-preview-d5b5-c5bd",client:Object.freeze({async request(path){paths.push(path);if(path==="/api/admin/worker/auto-dispatch/next")return{dispatched:false,channelPolling:["sharp_cuts_whatsapp"]};if(path==="/api/admin/worker/sharp-cuts/whatsapp/tick")return{worked:true,status:"awaiting_owner_review"};throw new Error("unexpected");}})}),result=await worker.runOnce();
   assert.equal(result.stepType,"sharp_cuts_whatsapp_inbound");assert.deepEqual(paths,["/api/admin/worker/auto-dispatch/next","/api/admin/worker/sharp-cuts/whatsapp/tick"]);

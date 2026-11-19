@@ -1,5 +1,14 @@
 # Connected Nova checkpoint — 19 November 2026
 
+## Latest verified outcome (supersedes pending-payment notes below)
+
+- Owner completed the first US$10 recharge; Gupshup displayed 10 credits added and US$9.994 balance. No subscription or second recharge.
+- Commit `dfe90bed2bc615ed815145ff06d91093adb5e400` deployed to the original connected Preview. One exact-record, recipient/hash-bound, expiring owner grant submitted only the persisted reply “Received, thank you.” at 20:51:24 GMT. Provider receipt `49b184e1-8fef-4745-af2d-9af9508211b1`. Owner explicitly confirmed receiving it. No further send is needed or authorised by that test grant.
+- This proves genuine inbound receipt, project-scoped Brain draft, one provider submission, phone receipt (owner-confirmed), and persisted conversation. It does not prove unrestricted automation or Windows dispatch. Five historical records remain queued with zero attempts; general dispatch remains held.
+- Provider receipt remains `submitted`. Two requests reached the webhook host at 20:51:35–36, but their payloads were not retained; their exact event type is unverified. `scnovawa.vercel.app` still points to Preview commit `2539ee5`.
+- Confirmed callback implementation defect: Gupshup V3 supplies Meta's wamid as `id` and its own submission UUID as `gs_id`; Nova stored the latter but looked up only the former. Corrected selection to prefer `gs_id`, retain legacy id fallback only when absent, normalise enqueued to queued, and log only non-sensitive status/matched/identifier-kind. No retrospective fabricated delivery event or manual delivered-status overwrite.
+- Regression run: 85/85 including V3 mapping, authentication, app/phone/owner boundaries, out-of-order callbacks, exact one-off submission, held queue and webhook-only host routing. Automated evidence, not live callback proof. Deployment of this correction is recorded in subsequent checkpoint.
+
 Branch: `codex/combined-nova-preview-d5b5-c5bd`. Starting/deployed commit at checkpoint: `2d09296`. No Production promotion.
 
 ## Verified external evidence

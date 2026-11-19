@@ -153,7 +153,17 @@ export function createSharpCutsWhatsAppCoexistenceService({config,storage,ownerI
           if(!claimed?.claimed){duplicates+=1;continue;}
           accepted+=1;
         }
-        for(const status of value.statuses||[]){if(status?.id&&status?.status)await storage.updateWhatsAppOutboundByProviderSid(String(status.id),ownerId,{status:String(status.status).toLowerCase(),errorCode:status.errors?.[0]?.code?String(status.errors[0].code).slice(0,32):null});}
+        for(const status of value.statuses||[]){
+          // V3 exposes Meta's wamid as id and the submission receipt as gs_id.
+          // Match the latter when present; never fall back to a different row.
+          const receiptId=status?.gs_id||status?.id;
+          const nextStatus=String(status?.status||'').toLowerCase();
+          const mappedStatus=nextStatus==='enqueued'?'queued':nextStatus;
+          if(!receiptId||!['queued','sent','delivered','read','failed','undelivered'].includes(mappedStatus)){ignored+=1;continue;}
+          const receipt=await storage.updateWhatsAppOutboundByProviderSid(providerId(receiptId),ownerId,{status:mappedStatus,errorCode:status.errors?.[0]?.code?String(status.errors[0].code).slice(0,32):null});
+          // Operational diagnostics only: no contacts, contents, IDs or payload.
+          logger.info?.('sharp_cuts_whatsapp_delivery_status',{status:mappedStatus,matched:Boolean(receipt),identifier:status.gs_id?'gupshup':'legacy'});
+        }
       }
       return{accepted:true,queued:accepted,duplicates,ignored,echoes,...(providerSource&&accepted===0&&echoes===0&&ignored>0?{acknowledgedOnly:true}:{})};
     },
