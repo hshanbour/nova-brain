@@ -35,6 +35,17 @@ test('guest project scope requires fresh owner credentials and signed exact proj
  assert.equal((await approve('other-workspace')).statusCode,403);
  verified=false;const before=lookups;assert.equal((await approve('permitted')).statusCode,403);assert.equal(lookups,before);
 });
+
+test('historical review resolves its booking placeholder without rewriting approved copy and shows current group separately',async()=>{
+ const tools=new Map(),draft={projectId:'sharp-cuts-web',copyHash:'original-hash',blocks:['Dedicated Sender audience binding required'],copy:{subject:'Welcome back',body:'Book here: [VERIFIED FRESHA BOOKING LINK REQUIRED]',bookingUrl:'https://www.fresha.com/a/sharp-cuts-luton-uk-57-cheapside-p20zttw0',address:'57 Cheapside, Luton'}};
+ registerBusinessPreparationTools({register:t=>tools.set(t.name,t)},{ownerId:'owner',storage:{listActivity:async()=>[{action:'sharp_cuts_email_review_draft_prepared',metadata:{draft}}]},senderClient:{audienceBinding:async()=> 'current-group'},whatsapp:{}});
+ const result=await tools.get('sharp_cuts_email_drafts').execute();
+ assert.deepEqual(result.currentAudienceBinding,{configured:true,groupId:'current-group'});
+ assert.equal(result.drafts[0].copyHash,'original-hash');assert.match(result.drafts[0].copy.body,/\[VERIFIED FRESHA/);
+ assert.doesNotMatch(result.drafts[0].providerContentPreview.content,/\[VERIFIED FRESHA/);
+ assert.match(result.drafts[0].providerContentPreview.content,/p20zttw0/);assert.match(result.drafts[0].providerContentPreview.content,/\{\$unsubscribe_link\}/);
+ assert.equal(result.sendingEnabled,false);
+});
 test('project guest receives one brief and no owner memory, history or tools',async()=>{
  let request;
  const service=createRealtimeVoiceService({apiKey:'synthetic',fetchImpl:async(_url,options)=>{request=JSON.parse(options.body);return Response.json({value:'ek_test'});}});

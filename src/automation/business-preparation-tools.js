@@ -31,12 +31,13 @@ export function registerBusinessPreparationTools(registry,{storage,ownerId,custo
   }});
   registry.register({...common,name:'sharp_cuts_email_drafts',description:'Retrieve saved Sharp Cuts campaign review drafts with exact subject/body, audience evidence, approval blocks and delivery status. These are Nova drafts, not sent provider campaigns.',riskLevel:'READ_ONLY',inputSchema:schema({}),async execute(){
     const events=await storage.listActivity(ownerId,{projectId,limit:200});
+    const audienceGroupId=senderConfig?.groupId||await senderClient?.audienceBinding?.()||null;
     return{projectId,drafts:events.filter(e=>e.action==='sharp_cuts_email_review_draft_prepared'&&e.metadata?.draft?.projectId===projectId).slice(0,20).map(e=>{
       const draft=e.metadata.draft;
       const copy=draft.copy;
       return copy?.subject&&copy?.body&&copy.bookingUrl===SHARP_CUTS_BOOKING_URL&&copy.address
         ? {...draft,providerContentPreview:previewSenderCopy(copy)} : draft;
-    }),sendingEnabled:false};
+    }),currentAudienceBinding:{configured:Boolean(audienceGroupId),groupId:audienceGroupId},note:'Draft blocks and audience counts are historical snapshots. Use currentAudienceBinding for the current group connection and sharp_cuts_email_provider_review for live audience evidence. ProviderContentPreview resolves the booking placeholder for review only; original copy and approval hashes are unchanged.',sendingEnabled:false};
   }});
   registry.register({...common,name:'sharp_cuts_email_draft_prepare',description:'Save a reviewable Sharp Cuts email campaign draft inside Nova. Rechecks audience evidence; never uploads contacts, creates a provider campaign, schedules or sends. Include no invented discounts or availability.',riskLevel:'LOW_RISK_WRITE',autonomous:true,inputSchema:{...schema({subject:{type:'string'},body:{type:'string'}}),required:['subject','body']},async execute(input,context={}){
     if(typeof input.subject!=='string'||!input.subject.trim()||input.subject.length>200||typeof input.body!=='string'||!input.body.trim()||input.body.length>8000)throw new Error('A bounded subject and body are required.');

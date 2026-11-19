@@ -210,7 +210,7 @@ const escapeHtml=value=>String(value).replace(/[&<>"']/g,char=>({"&":"&amp;","<"
 export function previewSenderCopy(copy){
   // Historical Nova drafts contain a clearly marked placeholder. Produce the
   // actual provider template without altering the original reviewed text.
-  const body=copy.body.replace(/^Unsubscribe:\s*\[PROVIDER UNSUBSCRIBE LINK REQUIRED BEFORE SEND\]\s*$/gmi,"").trim();
+  const body=copy.body.replaceAll('[VERIFIED FRESHA BOOKING LINK REQUIRED]',String(copy.bookingUrl)).replace(/^Unsubscribe:\s*\[PROVIDER UNSUBSCRIBE LINK REQUIRED BEFORE SEND\]\s*$/gmi,"").trim();
   const booking=String(copy.bookingUrl);
   const link='<a href="'+escapeHtml(booking)+'">Book with the Sharp Cuts team</a>';
   const paragraphs=body.split(/\n\s*\n/).map(p=>'<p>'+escapeHtml(p).replaceAll(escapeHtml(booking),link).replaceAll('\n','<br>')+'</p>').join('');

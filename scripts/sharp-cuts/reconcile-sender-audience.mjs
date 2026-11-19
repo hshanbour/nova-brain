@@ -3,6 +3,10 @@ import {readConfig} from "../../src/config/env.js";
 import {createSharpCutsCustomerReader} from "../../src/automation/sharp-cuts-customer-reader.js";
 import {createSenderMarketingClient} from "../../src/email/sender-marketing.js";
 import {describeCampaignSource,readCampaignAddresses} from "../../src/email/sharp-cuts-audience.js";
+import {continuityPreviewEnvironment} from '../../src/identity/continuity-preview.js';
+import {createPostgresStorage} from '../../src/storage/postgres-storage.js';
+import {createSenderGroupBinding} from '../../src/email/sender-group-binding.js';
+import {OWNER_ID} from '../../src/identity/initial-context.js';
 
 // Operator workflow. By default it only reads the exact original export,
 // current staging aggregate and provider status. No raw identifiers in output.
@@ -18,7 +22,9 @@ async function run() {
   }
   if(!options.get("--source"))throw Error("Use --source with the previously verified Sharp Cuts client CSV.");
   const {addresses,sharedAddresses}=readCampaignAddresses(await readFile(options.get("--source")));
-  const cfg=readConfig(process.env),reader=createSharpCutsCustomerReader({config:cfg.sharpCutsCustomerDatabase});
+  const preview=continuityPreviewEnvironment(process.env);
+  if(!preview.connected)throw Error('Existing connected Preview bindings are required.');
+  const cfg=readConfig(preview.environment),reader=createSharpCutsCustomerReader({config:cfg.sharpCutsCustomerDatabase});
   if(!reader||!cfg.sharpCutsEmail.configured)return {status:"existing_preview_bindings_required",distinctSourceAddresses:addresses.length,contactsTransferred:0};
   const snap=await reader.snapshot(),source=describeCampaignSource(snap.emailSource,snap.channels.email.verifiedEligible);
   if(source.membershipStatus!=="matched")throw Error("Staging membership changed. Reconcile the cohort first.");
@@ -29,7 +35,11 @@ async function run() {
       throw Error("Evidence file does not identify the verified source.");
     evidence=input.records;
   }
-  const client=createSenderMarketingClient({config:cfg.sharpCutsEmail});
+  // Read the same durable group receipt as Nova's UI, without initialization,
+  // migrations or seeds. Preparing a group does not authorise contact transfer.
+  const storage=createPostgresStorage({connectionString:cfg.databaseUrl});
+  const groupBinding=createSenderGroupBinding({storage,ownerId:OWNER_ID});
+  const client=createSenderMarketingClient({config:cfg.sharpCutsEmail,groupBinding});
   return client.reconcileAudience({addresses,sharedAddresses,evidence,membershipHash:source.membershipHash,approvalHash:options.get("--apply-transfer")});
 }
 
