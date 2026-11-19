@@ -258,6 +258,7 @@ export function createApi({
   phoneService,
   whatsappService,
   sharpCutsWhatsAppService,
+  controlledOwnerTest,
   socialService,
   mediaAutomation,
   footageAnalysis,
@@ -2576,6 +2577,23 @@ export function createApi({
           await ready();
           sendJson(response, 200, await whatsappService.status());
           return;
+        }
+        if(pathname==='/api/business-automation/sharp-cuts/whatsapp/controlled-test'){
+          if(!connectedPreview||!authorizeConsole||!controlledOwnerTest){sendJson(response,403,{error:'Authenticated original Preview required.'});return;}
+          await ready();
+          if(request.method==='GET'){sendJson(response,200,await controlledOwnerTest.review());return;}
+          if(request.method==='POST'){
+            if(!request.headers.origin||!sameOriginRequest(request)){sendJson(response,403,{error:'Same-origin owner confirmation required.'});return;}
+            sendJson(response,200,await controlledOwnerTest.submit(await readJsonBody(request,4096)));return;
+          }
+          sendJson(response,405,{error:'Method not allowed.'});return;
+        }
+        if(request.method==='GET'&&pathname==='/api/business-automation/sharp-cuts/whatsapp/controlled-test-review'){
+          if(!connectedPreview||!authorizeConsole||!controlledOwnerTest){sendJson(response,403,{error:'Authenticated original Preview required.'});return;}
+          await ready();await controlledOwnerTest.review();
+          const script=`const url='/api/business-automation/sharp-cuts/whatsapp/controlled-test';let review;const status=document.querySelector('pre'),button=document.querySelector('button');fetch(url).then(r=>r.json()).then(r=>{review=r;status.textContent=JSON.stringify(r,null,2);button.disabled=!r.canSubmit;});button.onclick=async()=>{button.disabled=true;try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recordRef:review.recordRef,replyHash:review.replyHash,confirmation:'send-one-approved-reply'})});status.textContent=JSON.stringify(await r.json(),null,2);}catch{status.textContent='Outcome unknown. Do not retry; inspect the stored provider receipt.';}};`;
+          response.setHeader('Cache-Control','no-store');response.setHeader('Referrer-Policy','no-referrer');response.setHeader('Content-Type','text/html; charset=utf-8');response.setHeader('Content-Security-Policy',`default-src 'none'; script-src 'sha256-${createHash('sha256').update(script).digest('base64')}'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'`);
+          response.end(`<!doctype html><title>Sharp Cuts controlled reply</title><h1>One approved WhatsApp test reply</h1><p>This sends only the displayed reply to the approved test recipient. Historical work and automatic replies remain held. Submitted does not mean delivered.</p><pre>Loading persisted draft…</pre><button disabled>Send this one approved reply</button><script>${script}</script>`);return;
         }
         if(request.method==="GET"&&pathname==="/api/business-automation/sharp-cuts/whatsapp/status"){
           await ready();

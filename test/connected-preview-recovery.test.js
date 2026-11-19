@@ -18,6 +18,17 @@ test('original connected branch requires exact verified bindings and keeps outbo
 });
 
 async function call(api,url,method='GET',headers={}){const req=Readable.from(method==='POST'?['{}']:[]);Object.assign(req,{url,method,headers});const res={statusCode:200,setHeader(){},end(v){this.body=v;}};await api.handle(req,res);return {...res,data:JSON.parse(res.body)};}
+
+test('manual WhatsApp test requires verified owner workspace, original Preview and same origin',async()=>{
+ let actor='owner',submitted=0;
+ const api=createApi({ownerId:'owner',connectedPreview:true,continuityPreview:true,config:{allowedOrigins:[],maxBodyBytes:4096},storage:{},initialize:async()=>{},authorizeConsole:async()=>({ownerId:actor,workspaceId:actor,role:actor==='owner'?'owner':'guest'}),controlledOwnerTest:{async review(){return{draft:'synthetic',canSubmit:true};},async submit(){submitted++;return{status:'fixture'};}}});
+ const url='/api/business-automation/sharp-cuts/whatsapp/controlled-test';
+ assert.equal((await call(api,url)).statusCode,200);
+ actor='other';assert.equal((await call(api,url)).statusCode,403);assert.equal((await call(api,url,'POST')).statusCode,403);
+ actor='owner';assert.equal((await call(api,url,'POST')).statusCode,403);assert.equal((await call(api,url,'POST',{origin:'https://evil.test',host:'nova.test'})).statusCode,403);
+ assert.equal(submitted,0);assert.equal((await call(api,url,'POST',{origin:'https://nova.test',host:'nova.test','content-type':'application/json'})).statusCode,200);assert.equal(submitted,1);
+ assert.equal(continuityRouteAllowed(url,'POST',{connected:false}),false);
+});
 test('history API pages oldest stored conversations, searches bodies, and never returns other owners',async()=>{
  const storage=createInMemoryStorage();await storage.initialize({owner:{id:'a'}});await storage.initialize({owner:{id:'b'}});
  for(let i=0;i<45;i++){await storage.ensureConversation({id:`a-${i}`,ownerId:'a',title:`Title ${i}`});await storage.appendMessage({conversationId:`a-${i}`,ownerId:'a',role:'user',content:i===0?'الزيتونة archived example':'fixture'});}

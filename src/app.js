@@ -1,4 +1,5 @@
 import {registerBusinessPreparationTools} from './automation/business-preparation-tools.js';
+import {createControlledOwnerTest} from './whatsapp/controlled-owner-test.js';
 import { randomUUID } from "node:crypto";
 import {CONNECTED_EXECUTION,connectedTaskAllowed} from './identity/connected-execution.js';
 import {continuityPreviewEnvironment,continuityToolAllowed,EXISTING_WORKSPACE_BRANCH,EXISTING_WORKSPACE_ENDPOINT} from './identity/continuity-preview.js';
@@ -201,6 +202,7 @@ export function createApp({
   const whatsappService = createWhatsAppService({ config, storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), fetchImpl: whatsappFetchImpl || globalThis.fetch, logger });
   const projectAutomationControls=createProjectAutomationControls({storage,ownerId:OWNER_ID});
   const sharpCutsWhatsAppService=createSharpCutsWhatsAppCoexistenceService({config,storage,ownerId:OWNER_ID,automationControls:projectAutomationControls,novaTurn:(input)=>agent.run(input),logger});
+  const controlledOwnerTest=continuity.connected?createControlledOwnerTest({environment,config,storage,ownerId:OWNER_ID}):null;
   const instagramOAuth=createInstagramOAuthService({config,storage,ownerId:OWNER_ID});
   const privateR2=config.socialMedia.r2Configured?createPrivateR2Store(config.socialMedia):null;
   const r2UsageGuard=createR2UsageGuard({storage,ownerId:OWNER_ID,config:config.socialMedia});
@@ -487,6 +489,7 @@ export function createApp({
     phoneService,
     whatsappService,
     sharpCutsWhatsAppService,
+    controlledOwnerTest,
     socialService,
     mediaAutomation,
     footageAnalysis,
