@@ -861,6 +861,9 @@ if(glassPreview){
  const settingsToggle=document.createElement('button');settingsToggle.id='glassSettingsToggle';settingsToggle.type='button';settingsToggle.textContent='Scene & options';settingsToggle.setAttribute('aria-expanded','false');settingsToggle.setAttribute('aria-controls','glassSettings');
  settingsToggle.onclick=()=>{settings.hidden=!settings.hidden;settingsToggle.setAttribute('aria-expanded',String(!settings.hidden));};
  settings.append(glassAvatar.controls,document.querySelector('#voiceContinueWorkspace'),document.querySelector('#novaCamera'));
+ const accessSettings=document.createElement('section');accessSettings.className='voice-access-settings';
+ const accessLabel=document.createElement('label');accessLabel.htmlFor='voiceAccountChoice';accessLabel.textContent='Private Voice access';
+ accessSettings.append(accessLabel,voiceAccountChoice,voiceAccountNotice);settings.prepend(accessSettings);
  toolbar.append(document.querySelector('#voiceTranscriptButton'));
  shell.append(settings);toolbar.prepend(settingsToggle);
  const start=document.createElement('button');start.id='currentGlassStart';start.type='button';start.className='send-button';start.textContent='Start Conversation';start.onclick=()=>{voiceExperienceMode.value='separate';voiceModeButton.click();};toolbar.prepend(start);
