@@ -90,7 +90,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
       const result=await request("/subscribers?page="+page);
       const total=typeof result.meta?.total==='number'?result.meta.total:/^\d+$/.test(String(result.meta?.total??''))?Number(result.meta.total):NaN;
       if(!Array.isArray(result.data)||!result.meta||Number(result.meta.current_page)!==page ||
-        !Number.isSafeInteger(total)||total<0||!result.links||!("next" in result.links))throw Object.assign(Error("Incomplete Sender subscriber inventory."),{code:'sender_inventory_incomplete'});
+        !Number.isSafeInteger(total)||total<0||!result.links||!("next" in result.links))throw Object.assign(Error("Incomplete Sender subscriber inventory."),{code:'sender_inventory_incomplete',paginationEvidence:{rows:Array.isArray(result.data)?result.data.length:null,currentPage:typeof result.meta?.current_page==='number'?result.meta.current_page:null,total:Number.isSafeInteger(total)?total:null,lastPage:typeof result.meta?.last_page==='number'?result.meta.last_page:null,nextFieldPresent:Boolean(result.links&&'next' in result.links),more:typeof result.has_more_resources==='boolean'?result.has_more_resources:null}});
       records.push(...result.data);
       if(!result.links.next){
         if(records.length!==total)throw Object.assign(Error("Sender subscriber total changed during reconciliation."),{code:'sender_inventory_total_mismatch'});
@@ -107,7 +107,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
       return {source:'Sender complete subscriber inventory',checked:true,total:rows.length,
         active:rows.filter(r=>r.status?.email==='active'&&!r.unsubscribed_at&&!r.bounced_at).length,
         restricted:rows.filter(r=>r.status?.email!=='active'||r.unsubscribed_at||r.bounced_at).length,
-        contactsChanged:0};}catch(error){return {checked:false,total:null,restricted:null,reason:['sender_inventory_incomplete','sender_inventory_total_mismatch','sender_authentication_required','sender_account_restricted','sender_rate_limited','sender_request_rejected','sender_provider_failed','sender_timeout','sender_transport_failed'].includes(error.code)?error.code:'sender_inventory_unavailable',contactsChanged:0};}
+        contactsChanged:0};}catch(error){return {checked:false,total:null,restricted:null,reason:['sender_inventory_incomplete','sender_inventory_total_mismatch','sender_authentication_required','sender_account_restricted','sender_rate_limited','sender_request_rejected','sender_provider_failed','sender_timeout','sender_transport_failed'].includes(error.code)?error.code:'sender_inventory_unavailable',...(error.paginationEvidence?{paginationEvidence:error.paginationEvidence}:{}),contactsChanged:0};}
     },
     async prepareDedicatedGroup(){
       if(!groupBinding)throw Error('Durable group binding is unavailable.');
