@@ -33,12 +33,12 @@ test('provider request has one recipient, exact finished creative, no groups/sub
  assert.equal(continuityToolAllowed({name:'sharp_cuts_welcome_test_send',riskLevel:'HIGH_IMPACT'},{connected:false}),false);assert.equal(continuityToolAllowed({name:'sharp_cuts_welcome_test_send',riskLevel:'HIGH_IMPACT'},{connected:true}),true);assert.equal(continuityToolAllowed({name:'sharp_cuts_campaign_send',riskLevel:'HIGH_IMPACT'},{connected:true}),false);
 });
 
-test('confirmed 429 permits only one new approved run after cooldown, without erasing receipts',async()=>{
+test('confirmed 429 permits bounded approved recovery after cooldown, without erasing receipts',async()=>{
  let now=Date.parse('2026-11-20T16:00:00Z');const f=fixture({clock:()=>new Date(now),fail:{code:'sender_rate_limited',upstreamStatus:429,retryAfterSeconds:600}});
  await f.service.send(input,context);now+=301000;
  await f.service.send(input,{runId:'run-2'});assert.equal(f.calls.length,1);
  now+=300000;await f.service.send(input,context);assert.equal(f.calls.length,1);
  await Promise.all([f.service.send(input,{runId:'run-2'}),f.service.send(input,{runId:'run-3'})]);
  assert.equal(f.calls.length,2);assert.equal(f.rows.size,4);assert.equal((await f.service.read()).attempt,2);
- now+=3600000;await f.service.send(input,{runId:'run-4'});assert.equal(f.calls.length,2);
+ now+=3600000;await f.service.send(input,{runId:'run-4'});assert.equal(f.calls.length,3);assert.equal((await f.service.read()).attempt,3);assert.equal(f.rows.size,6);now+=3600000;await f.service.send(input,{runId:'run-5'});assert.equal(f.calls.length,3);
 });
