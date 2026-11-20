@@ -77,7 +77,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
     const combined=signal?AbortSignal.any([signal,controller.signal]):controller.signal;
     try{
       const response=await fetchImpl(`${API_ORIGIN}/v2${path}`,{method,redirect:"error",headers:{Authorization:`Bearer ${config.apiToken}`,Accept:"application/json","Content-Type":"application/json"},signal:combined,...(body?{body:JSON.stringify(body)}:{})});
-      if(!response.ok)throw safeProviderError(response.status);
+      if(!response.ok){const error=safeProviderError(response.status);if(response.status===429){const retry=response.headers.get('Retry-After');error.retryAfterSeconds=/^\d+$/.test(retry||'')?Number(retry):null;}throw error;}
       return await response.json();
     }catch(error){if(error?.name==="AbortError")throw Object.assign(new Error("Sender.net request timed out safely."),{name:"SenderMarketingError",code:"sender_timeout",statusCode:503});if(error?.name==="SenderMarketingError")throw error;throw Object.assign(new Error("Sender.net request failed safely."),{name:"SenderMarketingError",code:"sender_transport_failed",statusCode:502});}
     finally{clearTimeout(timer);}
@@ -87,7 +87,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
   const inventory=async()=>{
     const records=[];let expectedTotal=null;
     for(let page=1;page<=999;page++){
-      let result;try{result=await request("/subscribers?page="+page+"&limit=100");}catch(error){error.paginationEvidence={page,read:records.length,requestedLimit:100};throw error;}
+      let result;try{result=await request("/subscribers?page="+page+"&limit=100");}catch(error){error.paginationEvidence={page,read:records.length,requestedLimit:100,retryAfterSeconds:error.retryAfterSeconds??null};throw error;}
       const total=typeof result.meta?.total==='number'?result.meta.total:/^\d+$/.test(String(result.meta?.total??''))?Number(result.meta.total):NaN;
       const lastPage=Number(result.meta?.last_page),hasLastPage=Number.isSafeInteger(lastPage)&&lastPage>=page&&lastPage<=999;
       const hasNextField=Boolean(result.links&&'next' in result.links);
@@ -136,7 +136,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
       const expectedNormalized=normalize(html),actualNormalized=normalize(actualHtml);
       const htmlMatches=actualNormalized===expectedNormalized;
       let mismatchAt=0;while(mismatchAt<Math.min(actualNormalized.length,expectedNormalized.length)&&actualNormalized[mismatchAt]===expectedNormalized[mismatchAt])mismatchAt++;
-      const htmlComparison={actualLength:actualNormalized.length,expectedLength:expectedNormalized.length,...(!htmlMatches?{mismatchAt,actualCodepoints:Array.from(actualNormalized.slice(mismatchAt,mismatchAt+80),x=>x.codePointAt(0)),expectedCodepoints:Array.from(expectedNormalized.slice(mismatchAt,mismatchAt+80),x=>x.codePointAt(0))}:{})};
+      const htmlComparison={actualLength:actualNormalized.length,expectedLength:expectedNormalized.length,...(!htmlMatches?{mismatchAt,actualCodepoints:Array.from(actualNormalized.slice(mismatchAt,mismatchAt+1600),x=>x.codePointAt(0)),expectedCodepoints:Array.from(expectedNormalized.slice(mismatchAt,mismatchAt+80),x=>x.codePointAt(0))}:{})};
       const errors=(validation.errors||[]).map(e=>String(e.title||'Provider restriction').slice(0,180));
       const warnings=(validation.warnings||[]).map(e=>String(e.title||'Provider warning').slice(0,180));
       const followupDisabled=c.auto_followup_active===false||c.auto_followup_active===0;
