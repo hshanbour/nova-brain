@@ -69,7 +69,7 @@ function safeProviderError(status){
 export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,timeoutMs=10_000,groupBinding=null}={}){
   if(!config?.configured)throw new TypeError("Configured Sharp Cuts Sender.net credentials are required.");
   if(typeof fetchImpl!=="function")throw new TypeError("fetchImpl is required.");
-  const request=async(path,{method="GET",body,signal}={})=>{
+  const request=async(path,{method="GET",body,signal,idempotencyKey}={})=>{
     const allowed = method==="GET"
       ? /^\/(?:groups(?:\?limit=1)?|subscribers\?page=[1-9][0-9]{0,2}(?:&limit=100)?|campaigns(?:\/[A-Za-z0-9_-]{2,80}(?:\/(?:emails-sent|errors))?)?)$/.test(path)
       : method==="POST" && /^\/(?:groups|subscribers(?:\/groups\/[A-Za-z0-9_-]{2,80})?|campaigns|message\/send)$/.test(path);
@@ -77,8 +77,8 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
     const combined=signal?AbortSignal.any([signal,controller.signal]):controller.signal;
     try{
-      const response=await fetchImpl(`${API_ORIGIN}/v2${path}`,{method,redirect:"error",headers:{Authorization:`Bearer ${config.apiToken}`,Accept:"application/json","Content-Type":"application/json"},signal:combined,...(body?{body:JSON.stringify(body)}:{})});
-      if(!response.ok){const error=safeProviderError(response.status);if(response.status===429){const retry=response.headers.get('Retry-After');error.retryAfterSeconds=/^\d+$/.test(retry||'')?Number(retry):null;}throw error;}
+      const response=await fetchImpl(`${API_ORIGIN}/v2${path}`,{method,redirect:"error",headers:{Authorization:`Bearer ${config.apiToken}`,Accept:"application/json","Content-Type":"application/json",...(idempotencyKey?{"Idempotency-Key":idempotencyKey}:{})},signal:combined,...(body?{body:JSON.stringify(body)}:{})});
+      if(!response.ok){const error=safeProviderError(response.status);if(response.status===429){const retry=response.headers.get('Retry-After');error.retryAfterSeconds=/^\d+$/.test(retry||'')?Number(retry):null;error.rateLimit=Object.fromEntries(['X-RateLimit-Limit','X-RateLimit-Remaining','X-RateLimit-Reset'].map(name=>[name,/^\d+$/.test(response.headers.get(name)||'')?Number(response.headers.get(name)):null]));}throw error;}
       return await response.json();
     }catch(error){if(error?.name==="AbortError")throw Object.assign(new Error("Sender.net request timed out safely."),{name:"SenderMarketingError",code:"sender_timeout",statusCode:503});if(error?.name==="SenderMarketingError")throw error;throw Object.assign(new Error("Sender.net request failed safely."),{name:"SenderMarketingError",code:"sender_transport_failed",statusCode:502});}
     finally{clearTimeout(timer);}
@@ -222,7 +222,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
     async sendWelcomeTest({recipient,subject,html,text},{authority}={}){
       if(recipient!=='hamodehshanbour@yahoo.com'||authority?.operation!=='welcome_single_test'||authority.projectId!=='sharp-cuts-web'||authority.campaignId!=='J6P5lD'||authority.recipient!==recipient||authority.creativeHash!==digest(JSON.stringify(html)))throw Object.assign(Error('Exact campaign-test authority required.'),{code:'sender_test_authority_required'});
       const previewHtml=html.replaceAll('{$unsubscribe_link}','https://campaign-statistics.com/unsubscribe_preview/en');
-      const response=await request('/message/send',{method:'POST',body:{from:{email:config.fromEmail,name:'Sharp Cuts'},to:{email:recipient,name:'Sharp Cuts owner'},subject,text,html:previewHtml.replace('</body>',SENDER_FREE_BRANDING+'</body>'),headers:{charset:'utf-8'}}});
+      const response=await request('/message/send',{method:'POST',idempotencyKey:authority.idempotencyKey,body:{from:{email:config.fromEmail,name:'Sharp Cuts'},to:{email:recipient,name:'Sharp Cuts owner'},subject,text,html:previewHtml.replace('</body>',SENDER_FREE_BRANDING+'</body>'),headers:{charset:'utf-8'}}});
       if(response?.success!==true||typeof response.emailId!=='string')throw safeProviderError(502);
       return {accepted:true,status:'submitted',provider:'Sender.net',messageId:response.emailId,recipient,customerContacts:0,subscriberUploads:0};
     },

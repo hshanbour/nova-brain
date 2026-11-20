@@ -38,3 +38,10 @@ test('new write boundary permits preparation only on connected Preview',()=>{
  assert.equal(continuityToolAllowed({name:'sharp_cuts_welcome_review_save',riskLevel:'LOW_RISK_WRITE'},{connected:true}),true);
  assert.equal(continuityToolAllowed({name:'sharp_cuts_campaign_send',riskLevel:'HIGH_IMPACT'},{connected:true}),false);
 });
+
+test('owner creative test verifies only the saved draft without scanning any customers',async()=>{
+ let checks=0;const saved={id:'saved',projectId:'sharp-cuts-web',copy:DEFAULT_WELCOME_COPY};
+ const forbidden=async()=>{throw Error('customer inventory must not run');};
+ const svc=createWelcomeReview({ownerId:'owner',storage:{listProjects:async()=>[{id:'sharp-cuts-web'}],listActivity:async()=>[{action:'sharp_cuts_welcome_review_saved',metadata:{review:saved}}]},customerReader:{snapshot:forbidden},senderClient:{inspectSuppressionReadiness:forbidden,inspectCampaignReadiness:forbidden,inspectPreparedCampaign:async args=>{checks++;assert.equal(args.campaignId,'J6P5lD');assert.match(args.html,/logo_hq/);return {ready:true,submitted:0};}}});
+ const result=await svc.readTestPreparation();assert.equal(result.review.id,'saved');assert.equal(result.preparation.provider.ready,true);assert.equal(checks,1);
+});

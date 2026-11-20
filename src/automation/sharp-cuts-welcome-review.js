@@ -101,7 +101,16 @@ export function createWelcomeReview({storage,ownerId,customerReader,senderClient
         reason:'Reuse project-scoped approvals, durable jobs, idempotency, suppression checks and provider receipts. An additional agent cannot establish consent or replace provider delivery evidence.',
         later:'A live n8n route would require hosting, scoped credentials, an authenticated Nova trigger, immutable approval envelope, idempotency, pause checks and signed status callbacks. It adds maintenance and does not remove the current audience requirements. Appointment follow-ups also need a supported fresh Fresha data feed.'}};
   }
-  return {read,async save(input){
+  // A one-recipient creative test does not need customer inventory or campaign-list scans.
+  async function readTestPreparation(){
+    await project();
+    const review=(await events()).find(e=>e.action===action&&e.metadata?.review?.projectId===projectId)?.metadata.review;
+    if(!review)return {review:null};
+    const copy=review.copy;
+    const provider=await senderClient.inspectPreparedCampaign({campaignId:WELCOME_PROVIDER_PREPARATION.campaignId,copy,html:welcomeEmailHtml(copy)});
+    return {copy,review,preparation:{provider}};
+  }
+  return {read,readTestPreparation,async save(input){
     const current=await read(),copy=validateCopy(input);
     if(!['email','whatsapp','compare'].includes(input.channel))throw Object.assign(Error('Select a campaign channel.'),{statusCode:400});
     const proposedAt=input.proposedAt||null;
