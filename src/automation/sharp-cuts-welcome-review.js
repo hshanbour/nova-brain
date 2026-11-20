@@ -1,4 +1,5 @@
 import {renderSharpCutsWelcome} from '../email/sharp-cuts-welcome-creative.js';
+import {withSenderRestriction} from '../email/sender-restriction.js';
 import {createHash} from 'node:crypto';
 import {SHARP_CUTS_BOOKING_URL} from './sharp-cuts-campaign.js';
 import {describeCampaignSource,SHARP_CUTS_EMAIL_SOURCE} from '../email/sharp-cuts-audience.js';
@@ -88,7 +89,7 @@ export function createWelcomeReview({storage,ownerId,customerReader,senderClient
     if(reconciliation.membershipStatus!=='matched')blockers.unshift('The live frozen cohort could not be confirmed. No audience changes or sends are permitted.');
     if(provider.status==='unavailable')blockers.unshift('Current Sender API readiness could not be read. Historical billing evidence is labelled separately.');
     return {projectId,campaignId:'sharp-cuts-welcome-back',title:'Welcome back / Fresh new look',status:review?'saved_for_review':'prepared_for_review',checkedAt:clock().toISOString(),
-      ownerTest:ev.status==='fulfilled'?ev.value.find(e=>e.action==='sharp_cuts_welcome_test_receipt')?.metadata?.receipt||null:null,
+      ownerTest:withSenderRestriction(ev.status==='fulfilled'?ev.value.find(e=>e.action==='sharp_cuts_welcome_test_receipt')?.metadata?.receipt||null:null),
       evidence:WELCOME_EVIDENCE,reconciliation,provider,suppression,copy,emailHtml:welcomeEmailHtml(copy),costs:welcomeCosts(),
       preparation:{...WELCOME_PROVIDER_PREPARATION,audienceMatched,ready:preparationReady,provider:prepared},
       audience:{emailAddressCandidates:1558,emailFreshaEligible:1240,mobileCandidates:1312,whatsappReachability:'Not checked for this audience',emailLaunchEligible:null,whatsappLaunchEligible:null,

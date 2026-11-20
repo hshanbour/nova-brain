@@ -57,3 +57,11 @@ test('placement test requires reconciled original, sends once across concurrent 
   assert.equal((await f.service.read()).inboxPlacement,'unknown');
  }
 });
+
+test('plan restriction cannot be retried after short header or next-day deadline; other 429 respects body/reset',async()=>{
+ for(const type of ['plan','rate_limit']){
+  let now=Date.parse('2026-11-20T17:17:40Z');const f=fixture({clock:()=>new Date(now),fail:{upstreamStatus:429,retryAfterSeconds:96,providerResponse:{type,message:'Rate limit exceeded. Retry after 2026-11-21T17:04:51Z.'},rateLimit:{'X-RateLimit-Reset':1795280691}}});
+  await f.service.send(input,context);now+=3600000;await f.service.send(input,{runId:'run-2'});assert.equal(f.calls.length,1);
+  now=Date.parse('2026-11-21T18:00:00Z');await f.service.send(input,{runId:'run-3'});assert.equal(f.calls.length,type==='plan'?1:2);
+ }
+});

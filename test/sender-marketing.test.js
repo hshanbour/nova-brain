@@ -31,7 +31,7 @@ test('observed Sender meta-only pagination proves completion without a links.nex
 test("Sender.net free readiness fits the candidate audience but fails closed without an owned domain",()=>{
   const empty=parseSharpCutsSenderConfig({}),status=senderReadiness(empty);
   assert.equal(status.suitableForCandidateAudience,true);assert.equal(status.cost.monthly,0);assert.equal(status.limits.subscribers,2500);assert.equal(status.limits.emailsPerMonth,15000);
-  assert.equal(status.plan,"Professional trial → Free Forever");assert.match(status.planEvidence,/automatically moves to Free Forever/);
+  assert.equal(status.plan,"Free Forever");assert.match(status.planEvidence,/verified Free Forever/);
   assert.equal(status.domain.gmailAllowedAsFrom,false);assert.equal(status.suppression.realtimeWebhooks,false);assert.equal(status.safeguards.sendAuthorised,false);
   const tokenOnly=parseSharpCutsSenderConfig({NOVA_SHARP_CUTS_SENDER_API_TOKEN:"x"});assert.equal(tokenOnly.configured,true);assert.equal(tokenOnly.draftConfigured,false);assert.equal(tokenOnly.sendingDomain,"sharpcuts.uk");assert.equal(tokenOnly.fromEmail,"info@sharpcuts.uk");
   for(const domain of ["gmail.com","sharp-cuts-web-blue.vercel.app"]){assert.throws(()=>parseSharpCutsSenderConfig({NOVA_SHARP_CUTS_SENDER_API_TOKEN:"x",NOVA_SHARP_CUTS_SENDER_GROUP_ID:"group_1",NOVA_SHARP_CUTS_SENDER_DOMAIN:domain,NOVA_SHARP_CUTS_SENDER_FROM_EMAIL:`hello@${domain}`}),/owned DNS domain/);}

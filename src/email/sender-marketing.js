@@ -9,8 +9,8 @@ const safeId=value=>typeof value==="string"&&/^[A-Za-z0-9_-]{2,80}$/.test(value)
 
 export const SHARP_CUTS_SENDER_PLAN=Object.freeze({
   provider:"Sender.net",
-  plan:"Professional trial → Free Forever",
-  planEvidence:"Sender billing showed an active Professional trial that automatically moves to Free Forever; the campaign is designed against the Free Forever limits only.",
+  plan:"Free Forever",
+  planEvidence:"Authenticated Sender billing verified Free Forever on 20 November 2026. Monthly allowance does not establish endpoint sending permission; a separate type=plan rejection is under investigation.",
   monthlyCostGbp:0,
   subscriberLimit:2500,
   monthlyEmailLimit:15000,
@@ -84,6 +84,8 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
         const error=safeProviderError(response.status);
         let data;try{data=await response.json();}catch{}
         const clean=value=>typeof value==='string'?value.split(config.apiToken).join('[credential redacted]').replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email redacted]').replace(/https?:\/\/[^\s]+/g,'[url redacted]').replace(/[A-Za-z0-9_=-]{60,}/g,'[token redacted]').slice(0,800):null;
+        // Retain only safe correlation headers, never cookies or authentication.
+        transport.requestIds=Object.fromEntries(['x-request-id','x-correlation-id','cf-ray'].flatMap(name=>{const value=response.headers.get(name);return value&&/^[A-Za-z0-9._:-]{1,128}$/.test(value)&&!value.includes(config.apiToken)?[[name,clean(value)]]:[];}));
         error.providerResponse={success:typeof data?.success==='boolean'?data.success:null,message:clean(data?.message),type:clean(data?.type),code:clean(data?.code)};
         error.transport=transport;error.rateLimit=transport.rateLimit;
         const retry=transport.retryAfter;error.retryAfterSeconds=/^\d+$/.test(retry||'')?Number(retry):null;

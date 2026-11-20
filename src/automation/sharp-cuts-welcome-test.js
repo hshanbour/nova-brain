@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {welcomeEmailHtml,WELCOME_PROVIDER_PREPARATION} from './sharp-cuts-welcome-review.js';
 import {SHARP_CUTS_WHATSAPP_URL} from '../email/sharp-cuts-welcome-creative.js';
+import {withSenderRestriction} from '../email/sender-restriction.js';
 export const WELCOME_TEST_RECIPIENT='hamodehshanbour@yahoo.com';
 export const isWelcomeTestApproval=(approval,ownerId)=>approval?.ownerId===ownerId&&approval.status==='pending'&&['sharp_cuts_welcome_test_send','sharp_cuts_welcome_placement_test'].includes(approval.tool)&&Boolean(approval.runId)&&approval.arguments?.recipient===WELCOME_TEST_RECIPIENT&&Object.keys(approval.arguments).length===1;
 const projectId='sharp-cuts-web';
@@ -15,7 +16,7 @@ export function createWelcomeTest({storage,ownerId,senderClient,welcome,connecte
   const tool=placementTest?'sharp_cuts_welcome_placement_test':'sharp_cuts_welcome_test_send';
   const readAttempt=async(id)=>{
     const receipt=await storage.getActivity(id+'-receipt',ownerId);
-    if(receipt)return receipt.metadata.receipt;
+    if(receipt)return withSenderRestriction(receipt.metadata.receipt);
     return await storage.getActivity(id,ownerId)?{status:'outcome_unconfirmed',retryAllowed:false,recipient:WELCOME_TEST_RECIPIENT,delivered:null}:null;
   };
   const retryId=claimId+'-rate-recovery';
@@ -36,8 +37,8 @@ export function createWelcomeTest({storage,ownerId,senderClient,welcome,connecte
       if(clock().getTime()<Date.parse(original.checkedAt)+300000)throw Error('The five-minute provider safety cooldown has not elapsed.');
     }
     if(prior){
-      const retryAt=Date.parse(prior.checkedAt)+Math.max(300,Number(prior.retryAfterSeconds)||0)*1000;
-      const eligible=prior.status==='rejected'&&prior.accepted===false&&prior.upstreamStatus===429&&!prior.messageId&&Number.isFinite(retryAt)&&clock().getTime()>=retryAt&&context.runId!==prior.runId&&!await readAttempt(diagnosticId);
+      const retryAt=Math.max(Date.parse(prior.checkedAt)+Math.max(300,Number(prior.retryAfterSeconds)||0)*1000,Date.parse(prior.restriction?.notBefore)||0);
+      const eligible=!prior.restriction?.requiresProviderClarification&&prior.status==='rejected'&&prior.accepted===false&&prior.upstreamStatus===429&&!prior.messageId&&Number.isFinite(retryAt)&&clock().getTime()>=retryAt&&context.runId!==prior.runId&&!await readAttempt(diagnosticId);
       if(!eligible)return {...prior,reused:true};
       attemptId=await readAttempt(retryId)?diagnosticId:retryId;
     }
@@ -53,6 +54,6 @@ export function createWelcomeTest({storage,ownerId,senderClient,welcome,connecte
     }catch(e){receipt={status:[400,401,403,422,429].includes(e.upstreamStatus)?'rejected':'outcome_unconfirmed',accepted:false,providerCode:e.code||'sender_outcome_unconfirmed',upstreamStatus:e.upstreamStatus||null,retryAfterSeconds:e.retryAfterSeconds??null,rateLimit:e.rateLimit??null,providerResponse:e.providerResponse??null,transport:e.transport??null,recipient:input.recipient};}
     receipt={...receipt,testPurpose:placementTest?'placement_review':'original',subject:(placementTest?'[TEST 2] ':'[TEST] ')+review.copy.subject,inboxPlacement:'unknown',campaignId:WELCOME_PROVIDER_PREPARATION.campaignId,reviewId:review.review.id,creativeHash:hash(html),conversationId:context.conversationId,runId:context.runId,attempt:attemptId===diagnosticId?3:attemptId===retryId?2:1,checkedAt:clock().toISOString(),delivered:null,retryAllowed:false,audienceMessages:0,note:'Single-recipient creative preview via Sender transactional API. Provider acceptance does not prove inbox delivery. The 1,240-person campaign remains unsent.'};
     await storage.appendActivity({...common,id:attemptId+'-receipt',action:'sharp_cuts_welcome_test_receipt',status:receipt.accepted?'completed':'blocked',summary:'Owner campaign test: '+receipt.status+'. Campaign audience not sent.',metadata:{receipt}});
-    return receipt;
+    return withSenderRestriction(receipt);
   }};
 }
