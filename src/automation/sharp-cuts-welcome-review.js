@@ -21,7 +21,7 @@ export const WELCOME_EVIDENCE=Object.freeze({
   mobileCountries:{GB:1304,LV:2,DE:1,IT:1,LC:1,AE:1,NZ:1,GH:1},
   fresha:{profiles:1999,upcomingBookingProfiles:52,winback90NoFutureBooking:1724,segmentId:'44230',
     note:'Read in the authenticated Fresha UI on 20 Nov. These are live segment totals, not a matched campaign recipient export. The frozen cohort is preserved; new clients are not added.'},
-  sender:{plan:'Free Forever',subscriberLimit:2500,emailLimit:15000,activeSubscribers:1,emailsUsed:1,uniqueEmailed:1,renewsOn:'2026-12-02',monthlyCost:0,currency:'USD',brandingRequired:true,source:'Authenticated Sender Billing, 20 Nov 2026'},
+  sender:{plan:'Free Forever',subscriberLimit:2500,emailLimit:15000,activeSubscribers:1241,emailsUsed:2,uniqueEmailed:2,renewsOn:'2026-12-02',monthlyCost:0,currency:'USD',brandingRequired:true,source:'Authenticated Sender Billing and Email usage, 20 Nov 2026, 19:40 GMT; snapshot, not live send permission'},
   whatsapp:{walletUsd:9.993,minimumTopupUsd:10,limitPer24Hours:250,approvedMarketingTemplates:0,source:'Authenticated SharpCutsNova provider and wallet review, 20 Nov 2026'},
   emailReconciliation:{checkedAt:'2026-11-20T13:22:22.730Z',eligibleBeforeProvider:1240,marketingOptOut:254,blocked:22,sharedAddress:3,upcomingBooking:39,missingCurrent:0,unknownPreference:0,
     audienceHash:'f847215b4f330d5adb478e84e72274a92c0747ac22fc04dae60034546bdec6f7',

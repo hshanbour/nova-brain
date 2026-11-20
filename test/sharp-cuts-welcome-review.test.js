@@ -12,7 +12,7 @@ function fixture({projects=[{id:'sharp-cuts-web'}],unavailable=false}={}){
  return {service,events,calls};
 }
 test('costs use actual mobile countries, marketing category and provider fee without counting top-up twice',()=>{
- const c=welcomeCosts();assert.equal(c.email.totalUsd,0);assert.equal(c.email.remainingEmails,14999);assert.equal(c.whatsapp.messages,1312);assert.equal(c.whatsapp.totalUsd,84.7287);assert.equal(c.whatsapp.additionalCreditUsd,74.7357);assert.equal(c.whatsapp.minimumBatches,6);assert.equal(c.whatsapp.destinations.reduce((n,r)=>n+r.count,0),1312);
+ const c=welcomeCosts();assert.equal(c.email.totalUsd,0);assert.equal(c.email.remainingEmails,14998);assert.equal(c.whatsapp.messages,1312);assert.equal(c.whatsapp.totalUsd,84.7287);assert.equal(c.whatsapp.additionalCreditUsd,74.7357);assert.equal(c.whatsapp.minimumBatches,6);assert.equal(c.whatsapp.destinations.reduce((n,r)=>n+r.count,0),1312);
 });
 test('validity does not grant consent or WhatsApp reachability; live membership and unavailable sources remain distinct',async()=>{
  const f=fixture(),r=await f.service.read();assert.equal(r.reconciliation.membershipStatus,'matched');assert.equal(r.audience.emailLaunchEligible,null);assert.equal(r.audience.whatsappLaunchEligible,null);assert.match(r.audience.whatsappReachability,/Not checked/);assert.equal(r.approval.launchEnabled,false);assert.equal(r.results.delivered,null);assert.equal(r.results.submitted,null);assert.equal(r.preparation.ready,false);assert.equal(f.events.length,0);
