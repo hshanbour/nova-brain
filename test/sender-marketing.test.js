@@ -137,3 +137,9 @@ test('exact provider Free footer is recognised but unexpected footer edits fail 
  assert.equal((await verify(persisted.replace('Powered by Sender.net','Other message'))).htmlMatches,false);
  assert.equal((await verify(persisted.replace('Approved','Changed'))).htmlMatches,false);
 });
+
+test('read-only transport diagnostic preserves provider reason/cooldown and never exposes credentials or subscriber data',async()=>{
+ const calls=[];const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async(url,options)=>{calls.push({url,method:options.method});return Response.json({success:false,message:'Daily limit reached for private@example.test with provider-secret-token',type:'daily_limit',data:{email:'private@example.test'}},{status:429,headers:{'Retry-After':'120','X-RateLimit-Limit':'100','X-RateLimit-Remaining':'0','X-RateLimit-Reset':'1795278963',Date:'Fri, 20 Nov 2026 16:46:22 GMT'}});}});
+ const r=await client.inspectTestTransport();assert.equal(r.httpStatus,429);assert.equal(r.providerResponse.type,'daily_limit');assert.match(r.providerResponse.message,/Daily limit/);assert.equal(r.retryAfter,'120');assert.equal(r.rateLimit['X-RateLimit-Remaining'],0);assert.doesNotMatch(JSON.stringify(r),/private@example|provider-secret-token/);assert.deepEqual(calls,[{url:'https://api.sender.net/v2/groups?limit=1',method:'GET'}]);
+ const ok=createSenderMarketingClient({config:CONFIG,fetchImpl:async()=>Response.json({data:[{private:'hidden'}]},{headers:{'X-RateLimit-Remaining':'99'}})});const probe=await ok.inspectTestTransport();assert.equal(probe.httpStatus,200);assert.equal(probe.data,undefined);assert.equal(probe.rateLimit['X-RateLimit-Remaining'],99);
+});

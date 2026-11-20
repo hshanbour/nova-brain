@@ -69,7 +69,7 @@ function safeProviderError(status){
 export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,timeoutMs=10_000,groupBinding=null}={}){
   if(!config?.configured)throw new TypeError("Configured Sharp Cuts Sender.net credentials are required.");
   if(typeof fetchImpl!=="function")throw new TypeError("fetchImpl is required.");
-  const request=async(path,{method="GET",body,signal,idempotencyKey}={})=>{
+  const request=async(path,{method="GET",body,signal,idempotencyKey,diagnostic=false}={})=>{
     const allowed = method==="GET"
       ? /^\/(?:groups(?:\?limit=1)?|subscribers\?page=[1-9][0-9]{0,2}(?:&limit=100)?|campaigns(?:\/[A-Za-z0-9_-]{2,80}(?:\/(?:emails-sent|errors))?)?)$/.test(path)
       : method==="POST" && /^\/(?:groups|subscribers(?:\/groups\/[A-Za-z0-9_-]{2,80})?|campaigns|message\/send)$/.test(path);
@@ -78,7 +78,18 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
     const combined=signal?AbortSignal.any([signal,controller.signal]):controller.signal;
     try{
       const response=await fetchImpl(`${API_ORIGIN}/v2${path}`,{method,redirect:"error",headers:{Authorization:`Bearer ${config.apiToken}`,Accept:"application/json","Content-Type":"application/json",...(idempotencyKey?{"Idempotency-Key":idempotencyKey}:{})},signal:combined,...(body?{body:JSON.stringify(body)}:{})});
-      if(!response.ok){const error=safeProviderError(response.status);if(response.status===429){const retry=response.headers.get('Retry-After');error.retryAfterSeconds=/^\d+$/.test(retry||'')?Number(retry):null;error.rateLimit=Object.fromEntries(['X-RateLimit-Limit','X-RateLimit-Remaining','X-RateLimit-Reset'].map(name=>[name,/^\d+$/.test(response.headers.get(name)||'')?Number(response.headers.get(name)):null]));}throw error;}
+      const numericHeader=name=>{const value=response.headers.get(name);return /^\d+$/.test(value||'')?Number(value):null;};
+      const transport={httpStatus:response.status,responseDate:response.headers.get('date'),retryAfter:response.headers.get('retry-after'),rateLimit:Object.fromEntries(['X-RateLimit-Limit','X-RateLimit-Remaining','X-RateLimit-Reset'].map(name=>[name,numericHeader(name)]))};
+      if(!response.ok){
+        const error=safeProviderError(response.status);
+        let data;try{data=await response.json();}catch{}
+        const clean=value=>typeof value==='string'?value.split(config.apiToken).join('[credential redacted]').replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[email redacted]').replace(/https?:\/\/[^\s]+/g,'[url redacted]').replace(/[A-Za-z0-9_=-]{60,}/g,'[token redacted]').slice(0,800):null;
+        error.providerResponse={success:typeof data?.success==='boolean'?data.success:null,message:clean(data?.message),type:clean(data?.type),code:clean(data?.code)};
+        error.transport=transport;error.rateLimit=transport.rateLimit;
+        const retry=transport.retryAfter;error.retryAfterSeconds=/^\d+$/.test(retry||'')?Number(retry):null;
+        throw error;
+      }
+      if(diagnostic)return transport;
       return await response.json();
     }catch(error){if(error?.name==="AbortError")throw Object.assign(new Error("Sender.net request timed out safely."),{name:"SenderMarketingError",code:"sender_timeout",statusCode:503});if(error?.name==="SenderMarketingError")throw error;throw Object.assign(new Error("Sender.net request failed safely."),{name:"SenderMarketingError",code:"sender_transport_failed",statusCode:502});}
     finally{clearTimeout(timer);}
@@ -108,6 +119,10 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
     throw Error("Sender inventory could not be completely reconciled.");
   };
   return Object.freeze({
+    async inspectTestTransport(){
+      try{return {checkedAt:new Date().toISOString(),endpoint:'GET /v2/groups?limit=1',...await request('/groups?limit=1',{diagnostic:true}),writes:0};}
+      catch(error){return {checkedAt:new Date().toISOString(),endpoint:'GET /v2/groups?limit=1',...error.transport,providerResponse:error.providerResponse||null,code:error.code,writes:0};}
+    },
     async audienceBinding(){return config.groupId||await groupBinding?.read()||null;},
     async inspectSuppressionReadiness(){
       try{const rows=await inventory();
