@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {welcomeEmailHtml,WELCOME_PROVIDER_PREPARATION} from './sharp-cuts-welcome-review.js';
 export const WELCOME_TEST_RECIPIENT='hamodehshanbour@yahoo.com';
+export const isWelcomeTestApproval=(approval,ownerId)=>approval?.ownerId===ownerId&&approval.status==='pending'&&approval.tool==='sharp_cuts_welcome_test_send'&&Boolean(approval.runId)&&approval.arguments?.recipient===WELCOME_TEST_RECIPIENT&&Object.keys(approval.arguments).length===1;
 const projectId='sharp-cuts-web';
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export function createWelcomeTest({storage,ownerId,senderClient,welcome,connected=false}){

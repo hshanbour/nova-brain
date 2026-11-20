@@ -2,6 +2,7 @@ import { readFormBody, readJsonBody, readMultipartUpload } from "./body.js";
 import {createSpeakerDiagnostic} from '../voice/speaker-diagnostic.js';
 import {usesServiceAuthentication} from "../identity/console-access.js";
 import {connectedTaskAllowed,isFreshCodingParent,connectedExecutionDenied} from '../identity/connected-execution.js';
+import {isWelcomeTestApproval} from '../automation/sharp-cuts-welcome-test.js';
 import {continuityRouteAllowed} from '../identity/continuity-preview.js';
 import {savedReplyLanguage} from '../identity/communication-policy.js';
 import {requirePrivateVoiceSpeaker,verifiedOwnerVoiceEvidence} from '../voice/private-context-access.js';
@@ -2377,7 +2378,7 @@ export function createApi({
           if(connectedPreview){
             const pending=await storage.getApproval(decodeURIComponent(approvalMatch[1]),ownerId);
             const parent=pending?.tool==='coding_job_create'?await storage.getAutonomyTask(pending.arguments?.parentTaskId,ownerId):null;
-            if(!isFreshCodingParent(parent))throw connectedExecutionDenied();
+            if(!isFreshCodingParent(parent)&&!isWelcomeTestApproval(pending,ownerId))throw connectedExecutionDenied();
           }
           const approval = await storage.decideApproval(
             decodeURIComponent(approvalMatch[1]),
@@ -2941,6 +2942,7 @@ export function createApi({
           return;
         }
 
+        if(error?.code==="connected_preview_task_held"){sendJson(response,403,{error:"This action remains held in the connected Preview.",code:error.code});return;}
         logger.error("Nova Brain request failed", {
           name: error?.name || "Error",
           code: error?.code || "INTERNAL_ERROR",
