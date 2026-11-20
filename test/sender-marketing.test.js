@@ -114,14 +114,16 @@ test('campaign report refuses details for a different campaign',async()=>{
 });
 
 test('prepared campaign verification rejects copy changes, broader groups, follow-ups and schedules',async()=>{
- const copy={subject:'Reviewed subject',preheader:'Reviewed preview',replyTo:'info@sharpcuts.uk'},html='<p>Reviewed creative</p>';
+ const copy={subject:'Reviewed subject',preheader:'Reviewed preview',replyTo:'info@sharpcuts.uk'},html='<p>Reviewed creative</p><a href="{$unsubscribe_link}">Unsubscribe</a>';
  const baseline={id:'draft_1',subject:copy.subject,preheader:copy.preheader,reply_to:copy.replyTo,from:'Sharp Cuts',campaign_groups:['group_90day'],segments:[],status:'DRAFT',schedule_time:null,sent_time:null,auto_followup_active:false,html:{html_content:html},recipient_count:1240,sent_count:0};
  const verify=async patch=>{const calls=[];const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async(url,options)=>{calls.push(options.method);return Response.json(url.endsWith('/errors')?{errors:[],warnings:[]}:{data:{...baseline,...patch}});}});const result=await client.inspectPreparedCampaign({campaignId:'draft_1',copy,html});assert.ok(calls.every(x=>x==='GET'));return result;};
  assert.equal((await verify({})).ready,true);
+ assert.equal((await verify({html:{html_content:html.replace('{$unsubscribe_link}','{{ unsubscribe_link }}')}})).ready,true);
+ assert.equal((await verify({html:{html_content:html.replace('{$unsubscribe_link}','https://wrong.example')}})).ready,false);
  for(const patch of [{subject:'Changed'},{html:{html_content:html+'<p>Extra</p>'}},{campaign_groups:['group_90day','unrelated']},{send_to_all:true},{auto_followup_active:true},{schedule_time:'2026-12-01'},{status:'SENT'}])assert.equal((await verify(patch)).ready,false);
 });
 
 test('group fingerprint uses actual members while preserving provider restrictions',async()=>{
- const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async()=>Response.json({data:[{email:'member@example.test',status:{email:'active'},subscriber_tags:[{id:'group_90day'}]},{email:'held@example.test',status:{email:'unsubscribed'},subscriber_tags:[]}],meta:{current_page:1,last_page:1,total:2}})});
+ const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async(url)=>{assert.equal(new URL(url).searchParams.get('limit'),'100');return Response.json({data:[{email:'member@example.test',status:{email:'active'},subscriber_tags:[{id:'group_90day'}]},{email:'held@example.test',status:{email:'unsubscribed'},subscriber_tags:[]}],meta:{current_page:1,last_page:1,total:2}});}});
  const r=await client.inspectSuppressionReadiness();assert.equal(r.groupCount,1);assert.equal(r.groupRestricted,0);assert.equal(r.restricted,1);assert.match(r.audienceHash,/^[a-f0-9]{64}$/);assert.doesNotMatch(JSON.stringify(r),/@/);
 });

@@ -70,7 +70,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
   if(typeof fetchImpl!=="function")throw new TypeError("fetchImpl is required.");
   const request=async(path,{method="GET",body,signal}={})=>{
     const allowed = method==="GET"
-      ? /^\/(?:groups(?:\?limit=1)?|subscribers\?page=[1-9][0-9]{0,2}|campaigns(?:\/[A-Za-z0-9_-]{2,80}(?:\/(?:emails-sent|errors))?)?)$/.test(path)
+      ? /^\/(?:groups(?:\?limit=1)?|subscribers\?page=[1-9][0-9]{0,2}(?:&limit=100)?|campaigns(?:\/[A-Za-z0-9_-]{2,80}(?:\/(?:emails-sent|errors))?)?)$/.test(path)
       : method==="POST" && /^\/(?:groups|subscribers(?:\/groups\/[A-Za-z0-9_-]{2,80})?|campaigns|message\/send)$/.test(path);
     if(!allowed)throw new Error("Sender.net endpoint is not allowlisted.");
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
@@ -87,7 +87,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
   const inventory=async()=>{
     const records=[];let expectedTotal=null;
     for(let page=1;page<=999;page++){
-      const result=await request("/subscribers?page="+page);
+      const result=await request("/subscribers?page="+page+"&limit=100");
       const total=typeof result.meta?.total==='number'?result.meta.total:/^\d+$/.test(String(result.meta?.total??''))?Number(result.meta.total):NaN;
       const lastPage=Number(result.meta?.last_page),hasLastPage=Number.isSafeInteger(lastPage)&&lastPage>=page&&lastPage<=999;
       const hasNextField=Boolean(result.links&&'next' in result.links);
@@ -128,7 +128,9 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
       const groups=(c.campaign_groups||[]).map(g=>typeof g==='string'?g:g.id);
       const sameGroup=Boolean(groupId)&&groups.length===1&&groups[0]===groupId&&!(c.segments?.length)&&!c.send_to_all;
       if(!sameGroup)return {checked:true,campaignId,status:'scope_mismatch',ready:false};
-      const normalize=value=>String(value??'').replace(/\r\n/g,'\n').trim();
+      // Sender's saved HTML editor converts its legacy unsubscribe token to Liquid.
+      // Canonicalise only that exact observed conversion; preserve every other byte.
+      const normalize=value=>String(value??'').replace(/\r\n/g,'\n').replaceAll('{{ unsubscribe_link }}','{$unsubscribe_link}').trim();
       const actualHtml=c.html?.html_content??c.content??'';
       const copyMatches=c.subject===copy.subject&&c.preheader===copy.preheader&&c.from==='Sharp Cuts'&&c.reply_to===copy.replyTo;
       const htmlMatches=normalize(actualHtml)===normalize(html);
