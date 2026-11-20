@@ -87,7 +87,7 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
   const inventory=async()=>{
     const records=[];let expectedTotal=null;
     for(let page=1;page<=999;page++){
-      const result=await request("/subscribers?page="+page+"&limit=100");
+      let result;try{result=await request("/subscribers?page="+page+"&limit=100");}catch(error){error.paginationEvidence={page,read:records.length,requestedLimit:100};throw error;}
       const total=typeof result.meta?.total==='number'?result.meta.total:/^\d+$/.test(String(result.meta?.total??''))?Number(result.meta.total):NaN;
       const lastPage=Number(result.meta?.last_page),hasLastPage=Number.isSafeInteger(lastPage)&&lastPage>=page&&lastPage<=999;
       const hasNextField=Boolean(result.links&&'next' in result.links);
@@ -133,13 +133,16 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
       const normalize=value=>String(value??'').replace(/\r\n/g,'\n').replaceAll('{{ unsubscribe_link }}','{$unsubscribe_link}').trim();
       const actualHtml=c.html?.html_content??c.content??'';
       const copyMatches=c.subject===copy.subject&&c.preheader===copy.preheader&&c.from==='Sharp Cuts'&&c.reply_to===copy.replyTo;
-      const htmlMatches=normalize(actualHtml)===normalize(html);
+      const expectedNormalized=normalize(html),actualNormalized=normalize(actualHtml);
+      const htmlMatches=actualNormalized===expectedNormalized;
+      let mismatchAt=0;while(mismatchAt<Math.min(actualNormalized.length,expectedNormalized.length)&&actualNormalized[mismatchAt]===expectedNormalized[mismatchAt])mismatchAt++;
+      const htmlComparison={actualLength:actualNormalized.length,expectedLength:expectedNormalized.length,...(!htmlMatches?{mismatchAt,actualCodepoints:Array.from(actualNormalized.slice(mismatchAt,mismatchAt+80),x=>x.codePointAt(0)),expectedCodepoints:Array.from(expectedNormalized.slice(mismatchAt,mismatchAt+80),x=>x.codePointAt(0))}:{})};
       const errors=(validation.errors||[]).map(e=>String(e.title||'Provider restriction').slice(0,180));
       const warnings=(validation.warnings||[]).map(e=>String(e.title||'Provider warning').slice(0,180));
       const followupDisabled=c.auto_followup_active===false||c.auto_followup_active===0;
       const count=v=>Number.isSafeInteger(v)&&v>=0?v:null;
       return {checked:true,campaignId,status:c.status,groupId,recipientCount:count(c.recipient_count),submitted:count(c.sent_count),
-        scheduleTime:c.schedule_time??null,sentTime:c.sent_time??null,copyMatches,htmlMatches,htmlHash:digest(actualHtml),followupDisabled,errors,warnings,
+        scheduleTime:c.schedule_time??null,sentTime:c.sent_time??null,copyMatches,htmlMatches,htmlHash:digest(actualHtml),htmlComparison,followupDisabled,errors,warnings,
         ready:c.status==='DRAFT'&&!c.schedule_time&&!c.sent_time&&copyMatches&&htmlMatches&&followupDisabled&&!errors.length,
         opens:count(c.opens),clicks:count(c.clicks),bounces:count(c.bounces_count),delivered:null,contactsChanged:0};
     },
