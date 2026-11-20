@@ -748,7 +748,7 @@ export function createRealtimeVoice({
   }
   function setMuted(value) {
     if(!active||muted===Boolean(value))return muted;
-    dropSpeechCandidate();clearTimeout(manualTimer);if(inputMode==='tap-to-talk')manualPhase='ready';
+    dropSpeechCandidate();if(manualPhase!=='configuring'){clearTimeout(manualTimer);if(inputMode==='tap-to-talk')manualPhase='ready';}
     muted=Boolean(value);setInputTracks(!muted&&inputMode!=='tap-to-talk');turnPcm?.setMuted(muted||inputMode==='tap-to-talk');
     if(muted){
       const hadTurn=Boolean(latestTurn);

@@ -52,3 +52,6 @@ test('public guest can use explicit speech controls without private Brain or rec
 test('mute discards a pending noise candidate and no delayed event starts work',async()=>{
  const f=await fixture();try{f.turn('one','Explain an idea');await wait(10);f.playback();f.event({type:'input_audio_buffer.speech_started',item_id:'late'});f.voice.setMuted(true);f.event({type:'input_audio_buffer.committed',item_id:'late'});f.event({type:'conversation.item.input_audio_transcription.completed',item_id:'late',transcript:'Save a private fact'});await wait(30);assert.equal(f.work.length,1);assert.equal(f.track.enabled,false);}finally{f.voice.end();}
 });
+test('mute during manual configuration cannot bypass the provider acknowledgement',async()=>{
+ const f=await fixture({manual:true});try{f.voice.setMuted(true);f.event({type:'input_audio_buffer.cleared'});f.voice.setMuted(false);assert.equal(f.voice.beginManualTurn(),false);assert.equal(f.track.enabled,false);f.event({type:'session.updated',session:{audio:{input:{turn_detection:null}}}});assert.equal(f.voice.beginManualTurn(),true);assert.equal(f.track.enabled,false);}finally{f.voice.end();}
+});
