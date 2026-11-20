@@ -101,6 +101,13 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
   };
   return Object.freeze({
     async audienceBinding(){return config.groupId||await groupBinding?.read()||null;},
+    async inspectSuppressionReadiness(){
+      const rows=await inventory();
+      return {source:'Sender complete subscriber inventory',checked:true,total:rows.length,
+        active:rows.filter(r=>r.status?.email==='active'&&!r.unsubscribed_at&&!r.bounced_at).length,
+        restricted:rows.filter(r=>r.status?.email!=='active'||r.unsubscribed_at||r.bounced_at).length,
+        contactsChanged:0};
+    },
     async prepareDedicatedGroup(){
       if(!groupBinding)throw Error('Durable group binding is unavailable.');
       const title='Nova Sharp Cuts — campaign review';

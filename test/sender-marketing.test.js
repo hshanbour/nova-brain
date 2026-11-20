@@ -10,6 +10,16 @@ const CONFIG=parseSharpCutsSenderConfig({
   NOVA_SHARP_CUTS_SENDER_FROM_EMAIL:"info@sharpcuts.uk",
 });
 
+test('suppression readiness reads complete inventory and exposes counts only',async()=>{
+  const calls=[];
+  const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async(url,options)=>{
+    calls.push(options.method||'GET');
+    return Response.json({data:[{email:'private@example.test',status:{email:'active'}},{email:'suppressed@example.test',status:{email:'unsubscribed'},unsubscribed_at:'2026-11-01'}],meta:{current_page:1,total:2},links:{next:null}});
+  }});
+  const r=await client.inspectSuppressionReadiness();
+  assert.equal(r.total,2);assert.equal(r.active,1);assert.equal(r.restricted,1);assert.equal(r.contactsChanged,0);assert.deepEqual(calls,['GET']);assert.doesNotMatch(JSON.stringify(r),/@/);
+});
+
 test("Sender.net free readiness fits the candidate audience but fails closed without an owned domain",()=>{
   const empty=parseSharpCutsSenderConfig({}),status=senderReadiness(empty);
   assert.equal(status.suitableForCandidateAudience,true);assert.equal(status.cost.monthly,0);assert.equal(status.limits.subscribers,2500);assert.equal(status.limits.emailsPerMonth,15000);

@@ -26,3 +26,14 @@ Existing inactive synthetic automations/n8n/sharp-cuts-retention-monitor.demo.js
 ## Validation
 26 focused tests pass: draft persistence, idempotency, escaped creative, pricing, private API, same-origin write boundary, source membership, suppression preservation, existing connected privacy and WhatsApp holds. Normal signed-in UI verification follows deployment; do not count these tests as campaign delivery.
 Rollback: restore the stable Preview alias to deployment dpl_7vZTCKTP8okNBWNZQZxcGY5eVLHV (512e6a4). No DB rollback needed. Keep scnovawa.vercel.app on its existing receipt repair.
+
+## Fresh reconciliation completed after initial deployment
+The client-list export did arrive in Downloads. Its 20 November export has 1,999 records, Client ID, Accepts Marketing, Accepts SMS Marketing and Blocked columns; SHA-256 c0decc411df9d3fb0b536f535df9b594d488ae9cf4e84aa5b8fb3d5368b54ee8. The earlier absence-of-export conclusion above is superseded. Fresha's official consent guide explicitly describes these columns as marketing preferences.
+
+The CSV exporter returns all clients even when the list is filtered; this was checked, not assumed to export a segment. The existing upcoming-appointment segment was therefore read through both UI pages (1–30 and 31–52), collecting 52 distinct Client IDs at 13:22 GMT. No segment criteria were changed. Counts had increased from 49 while this session was in progress, so refresh before launch.
+
+Matched only to the 1,558 original distinct email addresses: 254 opted out, 22 blocked, 3 remaining ambiguous shared addresses, 39 upcoming bookings, 0 missing/unknown. These mutually exclusive exclusions leave 1,240 addresses with explicit Fresha email preference, no block, no sharing ambiguity and no upcoming booking at inspection. This is a broad Welcome back proposal, not a claim that all satisfy the separate 90-day segment. Preserve the 1,562 original profiles. Original and downloaded records stay unchanged. A private, gitignored local manifest holds the join for reproducibility; only counts and hashes are bundled into Nova. Audience hash f847215b4f330d5adb478e84e72274a92c0747ac22fc04dae60034546bdec6f7.
+
+Sender UI lists two existing shop-owned records, neither in this shortlist. The review also reads a complete provider inventory for aggregate suppression status. Final recipient-specific suppression reconciliation, exact group transfer and provider draft validation remain required before separately approved launch. No upload or send occurred. SMS preference is not WhatsApp permission.
+
+Normal signed-in Edge journey: saved review persisted across refresh, email and WhatsApp previews present. New tests cover conservative Fresha joining, exclusion priority, incomplete booking evidence, provider suppression counts without identifiers. Previous 26 passes are separate from the added targeted run.

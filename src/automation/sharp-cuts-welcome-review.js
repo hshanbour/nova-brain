@@ -14,10 +14,15 @@ export const WELCOME_EVIDENCE=Object.freeze({
   distinctValidPhones:1314,mobileCandidates:1312,nonMobile:2,
   validation:'libphonenumber-js 1.12.31 max metadata; international digits normalised to E.164; format/numbering-plan checks, not live reachability',
   mobileCountries:{GB:1304,LV:2,DE:1,IT:1,LC:1,AE:1,NZ:1,GH:1},
-  fresha:{profiles:1999,upcomingBookingProfiles:49,winback90NoFutureBooking:1724,segmentId:'44230',
+  fresha:{profiles:1999,upcomingBookingProfiles:52,winback90NoFutureBooking:1724,segmentId:'44230',
     note:'Read in the authenticated Fresha UI on 20 Nov. These are live segment totals, not a matched campaign recipient export. The frozen cohort is preserved; new clients are not added.'},
   sender:{plan:'Free Forever',subscriberLimit:2500,emailLimit:15000,activeSubscribers:1,emailsUsed:1,uniqueEmailed:1,renewsOn:'2026-12-02',monthlyCost:0,currency:'USD',brandingRequired:true,source:'Authenticated Sender Billing, 20 Nov 2026'},
   whatsapp:{walletUsd:9.993,minimumTopupUsd:10,limitPer24Hours:250,approvedMarketingTemplates:0,source:'Authenticated SharpCutsNova provider and wallet review, 20 Nov 2026'},
+  emailReconciliation:{checkedAt:'2026-11-20T13:22:22.730Z',eligibleBeforeProvider:1240,marketingOptOut:254,blocked:22,sharedAddress:3,upcomingBooking:39,missingCurrent:0,unknownPreference:0,
+    audienceHash:'f847215b4f330d5adb478e84e72274a92c0747ac22fc04dae60034546bdec6f7',
+    exportHash:'c0decc411df9d3fb0b536f535df9b594d488ae9cf4e84aa5b8fb3d5368b54ee8',
+    source:'Fresh Fresha client export with Accepts Marketing and Blocked fields; complete 52-client upcoming-appointments UI listing. Matched only to original email addresses, with shared addresses withheld. No recipient uploaded.',
+    permissionGuide:'https://www.fresha.com/help-center/knowledge-base/privacy-and-security/101365-record-marketing-consent-for-clients'},
 });
 const rates={GB:.0635,LV:.086,DE:.1365,IT:.0795,LC:.0604,AE:.0576,NZ:.0842,GH:.0225};
 const countryNames={GB:'United Kingdom',LV:'Latvia',DE:'Germany',IT:'Italy',LC:'Saint Lucia',AE:'United Arab Emirates',NZ:'New Zealand',GH:'Ghana'};
@@ -57,20 +62,21 @@ export function createWelcomeReview({storage,ownerId,customerReader,senderClient
   const project=async()=>{if(!(await storage.listProjects(ownerId)).some(p=>p.id===projectId))throw Object.assign(Error('Sharp Cuts workspace access is unavailable.'),{statusCode:403});};
   async function read(){
     await project();
-    const [s,p,ev]=await Promise.allSettled([customerReader?.snapshot(),senderClient?.inspectCampaignReadiness(),events()]);
+    const [s,p,ev,sp]=await Promise.allSettled([customerReader?.snapshot(),senderClient?.inspectCampaignReadiness(),events(),senderClient?.inspectSuppressionReadiness?.()]);
+    const suppression=sp.status==='fulfilled'&&sp.value?sp.value:{checked:false,total:null,restricted:null};
     const source=s.status==='fulfilled'?s.value:null,provider=p.status==='fulfilled'&&p.value?p.value:{status:'unavailable',groups:[]};
     const saved=ev.status==='fulfilled'?ev.value.filter(e=>e.action===action&&e.metadata?.review?.projectId===projectId):[];
     const review=saved[0]?.metadata.review||null,copy=review?.copy||DEFAULT_WELCOME_COPY;
     const reconciliation=describeCampaignSource(source?.emailSource,source?.channels?.email?.verifiedEligible,provider);
-    const blockers=['Recipient-level marketing permission and current opt-outs must be reconciled with the preserved cohort; the available export has no consent/suppression columns.',
-      'Match current future bookings and shared addresses before final audience selection. Fresha segment totals alone cannot identify those recipients.',
+    const blockers=['Email: 1,240 addresses pass the fresh Fresha permission, blocked-client, duplicate and upcoming-booking checks. Recheck current provider suppressions and bookings immediately before any separately approved transfer or launch.',
+      'The dedicated Sender campaign group is empty. Recipient transfer, provider draft validation (including Reply-To and recipient unsubscribe links), and launch remain unexecuted; saving this Nova review authorises none of those actions.',
       'WhatsApp requires channel-specific marketing permission and an approved marketing template; none is evidenced for this campaign.',
       'Exact eligible audience, schedule, channel and final cost require a separate launch approval. Sending and historical queues remain held.'];
     if(reconciliation.membershipStatus!=='matched')blockers.unshift('The live frozen cohort could not be confirmed. No audience changes or sends are permitted.');
     if(provider.status==='unavailable')blockers.unshift('Current Sender API readiness could not be read. Historical billing evidence is labelled separately.');
     return {projectId,campaignId:'sharp-cuts-welcome-back',title:'Welcome back / Fresh new look',status:review?'saved_for_review':'prepared_for_review',checkedAt:clock().toISOString(),
-      evidence:WELCOME_EVIDENCE,reconciliation,provider,copy,emailHtml:welcomeEmailHtml(copy),costs:welcomeCosts(),
-      audience:{emailAddressCandidates:1558,mobileCandidates:1312,whatsappReachability:'Not checked for this audience',emailLaunchEligible:null,whatsappLaunchEligible:null,
+      evidence:WELCOME_EVIDENCE,reconciliation,provider,suppression,copy,emailHtml:welcomeEmailHtml(copy),costs:welcomeCosts(),
+      audience:{emailAddressCandidates:1558,emailFreshaEligible:1240,mobileCandidates:1312,whatsappReachability:'Not checked for this audience',emailLaunchEligible:null,whatsappLaunchEligible:null,
         note:'1,562 preserved staged email profiles are not 1,562 unique email addresses. No customer was removed or added. Counts describe the original export, not a live refreshed customer list.'},
       review:review?{id:review.id,hash:review.hash,savedAt:review.savedAt,channel:review.channel,proposedAt:review.proposedAt}:null,
       approval:{status:'not_requested',launchEnabled:false,sendAuthorised:false,blocks:blockers},
@@ -85,7 +91,7 @@ export function createWelcomeReview({storage,ownerId,customerReader,senderClient
     if(!['email','whatsapp','compare'].includes(input.channel))throw Object.assign(Error('Select a campaign channel.'),{statusCode:400});
     const proposedAt=input.proposedAt||null;
     if(proposedAt&&(!Number.isFinite(Date.parse(proposedAt))||Date.parse(proposedAt)<=clock().getTime()))throw Object.assign(Error('Choose a future proposed time or leave it undecided.'),{statusCode:400});
-    const envelope={projectId,copy,channel:input.channel,proposedAt,sourceHash:WELCOME_EVIDENCE.sourceHash,membershipHash:current.reconciliation.membershipHash,costs:current.costs,sendAuthorised:false};
+    const envelope={projectId,copy,channel:input.channel,proposedAt,sourceHash:WELCOME_EVIDENCE.sourceHash,membershipHash:current.reconciliation.membershipHash,audienceEvidence:WELCOME_EVIDENCE.emailReconciliation,costs:current.costs,sendAuthorised:false};
     const digest=hash(envelope),existing=(await events()).find(e=>e.action===action&&e.metadata?.review?.hash===digest);
     if(existing)return {saved:true,reused:true,review:existing.metadata.review};
     const review={...envelope,id:'welcome-'+digest.slice(0,24),hash:digest,savedAt:clock().toISOString(),status:'saved_for_review'};
