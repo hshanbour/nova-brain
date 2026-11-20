@@ -37,3 +37,5 @@ Matched only to the 1,558 original distinct email addresses: 254 opted out, 22 b
 Sender UI lists two existing shop-owned records, neither in this shortlist. The review also reads a complete provider inventory for aggregate suppression status. Final recipient-specific suppression reconciliation, exact group transfer and provider draft validation remain required before separately approved launch. No upload or send occurred. SMS preference is not WhatsApp permission.
 
 Normal signed-in Edge journey: saved review persisted across refresh, email and WhatsApp previews present. New tests cover conservative Fresha joining, exclusion priority, incomplete booking evidence, provider suppression counts without identifiers. Previous 26 passes are separate from the added targeted run.
+
+Sender live inventory diagnosis: GET subscribers returned 2 records, current_page=1, total=2, last_page=1, but no links.next field. The older reader rejected the complete result. It now accepts complete meta pagination, checks stable totals and rejects contradictory next/page metadata. Regression fixture matches these observed fields. No suppression is removed or contact resubscribed.

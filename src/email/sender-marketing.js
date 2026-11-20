@@ -85,14 +85,20 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
   // Kept private to this client. Raw subscriber records never enter the tool
   // registry, model context, persistent activity or the operator's output.
   const inventory=async()=>{
-    const records=[];
+    const records=[];let expectedTotal=null;
     for(let page=1;page<=999;page++){
       const result=await request("/subscribers?page="+page);
       const total=typeof result.meta?.total==='number'?result.meta.total:/^\d+$/.test(String(result.meta?.total??''))?Number(result.meta.total):NaN;
+      const lastPage=Number(result.meta?.last_page),hasLastPage=Number.isSafeInteger(lastPage)&&lastPage>=page&&lastPage<=999;
+      const hasNextField=Boolean(result.links&&'next' in result.links);
       if(!Array.isArray(result.data)||!result.meta||Number(result.meta.current_page)!==page ||
-        !Number.isSafeInteger(total)||total<0||!result.links||!("next" in result.links))throw Object.assign(Error("Incomplete Sender subscriber inventory."),{code:'sender_inventory_incomplete',paginationEvidence:{rows:Array.isArray(result.data)?result.data.length:null,currentPage:typeof result.meta?.current_page==='number'?result.meta.current_page:null,total:Number.isSafeInteger(total)?total:null,lastPage:typeof result.meta?.last_page==='number'?result.meta.last_page:null,nextFieldPresent:Boolean(result.links&&'next' in result.links),more:typeof result.has_more_resources==='boolean'?result.has_more_resources:null}});
+        !Number.isSafeInteger(total)||total<0||(!hasNextField&&!hasLastPage)||
+        (hasNextField&&hasLastPage&&Boolean(result.links.next)!==(page<lastPage)))throw Object.assign(Error("Incomplete Sender subscriber inventory."),{code:'sender_inventory_incomplete'});
+      if(expectedTotal!==null&&total!==expectedTotal)throw Object.assign(Error('Sender inventory changed during reconciliation.'),{code:'sender_inventory_total_mismatch'});
+      expectedTotal=total;
       records.push(...result.data);
-      if(!result.links.next){
+      const more=hasNextField?Boolean(result.links.next):page<lastPage;
+      if(!more){
         if(records.length!==total)throw Object.assign(Error("Sender subscriber total changed during reconciliation."),{code:'sender_inventory_total_mismatch'});
         return records;
       }

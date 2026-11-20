@@ -20,6 +20,13 @@ test('suppression readiness reads complete inventory and exposes counts only',as
   assert.equal(r.total,2);assert.equal(r.active,1);assert.equal(r.restricted,1);assert.equal(r.contactsChanged,0);assert.deepEqual(calls,['GET']);assert.doesNotMatch(JSON.stringify(r),/@/);
 });
 
+test('observed Sender meta-only pagination proves completion without a links.next field',async()=>{
+ const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async()=>Response.json({data:[{status:{email:'active'}},{status:{email:'unsubscribed'}}],meta:{current_page:1,last_page:1,total:'2'}})});
+ const result=await client.inspectSuppressionReadiness();assert.equal(result.checked,true);assert.equal(result.total,2);assert.equal(result.restricted,1);
+ const inconsistent=createSenderMarketingClient({config:CONFIG,fetchImpl:async()=>Response.json({data:[],meta:{current_page:1,last_page:2,total:0},links:{next:null}})});
+ const blocked=await inconsistent.inspectSuppressionReadiness();assert.equal(blocked.checked,false);assert.equal(blocked.reason,'sender_inventory_incomplete');
+});
+
 test("Sender.net free readiness fits the candidate audience but fails closed without an owned domain",()=>{
   const empty=parseSharpCutsSenderConfig({}),status=senderReadiness(empty);
   assert.equal(status.suitableForCandidateAudience,true);assert.equal(status.cost.monthly,0);assert.equal(status.limits.subscribers,2500);assert.equal(status.limits.emailsPerMonth,15000);
