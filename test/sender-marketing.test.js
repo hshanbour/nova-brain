@@ -1,3 +1,4 @@
+import {SENDER_FREE_BRANDING} from "../src/email/sender-free-branding.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import {buildSharpCutsWinbackReview} from "../src/automation/sharp-cuts-campaign.js";
@@ -126,4 +127,13 @@ test('prepared campaign verification rejects copy changes, broader groups, follo
 test('group fingerprint uses actual members while preserving provider restrictions',async()=>{
  const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async(url)=>{assert.equal(new URL(url).searchParams.get('limit'),'100');return Response.json({data:[{email:'member@example.test',status:{email:'active'},subscriber_tags:[{id:'group_90day'}]},{email:'held@example.test',status:{email:'unsubscribed'},subscriber_tags:[]}],meta:{current_page:1,last_page:1,total:2}});}});
  const r=await client.inspectSuppressionReadiness();assert.equal(r.groupCount,1);assert.equal(r.groupRestricted,0);assert.equal(r.restricted,1);assert.match(r.audienceHash,/^[a-f0-9]{64}$/);assert.doesNotMatch(JSON.stringify(r),/@/);
+});
+
+test('exact provider Free footer is recognised but unexpected footer edits fail closed',async()=>{
+ const copy={subject:'S',preheader:'P',replyTo:'info@sharpcuts.uk'},html='<html><body>Approved</body></html>';
+ const verify=async(content)=>{const client=createSenderMarketingClient({config:CONFIG,fetchImpl:async url=>Response.json(url.endsWith('/errors')?{errors:[],warnings:[]}:{data:{id:'draft_1',subject:'S',preheader:'P',reply_to:copy.replyTo,from:'Sharp Cuts',campaign_groups:['group_90day'],status:'DRAFT',auto_followup_active:false,html:{html_content:content}}})});return client.inspectPreparedCampaign({campaignId:'draft_1',copy,html});};
+ const persisted=html.replace('</body></html>',SENDER_FREE_BRANDING+'</body> </html>');
+ assert.equal((await verify(persisted)).htmlMatches,true);
+ assert.equal((await verify(persisted.replace('Powered by Sender.net','Other message'))).htmlMatches,false);
+ assert.equal((await verify(persisted.replace('Approved','Changed'))).htmlMatches,false);
 });

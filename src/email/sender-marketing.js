@@ -1,4 +1,5 @@
 import {createHash} from "node:crypto";
+import {SENDER_FREE_BRANDING} from "./sender-free-branding.js";
 
 const API_ORIGIN="https://api.sender.net";
 const FREE_EMAIL_DOMAINS=new Set(["gmail.com","googlemail.com","yahoo.com","outlook.com","hotmail.com","live.com"]);
@@ -131,12 +132,12 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
       // Sender's saved HTML editor converts its legacy unsubscribe token to Liquid.
       // Canonicalise only that exact observed conversion; preserve every other byte.
       const normalize=value=>String(value??'').replace(/\r\n/g,'\n').replaceAll('{{ unsubscribe_link }}','{$unsubscribe_link}').trim();
+      const canonicalProviderHtml=value=>normalize(value).replace(SENDER_FREE_BRANDING+'</body> </html>','</body></html>');
       const actualHtml=c.html?.html_content??c.content??'';
       const copyMatches=c.subject===copy.subject&&c.preheader===copy.preheader&&c.from==='Sharp Cuts'&&c.reply_to===copy.replyTo;
-      const expectedNormalized=normalize(html),actualNormalized=normalize(actualHtml);
+      const expectedNormalized=normalize(html),actualNormalized=canonicalProviderHtml(actualHtml);
       const htmlMatches=actualNormalized===expectedNormalized;
-      let mismatchAt=0;while(mismatchAt<Math.min(actualNormalized.length,expectedNormalized.length)&&actualNormalized[mismatchAt]===expectedNormalized[mismatchAt])mismatchAt++;
-      const htmlComparison={actualLength:actualNormalized.length,expectedLength:expectedNormalized.length,...(!htmlMatches?{mismatchAt,actualCodepoints:Array.from(actualNormalized.slice(mismatchAt,mismatchAt+1600),x=>x.codePointAt(0)),expectedCodepoints:Array.from(expectedNormalized.slice(mismatchAt,mismatchAt+80),x=>x.codePointAt(0))}:{})};
+      const htmlComparison={actualLength:actualNormalized.length,expectedLength:expectedNormalized.length,providerBrandingPresent:String(actualHtml).includes(SENDER_FREE_BRANDING)};
       const errors=(validation.errors||[]).map(e=>String(e.title||'Provider restriction').slice(0,180));
       const warnings=(validation.warnings||[]).map(e=>String(e.title||'Provider warning').slice(0,180));
       const followupDisabled=c.auto_followup_active===false||c.auto_followup_active===0;
