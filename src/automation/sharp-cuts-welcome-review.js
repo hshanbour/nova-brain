@@ -5,7 +5,7 @@ import {describeCampaignSource,SHARP_CUTS_EMAIL_SOURCE} from '../email/sharp-cut
 const projectId='sharp-cuts-web', action='sharp_cuts_welcome_review_saved';
 // Owner authorised this exact audience transfer and an unsent provider draft
 // on 20 November. Provider state is read live; this receipt is not send authority.
-export const WELCOME_PROVIDER_PREPARATION=Object.freeze({campaignId:'J6P5lD',groupId:'b8xDkj',reviewId:'welcome-e5a812712805134bbf9cd4a3',imported:1240,updated:0,createdAt:'2026-11-20T13:51:03Z',automationTriggered:false});
+export const WELCOME_PROVIDER_PREPARATION=Object.freeze({campaignId:'J6P5lD',groupId:'b8xDkj',reviewId:'welcome-e5a812712805134bbf9cd4a3',imported:1240,updated:0,createdAt:'2026-11-20T13:51:03Z',automationTriggered:false,inventoryRetryAt:'2026-11-20T14:26:29Z',exportReceipt:{"checkedAt":"2026-11-20T14:15:21.395Z","source":"Authenticated Sender UI export of only group b8xDkj","count":1240,"unique":1240,"active":1240,"onlyApprovedGroup":true,"audienceHash":"f847215b4f330d5adb478e84e72274a92c0747ac22fc04dae60034546bdec6f7","exactMatch":true,"fileHash":"8e96b5468b3aa847a063efc04a2be1bec4f291a81dbca7935ac850cff1fd3cf8"}});
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const escape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 // Aggregate-only evidence from the unchanged original export. No customer
@@ -65,7 +65,8 @@ export function createWelcomeReview({storage,ownerId,customerReader,senderClient
   const project=async()=>{if(!(await storage.listProjects(ownerId)).some(p=>p.id===projectId))throw Object.assign(Error('Sharp Cuts workspace access is unavailable.'),{statusCode:403});};
   async function read(){
     await project();
-    const [s,p,ev,sp]=await Promise.allSettled([customerReader?.snapshot(),senderClient?.inspectCampaignReadiness(),events(),senderClient?.inspectSuppressionReadiness?.()]);
+    const coolingDown=clock().getTime()<Date.parse(WELCOME_PROVIDER_PREPARATION.inventoryRetryAt);
+    const [s,p,ev,sp]=await Promise.allSettled([customerReader?.snapshot(),senderClient?.inspectCampaignReadiness(),events(),coolingDown?Promise.resolve({checked:false,total:null,restricted:null,reason:'sender_rate_limited',retryAt:WELCOME_PROVIDER_PREPARATION.inventoryRetryAt,contactsChanged:0}):senderClient?.inspectSuppressionReadiness?.()]);
     const suppression=sp.status==='fulfilled'&&sp.value?sp.value:{checked:false,total:null,restricted:null};
     const source=s.status==='fulfilled'?s.value:null,provider=p.status==='fulfilled'&&p.value?p.value:{status:'unavailable',groups:[]};
     const saved=ev.status==='fulfilled'?ev.value.filter(e=>e.action===action&&e.metadata?.review?.projectId===projectId):[];
