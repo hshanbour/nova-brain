@@ -43,6 +43,8 @@ export function createRealtimeVoice({
   // still needs fresh server authorization and never inherits an old match.
   verificationWindowMs = 12000,
   transcriptWaitMs = 1500,
+  interruptionConfirmMs = 300,
+  manualDrainMs = 250,
 } = {}) {
   if (!mediaDevices?.getUserMedia || typeof RTCPeerConnectionImpl !== "function" || typeof fetchImpl !== "function") throw new TypeError("Realtime Voice browser dependencies are unavailable.");
   let active = false, generation = 0, pc, channel, stream, remoteAudio, inputMeter, outputMeter;
@@ -52,6 +54,9 @@ export function createRealtimeVoice({
   let qualityRecoveryUsed=false, verificationStopTimer=null;
   let lastInputMeter=0,lastOutputMeter=0;
   let isolatedTurns=false;
+  let inputMode='hands-free',manualPhase='off',manualTimer=null,manualStartedAt=0;
+  let speechCandidate=null,brainQueue=Promise.resolve();
+  const discardedInputs=new Set();
   let privateSessionId=null,turnPcm=null,accountGrant=null;
   let inputLifetime=new AbortController(),pendingInputClears=0,inputClearTimer=null,awaitingFreshSpeech=false;
   const isolatedReplies=new Map();
@@ -83,13 +88,14 @@ export function createRealtimeVoice({
   function flushFollowup(){if(followup&&!inSpeech&&!responseOpen&&active){followup=false;responseOpen=true;sendEvent({type:"response.create",response:{tool_choice:"none"}});}}
   let turnRecorder = null, turnStartedAt = 0, speakerPromise = null, localSpeechAt=0;
 
-  const publish = (state, detail = {}) => onState(active&&muted?{active,state:'muted',mode:'realtime',muted:true}:{ active, state, mode: "realtime", ...detail });
+  const publish = (state, detail = {}) => onState(active&&muted?{active,state:'muted',mode:'realtime',muted:true}:{ active, state, mode: "realtime",inputMode,manualPhase, ...detail });
   const valid = (current) => active && current === generation;
 
-  async function start({guest=false,guestApproval=null,recovery=false,accountPermission=false}={}) {
+  async function start({guest=false,guestApproval=null,recovery=false,accountPermission=false,microphoneMode='hands-free'}={}) {
     if (active) return false;
     if(!recovery)qualityRecoveryUsed=false;
     guestMode=guest;accountGrant=null;
+    inputMode=microphoneMode==='tap-to-talk'?'tap-to-talk':'hands-free';manualPhase=inputMode==='tap-to-talk'?'configuring':'off';
     active = true;
     const current = ++generation;
     let startupStage='microphone';
@@ -98,18 +104,18 @@ export function createRealtimeVoice({
       const acquired=await requestMicrophone();
       if (!valid(current)) { stopTracks(acquired); return false; }
       stream=acquired;
-      if(muted)setInputTracks(false);
+      if(muted||inputMode==='tap-to-talk')setInputTracks(false);
       const track=stream.getAudioTracks?.()[0]||stream.getTracks?.().find(t=>t.kind==='audio');
       const settings=track?.getSettings?.()||{};
       onMicrophoneReady({label:track?.label||'System default microphone'});
       onTiming({stage:'microphone-format',measurements:Object.fromEntries(['sampleRate','channelCount','echoCancellation','noiseSuppression','autoGainControl'].filter(k=>typeof settings[k]==='number'||typeof settings[k]==='boolean').map(k=>[k,Number(settings[k])]))});
       inputMeter = createAudioMeter({ AudioContextImpl, stream, onLevel(level) {
-        if(muted)return;
+        if(muted||(inputMode==='tap-to-talk'&&manualPhase!=='recording'))return;
         onInputLevel(level);
         lastInputMeter=level;
         // Prime from local microphone energy, not a delayed remote VAD event.
         // This is capture only: server speech quality and identity still decide access.
-        if(!active||muted||accountGrant||turnPcm?.ready()||channel?.readyState!=="open")return;
+        if(!active||muted||accountGrant||guestMode||turnPcm?.ready()||channel?.readyState!=="open")return;
         if(level>=0.06){localSpeechAt=now();if(!turnRecorder)startTurnRecording();}
         if(turnRecorder&&!inSpeech&&!verificationStopTimer&&(now()-localSpeechAt>800||now()-turnStartedAt>4000))discardTurnRecording();
       } });
@@ -139,7 +145,7 @@ export function createRealtimeVoice({
       pc.ontrack = (event) => { const remoteStream = event.streams?.[0] || new MediaStream([event.track]); remoteAudio.srcObject = remoteStream; outputMeter?.dispose?.(); outputMeter = createAudioMeter({ AudioContextImpl, stream: remoteStream, onLevel: level=>{lastOutputMeter=level;const turn=activeResponseTurn;if(playbackActive&&remoteAudio&&!remoteAudio.paused&&!remoteAudio.muted&&remoteAudio.volume>0&&level>.006&&turn&&!turn.audibleMeterSeen&&isCurrentTurn(turn)){turn.audibleMeterSeen=true;onTiming({stage:'output-element-signal',turnId:turn.seq,measurements:{afterSpeechMs:Math.max(0,now()-lastSpeechEndedAt)}});}onOutputLevel(level);onAudibleLevel(playbackActive&&remoteAudio&&!remoteAudio.paused&&!remoteAudio.ended&&!remoteAudio.muted&&remoteAudio.volume>0?level*remoteAudio.volume:0);},onShape:shape=>onArticulation(playbackActive?shape:rest) }); void remoteAudio.play?.().then?.(()=>timing("playback-element-ready")).catch?.(() => { timing("playback-element-blocked"); onError("Browser audio playback is blocked. Restart Voice using its button to allow playback."); }); };
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       channel = pc.createDataChannel("oai-events");
-      channel.addEventListener("open", () => { if (valid(current)) { if(isolatedTurns)onAccessState({access:'public',reason:'ready'});publish("listening",privacyGate&&!isolatedTurns?{phase:'collecting-verification-speech'}:{}); } });
+      channel.addEventListener("open", () => { if (valid(current)) { if(isolatedTurns)onAccessState({access:'public',reason:'ready'});if(inputMode==='tap-to-talk'){sendEvent({type:'session.update',session:{type:'realtime',audio:{input:{turn_detection:null}}}});manualTimer=setTimeout(()=>{if(manualPhase==='configuring')fail('Explicit microphone mode was not acknowledged. No microphone audio was sent.');},8000);}publish("listening",privacyGate&&!isolatedTurns?{phase:'collecting-verification-speech'}:{}); } });
       channel.addEventListener("message", (event) => { if (valid(current)) void handleEvent(safeParse(event.data), current); });
       channel.addEventListener("close", () => { if (valid(current)) fail("Realtime Voice connection closed. Start Voice again to reconnect."); });
       pc.addEventListener?.("connectionstatechange", () => {
@@ -199,6 +205,20 @@ export function createRealtimeVoice({
 
   async function handleEvent(event, current) {
     if (!event?.type) return;
+    if(event.item_id&&discardedInputs.has(event.item_id)){
+      if(event.type==='input_audio_buffer.committed'){sendEvent({type:'conversation.item.delete',item_id:event.item_id});discardedInputs.delete(event.item_id);}return;
+    }
+    if(event.type==='session.updated'&&inputMode==='tap-to-talk'&&manualPhase==='configuring'&&event.session?.audio?.input?.turn_detection===null){clearTimeout(manualTimer);manualPhase='ready';timing('explicit-microphone-ready');publish('listening');return;}
+    if(inputMode==='tap-to-talk'&&event.type==='input_audio_buffer.cleared'&&manualPhase==='clearing'&&!muted){
+      clearTimeout(manualTimer);manualPhase='recording';manualStartedAt=now();setInputTracks(true);turnPcm?.setMuted(false);
+      void handleEvent({type:'input_audio_buffer.speech_started',item_id:'manual-'+globalThis.crypto.randomUUID(),novaManual:true},current);
+      manualTimer=setTimeout(()=>finishManualTurn(),30000);timing('explicit-microphone-open');publish('listening');return;
+    }
+    if(inputMode==='tap-to-talk'&&event.type==='input_audio_buffer.committed'&&manualPhase==='committing'&&latestTurn&&!muted){
+      clearTimeout(manualTimer);turns.delete(latestTurn.itemId);latestTurn.itemId=event.item_id;turns.set(event.item_id,latestTurn);manualPhase='ready';
+      await handleEvent({type:'input_audio_buffer.speech_stopped',item_id:event.item_id,novaManual:true},current);return;
+    }
+    if(inputMode==='tap-to-talk'&&event.type.startsWith('input_audio_buffer.speech_')&&!event.novaManual)return;
     if(event.type==='input_audio_buffer.cleared'){
       pendingInputClears=Math.max(0,pendingInputClears-1);
       if(!pendingInputClears){clearTimeout(inputClearTimer);inputClearTimer=null;if(!muted&&awaitingFreshSpeech)publish('listening');}
@@ -213,6 +233,24 @@ export function createRealtimeVoice({
         if(event.type==='response.created')sendEvent({type:'response.cancel'});
         if(event.type==='output_audio_buffer.started')sendEvent({type:'output_audio_buffer.clear'});
         if(event.type==='input_audio_buffer.committed'&&event.item_id)sendEvent({type:'conversation.item.delete',item_id:event.item_id});
+        return;
+      }
+    }
+    // Only explicit account access may defer a noisy VAD candidate. Strict
+    // speaker mode still silences private output at the first speech event.
+    if(accountGrant&&inputMode==='hands-free'&&!event.novaQualified){
+      if(event.type==='input_audio_buffer.speech_started'&&(playbackActive||responseOpen||latestTurn?.pendingWork)){
+        dropSpeechCandidate();const candidate={events:[event],current,startedAt:now()};speechCandidate=candidate;
+        candidate.timer=setTimeout(()=>confirmSpeechCandidate(candidate),interruptionConfirmMs);timing('barge-candidate',{inputRms:lastInputMeter/5,outputRms:lastOutputMeter/5,playing:playbackActive?1:0});return;
+      }
+      const candidate=speechCandidate;
+      if(candidate&&event.item_id===candidate.events[0].item_id&&['input_audio_buffer.committed','input_audio_buffer.speech_stopped','conversation.item.input_audio_transcription.completed','conversation.item.input_audio_transcription.failed'].includes(event.type)){
+        candidate.events.push(event);
+        if(event.type==='input_audio_buffer.speech_stopped'){clearTimeout(candidate.timer);candidate.timer=setTimeout(()=>dropSpeechCandidate(),transcriptWaitMs);}
+        if(event.type==='conversation.item.input_audio_transcription.completed'){
+          if(String(event.transcript||'').trim()&&!unsupportedVoiceScript(voiceScriptCounts(event.transcript)))void confirmSpeechCandidate(candidate);
+          else dropSpeechCandidate();
+        }else if(event.type.endsWith('.failed'))dropSpeechCandidate();
         return;
       }
     }
@@ -231,7 +269,7 @@ export function createRealtimeVoice({
       lastTranscript = "";
       lastAssistantTranscript = "";
       lastSpeechEndedAt = 0;
-      if(accountGrant){discardTurnRecording();}else if(turnPcm?.ready()){discardTurnRecording();turnPcm.begin();latestTurn.pcm=true;}else {turnPcm?.clear();startTurnRecording();}
+      if(accountGrant||guestMode){discardTurnRecording();}else if(turnPcm?.ready()){discardTurnRecording();turnPcm.begin();latestTurn.pcm=true;}else {turnPcm?.clear();startTurnRecording();}
       // VAD may split the initial verification window while MediaRecorder keeps
       // collecting one continuous clip. Keep the transcript segments attached
       // to that clip; do not infer identity across distinct recordings.
@@ -261,7 +299,10 @@ export function createRealtimeVoice({
         if(utterance)utterance.recognizedSpeaker=speaker;
         if(!isCurrentTurn(utterance)){timing('speaker-result-superseded');return;}
         if(speaker&&!accountGrant)onSpeaker(speaker);
-        if(!privacyGate)return;
+        if(!privacyGate){
+          if(inputMode==='tap-to-talk'&&guestMode){await waitForTranscript(utterance);if(!valid(current)||!isCurrentTurn(utterance))return;utterance.publicResponse=true;utterance.responseRequested=true;responseOpen=true;sendEvent({type:'response.create',response:publicVoiceResponse({text:utterance.transcript,language:replyLanguage,reason:utterance.transcript?'identity-uncertain':'transcript-unavailable'})});}
+          return;
+        }
         if(isolatedTurns){await handleIsolatedTurn(utterance,speaker,current);return;}
         // A short first utterance is not an identity mismatch. No private context
         // has entered this session yet; keep the gate shut and request more speech.
@@ -420,6 +461,9 @@ export function createRealtimeVoice({
       if (!toolInFlight) publish("listening");
       return;
     }
+    if(event.type==='error'&&inputMode==='tap-to-talk'&&manualPhase==='committing'&&event.error?.code==='input_audio_buffer_commit_empty'){
+      clearTimeout(manualTimer);discardTurnRecording();turnPcm?.clear();supersedeTurn();inSpeech=false;manualPhase='ready';sendEvent({type:'input_audio_buffer.clear'});timing('explicit-empty-turn');onError('No audio reached the input buffer. Microphone is closed; press Speak to try a complete sentence.');publish('listening');return;
+    }
     if (event.type === "error" && event.error?.code!=="response_cancel_not_active") {timing('provider-event-error');fail(safeProviderError(event));}
   }
 
@@ -514,7 +558,14 @@ export function createRealtimeVoice({
     utterance.brainHandled=true;utterance.pendingWork=true;toolInFlight=true;
     publish('thinking',{phase:'nova-brain'});timing('brain-turn-submitted');
     try{
-      const result=await sendTurn(utterance.request,{signal:utterance.signal,speaker:utterance.verifiedSpeaker,conversationId:getConversationId(),replyLanguage,presentResult:()=>valid(current)&&isCurrentTurn(utterance)&&!inSpeech&&Boolean(utterance.verifiedSpeaker)});
+      // The UI client binds each result to a conversation revision. Concurrent
+      // requests both captured the old revision, so a successful second result
+      // was rejected as a conversation change. Queue work, not audible replies.
+      const work=brainQueue.catch(()=>{}).then(()=>{
+        if(!valid(current)||!isCurrentTurn(utterance)||utterance.signal?.aborted)return null;
+        return sendTurn(utterance.request,{signal:utterance.signal,speaker:utterance.verifiedSpeaker,conversationId:getConversationId(),replyLanguage,presentResult:()=>valid(current)&&isCurrentTurn(utterance)&&!inSpeech&&Boolean(utterance.verifiedSpeaker)});
+      });brainQueue=work.catch(()=>{});
+      const result=await work;if(!result)return;
       if(!valid(current))return;
       const delivery=await deliveryTurn(utterance,current);if(!delivery)return;
       if(utterance.conversationId&&getConversationId()!==utterance.conversationId)throw Error('Conversation changed.');
@@ -523,7 +574,7 @@ export function createRealtimeVoice({
       speakBrainResult(result,delivery);
     }catch(error){
       if(valid(current)&&isCurrentTurn(utterance)){
-        timing('brain-turn-failed');onError(error?.message||'Nova Brain could not complete this turn.');
+        timing('brain-turn-failed',{aborted:error?.name==='AbortError'?1:0});onError(error?.message||'Nova Brain could not complete this turn.');
         speakBrainResult({message:replyLanguage==='en'?'The request failed. I have no successful result to confirm.':'تعذّر تنفيذ الطلب، وما عندي نتيجة ناجحة أقدر أؤكدها.'},utterance);
       }
     }finally{utterance.pendingWork=false;if(valid(current))toolInFlight=false;}
@@ -648,6 +699,7 @@ export function createRealtimeVoice({
   }
 
   function cleanup() {
+    dropSpeechCandidate();discardedInputs.clear();clearTimeout(manualTimer);manualPhase='off';brainQueue=Promise.resolve();
     inputLifetime.abort();inputLifetime=new AbortController();pendingInputClears=0;awaitingFreshSpeech=false;
     clearTimeout(inputClearTimer);inputClearTimer=null;
     if(privateSessionId)void fetchImpl('/api/voice/realtime/turn-state',{method:'POST',credentials:'same-origin',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'close',session_id:privateSessionId})}).catch(()=>{});
@@ -696,7 +748,8 @@ export function createRealtimeVoice({
   }
   function setMuted(value) {
     if(!active||muted===Boolean(value))return muted;
-    muted=Boolean(value);setInputTracks(!muted);turnPcm?.setMuted(muted);
+    dropSpeechCandidate();clearTimeout(manualTimer);if(inputMode==='tap-to-talk')manualPhase='ready';
+    muted=Boolean(value);setInputTracks(!muted&&inputMode!=='tap-to-talk');turnPcm?.setMuted(muted||inputMode==='tap-to-talk');
     if(muted){
       const hadTurn=Boolean(latestTurn);
       interrupt();supersedeTurn();inputLifetime.abort();inputLifetime=new AbortController();
@@ -704,7 +757,7 @@ export function createRealtimeVoice({
       discardTurnRecording();latestTurn?.resolveTranscript?.();latestTurn=null;turns.clear();
       inSpeech=false;speakerPromise=null;localSpeechAt=0;privateTurnAuthorized=false;
       lastTranscript=lastAssistantTranscript=assistantTranscript='';lastSpeechEndedAt=0;
-      responseOpen=toolInFlight=followup=false;activeResponseTurn=null;awaitingFreshSpeech=true;
+      responseOpen=toolInFlight=followup=false;activeResponseTurn=null;awaitingFreshSpeech=inputMode!=='tap-to-talk';
       if(remoteAudio)remoteAudio.muted=true;
       onInputLevel(0);onOutputLevel(0);
       if(channel?.readyState==='open'){
@@ -722,7 +775,19 @@ export function createRealtimeVoice({
     return muted;
   }
 
-  return Object.freeze({ start, end, interrupt, explainReport, setMuted, isMuted: () => muted, isActive: () => active, mode: "realtime" });
+  function dropSpeechCandidate(){const c=speechCandidate;if(!c)return;speechCandidate=null;clearTimeout(c.timer);const id=c.events[0].item_id;if(id){if(c.events.some(e=>e.type==='input_audio_buffer.committed'||e.type.startsWith('conversation.item.input_audio_transcription.')))sendEvent({type:'conversation.item.delete',item_id:id});else{discardedInputs.add(id);while(discardedInputs.size>32)discardedInputs.delete(discardedInputs.values().next().value);}}timing('barge-candidate-discarded');}
+  async function confirmSpeechCandidate(c){if(c!==speechCandidate||!valid(c.current)||muted)return;speechCandidate=null;clearTimeout(c.timer);timing('barge-confirmed',{candidateMs:now()-c.startedAt,transcribed:c.events.some(e=>e.type==='conversation.item.input_audio_transcription.completed')?1:0});for(const event of c.events)await handleEvent({...event,novaQualified:true},c.current);}
+  function beginManualTurn(){
+    if(!active||muted||pendingInputClears||inputMode!=='tap-to-talk'||manualPhase!=='ready'||channel?.readyState!=='open')return false;
+    interrupt();manualPhase='clearing';sendEvent({type:'input_audio_buffer.clear'});publish('resuming');
+    manualTimer=setTimeout(()=>{if(manualPhase==='clearing')fail('Microphone buffer did not clear. Voice stopped safely.');},8000);return true;
+  }
+  function finishManualTurn(){
+    if(!active||inputMode!=='tap-to-talk'||manualPhase!=='recording')return false;
+    clearTimeout(manualTimer);setInputTracks(false);onInputLevel(0);manualPhase='committing';timing('explicit-microphone-closed',{durationMs:now()-manualStartedAt});publish('thinking');
+    const current=generation;manualTimer=setTimeout(()=>{if(!valid(current)||manualPhase!=='committing'||muted)return;sendEvent({type:'input_audio_buffer.commit'});manualTimer=setTimeout(()=>{if(manualPhase==='committing')fail('The recorded turn was not acknowledged. Voice stopped safely.');},8000);},manualDrainMs);return true;
+  }
+  return Object.freeze({ start, end, interrupt, explainReport, setMuted,beginManualTurn,finishManualTurn,microphoneState:()=>({inputMode,manualPhase}), isMuted: () => muted, isActive: () => active, mode: "realtime" });
 }
 
 function stopTracks(stream) { for (const track of stream?.getTracks?.() || []) track.stop?.(); }

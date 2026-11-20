@@ -46,9 +46,10 @@ export function createRealtimeVoiceService({ apiKey, fetchImpl = globalThis.fetc
                 transcription: { model: "gpt-transcribe", ...(accountContext?.replyLanguage === "ar" ? { languages: ["ar", "en"] } : {}), keywords: ["Nova", ...(accountContext?.projects || []).map(p => p.name).filter(Boolean)].slice(0, 20) },
                 // For the laptop conversation, let the provider consider whether
                 // the sentence is finished, instead of cutting at every 900ms gap.
-                // Interrupt/mute still closes private output on EVERY speech start.
+                // The client owns cancellation. Provider auto-interruption would
+                // bypass its incidental-noise qualification and explicit mic mode.
                 turn_detection: isolatedTurns ? {
-                  type:'semantic_vad',eagerness:'medium',create_response:false,interrupt_response:true
+                  type:'semantic_vad',eagerness:'medium',create_response:false,interrupt_response:false
                 } : {
                   type: "server_vad",
                   threshold: 0.5,
