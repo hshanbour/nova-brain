@@ -237,7 +237,9 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
     async sendWelcomeTest({recipient,subject,html,text},{authority}={}){
       if(recipient!=='hamodehshanbour@yahoo.com'||authority?.operation!=='welcome_single_test'||authority.projectId!=='sharp-cuts-web'||authority.campaignId!=='J6P5lD'||authority.recipient!==recipient||authority.creativeHash!==digest(JSON.stringify(html)))throw Object.assign(Error('Exact campaign-test authority required.'),{code:'sender_test_authority_required'});
       const previewHtml=html.replaceAll('{$unsubscribe_link}','https://campaign-statistics.com/unsubscribe_preview/en');
-      const response=await request('/message/send',{method:'POST',idempotencyKey:authority.idempotencyKey,body:{from:{email:config.fromEmail,name:'Sharp Cuts'},to:{email:recipient,name:'Sharp Cuts owner'},subject,text,html:previewHtml.replace('</body>',SENDER_FREE_BRANDING+'</body>'),headers:{charset:'utf-8'}}});
+      // Sender adds its Free-plan footer and signed one-click unsubscribe headers.
+      // The received Yahoo message proved that adding our own footer duplicates it.
+      const response=await request('/message/send',{method:'POST',idempotencyKey:authority.idempotencyKey,body:{from:{email:config.fromEmail,name:'Sharp Cuts'},to:{email:recipient,name:'Sharp Cuts owner'},subject,text,html:previewHtml,headers:{charset:'utf-8','Reply-To':config.fromEmail}}});
       if(response?.success!==true||typeof response.emailId!=='string')throw safeProviderError(502);
       return {accepted:true,status:'submitted',provider:'Sender.net',messageId:response.emailId,recipient,customerContacts:0,subscriberUploads:0};
     },

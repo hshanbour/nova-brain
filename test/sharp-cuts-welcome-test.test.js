@@ -6,10 +6,10 @@ import {DEFAULT_WELCOME_COPY,welcomeEmailHtml} from '../src/automation/sharp-cut
 import {createSenderMarketingClient,parseSharpCutsSenderConfig} from '../src/email/sender-marketing.js';
 import {continuityToolAllowed} from '../src/identity/continuity-preview.js';
 const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
-function fixture({connected=true,ready=true,fail=false,clock=()=>new Date(),projects=true,run=true}={}){
+function fixture({connected=true,ready=true,fail=false,clock=()=>new Date(),projects=true,run=true,placementTest=false}={}){
  const rows=new Map(),calls=[];
  const storage={getRun:async(id,owner)=>run&&owner==='test-owner'?{conversationId:'normal-chat'}:null,listProjects:async()=>projects?[{id:'sharp-cuts-web'}]:[],getActivity:async(id,owner)=>owner==='test-owner'?rows.get(id):null,appendActivity:async e=>{if(rows.has(e.id))throw Object.assign(Error('duplicate'),{code:'23505'});rows.set(e.id,e);}};
- const service=createWelcomeTest({storage,ownerId:'test-owner',connected,clock,welcome:{readTestPreparation:async()=>({copy:DEFAULT_WELCOME_COPY,review:{id:'saved',creativeHash:hash(welcomeEmailHtml(DEFAULT_WELCOME_COPY))},preparation:{provider:{ready,submitted:0}}})},senderClient:{sendWelcomeTest:async input=>{calls.push(input);if(fail)throw (typeof fail==='object'?Object.assign(Error('rejected'),fail):Object.assign(Error('timeout'),{code:'sender_timeout'}));return {accepted:true,status:'submitted',messageId:'synthetic-id',recipient:input.recipient};}}});
+ const service=createWelcomeTest({storage,ownerId:'test-owner',connected,placementTest,clock,welcome:{readTestPreparation:async()=>({copy:DEFAULT_WELCOME_COPY,review:{id:'saved',creativeHash:hash(welcomeEmailHtml(DEFAULT_WELCOME_COPY))},preparation:{provider:{ready,submitted:0}}})},senderClient:{sendWelcomeTest:async input=>{calls.push(input);if(fail)throw (typeof fail==='object'?Object.assign(Error('rejected'),fail):Object.assign(Error('timeout'),{code:'sender_timeout'}));return {accepted:true,status:'submitted',messageId:'synthetic-id',recipient:input.recipient};}}});
  return {service,rows,calls};
 }
 const input={recipient:WELCOME_TEST_RECIPIENT},context={runId:'run-1'};
@@ -29,7 +29,7 @@ test('provider request has one recipient, exact finished creative, no groups/sub
  const html=welcomeEmailHtml(DEFAULT_WELCOME_COPY),args={recipient:WELCOME_TEST_RECIPIENT,subject:'[TEST] Welcome',html,text:'Test'};
  await assert.rejects(client.sendWelcomeTest(args));assert.equal(calls.length,0);
  const receipt=await client.sendWelcomeTest(args,{authority:{operation:'welcome_single_test',projectId:'sharp-cuts-web',campaignId:'J6P5lD',recipient:WELCOME_TEST_RECIPIENT,creativeHash:hash(html),idempotencyKey:'synthetic-once'}});
- assert.equal(receipt.status,'submitted');assert.equal(calls[0].headers['Idempotency-Key'],'synthetic-once');assert.equal(calls.length,1);assert.equal(calls[0].url,'https://api.sender.net/v2/message/send');assert.deepEqual(calls[0].body.to,{email:WELCOME_TEST_RECIPIENT,name:'Sharp Cuts owner'});assert.equal(calls[0].body.groups,undefined);assert.match(calls[0].body.html,/logo_hq.jpg/);assert.match(calls[0].body.html,/unsubscribe_preview/);
+ assert.equal(receipt.status,'submitted');assert.equal(calls[0].headers['Idempotency-Key'],'synthetic-once');assert.equal(calls.length,1);assert.equal(calls[0].url,'https://api.sender.net/v2/message/send');assert.deepEqual(calls[0].body.to,{email:WELCOME_TEST_RECIPIENT,name:'Sharp Cuts owner'});assert.equal(calls[0].body.groups,undefined);assert.equal(calls[0].body.headers['Reply-To'],'info@sharpcuts.uk');assert.doesNotMatch(calls[0].body.html,/Powered by Sender/);assert.match(calls[0].body.html,/<p class="headline"/);assert.match(calls[0].body.html,/logo_hq.jpg/);assert.match(calls[0].body.html,/unsubscribe_preview/);
  assert.equal(continuityToolAllowed({name:'sharp_cuts_welcome_test_send',riskLevel:'HIGH_IMPACT'},{connected:false}),false);assert.equal(continuityToolAllowed({name:'sharp_cuts_welcome_test_send',riskLevel:'HIGH_IMPACT'},{connected:true}),true);assert.equal(continuityToolAllowed({name:'sharp_cuts_campaign_send',riskLevel:'HIGH_IMPACT'},{connected:true}),false);
 });
 
@@ -41,4 +41,19 @@ test('confirmed 429 permits bounded approved recovery after cooldown, without er
  await Promise.all([f.service.send(input,{runId:'run-2'}),f.service.send(input,{runId:'run-3'})]);
  assert.equal(f.calls.length,2);assert.equal(f.rows.size,4);assert.equal((await f.service.read()).attempt,2);
  now+=3600000;await f.service.send(input,{runId:'run-4'});assert.equal(f.calls.length,3);assert.equal((await f.service.read()).attempt,3);assert.equal(f.rows.size,6);now+=3600000;await f.service.send(input,{runId:'run-5'});assert.equal(f.calls.length,3);
+});
+
+test('placement test requires reconciled original, sends once across concurrent runs and never retries rejection',async()=>{
+ for(const fail of [false,{upstreamStatus:429,retryAfterSeconds:1}]){
+  let now=Date.parse('2026-11-20T18:00:00Z');const f=fixture({placementTest:true,fail,clock:()=>new Date(now)});
+  await assert.rejects(f.service.send(input,context),/Reconcile/);assert.equal(f.calls.length,0);
+  const oldId='welcome-test-'+hash(['test-owner','J6P5lD',WELCOME_TEST_RECIPIENT,'2026-11-20']).slice(0,32)+'-receipt';
+  f.rows.set(oldId,{metadata:{receipt:{accepted:true,messageId:'original-message',checkedAt:'2026-11-20T18:00:00Z'}}});
+  await assert.rejects(f.service.send(input,context),/cooldown/);now+=301000;
+  await Promise.all([f.service.send(input,context),f.service.send(input,{runId:'run-2'})]);
+  now+=3600000;await f.service.send(input,{runId:'run-3'});
+  assert.equal(f.calls.length,1);assert.equal(f.rows.get(oldId).metadata.receipt.messageId,'original-message');
+  assert.match(f.calls[0].subject,/^\[TEST 2\]/);assert.match(f.calls[0].text,/Book via WhatsApp/);assert.match(f.calls[0].text,/Unsubscribe preview/);
+  assert.equal((await f.service.read()).inboxPlacement,'unknown');
+ }
 });
