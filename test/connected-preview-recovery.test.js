@@ -19,6 +19,17 @@ test('original connected branch requires exact verified bindings and keeps outbo
 
 async function call(api,url,method='GET',headers={}){const req=Readable.from(method==='POST'?['{}']:[]);Object.assign(req,{url,method,headers});const res={statusCode:200,setHeader(){},end(v){this.body=v;}};await api.handle(req,res);return {...res,data:JSON.parse(res.body)};}
 
+test('Welcome back review is private and only same-origin preparation can invoke its save tool',async()=>{
+ let actor='owner';const executed=[];
+ const api=createApi({ownerId:'owner',connectedPreview:true,continuityPreview:true,config:{allowedOrigins:[],maxBodyBytes:4096},storage:{},initialize:async()=>{},authorizeConsole:async()=>({ownerId:actor,workspaceId:actor,role:actor==='owner'?'owner':'guest'}),toolRegistry:{execute:async(name,input,context)=>{executed.push(name);assert.equal(context.projectId,'sharp-cuts-web');return{prepared:true};}}});
+ const path='/api/business-automation/sharp-cuts/welcome-review';
+ assert.equal((await call(api,path)).statusCode,200);
+ actor='other';assert.equal((await call(api,path)).statusCode,403);assert.equal((await call(api,path,'POST')).statusCode,403);
+ actor='owner';assert.equal((await call(api,path,'POST')).statusCode,403);assert.equal((await call(api,path,'POST',{host:'nova.test',origin:'https://other.test'})).statusCode,403);
+ assert.equal((await call(api,path,'POST',{host:'nova.test',origin:'https://nova.test','content-type':'application/json'})).statusCode,200);
+ assert.deepEqual(executed,['sharp_cuts_welcome_review','sharp_cuts_welcome_review_save']);
+});
+
 test('delivery evidence requires original Preview verified workspace before any data read',async()=>{
  let actor='owner',reads=0;
  const options={ownerId:'owner',connectedPreview:true,continuityPreview:true,config:{allowedOrigins:[],maxBodyBytes:4096},storage:{},initialize:async()=>{},authorizeConsole:async()=>({ownerId:actor,workspaceId:actor,role:actor==='owner'?'owner':'guest'}),sharpCutsWhatsAppService:{async deliveryReview(){reads++;return{records:[]};}}};

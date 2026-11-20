@@ -2578,6 +2578,14 @@ export function createApi({
           sendJson(response, 200, await whatsappService.status());
           return;
         }
+        if(pathname==='/api/business-automation/sharp-cuts/welcome-review'){
+          if(!connectedPreview||!authorizeConsole){sendJson(response,403,{error:'Authenticated original Preview required.'});return;}
+          if(!['GET','POST'].includes(request.method)){sendJson(response,405,{error:'Method not allowed.'});return;}
+          if(request.method==='POST'&&(!request.headers.origin||!sameOriginRequest(request))){sendJson(response,403,{error:'Same-origin owner review required.'});return;}
+          await ready();response.setHeader('Cache-Control','no-store');
+          const input=request.method==='POST'?await readJsonBody(request,16384):{};
+          sendJson(response,200,await toolRegistry.execute(request.method==='POST'?'sharp_cuts_welcome_review_save':'sharp_cuts_welcome_review',input,{ownerId,projectId:'sharp-cuts-web'}));return;
+        }
         if(pathname==='/api/business-automation/sharp-cuts/whatsapp/controlled-test'){
           if(!connectedPreview||!authorizeConsole||!controlledOwnerTest){sendJson(response,403,{error:'Authenticated original Preview required.'});return;}
           await ready();

@@ -1,0 +1,95 @@
+import {createHash} from 'node:crypto';
+import {SHARP_CUTS_BOOKING_URL} from './sharp-cuts-campaign.js';
+import {describeCampaignSource,SHARP_CUTS_EMAIL_SOURCE} from '../email/sharp-cuts-audience.js';
+
+const projectId='sharp-cuts-web', action='sharp_cuts_welcome_review_saved';
+const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const escape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Aggregate-only evidence from the unchanged original export. No customer
+// identifiers are bundled or inferred to have consent/reachability.
+export const WELCOME_EVIDENCE=Object.freeze({
+  checkedAt:'2026-11-20',exportDate:'2026-10-19',sourceHash:SHARP_CUTS_EMAIL_SOURCE.sourceSnapshotHash,
+  sourceRows:1988,emailRows:1571,distinctEmails:1558,emailSyntaxInvalid:0,emailDuplicateRows:13,emailMissing:417,
+  phoneRows:1649,phoneMissing:339,phoneInvalidRows:1,phoneValidRows:1648,phoneDuplicateRows:334,
+  distinctValidPhones:1314,mobileCandidates:1312,nonMobile:2,
+  validation:'libphonenumber-js 1.12.31 max metadata; international digits normalised to E.164; format/numbering-plan checks, not live reachability',
+  mobileCountries:{GB:1304,LV:2,DE:1,IT:1,LC:1,AE:1,NZ:1,GH:1},
+  fresha:{profiles:1999,upcomingBookingProfiles:49,winback90NoFutureBooking:1724,segmentId:'44230',
+    note:'Read in the authenticated Fresha UI on 20 Nov. These are live segment totals, not a matched campaign recipient export. The frozen cohort is preserved; new clients are not added.'},
+  sender:{plan:'Free Forever',subscriberLimit:2500,emailLimit:15000,activeSubscribers:1,emailsUsed:1,uniqueEmailed:1,renewsOn:'2026-12-02',monthlyCost:0,currency:'USD',brandingRequired:true,source:'Authenticated Sender Billing, 20 Nov 2026'},
+  whatsapp:{walletUsd:9.993,minimumTopupUsd:10,limitPer24Hours:250,approvedMarketingTemplates:0,source:'Authenticated SharpCutsNova provider and wallet review, 20 Nov 2026'},
+});
+const rates={GB:.0635,LV:.086,DE:.1365,IT:.0795,LC:.0604,AE:.0576,NZ:.0842,GH:.0225};
+const countryNames={GB:'United Kingdom',LV:'Latvia',DE:'Germany',IT:'Italy',LC:'Saint Lucia',AE:'United Arab Emirates',NZ:'New Zealand',GH:'Ghana'};
+export function welcomeCosts(evidence=WELCOME_EVIDENCE){
+  const destinations=Object.entries(evidence.mobileCountries).map(([country,count])=>({country,name:countryNames[country],count,metaMarketingUsd:rates[country],gupshupUsd:.001,totalUsd:count*(rates[country]+.001)}));
+  const subtotal=destinations.reduce((n,row)=>n+row.totalUsd,0),balance=evidence.whatsapp.walletUsd;
+  return {email:{totalUsd:0,recipientCeiling:evidence.distinctEmails,remainingEmails:evidence.sender.emailLimit-evidence.sender.emailsUsed,subscriptionUsd:0,topupUsd:0,
+    qualification:'Estimated total for one email per distinct eligible address within the inspected Free Forever allowance. No new subscription or top-up. Recheck usage at launch; Sender branding remains.'},
+    whatsapp:{destinations,category:'Marketing',messages:evidence.mobileCandidates,totalUsd:Number(subtotal.toFixed(4)),walletUsd:balance,
+      additionalCreditUsd:Number(Math.max(0,subtotal-balance).toFixed(4)),suggestedTopupUsd:Math.max(10,Math.ceil(subtotal-balance)),subscriptionUsd:0,
+      tax20ScenarioUsd:Number((subtotal*1.2).toFixed(2)),minimumBatches:Math.ceil(evidence.mobileCandidates/evidence.whatsapp.limitPer24Hours),
+      qualification:'Planning ceiling: one marketing template per valid mobile candidate, not a sendable audience. Assumes every candidate is eligible and charged once. Taxes, exchange/card fees and provider invoice treatment are not verified; the 20% scenario is illustrative, not a tax determination. Top-up funds the message cost; do not add it again. No reachability probes or purchases made.'},
+    sources:[{label:'Meta USD marketing rates effective 1 Oct 2026',url:'https://www.gupshup.ai/resources/wp-content/uploads/2026/11/USD_Oct2026.pdf'},
+      {label:'Meta destination-country mapping (Saint Lucia: Other)',url:'https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing'},
+      {label:'Gupshup self-serve pricing',url:'https://www.gupshup.io/channels/self-serve/whatsapp/pricing'},
+      {label:'Sender Free Forever limits',url:'https://www.sender.net/pricing/free-plan/'}]};
+}
+export const DEFAULT_WELCOME_COPY=Object.freeze({
+  subject:'Welcome back to Sharp Cuts — ready for a fresh look?',
+  preheader:'Your next fresh cut starts here. Book with the Sharp Cuts team in Luton.',
+  emailBody:'Ready for a fresh look?\n\nWe’d love to welcome you back to Sharp Cuts. Whether it’s a tidy-up, a new style or a beard refresh, choose your service and preferred barber on our team booking page.\n\nSee you in the chair,\nThe Sharp Cuts team',
+  whatsappBody:'Hello from Sharp Cuts 👋 Ready for a fresh look? We’d love to welcome you back for your next haircut or beard refresh. Choose your service and preferred barber on our team booking page.',
+  bookingUrl:SHARP_CUTS_BOOKING_URL,
+  from:'Sharp Cuts <info@sharpcuts.uk>',replyTo:'info@sharpcuts.uk',address:'57 Cheapside, Luton, LU1 2HN',
+  emailOptout:'{$unsubscribe_link}',whatsappOptout:'Reply STOP to opt out of Sharp Cuts WhatsApp marketing.'
+});
+export function welcomeEmailHtml(copy){return `<!doctype html><html><body style="margin:0;background:#f4f0e7;color:#20251f;font-family:Arial,sans-serif"><div style="max-width:600px;margin:auto"><div style="padding:34px;background:#102e27;color:#f3dfaa;text-align:center;letter-spacing:4px">SHARP CUTS</div><div style="padding:32px;background:#172f29;color:#fff4d9;text-align:center"><div style="font-size:12px;letter-spacing:3px">LUTON · GENTS BARBERS</div><h1 style="font-family:Georgia,serif;font-size:44px;line-height:1.1;font-weight:400">Welcome back.<br>A fresh look awaits.</h1><p style="color:#e9cd91">Your style. Your barber. Your next chapter.</p></div><div style="padding:30px;line-height:1.7">${escape(copy.emailBody).split('\n\n').map(p=>`<p>${p.replaceAll('\n','<br>')}</p>`).join('')}<p style="text-align:center;padding:14px"><a href="${SHARP_CUTS_BOOKING_URL}" style="display:inline-block;padding:14px 25px;background:#153b30;color:#fff1c9;text-decoration:none;border-radius:4px">Book with the Sharp Cuts team</a></p><p style="font-size:12px;color:#58605a">${escape(copy.address)}<br><a href="{$unsubscribe_link}" style="color:#58605a">Unsubscribe from Sharp Cuts marketing</a><br>Sent with Sender</p></div></div></body></html>`;}
+function validateCopy(input){
+  const copy={...DEFAULT_WELCOME_COPY};
+  for(const [key,max] of [['subject',180],['preheader',200],['emailBody',6000],['whatsappBody',800]]){
+    const value=input?.[key]??copy[key];if(typeof value!=='string'||!value.trim()||value.length>max)throw Object.assign(Error('A valid '+key+' is required.'),{statusCode:400});copy[key]=value.trim();
+  }
+  return copy;
+}
+export function createWelcomeReview({storage,ownerId,customerReader,senderClient,clock=()=>new Date()}){
+  const events=()=>storage.listActivity(ownerId,{projectId,limit:200});
+  const project=async()=>{if(!(await storage.listProjects(ownerId)).some(p=>p.id===projectId))throw Object.assign(Error('Sharp Cuts workspace access is unavailable.'),{statusCode:403});};
+  async function read(){
+    await project();
+    const [s,p,ev]=await Promise.allSettled([customerReader?.snapshot(),senderClient?.inspectCampaignReadiness(),events()]);
+    const source=s.status==='fulfilled'?s.value:null,provider=p.status==='fulfilled'&&p.value?p.value:{status:'unavailable',groups:[]};
+    const saved=ev.status==='fulfilled'?ev.value.filter(e=>e.action===action&&e.metadata?.review?.projectId===projectId):[];
+    const review=saved[0]?.metadata.review||null,copy=review?.copy||DEFAULT_WELCOME_COPY;
+    const reconciliation=describeCampaignSource(source?.emailSource,source?.channels?.email?.verifiedEligible,provider);
+    const blockers=['Recipient-level marketing permission and current opt-outs must be reconciled with the preserved cohort; the available export has no consent/suppression columns.',
+      'Match current future bookings and shared addresses before final audience selection. Fresha segment totals alone cannot identify those recipients.',
+      'WhatsApp requires channel-specific marketing permission and an approved marketing template; none is evidenced for this campaign.',
+      'Exact eligible audience, schedule, channel and final cost require a separate launch approval. Sending and historical queues remain held.'];
+    if(reconciliation.membershipStatus!=='matched')blockers.unshift('The live frozen cohort could not be confirmed. No audience changes or sends are permitted.');
+    if(provider.status==='unavailable')blockers.unshift('Current Sender API readiness could not be read. Historical billing evidence is labelled separately.');
+    return {projectId,campaignId:'sharp-cuts-welcome-back',title:'Welcome back / Fresh new look',status:review?'saved_for_review':'prepared_for_review',checkedAt:clock().toISOString(),
+      evidence:WELCOME_EVIDENCE,reconciliation,provider,copy,emailHtml:welcomeEmailHtml(copy),costs:welcomeCosts(),
+      audience:{emailAddressCandidates:1558,mobileCandidates:1312,whatsappReachability:'Not checked for this audience',emailLaunchEligible:null,whatsappLaunchEligible:null,
+        note:'1,562 preserved staged email profiles are not 1,562 unique email addresses. No customer was removed or added. Counts describe the original export, not a live refreshed customer list.'},
+      review:review?{id:review.id,hash:review.hash,savedAt:review.savedAt,channel:review.channel,proposedAt:review.proposedAt}:null,
+      approval:{status:'not_requested',launchEnabled:false,sendAuthorised:false,blocks:blockers},
+      results:{status:'not_launched',submitted:0,delivered:null,failed:null,unsubscribed:null,providerCampaignId:null,
+        note:'No provider campaign exists for this review. Zero submissions; delivery/failure/opt-out totals are unavailable until an authorised launch. Existing owner test and historical WhatsApp records are not campaign results.'},
+      execution:{choice:'Existing Nova tools and worker',n8n:'Inactive synthetic workflow only; no live n8n binding in the inspected configuration.',
+        reason:'Reuse project-scoped approvals, durable jobs, idempotency, suppression checks and provider receipts. An additional agent cannot establish consent or replace provider delivery evidence.',
+        later:'A live n8n route would require hosting, scoped credentials, an authenticated Nova trigger, immutable approval envelope, idempotency, pause checks and signed status callbacks. It adds maintenance and does not remove the current audience requirements. Appointment follow-ups also need a supported fresh Fresha data feed.'}};
+  }
+  return {read,async save(input){
+    const current=await read(),copy=validateCopy(input);
+    if(!['email','whatsapp','compare'].includes(input.channel))throw Object.assign(Error('Select a campaign channel.'),{statusCode:400});
+    const proposedAt=input.proposedAt||null;
+    if(proposedAt&&(!Number.isFinite(Date.parse(proposedAt))||Date.parse(proposedAt)<=clock().getTime()))throw Object.assign(Error('Choose a future proposed time or leave it undecided.'),{statusCode:400});
+    const envelope={projectId,copy,channel:input.channel,proposedAt,sourceHash:WELCOME_EVIDENCE.sourceHash,membershipHash:current.reconciliation.membershipHash,costs:current.costs,sendAuthorised:false};
+    const digest=hash(envelope),existing=(await events()).find(e=>e.action===action&&e.metadata?.review?.hash===digest);
+    if(existing)return {saved:true,reused:true,review:existing.metadata.review};
+    const review={...envelope,id:'welcome-'+digest.slice(0,24),hash:digest,savedAt:clock().toISOString(),status:'saved_for_review'};
+    await storage.appendActivity({ownerId,projectId,action,tool:'sharp_cuts_automation_welcome_review',status:'completed',summary:'Saved exact Welcome back copy, proposed timing, audience evidence and costs for owner review. Nothing scheduled or sent.',metadata:{review}});
+    return {saved:true,review,contactsChanged:0,messagesSent:0};
+  }};
+}

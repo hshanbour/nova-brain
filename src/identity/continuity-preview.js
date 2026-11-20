@@ -12,6 +12,7 @@ export function continuityPreviewEnvironment(input) {
   return {continuity:true,connected:input.VERCEL_GIT_COMMIT_REF===CONNECTED_BRANCH,environment:{...input,NOVA_PHONE_PRIVATE_OWNER_ENABLED:'false',NOVA_SHARP_CUTS_WHATSAPP_EXECUTION_ENABLED:'false',NOVA_SHARP_CUTS_WHATSAPP_OUTBOUND_ENABLED:'false'}};
 }
 export function continuityRouteAllowed(path,method,{connected=false}={}) {
+  if(connected&&method==='POST'&&path==='/api/business-automation/sharp-cuts/welcome-review')return true;
   if(connected&&method==='POST'&&path==='/api/business-automation/sharp-cuts/whatsapp/controlled-test')return true;
   if(connected&&method==='POST'&&path==='/api/voice/realtime/turn-state')return true;
   if(connected&&method==='POST'&&['/api/voice/speaker/diagnostic/prepare','/api/voice/speaker/diagnostic/compare'].includes(path))return true;
@@ -25,4 +26,4 @@ export function continuityRouteAllowed(path,method,{connected=false}={}) {
   if(method==='POST')return ['/api/agent','/api/memories','/api/voice/readiness','/api/voice/speaker/readiness','/api/voice/speaker/recognize','/api/voice/transcribe','/api/voice/speech','/api/voice/control','/api/voice/telemetry','/api/voice/realtime/session','/api/voice/realtime/authorize-turn','/api/voice/realtime/context','/api/voice/realtime/transcript'].includes(path)||/^\/api\/memory-candidates\/[^/]+\/decision$/.test(path);
   return ['PATCH','DELETE'].includes(method)&&/^\/api\/memories\/[^/]+$/.test(path);
 }
-export const continuityToolAllowed=(tool,{connected=false}={})=>tool?.riskLevel==='READ_ONLY'||['memory_remember','memory_correct','memory_forget'].includes(tool?.name)||(connected&&['coding_job_prepare','coding_job_create','sharp_cuts_email_group_prepare','sharp_cuts_email_draft_prepare','sharp_cuts_whatsapp_reply_draft','sharp_cuts_whatsapp_processing_check','gmail_draft_prepare'].includes(tool?.name));
+export const continuityToolAllowed=(tool,{connected=false}={})=>tool?.riskLevel==='READ_ONLY'||['memory_remember','memory_correct','memory_forget'].includes(tool?.name)||(connected&&['coding_job_prepare','coding_job_create','sharp_cuts_email_group_prepare','sharp_cuts_email_draft_prepare','sharp_cuts_welcome_review_save','sharp_cuts_whatsapp_reply_draft','sharp_cuts_whatsapp_processing_check','gmail_draft_prepare'].includes(tool?.name));
