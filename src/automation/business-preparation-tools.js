@@ -9,6 +9,8 @@ const schema=properties=>({type:'object',properties,additionalProperties:false})
 // or uploads contacts; provider group creation has a durable one-shot claim.
 export function registerBusinessPreparationTools(registry,{storage,ownerId,customerReader,senderClient,senderConfig,whatsapp}){
   const common={category:'business_preparation',available:true,configurationStatus:'draft_only'};
+  registry.register({...common,name:'sharp_cuts_whatsapp_delivery_review',description:'Read Sharp Cuts outbound provider status, retained authenticated callback evidence and separately labelled owner-confirmed receipt. Never equate owner confirmation with provider delivery. No sends or queue release.',riskLevel:'READ_ONLY',inputSchema:schema({}),execute:()=>whatsapp.deliveryReview()});
+  registry.register({...common,name:'sharp_cuts_whatsapp_delivery_reconcile',description:'Apply only already retained authenticated provider status receipts to one exact Sharp Cuts delivery recordRef. No provider calls, new messages or queue release. Cannot infer delivered from owner confirmation.',riskLevel:'LOW_RISK_WRITE',autonomous:true,inputSchema:{...schema({recordRef:{type:'string'}}),required:['recordRef']},execute:input=>whatsapp.reconcileDelivery(input)});
   const readiness=async()=>{
     let provider={connected:false,status:'not_configured'},audience={source:'unavailable',channels:null};
     if(senderClient)try{provider={...await senderClient.probe(),status:'connected'};}catch(e){provider={connected:false,status:e?.code||'probe_failed'};}

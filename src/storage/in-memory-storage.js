@@ -1164,8 +1164,11 @@ export function createInMemoryStorage({ clock = () => new Date() } = {}) {
     async updateWhatsAppOutboundByProviderSid(providerMessageSid, ownerId, patch) {
       const current = [...whatsappOutboundMessages.values()].find((item) => item.ownerId === ownerId && item.providerMessageSid === providerMessageSid);
       if(!current)return null;const rank={submitted:0,queued:0,sent:1,delivered:2,read:3},terminal=new Set(["failed","undelivered"]),next=patch.status;
-      if(terminal.has(current.status)||(!terminal.has(next)&&(rank[next]??-1)<(rank[current.status]??-1)))return copy(current);
+      if((terminal.has(next)&&(terminal.has(current.status)||['delivered','read'].includes(current.status)))||(terminal.has(current.status)&&!['delivered','read'].includes(next))||(!terminal.has(next)&&(rank[next]??-1)<(rank[current.status]??-1)))return copy(current);
       return this.updateWhatsAppOutbound(current.inboundSid, ownerId, patch);
+    },
+    async listProjectWhatsAppOutbound(ownerId,conversationPrefix){
+      return copy([...whatsappOutboundMessages.values()].filter(row=>row.ownerId===ownerId&&whatsappInboundMessages.get(row.inboundSid)?.conversationId.startsWith(conversationPrefix)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).slice(0,20));
     },
     async listHeldWhatsAppInbound(ownerId, conversationPrefix) { return copy([...whatsappInboundMessages.values()].filter(row=>row.ownerId===ownerId&&row.conversationId.startsWith(conversationPrefix)&&row.status==='queued'&&!row.leaseToken).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt))).slice(0,20)); },
     async getWhatsAppInbound(messageSid, ownerId) { const value = whatsappInboundMessages.get(messageSid); return copy(value?.ownerId === ownerId ? value : null); },

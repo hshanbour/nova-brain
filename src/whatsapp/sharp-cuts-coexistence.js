@@ -1,5 +1,6 @@
 import {createCipheriv,createDecipheriv,createHash,createHmac,randomBytes,randomUUID,timingSafeEqual} from "node:crypto";
 import {createInMemoryStorage} from '../storage/in-memory-storage.js';
+import {retainDeliveryEvidence,deliveryEvidence,reconcileDeliveryEvidence} from './delivery-evidence.js';
 
 const PROJECT_ID="sharp-cuts-web";
 const CONVERSATION_PREFIX=`whatsapp_${PROJECT_ID}_`;
@@ -51,12 +52,33 @@ export function createSharpCutsWhatsAppCoexistenceService({config,storage,ownerI
     if(!await executionAllowed()){await storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:"blocked",errorCode:"automation_paused"});throw new SharpCutsWhatsAppError("Sharp Cuts WhatsApp execution is held.",{code:"sharp_cuts_whatsapp_execution_held",statusCode:403,category:"authorization"});}
     try{response=await fetchImpl("https://api.gupshup.io/wa/api/v1/msg",{method:"POST",headers:{apikey:settings.apiKey,"content-type":"application/x-www-form-urlencoded"},body:body.toString(),signal:AbortSignal.timeout(15_000)});}catch{await storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:"uncertain",errorCode:"network_error"});throw new SharpCutsWhatsAppError("The owner-test delivery outcome is uncertain; Nova will not retry automatically.",{code:"sharp_cuts_whatsapp_send_uncertain",statusCode:502,category:"provider"});}
     const value=await response.json().catch(()=>null);
-    if(response.ok&&value?.status==="submitted"&&value.messageId)return storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:"submitted",providerMessageSid:String(value.messageId)});
+    if(response.ok&&value?.status==="submitted"&&value.messageId){
+      const row=await storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:"submitted",providerMessageSid:String(value.messageId)});
+      return reconcileDeliveryEvidence(storage,ownerId,row);
+    }
     const uncertain=response.status>=500||response.ok;
     await storage.updateWhatsAppOutbound(inboundSid,ownerId,{status:uncertain?"uncertain":"failed",errorCode:`gupshup_${response.status}`});
     throw new SharpCutsWhatsAppError(uncertain?"Submission has no conclusive provider receipt. Reconcile before retrying.":"Gupshup rejected the owner-test reply.",{code:uncertain?"sharp_cuts_whatsapp_send_uncertain":"sharp_cuts_whatsapp_provider_rejected",statusCode:502,category:"provider"});
   }
   return Object.freeze({
+    async deliveryReview(){
+      const rows=await storage.listProjectWhatsAppOutbound(ownerId,CONVERSATION_PREFIX);
+      return {projectId:PROJECT_ID,sendingEnabled:false,historicalQueueHeld:true,records:await Promise.all(rows.map(async row=>{
+        const events=await deliveryEvidence(storage,ownerId,row.providerMessageSid);
+        const confirmation=await storage.getActivity(`wa-owner-receipt-${hash(`${ownerId}:${row.providerMessageSid}`)}`,ownerId);
+        return {recordRef:hash(row.inboundSid),providerMessageId:row.providerMessageSid,providerStatus:row.status,updatedAt:row.updatedAt,
+          ownerConfirmedReceipt:confirmation?.projectId===PROJECT_ID&&confirmation.action==='sharp_cuts_whatsapp_owner_receipt_confirmed',
+          providerEvidence:events.map(e=>({status:e.metadata.providerStatus,receivedAt:e.createdAt,identifier:e.metadata.identifier})),
+          reconciliation:events.length?'authenticated_receipts_available':'no_retained_provider_receipt'};
+      }))};
+    },
+    async reconcileDelivery({recordRef}={}){
+      if(!/^[a-f0-9]{64}$/.test(recordRef||''))throw new SharpCutsWhatsAppError('A delivery record reference is required.');
+      const row=(await storage.listProjectWhatsAppOutbound(ownerId,CONVERSATION_PREFIX)).find(row=>hash(row.inboundSid)===recordRef);
+      if(!row)throw new SharpCutsWhatsAppError('The project delivery record was not found.',{statusCode:404});
+      const updated=await reconcileDeliveryEvidence(storage,ownerId,row);
+      return {recordRef,providerStatus:updated.status,sent:false,source:'retained_authenticated_provider_receipts',providerCalls:0};
+    },
     async processingCheck(){
       // Exercise the deployed handler and real Brain, but never the held queue.
       // The fixture has no real contact, provider key or network send capability.
@@ -135,7 +157,7 @@ export function createSharpCutsWhatsAppCoexistenceService({config,storage,ownerI
       if(settings.provider==="gupshup_coexistence"&&String(payload?.gs_app_id||"")!==settings.appId)throw new SharpCutsWhatsAppError("The webhook app identity does not match Sharp Cuts.",{code:"sharp_cuts_whatsapp_app_mismatch",statusCode:403,category:"authorization"});
       const values=changes(payload),verificationProbe=providerSource&&values.length>0&&values.every(value=>!(value?.messages?.length||value?.message_echoes?.length||value?.statuses?.length));
       if(verificationProbe)return{accepted:true,queued:0,duplicates:0,ignored:0,echoes:0,verification:true,acknowledgedOnly:true};
-      let accepted=0,duplicates=0,ignored=0,echoes=0;
+      let accepted=0,duplicates=0,ignored=0,echoes=0,statusReceived=0,statusMatched=0;
       for(const value of values){
         if(String(value?.metadata?.phone_number_id||"")!==settings.phoneNumberId){
           if(providerSource){ignored+=(value?.messages?.length||0)+(value?.message_echoes?.length||0)+(value?.statuses?.length||0)||1;continue;}
@@ -160,12 +182,17 @@ export function createSharpCutsWhatsAppCoexistenceService({config,storage,ownerI
           const nextStatus=String(status?.status||'').toLowerCase();
           const mappedStatus=nextStatus==='enqueued'?'queued':nextStatus;
           if(!receiptId||!['queued','sent','delivered','read','failed','undelivered'].includes(mappedStatus)){ignored+=1;continue;}
-          const receipt=await storage.updateWhatsAppOutboundByProviderSid(providerId(receiptId),ownerId,{status:mappedStatus,errorCode:status.errors?.[0]?.code?String(status.errors[0].code).slice(0,32):null});
+          const safeId=providerId(receiptId),patch={status:mappedStatus,errorCode:status.errors?.[0]?.code?String(status.errors[0].code).slice(0,32):null};
+          await retainDeliveryEvidence(storage,ownerId,safeId,patch,status.gs_id?'gupshup':'legacy');
+          const receipt=await storage.updateWhatsAppOutboundByProviderSid(safeId,ownerId,patch);
+          statusReceived++;if(receipt)statusMatched++;
+          const appliedId=`wa-receipt-result-${hash(`${ownerId}:${safeId}:${mappedStatus}:${receipt?.status||'unmatched'}`)}`;
+          try{await storage.appendActivity({id:appliedId,ownerId,projectId:PROJECT_ID,action:'sharp_cuts_whatsapp_receipt_processed',status:receipt?'completed':'pending',summary:receipt?'Provider receipt matched to a stored submission.':'Authenticated provider receipt retained pending a matching submission.',metadata:{providerMessageHash:hash(safeId),providerStatus:mappedStatus,matched:Boolean(receipt),storedStatus:receipt?.status||null}});}catch(error){if(error?.code!=='23505')throw error;}
           // Operational diagnostics only: no contacts, contents, IDs or payload.
           logger.info?.('sharp_cuts_whatsapp_delivery_status',{status:mappedStatus,matched:Boolean(receipt),identifier:status.gs_id?'gupshup':'legacy'});
         }
       }
-      return{accepted:true,queued:accepted,duplicates,ignored,echoes,...(providerSource&&accepted===0&&echoes===0&&ignored>0?{acknowledgedOnly:true}:{})};
+      return{accepted:true,queued:accepted,duplicates,ignored,echoes,...(statusReceived?{statusReceipts:{received:statusReceived,matched:statusMatched,unmatched:statusReceived-statusMatched}}:{}),...(providerSource&&accepted===0&&echoes===0&&ignored>0?{acknowledgedOnly:true}:{})};
     },
     async processNext({workerId=`sharp-cuts-whatsapp-${randomUUID()}`,recordRef,approvedReplyHash}={}){
       if(!settings.configured||!settings.receiveEnabled)return{worked:false,reason:"not_enabled"};

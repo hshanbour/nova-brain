@@ -19,6 +19,15 @@ test('original connected branch requires exact verified bindings and keeps outbo
 
 async function call(api,url,method='GET',headers={}){const req=Readable.from(method==='POST'?['{}']:[]);Object.assign(req,{url,method,headers});const res={statusCode:200,setHeader(){},end(v){this.body=v;}};await api.handle(req,res);return {...res,data:JSON.parse(res.body)};}
 
+test('delivery evidence requires original Preview verified workspace before any data read',async()=>{
+ let actor='owner',reads=0;
+ const options={ownerId:'owner',connectedPreview:true,continuityPreview:true,config:{allowedOrigins:[],maxBodyBytes:4096},storage:{},initialize:async()=>{},authorizeConsole:async()=>({ownerId:actor,workspaceId:actor,role:actor==='owner'?'owner':'guest'}),sharpCutsWhatsAppService:{async deliveryReview(){reads++;return{records:[]};}}};
+ const api=createApi(options),url='/api/business-automation/sharp-cuts/whatsapp/delivery-review';
+ assert.equal((await call(api,url)).statusCode,200);assert.equal(reads,1);
+ actor='other';assert.equal((await call(api,url)).statusCode,403);assert.equal(reads,1);
+ assert.equal((await call(createApi({...options,authorizeConsole:null}),url)).statusCode,403);assert.equal(reads,1);
+});
+
 test('manual WhatsApp test requires verified owner workspace, original Preview and same origin',async()=>{
  let actor='owner',submitted=0;
  const api=createApi({ownerId:'owner',connectedPreview:true,continuityPreview:true,config:{allowedOrigins:[],maxBodyBytes:4096},storage:{},initialize:async()=>{},authorizeConsole:async()=>({ownerId:actor,workspaceId:actor,role:actor==='owner'?'owner':'guest'}),controlledOwnerTest:{async review(){return{draft:'synthetic',canSubmit:true};},async submit(){submitted++;return{status:'fixture'};}}});

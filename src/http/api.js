@@ -2595,6 +2595,18 @@ export function createApi({
           response.setHeader('Cache-Control','no-store');response.setHeader('Referrer-Policy','no-referrer');response.setHeader('Content-Type','text/html; charset=utf-8');response.setHeader('Content-Security-Policy',`default-src 'none'; script-src 'sha256-${createHash('sha256').update(script).digest('base64')}'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'`);
           response.end(`<!doctype html><title>Sharp Cuts controlled reply</title><h1>One approved WhatsApp test reply</h1><p>This sends only the displayed reply to the approved test recipient. Historical work and automatic replies remain held. Submitted does not mean delivered.</p><pre>Loading persisted draft…</pre><button disabled>Send this one approved reply</button><script>${script}</script>`);return;
         }
+        if(request.method==='GET'&&pathname==='/api/business-automation/sharp-cuts/whatsapp/delivery-review'){
+          if(!connectedPreview||!authorizeConsole){sendJson(response,403,{error:'Authenticated original Preview required.'});return;}
+          await ready();response.setHeader('Cache-Control','no-store');
+          sendJson(response,200,await sharpCutsWhatsAppService.deliveryReview());return;
+        }
+        if(request.method==='GET'&&pathname==='/api/business-automation/sharp-cuts/whatsapp/delivery-review-page'){
+          if(!connectedPreview||!authorizeConsole){sendJson(response,403,{error:'Authenticated original Preview required.'});return;}
+          await ready();
+          const script=`const out=document.querySelector('main');async function load(){const r=await fetch('/api/business-automation/sharp-cuts/whatsapp/delivery-review');if(!r.ok){out.textContent='Sign in to the authorised workspace to view delivery evidence.';return;}const data=await r.json();out.replaceChildren();for(const row of data.records){const card=document.createElement('article');const title=document.createElement('h2');title.textContent='Provider status: '+row.providerStatus;const owner=document.createElement('p');owner.textContent='Owner-confirmed receipt: '+(row.ownerConfirmedReceipt?'Yes — separate human confirmation':'Not recorded');const evidence=document.createElement('pre');evidence.textContent=JSON.stringify({recordRef:row.recordRef,providerMessageId:row.providerMessageId,providerEvidence:row.providerEvidence,reconciliation:row.reconciliation,updatedAt:row.updatedAt},null,2);card.append(title,owner,evidence);out.append(card);}if(!data.records.length)out.textContent='No outbound records in this authorised project.';}document.querySelector('button').onclick=load;load();`;
+          response.setHeader('Cache-Control','no-store');response.setHeader('Referrer-Policy','no-referrer');response.setHeader('Content-Type','text/html; charset=utf-8');response.setHeader('Content-Security-Policy',`default-src 'none'; script-src 'sha256-${createHash('sha256').update(script).digest('base64')}'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'`);
+          response.end(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sharp Cuts delivery evidence</title><h1>Sharp Cuts WhatsApp delivery evidence</h1><p>Provider receipts and human confirmation are separate. This page cannot send messages or release the queue.</p><button>Refresh evidence</button><main>Loading…</main><script>${script}</script>`);return;
+        }
         if(request.method==="GET"&&pathname==="/api/business-automation/sharp-cuts/whatsapp/status"){
           await ready();
           const status=await sharpCutsWhatsAppService.status();

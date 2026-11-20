@@ -7,6 +7,59 @@ import {createPersistentLocalWorker} from "../src/autonomy/persistent-local-work
 import {createProjectAutomationControls} from "../src/automation/project-automation-controls.js";
 import {createAgent} from '../src/agent/agent.js';
 import {createToolRegistry} from '../src/tools/tool-registry.js';
+import {receiptHash,reconcileDeliveryEvidence} from '../src/whatsapp/delivery-evidence.js';
+
+test('early callback survives missing submission binding; reconciliation has no provider call',async()=>{
+  const {storage,service,calls}=await fixture(),sid='wamid.early-receipt',gs='gs-early-receipt-123';
+  await service.receive(payload('Synthetic early callback',sid),'Bearer '+TOKEN);
+  await storage.claimWhatsAppOutbound({ownerId:OWNER,inboundSid:sid,bodyHash:'a'.repeat(64)});
+  const event=payload();const value=event.entry[0].changes[0].value;delete value.messages;
+  value.statuses=[{id:'wamid.meta-early',gs_id:gs,status:'delivered'}];
+  await service.receive(event,'Bearer '+TOKEN);
+  await service.receive(event,'Bearer '+TOKEN);
+  assert.equal((await storage.listActivity(OWNER)).filter(e=>e.action==='sharp_cuts_whatsapp_provider_receipt').length,1);
+  assert.equal((await storage.getWhatsAppOutbound(sid,OWNER)).status,'sending');
+  const bound=await storage.updateWhatsAppOutbound(sid,OWNER,{status:'submitted',providerMessageSid:gs});
+  assert.equal((await reconcileDeliveryEvidence(storage,OWNER,bound)).status,'delivered');
+  const review=await service.deliveryReview();assert.equal(review.records[0].providerEvidence[0].status,'delivered');
+  assert.equal(review.records[0].ownerConfirmedReceipt,false);assert.equal(calls.length,0);
+  assert.doesNotMatch(JSON.stringify(await storage.listActivity(OWNER)),/wamid.meta-early|447700900111/);
+  assert.deepEqual(await storage.listProjectWhatsAppOutbound('other-owner','whatsapp_sharp-cuts-web_'),[]);
+  await assert.rejects(service.reconcileDelivery({recordRef:'0'.repeat(64)}),e=>e.statusCode===404);
+});
+
+test('human confirmation is separate and cannot reconcile provider status; stronger receipt is monotonic',async()=>{
+  const {storage,service,calls}=await fixture(),sid='wamid.confirmed-receipt',gs='gs-confirmed-receipt-123';
+  await service.receive(payload('Synthetic confirmation',sid),'Bearer '+TOKEN);
+  await storage.claimWhatsAppOutbound({ownerId:OWNER,inboundSid:sid,bodyHash:'b'.repeat(64)});
+  await storage.updateWhatsAppOutbound(sid,OWNER,{status:'submitted',providerMessageSid:gs});
+  await storage.appendActivity({id:`wa-owner-receipt-${receiptHash(`${OWNER}:${gs}`)}`,ownerId:OWNER,projectId:'sharp-cuts-web',action:'sharp_cuts_whatsapp_owner_receipt_confirmed',status:'completed',summary:'Synthetic owner confirmation.',metadata:{}});
+  let review=await service.deliveryReview();assert.equal(review.records[0].ownerConfirmedReceipt,true);
+  assert.equal((await service.reconcileDelivery({recordRef:review.records[0].recordRef})).providerStatus,'submitted');
+  const event=payload(),value=event.entry[0].changes[0].value;delete value.messages;
+  value.statuses=[{id:'wamid.meta-confirm',gs_id:gs,status:'failed'}];await service.receive(event,'Bearer '+TOKEN);
+  value.statuses[0].status='delivered';await service.receive(event,'Bearer '+TOKEN);
+  value.statuses[0].status='failed';await service.receive(event,'Bearer '+TOKEN);
+  assert.equal((await storage.getWhatsAppOutbound(sid,OWNER)).status,'delivered');
+  value.statuses[0].status='read';await service.receive(event,'Bearer '+TOKEN);
+  value.statuses[0].status='sent';await service.receive(event,'Bearer '+TOKEN);
+  assert.equal((await storage.getWhatsAppOutbound(sid,OWNER)).status,'read');assert.equal(calls.length,0);
+});
+
+test('untrusted callback cannot retain evidence; failed persistence requests retry before state changes',async()=>{
+  const {storage,service}=await fixture(),sid='wamid.receipt-retry',gs='gs-receipt-retry-123';
+  await service.receive(payload('Synthetic retry',sid),'Bearer '+TOKEN);
+  await storage.claimWhatsAppOutbound({ownerId:OWNER,inboundSid:sid,bodyHash:'c'.repeat(64)});
+  await storage.updateWhatsAppOutbound(sid,OWNER,{status:'submitted',providerMessageSid:gs});
+  const event=payload(),value=event.entry[0].changes[0].value;delete value.messages;value.statuses=[{id:'wamid.retry-meta',gs_id:gs,status:'delivered'}];
+  await assert.rejects(service.receive(event,'Bearer wrong'));
+  assert.equal((await storage.listActivity(OWNER)).filter(e=>e.action==='sharp_cuts_whatsapp_provider_receipt').length,0);
+  const failing=createSharpCutsWhatsAppCoexistenceService({config:readConfig(ENV),ownerId:OWNER,storage:{...storage,appendActivity:async()=>{throw Error('storage unavailable');}},novaTurn:async()=>{throw Error('unexpected');}});
+  await assert.rejects(failing.receive(event,'Bearer '+TOKEN),/storage unavailable/);
+  assert.equal((await storage.getWhatsAppOutbound(sid,OWNER)).status,'submitted');
+  await service.receive(event,'Bearer '+TOKEN);
+  assert.equal((await storage.getWhatsAppOutbound(sid,OWNER)).status,'delivered');
+});
 
 test('actual Brain produces a scoped WhatsApp draft and receipt without private owner context or send',async()=>{
  const storage=createInMemoryStorage();await storage.initialize({owner:{id:OWNER,facts:{secret:'PRIVATE OWNER FACT'},preferences:{}},projects:[{id:'sharp-cuts-web',name:'Sharp Cuts'},{id:'private',name:'PRIVATE PROJECT'}]});

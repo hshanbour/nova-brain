@@ -1568,9 +1568,9 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
       return whatsappOutboundRow((await run(
         `WITH updated AS (
            UPDATE nova_whatsapp_outbound_messages SET status=$3,error_code=$4,updated_at=now()
-           WHERE provider_message_sid=$1 AND owner_id=$2 AND status NOT IN ('failed','undelivered') AND (
-             $3 IN ('failed','undelivered','read') OR
-             ($3='delivered' AND status IN ('submitted','queued','sent','delivered')) OR
+           WHERE provider_message_sid=$1 AND owner_id=$2 AND (
+             ($3 IN ('failed','undelivered') AND status NOT IN ('delivered','read','failed','undelivered')) OR $3='read' OR
+             ($3='delivered' AND status <> 'read') OR
              ($3='sent' AND status IN ('submitted','queued','sent')) OR
              ($3='queued' AND status IN ('submitted','queued'))
            ) RETURNING *
@@ -1578,6 +1578,9 @@ export function createPostgresStorage({ connectionString, sqlClient } = {}) {
          WHERE existing.provider_message_sid=$1 AND existing.owner_id=$2 AND NOT EXISTS(SELECT 1 FROM updated) LIMIT 1`,
         [providerMessageSid,ownerId,patch.status,patch.errorCode??null],
       ))[0]);
+    },
+    async listProjectWhatsAppOutbound(ownerId,conversationPrefix){
+      return (await run(`SELECT o.* FROM nova_whatsapp_outbound_messages o JOIN nova_whatsapp_inbound_messages i ON i.message_sid=o.inbound_sid AND i.owner_id=o.owner_id WHERE o.owner_id=$1 AND starts_with(i.conversation_id,$2) ORDER BY o.created_at DESC LIMIT 20`,[ownerId,conversationPrefix])).map(whatsappOutboundRow);
     },
     async listHeldWhatsAppInbound(ownerId, conversationPrefix) { return (await run("SELECT * FROM nova_whatsapp_inbound_messages WHERE owner_id=$1 AND starts_with(conversation_id,$2) AND status='queued' AND lease_token IS NULL ORDER BY created_at ASC LIMIT 20",[ownerId,conversationPrefix])).map(whatsappInboundRow); },
     async getWhatsAppInbound(messageSid, ownerId) { return whatsappInboundRow((await run("SELECT * FROM nova_whatsapp_inbound_messages WHERE message_sid=$1 AND owner_id=$2",[messageSid,ownerId]))[0]); },
