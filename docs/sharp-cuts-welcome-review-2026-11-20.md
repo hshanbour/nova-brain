@@ -39,3 +39,10 @@ Sender UI lists two existing shop-owned records, neither in this shortlist. The 
 Normal signed-in Edge journey: saved review persisted across refresh, email and WhatsApp previews present. New tests cover conservative Fresha joining, exclusion priority, incomplete booking evidence, provider suppression counts without identifiers. Previous 26 passes are separate from the added targeted run.
 
 Sender live inventory diagnosis: GET subscribers returned 2 records, current_page=1, total=2, last_page=1, but no links.next field. The older reader rejected the complete result. It now accepts complete meta pagination, checks stable totals and rejects contradictory next/page metadata. Regression fixture matches these observed fields. No suppression is removed or contact resubscribed.
+
+## Approved provider preparation — 20 November
+Owner explicitly approved transfer of the reconciled 1,240-address audience and an UNSENT draft. Email-only CSV had the same f847215b... audience hash; source exports were unchanged. Sender import receipt at 13:51:03 UTC: completed, 1,240 new, 0 updated, no errors/warnings. Trigger automations unchecked; update-existing and erase-empty-fields off. Both pre-existing account addresses were absent from the imported audience.
+
+Created exactly one campaign J6P5lD, title Nova Sharp Cuts — Welcome back — e5a812712805, for existing group b8xDkj only. Confirm page shows 1,240 selected recipients, Sharp Cuts / info@sharpcuts.uk, exact reviewed subject and preheader. Custom HTML matches Nova's generated creative including team booking URL and Sender unsubscribe token. No test send, schedule or campaign send performed. Auto resend disabled on Free plan.
+
+Nova now reads the bound campaign and complete provider group inventory. Aggregate audience fingerprint and exact content comparisons fail closed on mismatch. Provider submission count is distinguished from delivery; no provider delivery inferred. Customer rows remain outside Git and UI tool output.

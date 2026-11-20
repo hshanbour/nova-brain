@@ -3,6 +3,9 @@ import {SHARP_CUTS_BOOKING_URL} from './sharp-cuts-campaign.js';
 import {describeCampaignSource,SHARP_CUTS_EMAIL_SOURCE} from '../email/sharp-cuts-audience.js';
 
 const projectId='sharp-cuts-web', action='sharp_cuts_welcome_review_saved';
+// Owner authorised this exact audience transfer and an unsent provider draft
+// on 20 November. Provider state is read live; this receipt is not send authority.
+export const WELCOME_PROVIDER_PREPARATION=Object.freeze({campaignId:'J6P5lD',groupId:'b8xDkj',reviewId:'welcome-e5a812712805134bbf9cd4a3',imported:1240,updated:0,createdAt:'2026-11-20T13:51:03Z',automationTriggered:false});
 const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const escape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 // Aggregate-only evidence from the unchanged original export. No customer
@@ -67,21 +70,30 @@ export function createWelcomeReview({storage,ownerId,customerReader,senderClient
     const source=s.status==='fulfilled'?s.value:null,provider=p.status==='fulfilled'&&p.value?p.value:{status:'unavailable',groups:[]};
     const saved=ev.status==='fulfilled'?ev.value.filter(e=>e.action===action&&e.metadata?.review?.projectId===projectId):[];
     const review=saved[0]?.metadata.review||null,copy=review?.copy||DEFAULT_WELCOME_COPY;
+    let prepared={checked:false,campaignId:WELCOME_PROVIDER_PREPARATION.campaignId,ready:false};
+    if(review&&senderClient?.inspectPreparedCampaign){
+      try{prepared=await senderClient.inspectPreparedCampaign({campaignId:WELCOME_PROVIDER_PREPARATION.campaignId,copy,html:welcomeEmailHtml(copy)});}
+      catch{prepared={...prepared,reason:'Provider draft validation currently unavailable'};}
+    }
+    const audienceMatched=suppression.checked===true&&suppression.groupId===WELCOME_PROVIDER_PREPARATION.groupId&&suppression.groupCount===1240&&suppression.groupRestricted===0&&suppression.audienceHash===WELCOME_EVIDENCE.emailReconciliation.audienceHash;
+    const preparationReady=prepared.ready===true&&audienceMatched&&prepared.recipientCount===1240&&prepared.submitted===0;
     const reconciliation=describeCampaignSource(source?.emailSource,source?.channels?.email?.verifiedEligible,provider);
     const blockers=['Email: 1,240 addresses pass the fresh Fresha permission, blocked-client, duplicate and upcoming-booking checks. Recheck current provider suppressions and bookings immediately before any separately approved transfer or launch.',
-      'The dedicated Sender campaign group is empty. Recipient transfer, provider draft validation (including Reply-To and recipient unsubscribe links), and launch remain unexecuted; saving this Nova review authorises none of those actions.',
+      ...(audienceMatched?[]:['The imported Sender audience must match the approved 1,240-address fingerprint with no restricted group members. Current verification is incomplete or differs.']),
+      ...(prepared.ready?[]:['The unsent Sender draft still needs matching copy, HTML, sender, group, disabled follow-up and successful provider validation.']),
       'WhatsApp requires channel-specific marketing permission and an approved marketing template; none is evidenced for this campaign.',
       'Exact eligible audience, schedule, channel and final cost require a separate launch approval. Sending and historical queues remain held.'];
     if(reconciliation.membershipStatus!=='matched')blockers.unshift('The live frozen cohort could not be confirmed. No audience changes or sends are permitted.');
     if(provider.status==='unavailable')blockers.unshift('Current Sender API readiness could not be read. Historical billing evidence is labelled separately.');
     return {projectId,campaignId:'sharp-cuts-welcome-back',title:'Welcome back / Fresh new look',status:review?'saved_for_review':'prepared_for_review',checkedAt:clock().toISOString(),
       evidence:WELCOME_EVIDENCE,reconciliation,provider,suppression,copy,emailHtml:welcomeEmailHtml(copy),costs:welcomeCosts(),
+      preparation:{...WELCOME_PROVIDER_PREPARATION,audienceMatched,ready:preparationReady,provider:prepared},
       audience:{emailAddressCandidates:1558,emailFreshaEligible:1240,mobileCandidates:1312,whatsappReachability:'Not checked for this audience',emailLaunchEligible:null,whatsappLaunchEligible:null,
         note:'1,562 preserved staged email profiles are not 1,562 unique email addresses. No customer was removed or added. Counts describe the original export, not a live refreshed customer list.'},
       review:review?{id:review.id,hash:review.hash,savedAt:review.savedAt,channel:review.channel,proposedAt:review.proposedAt}:null,
       approval:{status:'not_requested',launchEnabled:false,sendAuthorised:false,blocks:blockers},
-      results:{status:'not_launched',submitted:0,delivered:null,failed:null,unsubscribed:null,providerCampaignId:null,
-        note:'No provider campaign exists for this review. Zero submissions; delivery/failure/opt-out totals are unavailable until an authorised launch. Existing owner test and historical WhatsApp records are not campaign results.'},
+      results:{status:prepared.status||'unverified',submitted:prepared.checked?prepared.submitted??null:null,delivered:null,failed:null,unsubscribed:null,providerCampaignId:prepared.campaignId,
+        note:'Sender draft '+WELCOME_PROVIDER_PREPARATION.campaignId+' is bound to this review. Submission counts are read from the provider; delivery is not inferred from sent records. No launch or schedule has been authorised.'},
       execution:{choice:'Existing Nova tools and worker',n8n:'Inactive synthetic workflow only; no live n8n binding in the inspected configuration.',
         reason:'Reuse project-scoped approvals, durable jobs, idempotency, suppression checks and provider receipts. An additional agent cannot establish consent or replace provider delivery evidence.',
         later:'A live n8n route would require hosting, scoped credentials, an authenticated Nova trigger, immutable approval envelope, idempotency, pause checks and signed status callbacks. It adds maintenance and does not remove the current audience requirements. Appointment follow-ups also need a supported fresh Fresha data feed.'}};

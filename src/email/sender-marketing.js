@@ -110,10 +110,36 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
     async audienceBinding(){return config.groupId||await groupBinding?.read()||null;},
     async inspectSuppressionReadiness(){
       try{const rows=await inventory();
+      const groupId=config.groupId||await groupBinding?.read()||null;
+      const members=groupId?rows.filter(r=>r.subscriber_tags?.some(g=>g.id===groupId)):[];
       return {source:'Sender complete subscriber inventory',checked:true,total:rows.length,
         active:rows.filter(r=>r.status?.email==='active'&&!r.unsubscribed_at&&!r.bounced_at).length,
         restricted:rows.filter(r=>r.status?.email!=='active'||r.unsubscribed_at||r.bounced_at).length,
+        groupId,groupCount:members.length,groupRestricted:members.filter(r=>r.status?.email!=='active'||r.unsubscribed_at||r.bounced_at).length,
+        audienceHash:groupId?digest(JSON.stringify(members.map(r=>String(r.email).trim().toLowerCase()).sort())):null,
         contactsChanged:0};}catch(error){return {checked:false,total:null,restricted:null,reason:['sender_inventory_incomplete','sender_inventory_total_mismatch','sender_authentication_required','sender_account_restricted','sender_rate_limited','sender_request_rejected','sender_provider_failed','sender_timeout','sender_transport_failed'].includes(error.code)?error.code:'sender_inventory_unavailable',...(error.paginationEvidence?{paginationEvidence:error.paginationEvidence}:{}),contactsChanged:0};}
+    },
+    async inspectPreparedCampaign({campaignId,copy,html}){
+      if(!safeId(campaignId))throw new TypeError('Invalid campaign ID.');
+      const groupId=config.groupId||await groupBinding?.read()||null;
+      const [details,validation]=await Promise.all([request('/campaigns/'+campaignId),request('/campaigns/'+campaignId+'/errors')]);
+      const c=details.data;
+      if(c?.id!==campaignId)throw Error('Campaign identity mismatch.');
+      const groups=(c.campaign_groups||[]).map(g=>typeof g==='string'?g:g.id);
+      const sameGroup=Boolean(groupId)&&groups.length===1&&groups[0]===groupId&&!(c.segments?.length)&&!c.send_to_all;
+      if(!sameGroup)return {checked:true,campaignId,status:'scope_mismatch',ready:false};
+      const normalize=value=>String(value??'').replace(/\r\n/g,'\n').trim();
+      const actualHtml=c.html?.html_content??c.content??'';
+      const copyMatches=c.subject===copy.subject&&c.preheader===copy.preheader&&c.from==='Sharp Cuts'&&c.reply_to===copy.replyTo;
+      const htmlMatches=normalize(actualHtml)===normalize(html);
+      const errors=(validation.errors||[]).map(e=>String(e.title||'Provider restriction').slice(0,180));
+      const warnings=(validation.warnings||[]).map(e=>String(e.title||'Provider warning').slice(0,180));
+      const followupDisabled=c.auto_followup_active===false||c.auto_followup_active===0;
+      const count=v=>Number.isSafeInteger(v)&&v>=0?v:null;
+      return {checked:true,campaignId,status:c.status,groupId,recipientCount:count(c.recipient_count),submitted:count(c.sent_count),
+        scheduleTime:c.schedule_time??null,sentTime:c.sent_time??null,copyMatches,htmlMatches,htmlHash:digest(actualHtml),followupDisabled,errors,warnings,
+        ready:c.status==='DRAFT'&&!c.schedule_time&&!c.sent_time&&copyMatches&&htmlMatches&&followupDisabled&&!errors.length,
+        opens:count(c.opens),clicks:count(c.clicks),bounces:count(c.bounces_count),delivered:null,contactsChanged:0};
     },
     async prepareDedicatedGroup(){
       if(!groupBinding)throw Error('Durable group binding is unavailable.');
