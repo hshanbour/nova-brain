@@ -1,3 +1,4 @@
+import {renderSharpCutsWelcome} from '../email/sharp-cuts-welcome-creative.js';
 import {createHash} from 'node:crypto';
 import {SHARP_CUTS_BOOKING_URL} from './sharp-cuts-campaign.js';
 import {describeCampaignSource,SHARP_CUTS_EMAIL_SOURCE} from '../email/sharp-cuts-audience.js';
@@ -52,7 +53,7 @@ export const DEFAULT_WELCOME_COPY=Object.freeze({
   from:'Sharp Cuts <info@sharpcuts.uk>',replyTo:'info@sharpcuts.uk',address:'57 Cheapside, Luton, LU1 2HN',
   emailOptout:'{$unsubscribe_link}',whatsappOptout:'Reply STOP to opt out of Sharp Cuts WhatsApp marketing.'
 });
-export function welcomeEmailHtml(copy){return `<!doctype html><html><body style="margin:0;background:#f4f0e7;color:#20251f;font-family:Arial,sans-serif"><div style="max-width:600px;margin:auto"><div style="padding:34px;background:#102e27;color:#f3dfaa;text-align:center;letter-spacing:4px">SHARP CUTS</div><div style="padding:32px;background:#172f29;color:#fff4d9;text-align:center"><div style="font-size:12px;letter-spacing:3px">LUTON · GENTS BARBERS</div><h1 style="font-family:Georgia,serif;font-size:44px;line-height:1.1;font-weight:400">Welcome back.<br>A fresh look awaits.</h1><p style="color:#e9cd91">Your style. Your barber. Your next chapter.</p></div><div style="padding:30px;line-height:1.7">${escape(copy.emailBody).split('\n\n').map(p=>`<p>${p.replaceAll('\n','<br>')}</p>`).join('')}<p style="text-align:center;padding:14px"><a href="${SHARP_CUTS_BOOKING_URL}" style="display:inline-block;padding:14px 25px;background:#153b30;color:#fff1c9;text-decoration:none;border-radius:4px">Book with the Sharp Cuts team</a></p><p style="font-size:12px;color:#58605a">${escape(copy.address)}<br><a href="{$unsubscribe_link}" style="color:#58605a">Unsubscribe from Sharp Cuts marketing</a><br>Sent with Sender</p></div></div></body></html>`;}
+export function welcomeEmailHtml(copy){return renderSharpCutsWelcome(copy,SHARP_CUTS_BOOKING_URL);}
 function validateCopy(input){
   const copy={...DEFAULT_WELCOME_COPY};
   for(const [key,max] of [['subject',180],['preheader',200],['emailBody',6000],['whatsappBody',800]]){
@@ -87,11 +88,12 @@ export function createWelcomeReview({storage,ownerId,customerReader,senderClient
     if(reconciliation.membershipStatus!=='matched')blockers.unshift('The live frozen cohort could not be confirmed. No audience changes or sends are permitted.');
     if(provider.status==='unavailable')blockers.unshift('Current Sender API readiness could not be read. Historical billing evidence is labelled separately.');
     return {projectId,campaignId:'sharp-cuts-welcome-back',title:'Welcome back / Fresh new look',status:review?'saved_for_review':'prepared_for_review',checkedAt:clock().toISOString(),
+      ownerTest:ev.status==='fulfilled'?ev.value.find(e=>e.action==='sharp_cuts_welcome_test_receipt')?.metadata?.receipt||null:null,
       evidence:WELCOME_EVIDENCE,reconciliation,provider,suppression,copy,emailHtml:welcomeEmailHtml(copy),costs:welcomeCosts(),
       preparation:{...WELCOME_PROVIDER_PREPARATION,audienceMatched,ready:preparationReady,provider:prepared},
       audience:{emailAddressCandidates:1558,emailFreshaEligible:1240,mobileCandidates:1312,whatsappReachability:'Not checked for this audience',emailLaunchEligible:null,whatsappLaunchEligible:null,
         note:'1,562 preserved staged email profiles are not 1,562 unique email addresses. No customer was removed or added. Counts describe the original export, not a live refreshed customer list.'},
-      review:review?{id:review.id,hash:review.hash,savedAt:review.savedAt,channel:review.channel,proposedAt:review.proposedAt}:null,
+      review:review?{id:review.id,hash:review.hash,savedAt:review.savedAt,channel:review.channel,proposedAt:review.proposedAt,creativeHash:review.creativeHash}:null,
       approval:{status:'not_requested',launchEnabled:false,sendAuthorised:false,blocks:blockers},
       results:{status:prepared.status||'unverified',submitted:prepared.checked?prepared.submitted??null:null,delivered:null,failed:null,unsubscribed:null,providerCampaignId:prepared.campaignId,
         note:'Sender draft '+WELCOME_PROVIDER_PREPARATION.campaignId+' is bound to this review. Submission counts are read from the provider; delivery is not inferred from sent records. No launch or schedule has been authorised.'},
@@ -104,7 +106,7 @@ export function createWelcomeReview({storage,ownerId,customerReader,senderClient
     if(!['email','whatsapp','compare'].includes(input.channel))throw Object.assign(Error('Select a campaign channel.'),{statusCode:400});
     const proposedAt=input.proposedAt||null;
     if(proposedAt&&(!Number.isFinite(Date.parse(proposedAt))||Date.parse(proposedAt)<=clock().getTime()))throw Object.assign(Error('Choose a future proposed time or leave it undecided.'),{statusCode:400});
-    const envelope={projectId,copy,channel:input.channel,proposedAt,sourceHash:WELCOME_EVIDENCE.sourceHash,membershipHash:current.reconciliation.membershipHash,audienceEvidence:WELCOME_EVIDENCE.emailReconciliation,costs:current.costs,sendAuthorised:false};
+    const envelope={projectId,copy,creativeHash:hash(welcomeEmailHtml(copy)),channel:input.channel,proposedAt,sourceHash:WELCOME_EVIDENCE.sourceHash,membershipHash:current.reconciliation.membershipHash,audienceEvidence:WELCOME_EVIDENCE.emailReconciliation,costs:current.costs,sendAuthorised:false};
     const digest=hash(envelope),existing=(await events()).find(e=>e.action===action&&e.metadata?.review?.hash===digest);
     if(existing)return {saved:true,reused:true,review:existing.metadata.review};
     const review={...envelope,id:'welcome-'+digest.slice(0,24),hash:digest,savedAt:clock().toISOString(),status:'saved_for_review'};

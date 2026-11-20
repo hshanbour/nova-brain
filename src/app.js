@@ -213,7 +213,7 @@ export function createApp({
   const sharpCutsSender=config.sharpCutsEmail.configured?createSenderMarketingClient({config:config.sharpCutsEmail,fetchImpl:sharpCutsEmailFetchImpl||globalThis.fetch,groupBinding:createSenderGroupBinding({storage,ownerId:OWNER_ID})}):null;
   const sharpCutsCustomerReader=config.sharpCutsCustomerDatabase.configured?createSharpCutsCustomerReader({config:config.sharpCutsCustomerDatabase}):null;
   const sharpCutsAutomation=createSharpCutsAutomationService({storage,ownerId:OWNER_ID,senderConfig:config.sharpCutsEmail,senderClient:sharpCutsSender,instagramOAuth,customerReader:sharpCutsCustomerReader,whatsappStatusProvider:()=>sharpCutsWhatsAppService.status()});
-  registerBusinessPreparationTools(toolRegistry,{storage,ownerId:OWNER_ID,customerReader:sharpCutsCustomerReader,senderClient:sharpCutsSender,senderConfig:config.sharpCutsEmail,whatsapp:sharpCutsWhatsAppService});
+  registerBusinessPreparationTools(toolRegistry,{storage,ownerId:OWNER_ID,customerReader:sharpCutsCustomerReader,senderClient:sharpCutsSender,senderConfig:config.sharpCutsEmail,whatsapp:sharpCutsWhatsAppService,connected:continuity.connected===true});
   registerSocialTools(toolRegistry,{service:socialService,mediaAutomation});
   let browserTaskService=null,durableResearchTaskService=null;
   if(config.modelProvider === "openai"){

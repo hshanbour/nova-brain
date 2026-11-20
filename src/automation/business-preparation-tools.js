@@ -1,3 +1,4 @@
+import {createWelcomeTest} from './sharp-cuts-welcome-test.js';
 import {createHash} from 'node:crypto';
 import {SHARP_CUTS_BOOKING_URL} from './sharp-cuts-campaign.js';
 import {describeCampaignSource} from '../email/sharp-cuts-audience.js';
@@ -6,11 +7,14 @@ import {createWelcomeReview} from './sharp-cuts-welcome-review.js';
 const projectId='sharp-cuts-web', digest=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const schema=properties=>({type:'object',properties,additionalProperties:false});
 
-// Draft preparation and one dedicated empty provider group. No tool here sends
-// or uploads contacts; provider group creation has a durable one-shot claim.
-export function registerBusinessPreparationTools(registry,{storage,ownerId,customerReader,senderClient,senderConfig,whatsapp}){
+// Campaign preparation plus one explicitly approved, recipient-locked owner test.
+// No audience send or contact upload; provider writes have durable one-shot claims.
+export function registerBusinessPreparationTools(registry,{storage,ownerId,customerReader,senderClient,senderConfig,whatsapp,connected=false}){
   const common={category:'business_preparation',available:true,configurationStatus:'draft_only'};
   const welcome=createWelcomeReview({storage,ownerId,customerReader,senderClient});
+  const ownerTest=createWelcomeTest({storage,ownerId,senderClient,welcome,connected});
+  registry.register({...common,name:'sharp_cuts_welcome_test_send',description:'Send exactly ONE finished Sharp Cuts Welcome back campaign TEST to hamodehshanbour@yahoo.com only, through the existing Sender connection. Independent of the 1240 audience. Requires owner approval; durable duplicate protection; no launch/schedule. Returns actual acceptance receipt, never infers delivery.',riskLevel:'HIGH_IMPACT',approvalReason:'Send one finished campaign test to hamodehshanbour@yahoo.com only; keep audience campaign unsent.',inputSchema:{...schema({recipient:{type:'string',enum:['hamodehshanbour@yahoo.com']}}),required:['recipient']},execute:(input,context)=>ownerTest.send(input,context)});
+  registry.register({...common,name:'sharp_cuts_welcome_test_status',description:'Read the single owner campaign-test receipt; no send or retry. Accepted is not delivered.',riskLevel:'READ_ONLY',inputSchema:schema({}),execute:()=>ownerTest.read()});
   registry.register({...common,name:'sharp_cuts_welcome_review',description:'Read the complete Sharp Cuts Welcome back review: aggregate audience evidence, costs, copy, launch blockers and real results. No sends.',riskLevel:'READ_ONLY',inputSchema:schema({}),execute:()=>welcome.read()});
   registry.register({...common,name:'sharp_cuts_welcome_review_save',description:'Save exact campaign copy and proposed channel/time for review only. Does not approve, schedule, upload contacts or send.',riskLevel:'LOW_RISK_WRITE',autonomous:true,inputSchema:{...schema({subject:{type:'string'},preheader:{type:'string'},emailBody:{type:'string'},whatsappBody:{type:'string'},channel:{type:'string'},proposedAt:{type:'string'}}),required:['channel']},execute:input=>welcome.save(input)});
   registry.register({...common,name:'sharp_cuts_whatsapp_delivery_review',description:'Read Sharp Cuts outbound provider status, retained authenticated callback evidence and separately labelled owner-confirmed receipt. Never equate owner confirmation with provider delivery. No sends or queue release.',riskLevel:'READ_ONLY',inputSchema:schema({}),execute:()=>whatsapp.deliveryReview()});

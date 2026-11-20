@@ -28,8 +28,8 @@ test('foreign workspace and invalid schedule cannot save a draft',async()=>{
  await assert.rejects(fixture().service.save({channel:'email',proposedAt:'2026-01-01'}),/future proposed/);
  await assert.rejects(fixture().service.save({channel:'sms'}),/campaign channel/);
 });
-test('creative escapes editable copy, preserves team link, real unsubscribe token and no external assets',()=>{
- const html=welcomeEmailHtml({...DEFAULT_WELCOME_COPY,emailBody:'<script>bad()</script>'});assert.ok(!html.includes('<script>'));assert.match(html,/&lt;script&gt;/);assert.match(html,/p20zttw0/);assert.match(html,/\{\$unsubscribe_link\}/);assert.ok(!html.includes('<img'));assert.equal(WELCOME_EVIDENCE.distinctValidPhones-WELCOME_EVIDENCE.nonMobile,1312);
+test('creative escapes editable copy, preserves team link, real unsubscribe token and authentic branded assets',()=>{
+ const html=welcomeEmailHtml({...DEFAULT_WELCOME_COPY,emailBody:'<script>bad()</script>'});assert.ok(!html.includes('<script>'));assert.match(html,/&lt;script&gt;/);assert.match(html,/p20zttw0/);assert.match(html,/\{\$unsubscribe_link\}/);assert.match(html,/cdn.sender.net\/email_images\/493660\/images\/0\/logo_hq.jpg/);assert.match(html,/wa.me\/441582510565/);assert.match(html,/Book with the Sharp Cuts Team/);assert.equal(WELCOME_EVIDENCE.distinctValidPhones-WELCOME_EVIDENCE.nonMobile,1312);
 });
 test('new write boundary permits preparation only on connected Preview',()=>{
  assert.equal(continuityRouteAllowed('/api/business-automation/sharp-cuts/welcome-review','POST',{connected:true}),true);

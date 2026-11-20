@@ -219,6 +219,13 @@ export function createSenderMarketingClient({config,fetchImpl=globalThis.fetch,t
         throw Object.assign(new Error("Sender draft outcome is unconfirmed. Check existing campaigns before retrying."),{code:"sender_draft_requires_reconciliation"});
       return Object.freeze({created:true,campaignId:response.data.id,status:"DRAFT",sent:false});
     },
+    async sendWelcomeTest({recipient,subject,html,text},{authority}={}){
+      if(recipient!=='hamodehshanbour@yahoo.com'||authority?.operation!=='welcome_single_test'||authority.projectId!=='sharp-cuts-web'||authority.campaignId!=='J6P5lD'||authority.recipient!==recipient||authority.creativeHash!==digest(JSON.stringify(html)))throw Object.assign(Error('Exact campaign-test authority required.'),{code:'sender_test_authority_required'});
+      const previewHtml=html.replaceAll('{$unsubscribe_link}','https://campaign-statistics.com/unsubscribe_preview/en');
+      const response=await request('/message/send',{method:'POST',body:{from:{email:config.fromEmail,name:'Sharp Cuts'},to:{email:recipient,name:'Sharp Cuts owner'},subject,text,html:previewHtml.replace('</body>',SENDER_FREE_BRANDING+'</body>'),headers:{charset:'utf-8'}}});
+      if(response?.success!==true||typeof response.emailId!=='string')throw safeProviderError(502);
+      return {accepted:true,status:'submitted',provider:'Sender.net',messageId:response.emailId,recipient,customerContacts:0,subscriberUploads:0};
+    },
     async sendOwnerTest({recipient=SHARP_CUTS_SENDER_PLAN.accountMailbox,subject="Nova Sender integration test — no action required"}={}, {authority}={}){
       if(!authority||authority.operation!=="send_owner_test"||authority.projectId!=="sharp-cuts-web"||authority.recipient!==recipient||recipient!==SHARP_CUTS_SENDER_PLAN.accountMailbox)throw Object.assign(new Error("Exact owner-test authority is required."),{code:"sender_test_authority_required",statusCode:403});
       const html='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head><body><main><h1>Sharp Cuts email connection verified</h1><p>This is a single owner-controlled integration test from Nova Preview.</p><p>No customer list was uploaded and no marketing campaign was sent.</p><p>Sharp Cuts, 57 Cheapside, Luton.</p></main></body></html>';
