@@ -1,6 +1,12 @@
 import {writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 const LOCATION='139805',origin='https://partners.fresha.com';
+export function readFreshaSelector(snapshot,{team=false}={}){
+ const blocks=[];let current;
+ for(const line of snapshot.split('\n')){const match=/^\s*- button ("(?:[^"\\]|\\.)*")/.exec(line);if(match){current={name:JSON.parse(match[1]),lines:[]};blocks.push(current);}else if(current)current.lines.push(line);}
+ if(team)return blocks.map(x=>x.name).filter(x=>x!=='Any team member');
+ return blocks.flatMap(x=>{const text=x.lines.join('\n'),duration=/\b(\d+)m\b/.exec(text),price=/(from )?£(\d+(?:\.\d+)?)/.exec(text);return duration&&price?[{name:x.name,durationMinutes:Number(duration[1]),priceGbp:Number(price[2]),priceFrom:!!price[1]}]:[];});
+}
 export function createFreshaBrowserOperations({context,root,verifyBusiness}){
  return{async run(operation,request){let p;try{
  if(!await verifyBusiness())return{state:'blocked',reason:'fresha_reauthentication_required'};
@@ -11,9 +17,9 @@ export function createFreshaBrowserOperations({context,root,verifyBusiness}){
  await p.getByRole('button',{name:'Add',exact:true}).click();await p.getByRole('button',{name:'Appointment',exact:true}).click();await p.getByText('View available times',{exact:true}).click();
  const dialog=p.getByRole('dialog').last();await dialog.getByRole('button',{name:'Haircut (no beard trim )',exact:true}).waitFor();
  if(operation==='catalogue'){
- await writeFile(join(root,'service-selector.txt'),await dialog.ariaSnapshot(),{mode:0o600});
- const services=await dialog.getByRole('button').evaluateAll(es=>es.map(e=>({name:e.getAttribute('aria-label')||e.innerText,card:e.parentElement.innerText})).filter(x=>/£/.test(x.card)).map(x=>({name:x.name.trim(),durationMinutes:Number(x.card.match(/(\d+)\s*(?:min|m)\b/)?.[1])||null,priceGbp:Number(x.card.match(/£\s*(\d+(?:\.\d+)?)/)?.[1])||null})).filter(x=>x.name&&x.name.length<120));
- await dialog.getByRole('button',{name:'Haircut (no beard trim )',exact:true}).click();await p.getByRole('button',{name:'Continue',exact:true}).click();await p.getByRole('button',{name:'Any team member',exact:true}).click();const hamood=p.getByRole('button',{name:'Hamood',exact:true});await hamood.waitFor();let team=hamood;for(let depth=0;depth<6;depth++){team=team.locator('..');if(await team.getByRole('button',{name:'Any team member',exact:true}).count()===1&&await team.getByRole('button',{name:'Hamood',exact:true}).count()===1&&await team.getByRole('button').count()<=12)break;}await writeFile(join(root,'team-selector.txt'),await team.ariaSnapshot(),{mode:0o600});const staff=await team.getByRole('button').allTextContents();return{state:'catalogue_read',services,staff:staff.map(x=>x.trim()).filter(x=>x&&!/close|continue|any team|back|select|clear/i.test(x))};
+ const serviceSnapshot=await dialog.ariaSnapshot();await writeFile(join(root,'service-selector.txt'),serviceSnapshot,{mode:0o600});
+ const services=readFreshaSelector(serviceSnapshot);
+ await dialog.getByRole('button',{name:'Haircut (no beard trim )',exact:true}).click();await p.getByRole('button',{name:'Continue',exact:true}).click();await p.getByRole('button',{name:'Any team member',exact:true}).click();const hamood=p.getByRole('button',{name:'Hamood',exact:true});await hamood.waitFor();let team=hamood;for(let depth=0;depth<6;depth++){team=team.locator('..');if(await team.getByRole('button',{name:'Any team member',exact:true}).count()===1&&await team.getByRole('button',{name:'Hamood',exact:true}).count()===1&&await team.getByRole('button').count()<=12)break;}await writeFile(join(root,'team-selector.txt'),await team.ariaSnapshot(),{mode:0o600});const staff=readFreshaSelector(await team.ariaSnapshot(),{team:true});return{state:'catalogue_read',services,staff};
  }
  if(operation!=='availability')throw Error('unsupported_operation');
  await dialog.getByRole('button',{name:request.service,exact:true}).click();await p.getByRole('button',{name:'Continue',exact:true}).click();await p.getByRole('button',{name:'Any team member',exact:true}).click();await p.getByRole('button',{name:request.barber,exact:true}).click();await p.getByRole('button',{name:date,exact:true}).waitFor({timeout:10000});
