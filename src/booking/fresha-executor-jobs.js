@@ -36,7 +36,8 @@ export function createFreshaExecutorJobs({storage,ownerId,clock=()=>Date.now()})
           if(!belongs(old))throw fail('test_record_scope_mismatch');
           if(['queued','running'].includes(old.status))return{...receipt(old),reused:true};
           const last=old.metadata?.freshaResult;
-          const allowed={test_prepare:['prepared','blocked'],test_create:['prepared'],test_read:['created','read_back','rescheduled'],test_reschedule:['read_back'],test_cancel:['rescheduled']};
+          if(operation==='test_read'&&!last?.appointmentId)throw fail('test_id_required');
+          const allowed={test_prepare:['prepared','blocked'],test_create:['prepared'],test_read:['created','read_back','rescheduled','blocked','uncertain'],test_reschedule:['read_back'],test_cancel:['rescheduled']};
           if(!allowed[operation]?.includes(last?.state))throw fail('test_lifecycle_order_or_reconciliation_required');
           if(operation==='test_prepare'&&(last?.appointmentId||old.metadata.freshaHistory?.some(x=>x.operation==='test_create')))throw fail('test_creation_already_attempted');
           if(operation==='test_create'&&old.metadata.freshaHistory?.some(x=>x.operation==='test_create'))throw fail('test_creation_already_attempted');
