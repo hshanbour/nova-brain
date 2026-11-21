@@ -266,6 +266,8 @@ export function createApi({
   instagramOAuth,
   sharpCutsAutomation,
   freshaExecutorJobs,
+  freshaOperations,
+  bookingConversation,
   projectAutomationControls,
   ownerContactPolicy,
   pstnSpeakerEnrollment,
@@ -369,6 +371,17 @@ export function createApi({
               sendJson(response,error.statusCode||401,{error:"Verified Nova workspace sign-in is required.",code:error.code||"console_identity_required"});return;
             }
           }
+        }
+        if(pathname==='/api/business-automation/sharp-cuts/booking-operations'){
+          if(!connectedPreview||!authorizeConsole||!freshaOperations){sendJson(response,403,{error:'Authenticated original Preview required.'});return;}
+          await ready();response.setHeader('Cache-Control','no-store');
+          if(request.method==='GET'){sendJson(response,200,await freshaOperations.status());return;}
+          if(request.method==='POST'&&request.headers.origin&&sameOriginRequest(request)){const input=await readJsonBody(request,4096);sendJson(response,200,input.action==='chat'?await bookingConversation.turn(input):input.action==='pause'?await freshaOperations.pause(input.paused):input.action==='result'?await bookingConversation.result(input.id):await freshaOperations.request(input));return;}
+          sendJson(response,403,{error:'Same-origin owner request required.'});return;
+        }
+        if(['/api/admin/worker/fresha-operations/next','/api/admin/worker/fresha-operations/complete'].includes(pathname)&&request.method==='POST'){
+          if(!connectedPreview||!freshaOperations){sendJson(response,403,{error:'Original Preview executor only.'});return;}
+          authorizeLocalWorker(request,config.localWorkerToken);await ready();const input=await readJsonBody(request,32768);sendJson(response,200,await freshaOperations[pathname.endsWith('/next')?'next':'complete'](input));return;
         }
         if(pathname==='/api/business-automation/sharp-cuts/fresha-connection'){
           if(!connectedPreview||!authorizeConsole||!freshaExecutorJobs){sendJson(response,403,{error:'Authenticated original Preview required.'});return;}

@@ -12,7 +12,7 @@ export function continuityPreviewEnvironment(input) {
   return {continuity:true,connected:input.VERCEL_GIT_COMMIT_REF===CONNECTED_BRANCH,environment:{...input,NOVA_PHONE_PRIVATE_OWNER_ENABLED:'false',NOVA_SHARP_CUTS_WHATSAPP_EXECUTION_ENABLED:'false',NOVA_SHARP_CUTS_WHATSAPP_OUTBOUND_ENABLED:'false'}};
 }
 export function continuityRouteAllowed(path,method,{connected=false}={}) {
-  if(connected&&method==='POST'&&['/api/business-automation/sharp-cuts/fresha-connection','/api/admin/worker/fresha/next','/api/admin/worker/fresha/complete'].includes(path))return true;
+  if(connected&&method==='POST'&&['/api/business-automation/sharp-cuts/booking-operations','/api/admin/worker/fresha-operations/next','/api/admin/worker/fresha-operations/complete','/api/business-automation/sharp-cuts/fresha-connection','/api/admin/worker/fresha/next','/api/admin/worker/fresha/complete'].includes(path))return true;
   if(connected&&method==='POST'&&path==='/api/business-automation/sharp-cuts/welcome-review')return true;
   if(connected&&method==='POST'&&path==='/api/business-automation/sharp-cuts/whatsapp/controlled-test')return true;
   if(connected&&method==='POST'&&path==='/api/voice/realtime/turn-state')return true;

@@ -1,4 +1,4 @@
-import {createControlledFreshaTest} from './fresha-controlled-test.js';
+import {createFreshaBrowserOperations} from './fresha-browser-operations.js';
 import {stat, mkdir, realpath, writeFile, rename, open, readFile, rm} from 'node:fs/promises';
 import {resolve, relative, isAbsolute, join} from 'node:path';
 
@@ -88,6 +88,7 @@ export async function startFreshaBrowserSession({root,repositoryRoot,chromium,ch
       const active=context.pages().find(p=>p.url().startsWith('https://partners.fresha.com'))||page;
       const visible=async locator=>locator.isVisible().catch(()=>false);
       const calendarVisible=await visible(active.getByRole('button',{name:'Add',exact:true}));
+      if(calendarVisible&&!verifiedBusiness)await verifyBusiness();
       const businessVisible=verifiedBusiness&&isSharpCutsCalendar(active.url());
       const challengeVisible=await visible(active.getByText(/verify you are human|security verification|enter.*verification code/i).first());
       return {...connectionEvidence({url:active.url(),calendarVisible,businessVisible,challengeVisible}),observedAt:new Date().toISOString(),localOnly,workerConnected:false,loginInputVerified};
@@ -119,7 +120,7 @@ export async function startFreshaBrowserSession({root,repositoryRoot,chromium,ch
         return {state:'availability_read_incomplete',stage,writesEnabled:false,observedAt:new Date().toISOString()};
       }
     }
-    const controlledTest=createControlledFreshaTest({context,root:dir,verifyBusiness});
-    return{context,page,inspect,saveStatus,verifyBusiness,inspectAvailableTimes,runControlledTest:async(...args)=>{const revision=(await stat(new URL('./fresha-controlled-test.js',import.meta.url))).mtimeMs;const module=await import('./fresha-controlled-test.js?revision='+revision);return module.createControlledFreshaTest({context,root:dir,verifyBusiness}).run(...args);},async close(){await context.close();await release();}};
+    const operations=createFreshaBrowserOperations({context,root:dir,verifyBusiness});
+    return{context,page,inspect,saveStatus,verifyBusiness,inspectAvailableTimes,runOperation:operations.run,runControlledTest:async(...args)=>{const revision=(await stat(new URL('./fresha-controlled-test.js',import.meta.url))).mtimeMs;const module=await import('./fresha-controlled-test.js?revision='+revision);return module.createControlledFreshaTest({context,root:dir,verifyBusiness}).run(...args);},async close(){await context.close();await release();}};
   }catch(error){await context?.close().catch(()=>{});await release();throw error;}
 }

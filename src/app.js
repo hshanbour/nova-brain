@@ -1,3 +1,5 @@
+import {createBookingConversation} from './booking/customer-conversation.js';
+import {createFreshaOperations} from './booking/fresha-operations.js';
 import {registerBusinessPreparationTools} from './automation/business-preparation-tools.js';
 import {createFreshaExecutorJobs} from './booking/fresha-executor-jobs.js';
 import {createControlledOwnerTest} from './whatsapp/controlled-owner-test.js';
@@ -204,6 +206,8 @@ export function createApp({
   const projectAutomationControls=createProjectAutomationControls({storage,ownerId:OWNER_ID});
   const sharpCutsWhatsAppService=createSharpCutsWhatsAppCoexistenceService({config,storage,ownerId:OWNER_ID,automationControls:projectAutomationControls,novaTurn:(input)=>agent.run(input),logger});
   const freshaExecutorJobs=createFreshaExecutorJobs({storage,ownerId:OWNER_ID});
+  const freshaOperations=createFreshaOperations({storage,ownerId:OWNER_ID});
+  const bookingConversation=createBookingConversation({storage,ownerId:OWNER_ID,modelProvider,operations:freshaOperations});
   const controlledOwnerTest=continuity.connected?createControlledOwnerTest({environment,config,storage,ownerId:OWNER_ID}):null;
   const instagramOAuth=createInstagramOAuthService({config,storage,ownerId:OWNER_ID});
   const privateR2=config.socialMedia.r2Configured?createPrivateR2Store(config.socialMedia):null;
@@ -492,6 +496,8 @@ export function createApp({
     whatsappService,
     sharpCutsWhatsAppService,
     freshaExecutorJobs,
+    freshaOperations,
+    bookingConversation,
     controlledOwnerTest,
     socialService,
     mediaAutomation,

@@ -1,0 +1,15 @@
+*
+!package.json
+!package-lock.json
+!src/
+!src/booking/
+!src/booking/fresha-browser-session.js
+!src/booking/fresha-controlled-test.js
+!src/booking/fresha-connection-worker.js
+!src/booking/fresha-browser-operations.js
+!src/autonomy/
+!src/autonomy/local-worker-client.js
+!fresha-executor/
+!fresha-executor/Dockerfile
+!fresha-executor/server.js
+!fresha-executor/start.sh
