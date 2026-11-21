@@ -45,3 +45,14 @@ test('HTTP connection checks require the owner workspace or authenticated worker
   assert.equal(await call('/api/admin/worker/fresha/next','POST',{authorization:'Bearer synthetic-worker-token-for-boundary-test','content-type':'application/json'}),200);
   assert.equal(await call('/api/admin/worker/fresha/create','POST',{authorization:'Bearer synthetic-worker-token-for-boundary-test'}),403);
 });
+test('controlled lifecycle is a single durable test and cannot skip preparation or change appointment IDs',async()=>{
+ const f=fixture();await assert.rejects(()=>f.service.request({operation:'test_create'}),{code:'test_prepare_required'});
+ const t=await f.service.request({operation:'test_prepare'});assert.equal(t.id,'fresha_controlled_20261121');
+ async function finish(result){const j=await f.service.next({workerId:'fresha-worker-a'});return f.service.complete({...j,workerId:'fresha-worker-a',result:{...result,observedAt:new Date().toISOString()}});}
+ await finish({state:'prepared',walkIn:true});await f.service.request({operation:'test_create'});await finish({state:'created',appointmentId:'12345678'});
+ await assert.rejects(()=>f.service.request({operation:'test_create'}));await assert.rejects(()=>f.service.request({operation:'test_prepare'}));await assert.rejects(()=>f.service.request({operation:'test_cancel'}));
+ await f.service.request({operation:'test_read'});const j=await f.service.next({workerId:'fresha-worker-a'});await assert.rejects(()=>f.service.complete({...j,workerId:'fresha-worker-a',result:{state:'read_back',appointmentId:'87654321'}}),{code:'test_appointment_id_mismatch'});
+ await f.service.complete({...j,workerId:'fresha-worker-a',result:{state:'read_back',appointmentId:'12345678'}});
+ await f.service.request({operation:'test_reschedule'});await finish({state:'rescheduled',appointmentId:'12345678'});await f.service.request({operation:'test_cancel'});await finish({state:'cancelled',appointmentId:'12345678'});
+ await assert.rejects(()=>f.service.request({operation:'test_create'}));assert.equal(f.rows.size,1);
+});

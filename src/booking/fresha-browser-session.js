@@ -1,3 +1,4 @@
+import {createControlledFreshaTest} from './fresha-controlled-test.js';
 import {mkdir, realpath, writeFile, rename, open, readFile, rm} from 'node:fs/promises';
 import {resolve, relative, isAbsolute, join} from 'node:path';
 
@@ -118,6 +119,7 @@ export async function startFreshaBrowserSession({root,repositoryRoot,chromium,ch
         return {state:'availability_read_incomplete',stage,writesEnabled:false,observedAt:new Date().toISOString()};
       }
     }
-    return{context,page,inspect,saveStatus,verifyBusiness,inspectAvailableTimes,async close(){await context.close();await release();}};
+    const controlledTest=createControlledFreshaTest({context,root:dir,verifyBusiness});
+    return{context,page,inspect,saveStatus,verifyBusiness,inspectAvailableTimes,runControlledTest:controlledTest.run,async close(){await context.close();await release();}};
   }catch(error){await context?.close().catch(()=>{});await release();throw error;}
 }
