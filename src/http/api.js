@@ -265,6 +265,7 @@ export function createApi({
   footageAnalysis,
   instagramOAuth,
   sharpCutsAutomation,
+  freshaExecutorJobs,
   projectAutomationControls,
   ownerContactPolicy,
   pstnSpeakerEnrollment,
@@ -368,6 +369,19 @@ export function createApi({
               sendJson(response,error.statusCode||401,{error:"Verified Nova workspace sign-in is required.",code:error.code||"console_identity_required"});return;
             }
           }
+        }
+        if(pathname==='/api/business-automation/sharp-cuts/fresha-connection'){
+          if(!connectedPreview||!authorizeConsole||!freshaExecutorJobs){sendJson(response,403,{error:'Authenticated original Preview required.'});return;}
+          await ready();response.setHeader('Cache-Control','no-store');
+          if(request.method==='GET'){sendJson(response,200,await freshaExecutorJobs.status());return;}
+          if(request.method==='POST'&&request.headers.origin&&sameOriginRequest(request)){const input=await readJsonBody(request,4096);sendJson(response,200,await freshaExecutorJobs.request(input));return;}
+          sendJson(response,403,{error:'Same-origin owner request required.'});return;
+        }
+        if(['/api/admin/worker/fresha/next','/api/admin/worker/fresha/complete'].includes(pathname)&&request.method==='POST'){
+          if(!connectedPreview||!freshaExecutorJobs){sendJson(response,403,{error:'Original Preview executor only.'});return;}
+          authorizeLocalWorker(request,config.localWorkerToken);await ready();
+          const input=await readJsonBody(request,4096);
+          sendJson(response,200,await freshaExecutorJobs[pathname.endsWith('/next')?'next':'complete'](input));return;
         }
         if(connectedPreview&&request.method==='POST'&&pathname==='/api/admin/worker/sharp-cuts/whatsapp/tick'){
           sendJson(response,200,{dispatched:false,channels:[],worked:false,held:true,reason:'connected_preview_recovery_hold'});return;

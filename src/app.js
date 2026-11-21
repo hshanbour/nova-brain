@@ -1,4 +1,5 @@
 import {registerBusinessPreparationTools} from './automation/business-preparation-tools.js';
+import {createFreshaExecutorJobs} from './booking/fresha-executor-jobs.js';
 import {createControlledOwnerTest} from './whatsapp/controlled-owner-test.js';
 import { randomUUID } from "node:crypto";
 import {CONNECTED_EXECUTION,connectedTaskAllowed} from './identity/connected-execution.js';
@@ -202,6 +203,7 @@ export function createApp({
   const whatsappService = createWhatsAppService({ config, storage, ownerId: OWNER_ID, novaTurn: (input) => agent.run(input), fetchImpl: whatsappFetchImpl || globalThis.fetch, logger });
   const projectAutomationControls=createProjectAutomationControls({storage,ownerId:OWNER_ID});
   const sharpCutsWhatsAppService=createSharpCutsWhatsAppCoexistenceService({config,storage,ownerId:OWNER_ID,automationControls:projectAutomationControls,novaTurn:(input)=>agent.run(input),logger});
+  const freshaExecutorJobs=createFreshaExecutorJobs({storage,ownerId:OWNER_ID});
   const controlledOwnerTest=continuity.connected?createControlledOwnerTest({environment,config,storage,ownerId:OWNER_ID}):null;
   const instagramOAuth=createInstagramOAuthService({config,storage,ownerId:OWNER_ID});
   const privateR2=config.socialMedia.r2Configured?createPrivateR2Store(config.socialMedia):null;
@@ -489,6 +491,7 @@ export function createApp({
     phoneService,
     whatsappService,
     sharpCutsWhatsAppService,
+    freshaExecutorJobs,
     controlledOwnerTest,
     socialService,
     mediaAutomation,
