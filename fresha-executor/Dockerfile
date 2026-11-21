@@ -1,4 +1,4 @@
-# Prepared only. No build, deployment or paid machine has been started.
+# Dedicated private Fresha executor; provisioned within the approved hosting scope.
 FROM node:24-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends chromium xvfb x11vnc novnc websockify tini ca-certificates fonts-liberation && rm -rf /var/lib/apt/lists/*
 WORKDIR /app

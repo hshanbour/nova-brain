@@ -1,10 +1,11 @@
 // Same authenticated Nova worker client; a separate bounded capability prevents
 // this browser from dispatching old jobs or acquiring repository-execution rights.
-export function createFreshaConnectionWorker({client,session,workerId}){
+export function createFreshaConnectionWorker({client,session,workerId,ownerLoginMode=false}){
   let busy=false;
   return{async runOnce(){
     if(busy)return{worked:false};busy=true;
     try{
+      if(ownerLoginMode)return client.request('/api/admin/worker/fresha-operations/next',{workerId,connection:{state:'owner_intervention_required',localOnly:false}});
       const job=await client.request('/api/admin/worker/fresha/next',{workerId});
       if(!job.worked){const next=await client.request('/api/admin/worker/fresha-operations/next',{workerId,connection:await session.inspect()});if(!next.worked)return next;const result=await session.runOperation(next.operation,next.request);return client.request('/api/admin/worker/fresha-operations/complete',{...next,workerId,result});}
       if(!['inspect_connection','inspect_availability','test_prepare','test_create','test_read','test_reschedule','test_cancel'].includes(job.operation)||!job.taskId?.startsWith('fresha_'))throw Object.assign(Error('Unexpected Fresha operation.'),{code:'fresha_operation_forbidden'});

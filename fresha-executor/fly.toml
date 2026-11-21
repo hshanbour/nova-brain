@@ -1,4 +1,4 @@
-# NOT PROVISIONED. Requires owner approval of cost and the verified Fly organisation.
+# Approved 21 November 2026. One private London machine; remote login defaults off.
 app = "nova-sharp-cuts-fresha-executor"
 primary_region = "lhr"
 kill_signal = "SIGTERM"

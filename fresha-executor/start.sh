@@ -5,6 +5,11 @@ mkdir -p /data/NovaBrain/FreshaExecutor
 chown -R node:node /data/NovaBrain
 chmod 700 /data/NovaBrain /data/NovaBrain/FreshaExecutor
 Xvfb :99 -screen 0 1280x850x24 -nolisten tcp &
+count=0
+while [ ! -S /tmp/.X11-unix/X99 ]; do
+  count=$((count + 1)); [ "$count" -lt 20 ] || exit 1
+  sleep 0.25
+done
 # No public HTTP service, VNC port or browser debugging port. Temporary owner
 # login is available only through a separately opened Fly private-network tunnel.
 if [ "${FRESHA_OWNER_LOGIN_ENABLED:-false}" = "true" ]; then

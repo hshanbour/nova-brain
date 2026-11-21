@@ -2,7 +2,7 @@ import {renderBookingOperations} from './booking-operations.js';
 const endpoint='/api/business-automation/sharp-cuts/fresha-connection';
 const node=(tag,text)=>{const n=document.createElement(tag);n.textContent=text;return n;};
 export async function renderFreshaExecutor(host){
-  host.replaceChildren(node('h1','Sharp Cuts · Fresha execution'),node('p','Owner-approved walk-in test only: Hamood, 25 minutes, 21 November. No existing appointments, customers, payments or notifications.'));
+  host.replaceChildren(node('h1','Sharp Cuts · Fresha execution'),node('p','Live connection and read-only booking preparation. The completed 21 November walk-in lifecycle is preserved below. New booking writes and customer messages remain disabled.'));
   await renderBookingOperations(host);
   host.append(node('h2','Preserved 21 November live test evidence'));
   const controls=node('div',''),status=node('p','Loading saved execution receipts…'),receipts=node('div','');
