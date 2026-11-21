@@ -31,12 +31,12 @@ export function createControlledFreshaTest({context,root,verifyBusiness}){
  async function inspectTest(j,{fresh=true}={}){
   if(!/^[0-9]{4,20}$/.test(j.appointmentId||''))throw Error('test_id_missing');
   if(j.beforeIds?.includes('calendar-event-booking-'+j.appointmentId))throw Error('preexisting_id_forbidden');
-  const p=await context.newPage();draftPage=p;await p.goto(base,{waitUntil:'domcontentloaded'});assertTestOrigin(p.url());
+  for(const stale of context.pages().slice(1))await stale.close().catch(()=>{});const p=await context.newPage();draftPage=p;await p.goto(base,{waitUntil:'domcontentloaded'});assertTestOrigin(p.url());
   const card=p.locator('[id="calendar-event-booking-'+j.appointmentId+'"]');await card.waitFor({state:'attached',timeout:20000});
   const cardText=await card.innerText();if(!cardText.includes('Walk-in')||!cardText.includes(SERVICE.trim()))throw Error('test_card_details_mismatch');
-  await card.click();await p.getByRole('dialog').last().waitFor();await p.getByRole('dialog').last().getByText(/Walk-in/).first().waitFor({timeout:15000});await p.getByRole('dialog').last().getByText(/Hamood/).first().waitFor({timeout:15000});await diagnostic(p);
+  await card.click();await p.getByRole('dialog').last().waitFor();await p.getByRole('dialog').last().getByText(/Or leave empty for walk-ins/).first().waitFor({timeout:15000});await p.getByRole('dialog').last().getByText(/Hamood/).first().waitFor({timeout:15000});await diagnostic(p);
   const text=await p.getByRole('dialog').last().innerText();
-  if(!text.includes('Walk-in')||!text.includes('Hamood')||!text.includes(SERVICE.trim()))throw Error('test_readback_details_mismatch');
+  if(!text.includes('Or leave empty for walk-ins')||!text.includes('Hamood')||!text.includes(SERVICE.trim()))throw Error('test_readback_details_mismatch');
   await save({...j,detailUrl:p.url()});return {p,text};
  }
  async function create(){
@@ -64,7 +64,43 @@ export function createControlledFreshaTest({context,root,verifyBusiness}){
   phase='created_readback';await inspectTest(recorded);
   const result={state:'created',appointmentId:id,start:j.start,end:j.end,walkIn:true,observedAt:new Date().toISOString(),detail:'Created once by dedicated worker; provider walk-in details read back.'};await save({...await load(),...result,history:[...j.history,result]});return result;
  }
- async function readBack(previous){const j=await load();if(j.appointmentId!==previous?.appointmentId)throw Error('test_id_binding_mismatch');phase='read_back';await inspectTest(j);return{state:'read_back',appointmentId:j.appointmentId,start:j.start,end:j.end,walkIn:true,observedAt:new Date().toISOString(),detail:'Fresh provider read of the exact recorded test ID.'};}
+ const labelFor=iso=>(Number(iso.slice(11,13))%12||12)+':'+iso.slice(14,16)+' '+(Number(iso.slice(11,13))>=12?'pm':'am');
+ async function freshTimes(){
+  const q=await context.newPage();try{await q.goto(base,{waitUntil:'domcontentloaded'});await q.getByRole('button',{name:'Add',exact:true}).click();await q.getByRole('button',{name:'Appointment',exact:true}).click();await q.getByText('View available times',{exact:true}).click();await q.getByRole('button',{name:SERVICE,exact:true}).click();await q.getByRole('button',{name:'Continue',exact:true}).click();await q.getByRole('button',{name:'Any team member',exact:true}).click();await q.getByRole('button',{name:'Hamood',exact:true}).click();await q.getByRole('button',{name:APPROVED_DATE,exact:true}).waitFor();const slots=q.getByRole('dialog',{name:'Select a time',exact:true}).getByText(/^\d{1,2}:\d{2}\s*(am|pm)$/i);await slots.first().waitFor();return(await slots.allTextContents()).map(x=>x.trim());}finally{await q.close();}
+ }
+ async function readBack(previous){
+ const j=await load();if(j.appointmentId!==previous?.appointmentId)throw Error('test_id_binding_mismatch');if(j.cancelAttempted)return await confirmCancelled(j);phase='read_back';const {p}=await inspectTest(j);
+ const expected=j.targetStart||j.start;await p.getByRole('dialog').last().getByText(labelFor(expected)+' • 25m • Hamood',{exact:true}).waitFor({timeout:12000});
+ const moved=!!j.rescheduleAttempted&&expected===j.targetStart;const result={state:moved?'rescheduled':'read_back',appointmentId:j.appointmentId,start:expected,end:moved?j.targetEnd:j.end,walkIn:true,observedAt:new Date().toISOString(),detail:moved?'Same test ID rescheduled; fresh provider read confirms the new time.':'Fresh provider read of the exact recorded test ID.'};
+ await save({...await load(),...result,history:[...j.history,result]});
+ return result;
+ }
+ async function reschedule(previous){
+  const j=await load();if(j.appointmentId!==previous?.appointmentId||!j.createAttempted)throw Error('test_id_binding_mismatch');if(j.rescheduleAttempted)throw Error('reschedule_requires_reconciliation');
+  phase='reschedule_availability';const labels=await freshTimes();const target=labels.find(x=>Date.parse(slotIso(x))>Math.max(Date.now()+5*60000,Date.parse(j.end)));if(!target)throw Error('no_future_reschedule_slot');const start=slotIso(target),end=new Date(Date.parse(start)+25*60000).toISOString().replace('.000','');
+  phase='reschedule_binding';const {p}=await inspectTest(j);const u=new URL(p.url());if(u.searchParams.get('focusedBookingId')!==j.appointmentId||!u.pathname.includes('/view-appointment/'))throw Error('test_url_binding_mismatch');
+  await p.getByRole('dialog').last().getByRole('button',{name:labelFor(j.start),exact:true}).click();
+  const option=p.getByText(target,{exact:true});if(await option.count()!==1)throw Error('time_option_ambiguous');
+  phase='reschedule_attempt';await save({...await load(),rescheduleAttempted:true,targetStart:start,targetEnd:end});await option.click({timeout:10000});
+  const d=p.getByRole('dialog').last();await d.getByText(target+' • 25m • Hamood',{exact:true}).waitFor({timeout:10000});const text=await d.innerText();if(/conflict|overlap|not available|double.book/i.test(text))throw Error('reschedule_conflict');if(!text.includes('Or leave empty for walk-ins'))throw Error('client_scope_changed');if(await d.getByRole('checkbox').count())throw Error('notification_controls_require_inspection');
+  await diagnostic(p);const saveButton=d.getByRole('button',{name:'Save',exact:true});await saveButton.waitFor({timeout:10000});await saveButton.click();
+  await saveButton.waitFor({state:'hidden',timeout:15000});phase='reschedule_readback';const updated={...await load(),start,end};const back=await inspectTest(updated);await back.p.getByRole('dialog').last().getByText(target+' • 25m • Hamood',{exact:true}).waitFor({timeout:12000});
+  const result={state:'rescheduled',appointmentId:j.appointmentId,start,end,walkIn:true,observedAt:new Date().toISOString(),detail:'Same test ID moved; fresh provider read confirms new time.'};await save({...await load(),...result,history:[...j.history,result]});return result;
+ }
+
+ async function confirmCancelled(j){
+  phase='cancel_readback';const u=new URL(j.detailUrl);assertTestOrigin(u.href);if(u.searchParams.get('focusedBookingId')!==j.appointmentId||!u.pathname.includes('/view-appointment/'))throw Error('test_url_binding_mismatch');
+  const p=await context.newPage();draftPage=p;await p.goto(u.href,{waitUntil:'domcontentloaded'});assertTestOrigin(p.url());const d=p.getByRole('dialog').last();await d.getByText(/Hamood/).first().waitFor({timeout:20000});await d.getByText('Cancelled',{exact:true}).first().waitFor({timeout:20000});await diagnostic(p);
+  await d.getByText('Walk in',{exact:true}).waitFor({timeout:10000});await d.getByText(labelFor(j.start)+' • 25m • Hamood',{exact:true}).waitFor({timeout:10000});
+  const result={state:'cancelled',appointmentId:j.appointmentId,start:j.start,end:j.end,walkIn:true,observedAt:new Date().toISOString(),detail:'Exact test ID cancelled with no fee; fresh provider detail confirms Cancelled.'};await save({...await load(),...result,history:[...j.history,result]});return result;
+ }
+ async function cancel(previous){
+  const j=await load();if(j.appointmentId!==previous?.appointmentId||j.state!=='rescheduled'||!j.rescheduleAttempted)throw Error('test_cancel_binding_mismatch');if(j.cancelAttempted)return await confirmCancelled(j);
+  phase='cancel_binding';const {p}=await inspectTest(j);const u=new URL(p.url());if(u.searchParams.get('focusedBookingId')!==j.appointmentId||!u.pathname.includes('/view-appointment/'))throw Error('test_url_binding_mismatch');await p.getByRole('dialog').last().getByText(labelFor(j.start)+' • 25m • Hamood',{exact:true}).waitFor();
+  await p.getByRole('button',{name:'Options',exact:true}).click();await p.getByRole('menuitem',{name:'Cancel',exact:true}).click();const d=p.getByRole('dialog',{name:'Are you sure you want to cancel?',exact:true});const submit=d.getByRole('button',{name:'Cancel appointment',exact:true});await submit.waitFor({timeout:20000});await d.getByText('No fee will be charged',{exact:true}).waitFor();
+  if(await d.getByRole('checkbox').count()||/notify|notification|send.*email|charge.*fee.*£[1-9]/i.test(await d.innerText()))throw Error('cancel_notification_or_fee_requires_inspection');
+  phase='cancel_attempt';await save({...await load(),cancelAttempted:true,cancelSubmittedAt:new Date().toISOString()});await submit.click();await submit.waitFor({state:'hidden',timeout:20000});return await confirmCancelled(await load());
+ }
 
  return{async run(operation,previous){
    let stage=operation;try{
@@ -72,7 +108,9 @@ export function createControlledFreshaTest({context,root,verifyBusiness}){
     if(operation==='test_prepare')return await prepare();
     if(operation==='test_create')return await create();
     if(operation==='test_read')return await readBack(previous);
+    if(operation==='test_reschedule')return await reschedule(previous);
+    if(operation==='test_cancel')return await cancel(previous);
     throw Error('write_adapter_not_enabled');
-   }catch(error){if(draftPage)await diagnostic(draftPage).catch(()=>{});const j=await load();return{state:j.createAttempted&&!j.appointmentId?'uncertain':'blocked',stage:phase||stage,appointmentId:j.appointmentId||previous?.appointmentId||null,observedAt:new Date().toISOString(),detail:/^[a-z_]+$/.test(error.message)?error.message:'provider_ui_changed_or_timeout'};}
+   }catch(error){await writeFile(join(root,'test-error.txt'),String(error.message).slice(0,2200),{mode:0o600}).catch(()=>{});if(draftPage)await diagnostic(draftPage).catch(()=>{});const j=await load();return{state:j.createAttempted&&!j.appointmentId?'uncertain':'blocked',stage:phase||stage,appointmentId:j.appointmentId||previous?.appointmentId||null,observedAt:new Date().toISOString(),detail:/^[a-z_]+$/.test(error.message)?error.message:'provider_ui_changed_or_timeout'};}
  }};
 }

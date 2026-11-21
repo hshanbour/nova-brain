@@ -52,12 +52,12 @@ export function createFreshaExecutorJobs({storage,ownerId,clock=()=>Date.now()})
       const task=await storage.createAutonomyTask({id:`fresha_${randomUUID()}`,ownerId,projectId:PROJECT,title:operation==='inspect_availability'?'Read Fresha controlled-test availability':'Check dedicated Fresha connection',objective:'Read only; no calendar writes, customer records or sends.',taskType:'fresha_connection',maxSteps:1,maxRetries:0,maxRuntimeMinutes:5,metadata:{connectedExecution:SCOPE,requiredCapability:SCOPE,freshaOperation:operation}});
       return receipt(task);
     },
-    async status(){return{capability:'read_only_connection_and_availability',writesEnabled:false,checks:(await list()).sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).slice(0,10).map(receipt)};},
+    async status(){return{capability:'connection_availability_and_approved_single_walk_in_test',writesEnabled:false,checks:(await list()).sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).slice(0,10).map(receipt)};},
     async next({workerId}){
       if(!/^fresha-[a-zA-Z0-9-]{6,80}$/.test(workerId||''))throw fail('fresha_worker_invalid');
       for(const task of await list()){
         if(task.status==='running'&&Date.parse(task.leaseExpiresAt)<clock()){
-          await storage.updateAutonomyTask(task.id,ownerId,{status:'blocked',errorCode:'fresha_executor_disconnected',blockedReason:'Connection check lost its executor. Request a new read; no write was attempted.'},task.stateVersion);continue;
+          await storage.updateAutonomyTask(task.id,ownerId,{status:'blocked',errorCode:'fresha_executor_disconnected',blockedReason:'Executor disconnected. Reconcile the recorded test ID before any further change; never repeat creation.'},task.stateVersion);continue;
         }
         if(task.status!=='queued')continue;
         const leaseToken=randomUUID(),claimed=await storage.updateAutonomyTask(task.id,ownerId,{status:'running',leaseOwner:workerId,leaseToken,leaseExpiresAt:new Date(clock()+300000).toISOString(),startedAt:new Date(clock()).toISOString()},task.stateVersion);

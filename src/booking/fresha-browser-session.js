@@ -1,5 +1,5 @@
 import {createControlledFreshaTest} from './fresha-controlled-test.js';
-import {mkdir, realpath, writeFile, rename, open, readFile, rm} from 'node:fs/promises';
+import {stat, mkdir, realpath, writeFile, rename, open, readFile, rm} from 'node:fs/promises';
 import {resolve, relative, isAbsolute, join} from 'node:path';
 
 export const FRESHA_CALENDAR = 'https://partners.fresha.com/calendar';
@@ -120,6 +120,6 @@ export async function startFreshaBrowserSession({root,repositoryRoot,chromium,ch
       }
     }
     const controlledTest=createControlledFreshaTest({context,root:dir,verifyBusiness});
-    return{context,page,inspect,saveStatus,verifyBusiness,inspectAvailableTimes,runControlledTest:controlledTest.run,async close(){await context.close();await release();}};
+    return{context,page,inspect,saveStatus,verifyBusiness,inspectAvailableTimes,runControlledTest:async(...args)=>{const revision=(await stat(new URL('./fresha-controlled-test.js',import.meta.url))).mtimeMs;const module=await import('./fresha-controlled-test.js?revision='+revision);return module.createControlledFreshaTest({context,root:dir,verifyBusiness}).run(...args);},async close(){await context.close();await release();}};
   }catch(error){await context?.close().catch(()=>{});await release();throw error;}
 }
